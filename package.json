@@ -1,0 +1,24 @@
+{
+  "name": "pi-tidy-tools",
+  "version": "0.1.0",
+  "description": "Tidy, reason-first tool output for pi. Every tool call in two lines: why it ran, and what it returned. Diffs and output on demand.",
+  "license": "MIT",
+  "author": "Mikey O'Brien <m@mobrienv.dev>",
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.80.6",
+    "@earendil-works/pi-tui": "0.80.6"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "typescript": "5.6.3"
+  }
+}

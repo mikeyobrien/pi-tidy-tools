@@ -21,6 +21,12 @@
   "scripts": {
     "test": "npm test --workspaces --if-present && node scripts/test-pack.mjs",
     "check": "npm run check --workspaces --if-present",
-    "test:pack": "node scripts/test-pack.mjs"
+    "test:pack": "node scripts/test-pack.mjs",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "husky": "^9.1.7",
+    "lint-staged": "^17.0.8",
+    "prettier": "^3.9.5"
   }
 }

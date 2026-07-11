@@ -10,5 +10,5 @@
     "lib": ["ES2022"],
     "types": ["node"]
   },
-  "include": ["index.ts", "render.ts", "config.ts"]
+  "include": ["index.ts", "render.ts", "config.ts", "tool-composition.ts"]
 }

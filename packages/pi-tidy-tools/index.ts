@@ -46,11 +46,7 @@ import {
 	createGrepTool,
 	createLsTool,
 	createReadTool,
-	createWriteTool,
-	generateDiffString,
 } from "@earendil-works/pi-coding-agent";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
 import { Container, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { CONFIG_PATH, loadTidyMode, loadTidyState, saveTidyEnabled, saveTidyMode, type TidyMode } from "./config.js";
 import {
@@ -66,6 +62,14 @@ import {
 	shortPath,
 	style,
 } from "./render.js";
+import {
+	composeSourceTool,
+	createDiffingWriteTool,
+	stripReasoning,
+	withReasoning,
+} from "./tool-composition.js";
+
+export { withReasoning } from "./tool-composition.js";
 
 // A leading indent offsets each tool block from surrounding prose, making tool
 // calls visually distinct from the assistant's text.
@@ -282,25 +286,6 @@ export function buildTurnDiffBlock(diffs: TurnDiff[]): string[] {
 	return [header, ...renderTurnDiffs(diffs)];
 }
 
-/** Clone a JSON-schema params object and inject a REQUIRED, first `reasoning` prop. */
-export function withReasoning(parameters: any): any {
-	const reasoning = {
-		type: "string",
-		description:
-			"Short phrase (≤12 words) stating the GOAL behind this call — the why-in-context, not the what. Do NOT restate the file, path, or command (those are already shown next to it); instead give the intent or what you expect to find/confirm. Present-tense, no period. E.g. \"confirm executionStarted is a timestamp\", \"fix the map leak from review\", \"retry match after previous miss\".",
-	};
-	const properties = { reasoning, ...(parameters?.properties ?? {}) };
-	const required = Array.from(new Set(["reasoning", ...(parameters?.required ?? [])]));
-	return { ...parameters, properties, required };
-}
-
-/** Strip our injected `reasoning` before delegating to the real tool. */
-function stripReasoning(params: any): { reasoning?: string; rest: any } {
-	if (!params || typeof params !== "object") return { rest: params };
-	const { reasoning, ...rest } = params;
-	return { reasoning: typeof reasoning === "string" ? reasoning : undefined, rest };
-}
-
 /**
  * Build the expanded (C-o) continuation lines for a settled tool result:
  *   - bash: the full multi-line command input, then its output
@@ -477,6 +462,23 @@ export default function (pi: ExtensionAPI) {
 	// disabled mode, including schemas, prompt guidelines, hooks, and renderers.
 	if (!tidyState.enabled) return;
 
+	const sourceTools: Record<string, any> = {
+		read: createReadTool(cwd),
+		write: createDiffingWriteTool(cwd),
+		edit: createEditTool(cwd),
+		bash: createBashTool(cwd),
+		grep: createGrepTool(cwd),
+		find: createFindTool(cwd),
+		ls: createLsTool(cwd),
+	};
+	const builtinTools: Record<string, any> = Object.fromEntries(Object.entries(sourceTools).map(([name, source]) => [
+		name,
+		composeSourceTool(source, {
+			mode: tidyMode,
+			reasoningGuideline: `Always pass a "reasoning" phrase to ${name}: state the GOAL/intent, not the file or command (those are shown already).`,
+		}),
+	]));
+
 	// --- Turn-diff tracking: capture edit/write changes, bucketed per turn, so
 	// `/diff` can recap the last turn's file changes as one combined diff.
 	// NOTE: tool_execution_end has NO args — only tool_execution_start carries
@@ -611,54 +613,11 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	const builtinTools: Record<string, any> = {
-		read: createReadTool(cwd),
-		write: createWriteTool(cwd),
-		edit: createEditTool(cwd),
-		bash: createBashTool(cwd),
-		grep: createGrepTool(cwd),
-		find: createFindTool(cwd),
-		ls: createLsTool(cwd),
-	};
-
 	for (const [name, tool] of Object.entries(builtinTools)) {
 		pi.registerTool({
+			...tool,
 			name,
-			label: name,
-			description: tool.description,
-			parameters: tidyMode === "result" ? tool.parameters : withReasoning(tool.parameters),
-			promptGuidelines: tidyMode === "result" ? [] : [
-				`Always pass a "reasoning" phrase to ${name}: state the GOAL/intent, not the file or command (those are shown already).`,
-			],
 			renderShell: "self",
-
-			// Strip our injected `reasoning`, delegate to the real built-in. Writes
-			// use per-call operations so the before-content is read inside Pi's file
-			// mutation queue and can produce the same diff format as edit.
-			execute: async (id: string, p: any, sig: any, up: any) => {
-				const { rest } = stripReasoning(p);
-				if (name !== "write") return tool.execute(id, rest, sig, up);
-
-				let diff = "";
-				const writeTool = createWriteTool(cwd, {
-					operations: {
-						mkdir: async (directory: string) => { await mkdir(directory, { recursive: true }); },
-						writeFile: async (path: string, content: string) => {
-							let previous = "";
-							try {
-								previous = await readFile(path, "utf8");
-							} catch (error: any) {
-								if (error?.code !== "ENOENT") throw error;
-							}
-							await mkdir(dirname(path), { recursive: true });
-							await writeFile(path, content, "utf8");
-							diff = generateDiffString(previous, content).diff;
-						},
-					},
-				});
-				const result = await writeTool.execute(id, rest, sig, up);
-				return { ...result, details: { ...(result.details ?? {}), diff } };
-			},
 
 			// The call slot owns the running block, so tools that never stream partial
 			// results still appear immediately with a live elapsed timer.

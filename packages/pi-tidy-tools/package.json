@@ -25,6 +25,7 @@
     "index.ts",
     "config.ts",
     "render.ts",
+    "tool-composition.ts",
     "vendor/**/*.ts",
     "README.md",
     "LICENSE",

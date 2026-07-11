@@ -81,15 +81,26 @@ npm test
 npm run check
 ```
 
+Coverage bars (c8) and mutation testing (Stryker) are available monorepo-wide or per package:
+
+```bash
+npm run test:coverage
+npm run test:mutation
+```
+
+HTML reports land under each package's `coverage/` and `reports/mutation/` directories. Coverage thresholds live in each package's `.c8rc.json`; mutation break scores live in each package's `stryker.config.mjs`.
+
 Target one package during development:
 
 ```bash
 npm test --workspace @mobrienv/pi-tidy-tools
 npm run check --workspace @mobrienv/pi-tidy-tools
+npm run test:coverage --workspace @mobrienv/pi-tidy-tools
 npm pack --workspace @mobrienv/pi-tidy-tools --dry-run
 
 npm test --workspace @mobrienv/pi-tidy-subagents
 npm run check --workspace @mobrienv/pi-tidy-subagents
+npm run test:coverage --workspace @mobrienv/pi-tidy-subagents
 npm pack --workspace @mobrienv/pi-tidy-subagents --dry-run
 ```
 

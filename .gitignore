@@ -5,6 +5,10 @@ node_modules/
 .pi-subagents/
 .pi/qa-runs/
 .test-dist/
+coverage/
+.nyc_output/
+reports/
+.stryker-tmp/
 packages/*/docs/comparison.html
 packages/*/docs/demo.html
 packages/*/docs/visual.html

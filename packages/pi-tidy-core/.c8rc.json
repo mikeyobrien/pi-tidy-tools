@@ -1,0 +1,10 @@
+{
+  "exclude": ["**/test/**", "**/*.test.ts", "**/node_modules/**"],
+  "reporter": ["text", "text-summary", "html", "lcov"],
+  "reports-dir": "coverage",
+  "check-coverage": true,
+  "statements": 75,
+  "branches": 55,
+  "functions": 75,
+  "lines": 75
+}

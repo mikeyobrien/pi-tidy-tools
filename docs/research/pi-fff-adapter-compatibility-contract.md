@@ -1,7 +1,9 @@
 # pi-fff adapter compatibility contract
 
-**Status:** research resolution for [Define the pi-fff adapter compatibility contract](https://github.com/mikeyobrien/pi-tidy-tools/issues/12)  
-**Decision date:** 2026-07-11  
+**Status:** research resolution for [Define the pi-fff adapter compatibility contract](https://github.com/mikeyobrien/pi-tidy-tools/issues/12)
+
+**Decision date:** 2026-07-11
+
 **Minimum versions:** Pi / `@earendil-works/pi-coding-agent` **>=0.80.6** + `pi-fff` **>=0.1.12**, with no upper bound
 
 **Verified baseline tuple:** Pi **0.80.6** + `pi-fff` **0.1.12**

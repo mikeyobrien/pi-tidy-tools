@@ -1,5 +1,7 @@
+type Digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9";
+type FindingDigits = `${Digit}${Digit}${Digit}` | `${Digit}${Digit}${Digit}${Digit}`;
 export type RunId = string;
-export type FindingId = `F${number}`;
+export type FindingId = `F${FindingDigits}`;
 export type ScenarioStatus = "pass" | "finding" | "blocked";
 export type Severity = "critical" | "high" | "medium" | "low";
 export type Confidence = "high" | "medium" | "low";
@@ -10,14 +12,28 @@ export interface EvidenceRef {
   sha256?: string;
 }
 
+export interface AcceptanceRequirement {
+  /** Stable kebab-case identity, unique within the charter. */
+  id: string;
+  text: string;
+}
+
+export interface BuildQaHandoffRef {
+  path: string;
+  schemaVersion: 1;
+  sha256: string;
+}
+
 export interface Charter {
   feature: string;
   promise: string;
   entryPoint: string;
   environment: string;
-  acceptance: string[];
+  acceptance: AcceptanceRequirement[];
   safety: string[];
   outOfScope: string[];
+  /** Provenance only; the human-confirmed charter remains authoritative. */
+  handoff: BuildQaHandoffRef | null;
 }
 
 interface EventBase<T extends string> {
@@ -107,10 +123,16 @@ export interface RoundClosed extends EventBase<"round.closed"> {
   outcome: "findings" | "no-findings" | "blocked";
 }
 
+export interface FinalVerificationCheck {
+  command: string;
+  status: "passed" | "failed" | "blocked";
+  exitCode: number | null;
+  evidence: EvidenceRef[];
+}
 export interface RunClosed extends EventBase<"run.closed"> {
   reason: "no-findings" | "human-signoff";
   acceptedOpenFindingIds: FindingId[];
-  verificationCommands: string[];
+  verificationChecks: FinalVerificationCheck[];
   worktreeStatus: string[];
 }
 

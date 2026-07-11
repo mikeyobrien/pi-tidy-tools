@@ -7,9 +7,14 @@ built-in tools into compact, configurable blocks so the transcript reads like
 a narrative, not a wall of boxes.
 
 Restyles pi's built-in tools (`read` `write` `edit` `bash` `grep` `find` `ls`)
-with a two-line default plus optional one-line reasoning and result layouts:
+with a two-line default plus optional one-line reasoning and result layouts.
 
-![pi-tidy-tools demo](docs/demo.png)
+## Before and after
+
+The same successful `read`, `grep`, and `edit` calls rendered by native pi and
+pi-tidy-tools:
+
+![Native pi tool cards compared with compact pi-tidy-tools output](docs/comparison.png)
 
 - **Line 1** — status mark, tool icon/name, and the model's **goal/reasoning** for the call.
 - **Line 2** — the concrete target (path/command/pattern) and a colored result summary.
@@ -17,6 +22,10 @@ with a two-line default plus optional one-line reasoning and result layouts:
 Execution delegates to pi's built-in tools unchanged. The extension replaces
 their TUI rendering and, in reasoning-enabled modes, augments their schemas with
 a required goal phrase.
+
+## In action
+
+![pi-tidy-tools transcript showing successful and failed tool calls](docs/demo.png)
 
 ## Reasoning headline
 
@@ -148,15 +157,17 @@ npm test        # native Node test runner
 npm run check   # tsc --noEmit
 ```
 
-## Regenerating the demo image
+## Regenerating screenshots
 
-`docs/demo.png` is generated from **real** renderer output (no hand-typed ANSI):
-the demo runs the built-in tools, renders them through the actual extension, and
-screenshots the result via headless Chrome.
+`docs/comparison.png`, `docs/demo.png`, and `docs/modes.png` are generated from
+**real** renderer output (no hand-typed ANSI): the scripts run the built-in tools,
+render them through the actual extension (or native pi cards for the comparison),
+and screenshot the result via headless Chrome.
 
 ```bash
-bash docs/demo.sh    # hero screenshot
-bash docs/modes.sh   # layout-mode comparison
+bash docs/comparison.sh # native vs tidy comparison
+bash docs/demo.sh       # full tidy transcript
+bash docs/modes.sh      # layout-mode comparison
 ```
 
-Both generators require Google Chrome/Chromium and ImageMagick.
+All three generators require Google Chrome/Chromium and ImageMagick.

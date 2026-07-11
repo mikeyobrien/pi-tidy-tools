@@ -105,7 +105,7 @@ without owning its execution.
 Install from npm:
 
 ```bash
-pi install npm:pi-tidy-tools
+pi install npm:@mobrienv/pi-tidy-tools
 ```
 
 Quick-test a local checkout:

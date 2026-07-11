@@ -1,5 +1,5 @@
 {
-  "name": "pi-tidy-tools",
+  "name": "@mobrienv/pi-tidy-tools",
   "version": "0.1.0",
   "description": "Compact, reason-first tool output for pi with configurable layouts, live status, and diffs on demand.",
   "license": "MIT",

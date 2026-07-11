@@ -425,7 +425,7 @@ export default function (pi: ExtensionAPI) {
 	const elapsedTimerByCallId = new Map<string, ReturnType<typeof setInterval>>();
 
 	pi.on("tool_execution_start", async (e: any) => {
-		startedAtByCallId.set(e.toolCallId, Date.now());
+		if (!startedAtByCallId.has(e.toolCallId)) startedAtByCallId.set(e.toolCallId, Date.now());
 		if ((e.toolName === "edit" || e.toolName === "write") && typeof e?.args?.path === "string") {
 			pathByCallId.set(e.toolCallId, e.args.path);
 		}
@@ -524,7 +524,11 @@ export default function (pi: ExtensionAPI) {
 					timer.unref?.();
 					elapsedTimerByCallId.set(toolCallId, timer);
 				}
-				const startedAt = startedAtByCallId.get(toolCallId) ?? Date.now();
+				let startedAt = startedAtByCallId.get(toolCallId);
+				if (startedAt === undefined) {
+					startedAt = Date.now();
+					startedAtByCallId.set(toolCallId, startedAt);
+				}
 				return new WidthAwareLines(
 					() => buildToolBlock(name, args ?? {}, {}, {
 						isPartial: true,

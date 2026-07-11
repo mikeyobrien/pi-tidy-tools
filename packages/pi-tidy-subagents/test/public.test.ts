@@ -5,8 +5,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import extension, {
- buildEnvelope, concurrencyCap, inheritRuntimePlan, launchRuntime, parseExactModelRef,
- renderLines, resolveBatchRuntime, RuntimeResolutionError, Scheduler,
+ buildDefaultRoutingConfig, buildEnvelope, clearRoutingConfig, concurrencyCap,
+ formatRoutingGuidance, inheritRuntimePlan, launchRuntime, listAuthenticatedModels,
+ loadRoutingConfig, MODEL_FIELD_DESCRIPTION, parseExactModelRef, renderLines,
+ resolveBatchRuntime, resolveTaskSelection, routingConfigPath, RuntimeResolutionError,
+ saveRoutingConfig, Scheduler, STANDARD_TASK_CLASSES, THINKING_FIELD_DESCRIPTION,
 } from "../index.js";
 import { SnapshotComponent } from "../render.js";
 import { buildChildArgs } from "../runner.js";
@@ -55,9 +58,10 @@ function makeRegistry(entries: RegistryEntry[] = [
 }
 
 function register(registry = makeRegistry()) {
- let tool: any; const shutdown: any[] = [];
+ let tool: any; const shutdown: any[] = []; const commands = new Map<string, any>();
  const pi = {
   registerTool(value: any) { tool = value; },
+  registerCommand(name: string, options: any) { commands.set(name, options); },
   on(name: string, handler: any) { if (name === "session_shutdown") shutdown.push(handler); },
   getThinkingLevel: () => "medium",
   getActiveTools: () => ["read", "subagent", "mystery"],
@@ -70,7 +74,7 @@ function register(registry = makeRegistry()) {
   if (previousChild === undefined) delete process.env.PI_TIDY_SUBAGENT_CHILD;
   else process.env.PI_TIDY_SUBAGENT_CHILD = previousChild;
  }
- return { tool, shutdown, registry };
+ return { tool, shutdown, registry, commands };
 }
 const context = (cwd: string, registry = makeRegistry()) => ({
  cwd, mode: "tui", model: { provider: "fake", id: "model-x" }, isProjectTrusted: () => true, modelRegistry: registry,
@@ -133,6 +137,7 @@ test("two inherited children independently own equivalent runtime plans and laun
  let tool: any;
  const pi = {
   registerTool(value: any) { tool = value; },
+  registerCommand() {},
   on() {},
   getThinkingLevel: () => { thinkingReads++; return "medium"; },
   getActiveTools: () => ["read", "subagent"],
@@ -452,6 +457,7 @@ test("inherited clamp when parent level is unsupported by sparse or always-think
  let tool: any;
  const pi = {
   registerTool(value: any) { tool = value; },
+  registerCommand() {},
   on() {},
   getThinkingLevel: () => "off",
   getActiveTools: () => ["read", "subagent"],
@@ -797,3 +803,197 @@ test("pure boundaries cover cap FIFO envelope limits and renderer", async () => 
  assert.deepEqual(buildChildArgs({ model: "provider/model", thinking: "high", tools: ["read", "grep"], approved: true }), ["--mode", "rpc", "--no-session", "--approve", "--model", "provider/model", "--thinking", "high", "--tools", "read,grep"]);
  assert.deepEqual(buildChildArgs({ model: "provider/model", thinking: "off", tools: [] }).slice(-1), ["--no-tools"]);
 });
+
+test("schema model and thinking guidance: exact IDs, omit inherits, reject fuzzy, thinking-primary", () => {
+ const { tool, commands } = register();
+ const agentProps = tool.parameters.properties.agents.items.properties;
+ const modelDesc = agentProps.model.description as string;
+ const thinkingDesc = agentProps.thinking.anyOf
+  ? (agentProps.thinking.description as string) // union may hoist description
+  : (agentProps.thinking.description as string);
+ // Prefer exported constants (TypeBox may nest union descriptions differently).
+ assert.equal(MODEL_FIELD_DESCRIPTION, modelDesc || MODEL_FIELD_DESCRIPTION);
+ assert.match(MODEL_FIELD_DESCRIPTION, /exact registered provider\/model-id/i);
+ assert.match(MODEL_FIELD_DESCRIPTION, /omit inherits parent/i);
+ assert.match(MODEL_FIELD_DESCRIPTION, /aliases|profiles|fuzzy/i);
+ assert.match(MODEL_FIELD_DESCRIPTION, /tidy-subagents-routing/);
+ assert.doesNotMatch(MODEL_FIELD_DESCRIPTION, /claude-|gpt-|gemini-/i);
+
+ assert.match(THINKING_FIELD_DESCRIPTION, /off\|minimal\|low\|medium\|high\|xhigh\|max/);
+ assert.match(THINKING_FIELD_DESCRIPTION, /omit inherits parent/i);
+ assert.match(THINKING_FIELD_DESCRIPTION, /primary per-child control/i);
+ assert.match(THINKING_FIELD_DESCRIPTION, /bounded|mechanical/i);
+ assert.match(THINKING_FIELD_DESCRIPTION, /architecture|concurrency/i);
+
+ // TypeBox string optional keeps description on the property; thinking union may put it on the schema root.
+ if (modelDesc) assert.equal(modelDesc, MODEL_FIELD_DESCRIPTION);
+ if (thinkingDesc) assert.equal(thinkingDesc, THINKING_FIELD_DESCRIPTION);
+
+ const guidelines = tool.promptGuidelines as string[];
+ assert.ok(guidelines.some((line) => /primary per-child control/i.test(line)));
+ assert.ok(guidelines.some((line) => /exact registered provider\/model-id|No aliases/i.test(line)));
+ assert.ok(guidelines.some((line) => /tidy-subagents-routing/.test(line)));
+ // Override hierarchy (most specific wins): tool-call fields > user turn > AGENTS.md > routing map > schema defaults > parent inherit.
+ const hierarchyLine = guidelines.find((line) => /most specific wins|precedence/i.test(line));
+ assert.ok(hierarchyLine, "promptGuidelines must document override precedence");
+ assert.match(hierarchyLine!, /explicit|tool[- ]call|request fields/i);
+ assert.match(hierarchyLine!, /user turn/i);
+ assert.match(hierarchyLine!, /AGENTS\.md/);
+ assert.match(hierarchyLine!, /routing map|tidy-subagents-routing/i);
+ assert.match(hierarchyLine!, /schema defaults|promptGuidelines/i);
+ assert.match(hierarchyLine!, /inherit/i);
+ assert.ok(guidelines.every((line) => !/coequal/i.test(line)), "coequal framing must be removed");
+ assert.ok(commands.has("tidy-subagents-routing"));
+});
+
+test("structured routing config atomic load/save and thinking-primary defaults", async () => fixture(async (root) => {
+ const agentDir = join(root, "agent");
+ assert.equal(loadRoutingConfig(agentDir), undefined);
+
+ const defaults = buildDefaultRoutingConfig();
+ assert.equal(defaults.version, 1);
+ assert.deepEqual(Object.keys(defaults.taskClasses).sort(), [...STANDARD_TASK_CLASSES].filter((t) => defaults.taskClasses[t]).sort());
+ // Thinking-primary: model omitted by default on every task class.
+ for (const selection of Object.values(defaults.taskClasses)) {
+  assert.equal(selection?.model, undefined);
+ }
+ assert.equal(defaults.taskClasses["bounded-lookup"]?.thinking, "minimal");
+ assert.equal(defaults.taskClasses["mechanical-implementation"]?.thinking, "low");
+ assert.equal(defaults.taskClasses["ordinary-review"]?.thinking, "medium");
+ assert.equal(defaults.taskClasses["architectural-judgment"]?.thinking, "high");
+ assert.equal(defaults.taskClasses["concurrency-analysis"]?.thinking, "high");
+ assert.equal(defaults.taskClasses["cost-sensitive"]?.thinking, "minimal");
+
+ const path = await saveRoutingConfig(defaults, agentDir);
+ assert.equal(path, routingConfigPath(agentDir));
+ const loaded = loadRoutingConfig(agentDir);
+ assert.deepEqual(loaded, defaults);
+
+ const withModels = buildDefaultRoutingConfig({
+  "architectural-judgment": "other/strong",
+  "cost-sensitive": "fake/fast",
+ });
+ assert.equal(withModels.taskClasses["architectural-judgment"]?.model, "other/strong");
+ assert.equal(withModels.taskClasses["cost-sensitive"]?.model, "fake/fast");
+ assert.equal(withModels.taskClasses["ordinary-review"]?.model, undefined);
+ await saveRoutingConfig(withModels, agentDir);
+ assert.deepEqual(resolveTaskSelection(loadRoutingConfig(agentDir), "architectural-judgment"), {
+  thinking: "high", model: "other/strong",
+ });
+ assert.deepEqual(resolveTaskSelection(loadRoutingConfig(agentDir), "ordinary-review"), {
+  thinking: "medium",
+ });
+
+ const guidance = formatRoutingGuidance(loadRoutingConfig(agentDir));
+ assert.ok(guidance.some((line) => line.includes("architectural-judgment") && line.includes("other/strong")));
+ assert.ok(guidance.some((line) => line.includes("model=inherit") || line.includes("ordinary-review")));
+
+ assert.equal(await clearRoutingConfig(agentDir), true);
+ assert.equal(loadRoutingConfig(agentDir), undefined);
+ assert.equal(await clearRoutingConfig(agentDir), false);
+}));
+
+test("listAuthenticatedModels prefers getAvailable and falls back to auth filter", () => {
+ const available = listAuthenticatedModels({
+  getAvailable: () => [{ provider: "fake", id: "fast" }, { provider: "other", id: "strong" }],
+  getAll: () => [{ provider: "fake", id: "ignored" }],
+  hasConfiguredAuth: () => false,
+ });
+ assert.deepEqual(available.map((m) => m.ref), ["fake/fast", "other/strong"]);
+
+ const filtered = listAuthenticatedModels({
+  getAll: () => [
+   { provider: "fake", id: "fast" },
+   { provider: "other", id: "unauthed" },
+  ],
+  hasConfiguredAuth: (m) => m.id !== "unauthed",
+ });
+ assert.deepEqual(filtered.map((m) => m.ref), ["fake/fast"]);
+ assert.deepEqual(listAuthenticatedModels(undefined), []);
+});
+
+test("/tidy-subagents-routing setup writes agent-dir map without parent mutation", async () => fixture(async (root) => {
+ process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+ const { commands } = register();
+ const command = commands.get("tidy-subagents-routing");
+ assert.ok(command);
+
+ let setModelCalls = 0;
+ let setThinkingCalls = 0;
+ const notes: Array<{ message: string; type?: string }> = [];
+ const answers = [
+  // thinking then model for each of 8 task classes
+  "minimal (suggested)", "inherit (parent)",
+  "low (suggested)", "fake/fast",
+  "medium (suggested)", "inherit (parent)",
+  "high (suggested)", "other/strong",
+  "high (suggested)", "inherit (parent)",
+  "minimal (suggested)", "fake/fast",
+  "inherit (parent)", "fake/deep/reasoner",
+  "inherit (parent)", "other/strong",
+ ];
+ let answerIndex = 0;
+ const ctx = {
+  ui: {
+   notify(message: string, type?: string) { notes.push({ message, type }); },
+   async select(_title: string, _options: string[]) {
+    return answers[answerIndex++];
+   },
+  },
+  modelRegistry: {
+   getAvailable: () => [
+    { provider: "fake", id: "fast" },
+    { provider: "fake", id: "deep/reasoner" },
+    { provider: "other", id: "strong" },
+   ],
+  },
+  setModel() { setModelCalls++; },
+  setThinkingLevel() { setThinkingCalls++; },
+ };
+
+ await command.handler("setup", ctx);
+ assert.equal(setModelCalls, 0);
+ assert.equal(setThinkingCalls, 0);
+ assert.ok(notes.some((n) => /Saved routing map/.test(n.message)));
+
+ const loaded = loadRoutingConfig(join(root, "agent"));
+ assert.ok(loaded);
+ assert.equal(loaded!.taskClasses["bounded-lookup"]?.thinking, "minimal");
+ assert.equal(loaded!.taskClasses["bounded-lookup"]?.model, undefined);
+ assert.equal(loaded!.taskClasses["mechanical-implementation"]?.model, "fake/fast");
+ assert.equal(loaded!.taskClasses["architectural-judgment"]?.model, "other/strong");
+ assert.equal(loaded!.taskClasses["similarly-named-models"]?.model, "fake/deep/reasoner");
+ assert.equal(loaded!.taskClasses["cross-provider"]?.model, "other/strong");
+
+ notes.length = 0;
+ await command.handler("status", ctx);
+ assert.ok(notes.some((n) => /architectural-judgment/.test(n.message)));
+
+ notes.length = 0;
+ await command.handler("defaults", ctx);
+ const defaults = loadRoutingConfig(join(root, "agent"));
+ assert.ok(defaults);
+ for (const selection of Object.values(defaults!.taskClasses)) {
+  assert.equal(selection?.model, undefined);
+ }
+
+ notes.length = 0;
+ await command.handler("clear", ctx);
+ assert.equal(loadRoutingConfig(join(root, "agent")), undefined);
+ assert.ok(notes.some((n) => /Cleared/.test(n.message)));
+}));
+
+test("/tidy-subagents-routing setup warns when no authenticated models", async () => fixture(async (root) => {
+ process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+ const { commands } = register();
+ const notes: string[] = [];
+ await commands.get("tidy-subagents-routing").handler("setup", {
+  ui: {
+   notify(message: string) { notes.push(message); },
+   async select() { throw new Error("select should not run"); },
+  },
+  modelRegistry: { getAvailable: () => [] },
+ });
+ assert.ok(notes.some((n) => /No authenticated models/i.test(n)));
+ assert.equal(loadRoutingConfig(join(root, "agent")), undefined);
+}));

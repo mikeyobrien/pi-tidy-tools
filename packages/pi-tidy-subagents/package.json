@@ -24,6 +24,7 @@
   "type": "module",
   "files": [
     "index.ts",
+    "config.ts",
     "envelope.ts",
     "render.ts",
     "runner.ts",
@@ -35,7 +36,8 @@
     "README.md",
     "CHANGELOG.md",
     "LICENSE",
-    "docs/*.png"
+    "docs/*.png",
+    "docs/routing-eval.md"
   ],
   "pi": {
     "extensions": [
@@ -47,7 +49,8 @@
     "test": "node --import tsx --test test/*.test.ts",
     "check": "node ../../scripts/bundle-core.mjs . && tsc --noEmit",
     "prepack": "node ../../scripts/bundle-core.mjs .",
-    "smoke": "PI_TIDY_REAL_SMOKE=1 node --import tsx --test test/smoke.test.ts"
+    "smoke": "PI_TIDY_REAL_SMOKE=1 node --import tsx --test test/smoke.test.ts",
+    "routing-eval": "PI_TIDY_ROUTING_EVAL=1 node --import tsx --test test/routing-eval.test.ts"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "0.80.6",

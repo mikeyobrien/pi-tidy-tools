@@ -1,0 +1,18 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
+import { buildToolActivityBlock, describeTool, fitLine, formatElapsed, shortPath, summarizeToolActivity } from "../index.js";
+test("shared primitives stay compact", () => {
+  assert.equal(formatElapsed(64_000), "1m 04s");
+  assert.equal(describeTool("grep", { pattern: "x", path: "src" }), "x in src");
+  assert.equal(summarizeToolActivity("mcp", {}, "running"), "· mcp");
+  assert.equal(summarizeToolActivity("read", { path: "a.ts" }, "success", { content: [{ type: "text", text: "a\nb" }] }), "✓ read a.ts → 2 lines");
+  assert.equal(summarizeToolActivity("grep", { pattern: "x", path: "src" }, "success", { content: [{ type: "text", text: "a.ts:1:x\nb.ts:2:x" }] }), "✓ grep x in src → 2 matches in 2 files");
+  assert.equal(summarizeToolActivity("bash", { command: "npm test" }, "success", {}, 2_100), "✓ bash npm test → done in 2s");
+  const block = buildToolActivityBlock("read", { path: "a.ts", reasoning: "inspect auth state" }, "success", { content: [{ type: "text", text: "a\nb" }] }).map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+  assert.deepEqual(block, ["✓ 📖 read inspect auth state", "  a.ts → 2 lines"]);
+  const failure = buildToolActivityBlock("bash", { command: "npm test", reasoning: "run the suite" }, "error", { content: [{ type: "text", text: "Command failed with exit code 1" }] }, 2_100).map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+  assert.deepEqual(failure, ["✗ ⚡ bash run the suite", "  npm test → error in 2s"]);
+  assert.ok(visibleWidth(fitLine("abcdefgh", 5)) <= 5);
+  assert.ok(shortPath(process.env.HOME ?? "").startsWith("~"));
+});

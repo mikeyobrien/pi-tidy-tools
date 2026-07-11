@@ -19,7 +19,8 @@
     ]
   },
   "scripts": {
-    "test": "npm test --workspaces --if-present",
-    "check": "npm run check --workspaces --if-present"
+    "test": "npm test --workspaces --if-present && node scripts/test-pack.mjs",
+    "check": "npm run check --workspaces --if-present",
+    "test:pack": "node scripts/test-pack.mjs"
   }
 }

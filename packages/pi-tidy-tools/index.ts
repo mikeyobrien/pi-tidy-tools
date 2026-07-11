@@ -150,7 +150,10 @@ function summarize(
 	elapsedMs = 0,
 ): string {
 	const text = textFromResult(result);
-	if (isError) return `${RED}${text.split("\n")[0] || "error"}${RESET}`;
+	if (isError) {
+		if (name === "bash") return `${RED}error${RESET} ${DIM}in ${formatElapsed(elapsedMs)}${RESET}`;
+		return `${RED}${text.split("\n")[0] || "error"}${RESET}`;
+	}
 	if (name === "read") return `${GREEN}${text.split("\n").length} lines${RESET}`;
 	if (name === "write") {
 		if (typeof args.content === "string" && !args.content.includes("\0")) {
@@ -202,16 +205,43 @@ function textFromResult(r: any): string {
 		if (c?.text) return c.text;
 	}
 	if (typeof r?.output === "string") return r.output;
+	if (typeof r?.error === "string") return r.error;
+	if (typeof r?.message === "string") return r.message;
+	if (typeof r?.details?.error === "string") return r.details.error;
 	return "";
+}
+
+/** Replace tabs with painted cells using stops relative to the code payload. */
+function expandTabs(text: string): string {
+	let column = 0;
+	let expanded = "";
+	for (const character of text) {
+		if (character === "\t") {
+			const spaces = 8 - (column % 8);
+			expanded += " ".repeat(spaces);
+			column += spaces;
+		} else {
+			expanded += character;
+			column += visibleWidth(character);
+		}
+	}
+	return expanded;
+}
+
+/** Keep line-number prefixes out of edit payload tab-stop calculations. */
+function expandDiffTabs(line: string): string {
+	const numbered = line.match(/^([ +\-]\s*\d+ )(.*)$/);
+	return numbered ? `${numbered[1]}${expandTabs(numbered[2])}` : expandTabs(line);
 }
 
 /** Colorize a unified/line-numbered diff string (edit tool's details.diff). */
 function colorizeDiff(diff: string): string[] {
-	return diff.split("\n").map((l) => {
-		if (l.startsWith("+") && !l.startsWith("+++")) return `${GREEN}${l}${RESET}`;
-		if (l.startsWith("-") && !l.startsWith("---")) return `${RED}${l}${RESET}`;
-		if (l.startsWith("@@")) return `${CYAN}${l}${RESET}`;
-		return `${DIM}${l}${RESET}`;
+	return diff.split("\n").map((rawLine) => {
+		const line = expandDiffTabs(rawLine);
+		if (line.startsWith("+") && !line.startsWith("+++")) return `${GREEN}${line}${RESET}`;
+		if (line.startsWith("-") && !line.startsWith("---")) return `${RED}${line}${RESET}`;
+		if (line.startsWith("@@")) return `${CYAN}${line}${RESET}`;
+		return `${DIM}${line}${RESET}`;
 	});
 }
 
@@ -292,7 +322,7 @@ function expandedLines(name: string, args: Record<string, unknown>, result: any)
 		const lineNumberWidth = String(contentLines.length).length;
 		contentLines.forEach((line, index) => {
 			const lineNumber = String(index + 1).padStart(lineNumberWidth, " ");
-			out.push(`${INDENT}${DIM}${lineNumber} ${RESET}${line}`);
+			out.push(`${INDENT}${DIM}${lineNumber} ${RESET}${expandTabs(line)}`);
 		});
 		return out;
 	}
@@ -300,7 +330,7 @@ function expandedLines(name: string, args: Record<string, unknown>, result: any)
 	// Prefer the structured diff over the generic "Successfully replaced..." text.
 	const diff = result?.details?.diff as string | undefined;
 	if (diff && diff.trim()) {
-		for (const dl of colorizeDiff(diff.replace(/\s+$/, ""))) out.push(`${INDENT}${dl}`);
+		for (const dl of colorizeDiff(diff)) out.push(`${INDENT}${dl}`);
 		return out;
 	}
 
@@ -335,9 +365,9 @@ export function buildToolBlock(
 	const { icon, color } = style(name);
 	const headline = oneLine(reasoning || argDetail(name, rest));
 	const detail = argDetail(name, rest);
-	// On error, give the whole line-2 to the message (skip the detail prefix so a
-	// long error isn't squeezed off-screen). The full error is on expand anyway.
-	const line2 = isError || !detail
+	// Keep the target on failures too; width fitting preserves the useful error
+	// tail while the command/path answers what actually failed.
+	const line2 = !detail
 		? `${INDENT}${DIM}→${RESET} ${summary}`
 		: `${INDENT}${DIM}${detail}${RESET} ${DIM}→${RESET} ${summary}`;
 	let lines: string[];
@@ -463,6 +493,13 @@ export default function (pi: ExtensionAPI) {
 		currentTurn.push({ tool: e.toolName, path: path ?? "(unknown)", diff });
 	});
 
+	pi.on("tool_result", async (e: any) => {
+		if (!Object.hasOwn(builtinTools, e.toolName)) return;
+		const startedAt = startedAtByCallId.get(e.toolCallId);
+		if (startedAt === undefined) return;
+		return { details: { ...(e.details ?? {}), piTidyElapsedMs: Math.max(0, Date.now() - startedAt) } };
+	});
+
 	pi.on("turn_end", async () => {
 		lastTurn = currentTurn;
 		currentTurn = [];
@@ -586,10 +623,18 @@ export default function (pi: ExtensionAPI) {
 				const isError = context?.isError ?? result?.isError ?? false;
 				const toolCallId = context?.toolCallId as string | undefined;
 				const startedAt = startedAtByCallId.get(toolCallId ?? "");
+				const elapsedTimer = elapsedTimerByCallId.get(toolCallId ?? "");
+				if (elapsedTimer) clearInterval(elapsedTimer);
+				elapsedTimerByCallId.delete(toolCallId ?? "");
+				startedAtByCallId.delete(toolCallId ?? "");
+				const persistedElapsed = Number(result?.details?.piTidyElapsedMs);
+				const elapsedMs = Number.isFinite(persistedElapsed)
+					? persistedElapsed
+					: startedAt === undefined ? 0 : Date.now() - startedAt;
 				const lines = buildToolBlock(name, context?.args ?? {}, result, {
 					isError,
 					expanded: options?.expanded ?? false,
-					elapsedMs: startedAt === undefined ? 0 : Date.now() - startedAt,
+					elapsedMs,
 					mode: tidyMode,
 				});
 

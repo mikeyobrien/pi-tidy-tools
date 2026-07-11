@@ -25,6 +25,7 @@
     "index.ts",
     "config.ts",
     "render.ts",
+    "vendor/**/*.ts",
     "README.md",
     "LICENSE",
     "docs/*.png"
@@ -35,8 +36,10 @@
     ]
   },
   "scripts": {
+    "pretest": "node ../../scripts/bundle-core.mjs .",
     "test": "node scripts/test.mjs",
-    "check": "tsc --noEmit"
+    "check": "node ../../scripts/bundle-core.mjs . && tsc --noEmit",
+    "prepack": "node ../../scripts/bundle-core.mjs ."
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.80.6 <0.81.0",

@@ -3,8 +3,10 @@ node_modules/
 *.tgz
 .agents/
 .pi-subagents/
+.pi/qa-runs/
 .test-dist/
 packages/*/docs/comparison.html
 packages/*/docs/demo.html
+packages/*/docs/visual.html
 packages/*/docs/diff.html
 packages/*/docs/modes.html

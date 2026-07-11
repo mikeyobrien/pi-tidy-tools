@@ -43,6 +43,49 @@ function loadWith(value: string): Registrations {
 	return registrations;
 }
 
+test("restored settled tools clear timers started during call hydration", () => {
+ const tools = new Map<string, any>();
+ const previous = process.env.PI_TIDY_TOOLS; process.env.PI_TIDY_TOOLS = "on";
+ try {
+  extension({ on() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerTool: (tool: any) => tools.set(tool.name, tool) } as any);
+ } finally {
+  if (previous === undefined) delete process.env.PI_TIDY_TOOLS; else process.env.PI_TIDY_TOOLS = previous;
+ }
+ const originalSetInterval = globalThis.setInterval, originalClearInterval = globalThis.clearInterval;
+ const timer = { unref() {} }; let cleared = false;
+ globalThis.setInterval = (() => timer) as any;
+ globalThis.clearInterval = ((value: unknown) => { if (value === timer) cleared = true; }) as any;
+ try {
+  const bash = tools.get("bash"); const args = { command: "echo restored", reasoning: "check restored output" };
+  const context = { isPartial: true, toolCallId: "restored", invalidate() {}, state: {}, args };
+  const theme = { bg: (_name: string, text: string) => text };
+  bash.renderCall(args, theme, context);
+  bash.renderResult({ content: [{ type: "text", text: "done" }] }, { isPartial: false, expanded: false }, theme, { ...context, isPartial: false, isError: false });
+  assert.equal(cleared, true);
+  const restored = bash.renderResult({ content: [{ type: "text", text: "done" }], details: { piTidyElapsedMs: 7_000 } }, { isPartial: false, expanded: false }, theme, { ...context, toolCallId: "reloaded", isPartial: false, isError: false });
+  assert.match(restored.render(200).join("\n").replace(/\x1b\[[0-9;]*m/g, ""), /done in 7s/);
+ } finally {
+  globalThis.setInterval = originalSetInterval; globalThis.clearInterval = originalClearInterval;
+ }
+});
+
+test("tool results persist elapsed duration for reload", async () => {
+ const handlers = new Map<string, (event: any) => Promise<any>>();
+ const previous = process.env.PI_TIDY_TOOLS; process.env.PI_TIDY_TOOLS = "on";
+ try {
+  extension({ on: (name: string, handler: any) => handlers.set(name, handler), registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerTool() {} } as any);
+ } finally {
+  if (previous === undefined) delete process.env.PI_TIDY_TOOLS; else process.env.PI_TIDY_TOOLS = previous;
+ }
+ const originalNow = Date.now; let now = 1_000; Date.now = () => now;
+ try {
+  await handlers.get("tool_execution_start")!({ toolName: "bash", toolCallId: "duration", args: { command: "npm test" } });
+  now = 8_000;
+  const patch = await handlers.get("tool_result")!({ toolName: "bash", toolCallId: "duration", details: { existing: true } });
+  assert.deepEqual(patch.details, { existing: true, piTidyElapsedMs: 7_000 });
+ } finally { Date.now = originalNow; }
+});
+
 test("reasoning is the first schema field so it streams before large arguments", () => {
 	const schema = withReasoning({
 		type: "object",
@@ -63,6 +106,12 @@ test("running tools show compact human-readable elapsed time", () => {
 		elapsedMs: 5_000,
 	});
 	assert.match(block[1].replace(/\x1b\[[0-9;]*m/g, ""), /→ 5s$/);
+});
+
+test("failed bash summaries retain the command and report duration", () => {
+ const block = buildToolBlock("bash", { command: "npm test", reasoning: "run the suite" }, { content: [{ type: "text", text: "Command failed with exit code 1" }] }, { isError: true, elapsedMs: 2_100 });
+ const plain = block.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+ assert.match(plain[1], /npm test → error in 2s$/);
 });
 
 test("settled bash summaries report duration instead of output line count", () => {
@@ -121,6 +170,38 @@ test("expanded writes preserve trailing spaces, blank lines, and empty files", (
 		reasoning: "create empty fixture",
 	}, result, { expanded: true }).map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
 	assert.match(empty[2], /\(empty file\)$/);
+});
+
+test("expanded write and edit use code-relative tab stops without losing whitespace", () => {
+	const plain = (lines: string[]) => lines.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+	const write = plain(buildToolBlock("write", {
+		path: "tabs.ts",
+		content: "\talpha  \n \tbeta\n\n  \n        gamma\n\t  delta\n",
+		reasoning: "write whitespace fixture",
+	}, { content: [{ type: "text", text: "Successfully wrote file" }] }, { expanded: true }));
+	const edit = plain(buildToolBlock("edit", {
+		path: "tabs.ts",
+		reasoning: "edit whitespace fixture",
+	}, {
+		content: [{ type: "text", text: "Successfully replaced text" }],
+		details: { diff: "  1 \talpha  \n  2  \tbeta\n  3 \n  4   \n- 5 \told\n+ 5 \tnew\n  6         gamma" },
+	}, { expanded: true }));
+
+	assert.doesNotMatch(write.join("\n"), /\t/);
+	assert.doesNotMatch(edit.join("\n"), /\t/);
+	assert.ok(write[2].endsWith(`1 ${" ".repeat(8)}alpha  `));
+	assert.ok(write[3].endsWith(`2 ${" ".repeat(8)}beta`));
+	assert.ok(write[4].endsWith("3 "));
+	assert.ok(write[5].endsWith("4   "));
+	assert.ok(write[6].endsWith(`5 ${" ".repeat(8)}gamma`));
+	assert.ok(write[7].endsWith(`6 ${" ".repeat(10)}delta`));
+	assert.ok(edit[2].endsWith(`  1 ${" ".repeat(8)}alpha  `));
+	assert.ok(edit[3].endsWith(`  2 ${" ".repeat(8)}beta`));
+	assert.ok(edit[4].endsWith("  3 "));
+	assert.ok(edit[5].endsWith("  4   "));
+	assert.ok(edit[6].endsWith(`- 5 ${" ".repeat(8)}old`));
+	assert.ok(edit[7].endsWith(`+ 5 ${" ".repeat(8)}new`));
+	assert.ok(edit[8].endsWith(`  6 ${" ".repeat(8)}gamma`));
 });
 
 test("write execution returns diffs for new files and overwrites", async () => {
@@ -220,7 +301,7 @@ test("disabled startup keeps only the tidy management command", () => {
 test("enabled startup preserves every optional registration", () => {
 	const registrations = loadWith("on");
 	assert.deepEqual([...registrations.commands.keys()], ["tidy", "diff"]);
-	assert.deepEqual(registrations.events, ["tool_execution_start", "tool_execution_end", "turn_end"]);
+	assert.deepEqual(registrations.events, ["tool_execution_start", "tool_execution_end", "tool_result", "turn_end"]);
 	assert.deepEqual(registrations.shortcuts, ["ctrl+shift+o"]);
 	assert.deepEqual(registrations.renderers, ["minimal-turn-diff"]);
 	assert.deepEqual(registrations.tools, ["read", "write", "edit", "bash", "grep", "find", "ls"]);

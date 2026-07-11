@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Multi-child fan-out now inserts one unpainted blank line between sibling agents so parallel children scan like parallel tool cards (gap punches through the shared state background); single-child output stays tight.
+
 ## [0.1.0] - 2026-07-11
 
 ### Added

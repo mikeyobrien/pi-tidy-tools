@@ -5,6 +5,8 @@ export default {
   commandRunner: {
     command: "npm test",
   },
+  coverageAnalysis: "off",
+  incremental: false,
   checkers: ["typescript"],
   tsconfigFile: "tsconfig.json",
   mutate: ["index.ts"],
@@ -13,13 +15,11 @@ export default {
   htmlReporter: {
     fileName: "reports/mutation/mutation.html",
   },
-  // One focused unit file today; raise `break` as mutation score improves.
   thresholds: {
-    high: 80,
-    low: 40,
-    break: 30,
+    high: 90,
+    low: 80,
+    break: 80,
   },
   timeoutMS: 60_000,
   concurrency: 4,
-  ignoreStatic: true,
 };

@@ -88,7 +88,7 @@ npm run test:coverage
 npm run test:mutation
 ```
 
-HTML reports land under each package's `coverage/` and `reports/mutation/` directories. Coverage thresholds live in each package's `.c8rc.json`; mutation break scores live in each package's `stryker.config.mjs`.
+HTML reports land under each package's `coverage/` and `reports/mutation/` directories. The canonical [quality-gate policy](docs/quality-gates.md) sets per-file coverage floors of 90% statements/lines/functions and 80% branches, plus an 80% package mutation break score. Package `.c8rc.json` and `stryker.config.mjs` files enforce those values.
 
 Target one package during development:
 

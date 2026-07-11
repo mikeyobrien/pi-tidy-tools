@@ -7,6 +7,8 @@ export default {
   },
   // Monorepo pretest reaches ../../scripts; mutate in place so that path resolves.
   inPlace: true,
+  coverageAnalysis: "off",
+  incremental: false,
   checkers: ["typescript"],
   tsconfigFile: "tsconfig.json",
   mutate: ["index.ts", "config.ts", "render.ts"],
@@ -24,11 +26,10 @@ export default {
     fileName: "reports/mutation/mutation.html",
   },
   thresholds: {
-    high: 80,
-    low: 60,
-    break: null,
+    high: 90,
+    low: 80,
+    break: 80,
   },
   timeoutMS: 120_000,
   concurrency: 2,
-  ignoreStatic: true,
 };

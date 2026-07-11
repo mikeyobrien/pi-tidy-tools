@@ -1,10 +1,13 @@
 {
+  "all": true,
+  "extension": [".ts"],
   "exclude": ["**/test/**", "**/*.test.ts", "**/node_modules/**"],
   "reporter": ["text", "text-summary", "html", "lcov"],
   "reports-dir": "coverage",
   "check-coverage": true,
-  "statements": 75,
-  "branches": 55,
-  "functions": 75,
-  "lines": 75
+  "per-file": true,
+  "statements": 90,
+  "branches": 80,
+  "functions": 90,
+  "lines": 90
 }

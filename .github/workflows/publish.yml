@@ -43,3 +43,7 @@ jobs:
 
       - name: Publish with provenance
         run: npm publish --access public --provenance
+        # Bootstrap only: set NPM_TOKEN as an Actions secret for the first publish.
+        # After configuring npm Trusted Publisher, delete the secret and this env block.
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

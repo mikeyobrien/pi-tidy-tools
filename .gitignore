@@ -6,4 +6,5 @@ node_modules/
 .test-dist/
 docs/comparison.html
 docs/demo.html
+docs/diff.html
 docs/modes.html

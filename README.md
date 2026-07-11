@@ -50,6 +50,8 @@ Collapsed blocks show the two-line summary. Expanding a tool (`ctrl+o`,
 immediately preceding turn as colored line-by-line diffs, including new files and
 whole-file overwrites.
 
+![`/diff` recap of the last turn's edit and write changes](docs/diff.png)
+
 > `ctrl+shift+o` also maps to the built-in `app.tree.filter.cycleBackward`; in the
 > main transcript it triggers `/diff`. Rebind in `keybindings.json` if you prefer.
 
@@ -159,15 +161,16 @@ npm run check   # tsc --noEmit
 
 ## Regenerating screenshots
 
-`docs/comparison.png`, `docs/demo.png`, and `docs/modes.png` are generated from
-**real** renderer output (no hand-typed ANSI): the scripts run the built-in tools,
-render them through the actual extension (or native pi cards for the comparison),
-and screenshot the result via headless Chrome.
+`docs/comparison.png`, `docs/demo.png`, `docs/diff.png`, and `docs/modes.png` are
+generated from **real** renderer output (no hand-typed ANSI): the scripts run the
+built-in tools, render them through the actual extension (or native pi cards for
+the comparison), and screenshot the result via headless Chrome.
 
 ```bash
 bash docs/comparison.sh # native vs tidy comparison
 bash docs/demo.sh       # full tidy transcript
+bash docs/diff.sh       # /diff last-turn recap
 bash docs/modes.sh      # layout-mode comparison
 ```
 
-All three generators require Google Chrome/Chromium and ImageMagick.
+All four generators require Google Chrome/Chromium and ImageMagick.

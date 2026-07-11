@@ -216,7 +216,7 @@ function colorizeDiff(diff: string): string[] {
 }
 
 /** A file change captured during a turn, for the `/diff` recap. */
-interface TurnDiff {
+export interface TurnDiff {
 	tool: string; // "edit" | "write"
 	path: string;
 	diff: string; // raw details.diff (may be empty for whole-file writes)
@@ -233,6 +233,13 @@ function renderTurnDiffs(diffs: TurnDiff[]): string[] {
 		else lines.push(`${DIM}(new file / full overwrite — no line diff)${RESET}`);
 	});
 	return lines;
+}
+
+/** Full `/diff` recap block — same lines the command posts into the transcript. */
+export function buildTurnDiffBlock(diffs: TurnDiff[]): string[] {
+	const n = diffs.length;
+	const header = `${MAGENTA}◆ ${BOLD}last turn diff${RESET} ${DIM}(${n} file${n === 1 ? "" : "s"})${RESET}`;
+	return [header, ...renderTurnDiffs(diffs)];
 }
 
 /** Clone a JSON-schema params object and inject a REQUIRED, first `reasoning` prop. */
@@ -478,9 +485,7 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.notify("No file changes recorded in the last turn.", "info");
 			return;
 		}
-		const n = lastTurn.length;
-		const header = `${MAGENTA}◆ ${BOLD}last turn diff${RESET} ${DIM}(${n} file${n === 1 ? "" : "s"})${RESET}`;
-		const rows = [header, ...renderTurnDiffs(lastTurn)];
+		const rows = buildTurnDiffBlock(lastTurn);
 		pi.sendMessage({ customType: DIFF_MSG_TYPE, content: rows.join("\n"), display: true, details: { rows } });
 	};
 

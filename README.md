@@ -87,7 +87,7 @@ Mirrors a clean, theme-agnostic palette + icon mapping:
 | `bash`                   | ⚡   | magenta |
 
 - Paths collapse `$HOME` → `~`
-- `edit` shows `+adds/-dels`; text `write` shows line count; `bash` shows `done` / `exit N` + line count
+- `edit` shows `+adds/-dels`; text `write` shows line count; `bash` shows status + elapsed time
 - `grep` shows `N matches in M files`; `find`/`ls` show file or entry counts
 - Every line is truncated to the live terminal width (ANSI-aware) so nothing wraps past the gutter
 - Pi's native pending/success/error background colors remain, without restoring its padding or extra spacing

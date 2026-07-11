@@ -44,7 +44,7 @@ function loadWith(value: string): Registrations {
 }
 
 test("running tools show compact human-readable elapsed time", () => {
-	assert.equal(formatElapsed(0), "0s");
+	assert.equal(formatElapsed(0), "<1s");
 	assert.equal(formatElapsed(9_900), "9s");
 	assert.equal(formatElapsed(64_000), "1m 04s");
 	assert.equal(formatElapsed(3_720_000), "1h 02m");
@@ -53,6 +53,16 @@ test("running tools show compact human-readable elapsed time", () => {
 		elapsedMs: 5_000,
 	});
 	assert.match(block[1].replace(/\x1b\[[0-9;]*m/g, ""), /→ 5s$/);
+});
+
+test("settled bash summaries report duration instead of output line count", () => {
+	const block = buildToolBlock("bash", {
+		command: "printf 'one\\ntwo\\n'",
+		reasoning: "run fixture",
+	}, { content: [{ type: "text", text: "one\ntwo" }] }, { elapsedMs: 2_400 });
+	const plain = block[1].replace(/\x1b\[[0-9;]*m/g, "");
+	assert.match(plain, /done in 2s$/);
+	assert.doesNotMatch(plain, /lines/);
 });
 
 test("tool blocks support default reasoning and result layouts", () => {

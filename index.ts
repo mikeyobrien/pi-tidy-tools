@@ -128,7 +128,8 @@ function argDetail(name: string, args: Record<string, unknown>): string {
 
 /** Compact elapsed time for an in-progress tool. */
 export function formatElapsed(milliseconds: number): string {
-	const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+	if (milliseconds < 1000) return "<1s";
+	const seconds = Math.floor(milliseconds / 1000);
 	if (seconds < 60) return `${seconds}s`;
 	const minutes = Math.floor(seconds / 60);
 	const remainder = seconds % 60;
@@ -138,7 +139,13 @@ export function formatElapsed(milliseconds: number): string {
 }
 
 /** Colored result summary from a finished tool result. */
-function summarize(name: string, result: any, isError: boolean, args: Record<string, unknown> = {}): string {
+function summarize(
+	name: string,
+	result: any,
+	isError: boolean,
+	args: Record<string, unknown> = {},
+	elapsedMs = 0,
+): string {
 	const text = textFromResult(result);
 	if (isError) return `${RED}${text.split("\n")[0] || "error"}${RESET}`;
 	if (name === "read") return `${GREEN}${text.split("\n").length} lines${RESET}`;
@@ -166,7 +173,8 @@ function summarize(name: string, result: any, isError: boolean, args: Record<str
 	if (name === "bash") {
 		const m = text.match(/exit code: (\d+)/);
 		const exit = m ? Number(m[1]) : null;
-		return `${exit && exit !== 0 ? `${RED}exit ${exit}` : `${GREEN}done`}${RESET} ${DIM}(${nonEmptyLineCount(text)} lines)${RESET}`;
+		const status = exit && exit !== 0 ? `${RED}exit ${exit}` : `${GREEN}done`;
+		return `${status}${RESET} ${DIM}in ${formatElapsed(elapsedMs)}${RESET}`;
 	}
 	if (name === "grep") {
 		if (/^No matches found/.test(text.trim())) return `${DIM}0 matches in 0 files${RESET}`;
@@ -310,7 +318,9 @@ export function buildToolBlock(
 		: isError
 			? `${RED}✗${RESET}`
 			: `${GREEN}✓${RESET}`;
-	const summary = isPartial ? `${DIM}${formatElapsed(elapsedMs)}${RESET}` : summarize(name, result, isError, rest);
+	const summary = isPartial
+		? `${DIM}${formatElapsed(elapsedMs)}${RESET}`
+		: summarize(name, result, isError, rest, elapsedMs);
 
 	const { icon, color } = style(name);
 	const headline = oneLine(reasoning || argDetail(name, rest));
@@ -544,9 +554,12 @@ export default function (pi: ExtensionAPI) {
 			renderResult: (result: any, options: any, theme: any, context: any) => {
 				if (options?.isPartial) return new Container();
 				const isError = context?.isError ?? result?.isError ?? false;
+				const toolCallId = context?.toolCallId as string | undefined;
+				const startedAt = startedAtByCallId.get(toolCallId ?? "");
 				const lines = buildToolBlock(name, context?.args ?? {}, result, {
 					isError,
 					expanded: options?.expanded ?? false,
+					elapsedMs: startedAt === undefined ? 0 : Date.now() - startedAt,
 					mode: tidyMode,
 				});
 

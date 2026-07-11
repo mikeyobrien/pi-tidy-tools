@@ -168,7 +168,7 @@ Diagnostics must have a stable code, one of the policy categories below, severit
 | `SURFACE_BREAKING` / `PIFFF_SURFACE_BREAKING` | error | baseline field/type/callable removed, capture duplicate/missing, overlap, unknown registration, or unsafe commit trace | `Pi <pi> / pi-fff <fff> changed required adapter surface <detail>. No pi-fff registrations were forwarded. Install a structurally compatible release or disable orchestration, then /reload.` |
 | `FORWARD_UNVERIFIED` / `PIFFF_FORWARD_UNVERIFIED` | info | eligible newer tuple passes startup validation but has not completed smoke | `Pi <pi> / pi-fff <fff> passed structural compatibility checks and is forward-compatible/unverified. Run the release smoke matrix before promoting this tuple to verified.` |
 | runtime incompatibility / `PIFFF_RUNTIME_INCOMPATIBLE` | error/fatal | malformed result, semantic/TUI/lifecycle failure, or unexpected replay failure | `Pi <pi> / pi-fff <fff> failed at runtime: <safe concrete detail>. Stop using the affected integration and /reload; use the verified baseline or a smoke-tested release while investigating.` |
-| `PIFFF_CONFIG_MISSING` | warning | no active npm package entry | `pi-fff adapter inactive with Pi <pi>: no npm:pi-fff package entry. Run /tidy pi-fff setup, then /reload.` |
+| `PIFFF_CONFIG_MISSING` | warning | no active npm package entry | `pi-fff adapter inactive with Pi <pi>: no npm:pi-fff package entry. Install pi-fff in a managed Pi npm scope, then run /tidy pi-fff setup.` |
 | `PIFFF_CONFIG_FILTER_REQUIRED` | error | entry is string form or `extensions` is not `[]` | `pi-fff <fff> must use extensions: [] so its factory runs once. Run /tidy pi-fff setup, then /reload.` |
 | `PIFFF_SCOPE_SHADOWED_INVALID` | error | selected project entry shadows a valid user copy but is invalid | `Pi <pi> selected project pi-fff <fff>, which shadows the user install and is invalid: <reason>. Fix/remove the project entry; tidy will not fall back.` |
 | `PIFFF_PACKAGE_MISSING` | error | selected managed package is absent | `Configured pi-fff is missing from the selected <project|user> Pi npm root. Install npm:pi-fff@<version-at-or-above-0.1.12> with extensions: [], then /reload.` |
@@ -225,7 +225,7 @@ Run against the packed tidy artifact. Always test the verified baseline tarball 
 | Modes | TUI fully works; RPC commands/notifications work and `custom()` limitation is understood; JSON/print do not hang due to background resources |
 | Native/platform | supported Linux architectures at minimum; macOS and Windows only when claimed, including native addon load and file watching |
 | Filesystem edges | non-ASCII filename regression from [pi-fff PR #8](https://github.com/ShpetimA/pi-fff/pull/8); spaces; large repo; cwd outside git; requested grep scope outside initial workspace |
-| Setup/teardown | setup writes filtered entry once; disabling/removing tidy restores the exact prior standalone pi-fff entry; reload has no duplicate registrations |
+| Setup/teardown | confirmed all-scope setup journals and filters entries transactionally; tidy disablement never edits package settings; explicit teardown restores exact prior entries; interrupted startup recovery rolls back safely and requires one user `/reload`; command-triggered reload has no duplicate registrations |
 
 The 2026-07-11 real-TUI probe passed the baseline feature dialog and autocomplete rows for `0.80.6 × 0.1.12`. Competing-editor composition, all session replacement flows, macOS/Windows, setup/teardown, and future tuples were not directly verified by this research.
 

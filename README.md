@@ -1,5 +1,7 @@
 # pi-tidy-tools
 
+[![npm version](https://img.shields.io/npm/v/%40mobrienv%2Fpi-tidy-tools)](https://www.npmjs.com/package/@mobrienv/pi-tidy-tools)
+
 **See what your pi agent is doing at a glance.** Restyles [pi](https://github.com/earendil-works/pi-mono)'s
 built-in tools into compact, configurable blocks so the transcript reads like
 a narrative, not a wall of boxes.
@@ -100,13 +102,27 @@ Only the seven built-in tools are restyled. MCP / third-party tools keep their
 default rendering — pi does not expose a way to override a foreign tool's renderer
 without owning its execution.
 
-## Usage
+## Install
 
-Install from npm:
+Install the published [npm package](https://www.npmjs.com/package/@mobrienv/pi-tidy-tools) with pi:
 
 ```bash
 pi install npm:@mobrienv/pi-tidy-tools
 ```
+
+Restart pi or run `/reload` in an existing session. To update later:
+
+```bash
+pi update --extension npm:@mobrienv/pi-tidy-tools
+```
+
+To remove it:
+
+```bash
+pi remove npm:@mobrienv/pi-tidy-tools
+```
+
+## Local development
 
 Quick-test a local checkout:
 

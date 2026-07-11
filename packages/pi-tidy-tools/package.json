@@ -1,6 +1,6 @@
 {
   "name": "@mobrienv/pi-tidy-tools",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Compact, reason-first tool output for pi with configurable layouts, live status, and diffs on demand.",
   "license": "MIT",
   "author": "Mikey O'Brien <m@mobrienv.dev>",

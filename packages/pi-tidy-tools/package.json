@@ -26,6 +26,7 @@
     "config.ts",
     "render.ts",
     "tool-composition.ts",
+    "pi-fff/**/*.ts",
     "vendor/**/*.ts",
     "README.md",
     "LICENSE",

@@ -10,7 +10,7 @@
   "engines": { "node": ">=22.19.0" },
   "keywords": ["pi-package", "pi", "extension", "subagents", "delegation"],
   "type": "module",
-  "files": ["index.ts", "envelope.ts", "render.ts", "runner.ts", "scheduler.ts", "store.ts", "types.ts", "vendor/**/*.ts", "README.md", "CHANGELOG.md", "LICENSE", "docs/*.png"],
+  "files": ["index.ts", "envelope.ts", "render.ts", "runner.ts", "runtime.ts", "scheduler.ts", "store.ts", "types.ts", "vendor/**/*.ts", "README.md", "CHANGELOG.md", "LICENSE", "docs/*.png"],
   "pi": { "extensions": ["./index.ts"] },
   "scripts": { "pretest": "node ../../scripts/bundle-core.mjs .", "test": "node --import tsx --test test/*.test.ts", "check": "node ../../scripts/bundle-core.mjs . && tsc --noEmit", "prepack": "node ../../scripts/bundle-core.mjs .", "smoke": "PI_TIDY_REAL_SMOKE=1 node --import tsx --test test/smoke.test.ts" },
   "dependencies": { "typebox": "1.1.38" },

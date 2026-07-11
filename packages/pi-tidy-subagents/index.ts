@@ -6,16 +6,19 @@ import { join } from "node:path";
 import { buildEnvelope } from "./envelope.js";
 import { SnapshotComponent } from "./render.js";
 import { launchRuntime, runChild, type SharedLaunchContext } from "./runner.js";
+import { resolveBatchRuntime, wrapPiRegistry, type ModelAuthRegistry } from "./runtime.js";
 import { concurrencyCap, Scheduler } from "./scheduler.js";
 import { createRunStore, saveRun } from "./store.js";
-import { inheritRuntimePlan, type ChildState, type RunDetails } from "./types.js";
+import type { ChildState, RunDetails } from "./types.js";
 
 export { buildEnvelope } from "./envelope.js";
 export { concurrencyCap, Scheduler } from "./scheduler.js";
 export { renderLines } from "./render.js";
 export { buildChildArgs, launchRuntime } from "./runner.js";
 export { inheritRuntimePlan } from "./types.js";
+export { parseExactModelRef, resolveBatchRuntime, wrapPiRegistry, RuntimeResolutionError } from "./runtime.js";
 export type { ChildRuntimePlan, RuntimeProvenance } from "./types.js";
+export type { ModelAuthRegistry } from "./runtime.js";
 
 function publicDetails(details: RunDetails): RunDetails {
  return {
@@ -27,15 +30,28 @@ function publicDetails(details: RunDetails): RunDetails {
    activities: [...child.activities],
    activeTools: child.activeTools.map((tool) => ({ ...tool })),
    // Independent snapshot of the child-owned plan (never share the live object).
-   ...(child.runtimePlan ? { runtimePlan: { ...child.runtimePlan } } : {}),
+   ...(child.runtimePlan ? {
+    runtimePlan: {
+     ...child.runtimePlan,
+     ...(child.runtimePlan.observed ? { observed: { ...child.runtimePlan.observed } } : {}),
+    },
+   } : {}),
   })),
  };
+}
+
+function registryFromContext(ctx: { modelRegistry?: { find(provider: string, modelId: string): { provider: string; id: string } | undefined | null; hasConfiguredAuth(model: { provider: string; id: string }): boolean } }): ModelAuthRegistry | undefined {
+ if (!ctx.modelRegistry) return undefined;
+ return wrapPiRegistry(ctx.modelRegistry);
 }
 
 const Parameters = Type.Object({ agents: Type.Array(Type.Object({
  label: Type.Optional(Type.String({ description: "Short display label; defaults to agent" })),
  reason: Type.String({ description: "Short present-tense intent shown in the transcript (ideally ≤12 words, no period)" }),
  prompt: Type.String({ description: "Full context, skills, objective, and output expectations sent verbatim to the child" }),
+ model: Type.Optional(Type.String({
+  description: "Optional exact registered provider/model-id for this child (parsed at the first '/'; model IDs may contain additional separators). Omission inherits the parent model. Fuzzy patterns, aliases, and profiles are rejected.",
+ })),
 }), { minItems: 1 }) });
 
 export default function extension(pi: ExtensionAPI): void {
@@ -47,13 +63,11 @@ export default function extension(pi: ExtensionAPI): void {
  });
  pi.registerTool({
   name: "subagent", label: "subagent", renderShell: "self", executionMode: "parallel",
-  description: "Run an ordered synchronous fan-out of isolated child Pi agents. Every agent needs a short reason and verbatim prompt. Children share the working tree; assign non-overlapping writes.",
-  promptGuidelines: ["Use subagent only for independent work. Concurrent children share the working tree; assign non-overlapping mutation scopes or read-only objectives."],
+  description: "Run an ordered synchronous fan-out of isolated child Pi agents. Every agent needs a short reason and verbatim prompt. Children share the working tree; assign non-overlapping writes. Optional per-child model selects an exact registered provider/model-id; omission inherits the parent.",
+  promptGuidelines: ["Use subagent only for independent work. Concurrent children share the working tree; assign non-overlapping mutation scopes or read-only objectives.", "When selecting a child model, pass an exact registered provider/model-id. Omit model to inherit the parent."],
   parameters: Parameters,
   execute: async (toolCallId, params, signal, onUpdate, ctx) => {
    if (!ctx.model) throw new Error("subagent requires a resolved parent model");
-   const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
-   const runDir = await createRunStore(getAgentDir(), runId);
    // Snapshot parent runtime once; never mutate parent model/thinking APIs.
    const parentProvider = ctx.model.provider;
    const parentModelId = ctx.model.id;
@@ -61,11 +75,20 @@ export default function extension(pi: ExtensionAPI): void {
    const parentModel = `${parentProvider}/${parentModelId}`;
    const activeTools = pi.getActiveTools().filter((name) => name !== "subagent");
    const projectTrusted = ctx.isProjectTrusted();
+
+   // Resolve and validate the complete ordered batch BEFORE run artifacts or spawning (AC-007).
+   const plans = resolveBatchRuntime(
+    params.agents,
+    { provider: parentProvider, modelId: parentModelId, thinking: parentThinking },
+    registryFromContext(ctx),
+   );
+
+   const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
+   const runDir = await createRunStore(getAgentDir(), runId);
    const shared: SharedLaunchContext = { cwd: ctx.cwd, tools: activeTools, runDir, approved: projectTrusted };
    const children: ChildState[] = params.agents.map((request, index) => {
     const id = `child-${String(index + 1).padStart(3, "0")}`;
-    // Each child owns an independent inherited plan object (no shared mutable reference).
-    const runtimePlan = inheritRuntimePlan({ provider: parentProvider, modelId: parentModelId, thinking: parentThinking });
+    const runtimePlan = plans[index]!;
     return {
      index, id, label: request.label || "agent", reason: request.reason, prompt: request.prompt, status: "queued",
      model: runtimePlan.modelId, thinking: runtimePlan.thinking, runtimePlan,
@@ -74,7 +97,7 @@ export default function extension(pi: ExtensionAPI): void {
     };
    });
    const details: RunDetails = {
-    schemaVersion: 1, runId, runDir, cwd: ctx.cwd, createdAt: new Date().toISOString(), cap: scheduler.cap,
+    schemaVersion: 2, runId, runDir, cwd: ctx.cwd, createdAt: new Date().toISOString(), cap: scheduler.cap,
     runtime: { provider: parentProvider, modelId: parentModelId, model: parentModel, thinking: parentThinking, activeTools, projectTrusted }, children,
    };
    await saveRun(details, false);

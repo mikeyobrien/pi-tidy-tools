@@ -1,4 +1,18 @@
 let buffer = "";
+let stateSeen = false;
+let promptBeforeState = false;
+
+function parseLaunchModel(argv) {
+ const index = argv.indexOf("--model");
+ if (index < 0 || index + 1 >= argv.length) return { provider: "fake", id: "model-x" };
+ const ref = String(argv[index + 1] ?? "");
+ const slash = ref.indexOf("/");
+ if (slash <= 0) return { provider: "fake", id: ref || "model-x" };
+ return { provider: ref.slice(0, slash), id: ref.slice(slash + 1) };
+}
+
+const launchModel = parseLaunchModel(process.argv);
+
 process.stdin.on("data", (chunk) => {
  buffer += chunk.toString("utf8");
  const lines = buffer.split("\n"); buffer = lines.pop() ?? "";
@@ -6,12 +20,65 @@ process.stdin.on("data", (chunk) => {
   if (line.endsWith("\r")) line = line.slice(0, -1);
   if (!line) continue;
   const command = JSON.parse(line);
-  if (command.type === "abort") { process.exitCode = 0; setTimeout(() => process.exit(), 5); continue; }
-  if (command.type !== "prompt") continue;
-  const prompt = command.message;
   const send = (event) => process.stdout.write(`${JSON.stringify(event)}\n`);
+
+  if (command.type === "abort") { process.exitCode = 0; setTimeout(() => process.exit(), 5); continue; }
+
+  if (command.type === "get_state") {
+   stateSeen = true;
+   if (process.env.PI_TIDY_FAKE_RPC_MALFORMED_STATE === "1") {
+    send({ type: "response", id: command.id, command: "get_state", success: true, data: { thinkingLevel: "medium" } });
+    continue;
+   }
+   if (process.env.PI_TIDY_FAKE_RPC_STATE_ERROR === "1") {
+    send({ type: "response", id: command.id, command: "get_state", success: false, error: "state unavailable" });
+    continue;
+   }
+   let provider = launchModel.provider;
+   let id = launchModel.id;
+   if (process.env.PI_TIDY_FAKE_RPC_MISMATCH === "1") {
+    provider = "other";
+    id = "wrong-model";
+   } else if (process.env.PI_TIDY_FAKE_RPC_OBSERVED_MODEL) {
+    const ref = process.env.PI_TIDY_FAKE_RPC_OBSERVED_MODEL;
+    const slash = ref.indexOf("/");
+    if (slash > 0) { provider = ref.slice(0, slash); id = ref.slice(slash + 1); }
+    else id = ref;
+   }
+   send({
+    type: "response",
+    id: command.id,
+    command: "get_state",
+    success: true,
+    data: {
+     model: { provider, id, name: id },
+     thinkingLevel: "medium",
+     isStreaming: false,
+     isCompacting: false,
+     steeringMode: "all",
+     followUpMode: "one-at-a-time",
+     sessionId: "fake",
+     autoCompactionEnabled: true,
+     messageCount: 0,
+     pendingMessageCount: 0,
+    },
+   });
+   continue;
+  }
+
+  if (command.type !== "prompt") continue;
+  if (!stateSeen) promptBeforeState = true;
+  const prompt = command.message;
+
+  // Per-prompt mismatch / malformed overrides (for mixed-batch tests).
+  if (prompt === "state-mismatch" || prompt === "state-malformed") {
+   // These prompts are only reached if the runner skipped state checks; treat as crash.
+   send({ type: "response", id: command.id, command: "prompt", success: false, error: "prompt arrived without verified state" });
+   continue;
+  }
+
   if (prompt === "reject") { send({ type: "response", id: command.id, command: "prompt", success: false, error: "prompt rejected" }); continue; }
-  send({ type: "response", id: command.id, command: "prompt", success: true });
+  send({ type: "response", id: command.id, command: "prompt", success: true, promptBeforeState });
   send({ type: "agent_start" });
   if (prompt === "hang") continue;
   if (prompt === "crash") { process.stderr.write("provider failed"); process.exit(7); continue; }

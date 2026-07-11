@@ -1,23 +1,49 @@
 {
   "name": "pi-tidy-tools",
   "version": "0.1.0",
-  "description": "Tidy, reason-first tool output for pi. Every tool call in two lines: why it ran, and what it returned. Diffs and output on demand.",
+  "description": "Compact, reason-first tool output for pi with configurable layouts, live status, and diffs on demand.",
   "license": "MIT",
   "author": "Mikey O'Brien <m@mobrienv.dev>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mikeyobrien/pi-tidy-tools.git"
+  },
+  "homepage": "https://github.com/mikeyobrien/pi-tidy-tools#readme",
+  "bugs": "https://github.com/mikeyobrien/pi-tidy-tools/issues",
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "extension",
+    "developer-tools"
+  ],
+  "files": [
+    "index.ts",
+    "config.ts",
+    "render.ts",
+    "README.md",
+    "LICENSE",
+    "docs/*.png"
+  ],
   "pi": {
     "extensions": [
       "./index.ts"
     ]
   },
   "scripts": {
+    "test": "node scripts/test.mjs",
     "check": "tsc --noEmit"
   },
-  "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.80.6",
-    "@earendil-works/pi-tui": "0.80.6"
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.80.6 <0.81.0",
+    "@earendil-works/pi-tui": ">=0.80.6 <0.81.0"
   },
   "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.80.6",
+    "@earendil-works/pi-tui": "0.80.6",
     "@types/node": "22.10.2",
     "typescript": "5.6.3"
   }

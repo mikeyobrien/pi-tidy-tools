@@ -115,7 +115,10 @@ async function main() {
 	const BORDERc = "#2b2d3a";
 	const prompt = `<span style="color:${DIMc}">❯</span> refactor the auth middleware and run the tests`;
 	const spinner = `<span style="color:${CYANc}">⠋</span> <span style="color:${DIMc}">Working…</span>`;
-	const blockHtml = blocks.map((b) => ansiToHtml(b.join("\n"))).join("\n\n");
+	const blockHtml = blocks.map((block, index) => {
+		const state = index === blocks.length - 1 ? "error" : "success";
+		return `<span class="tool ${state}">${ansiToHtml(block.join("\n"))}</span>`;
+	}).join("\n\n");
 	const body = `${prompt}\n\n${blockHtml}\n\n${spinner}`;
 
 	// pi's real editor chrome: a full-width rule, a blank input line, and a
@@ -154,6 +157,9 @@ async function main() {
     font-size:20px; line-height:1.6; color:#c0caf5;
     white-space:pre; tab-size:2;
   }
+  .tool{display:block; margin:0 -40px; padding:0 40px}
+  .tool.success{background:#1f2d29}
+  .tool.error{background:#33242b}
 </style></head>
 <body><div class="bg"><div class="win">
   <div class="bar">

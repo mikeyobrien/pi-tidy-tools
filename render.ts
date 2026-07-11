@@ -29,5 +29,5 @@ const HOME = homedir();
 /** Collapse the home prefix to ~ for readability. */
 export function shortPath(p: string): string {
 	if (!p) return "";
-	return p.startsWith(HOME) ? `~${p.slice(HOME.length)}` : p;
+	return p === HOME || p.startsWith(`${HOME}/`) ? `~${p.slice(HOME.length)}` : p;
 }

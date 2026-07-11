@@ -9,10 +9,18 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+if [[ -x "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ]]; then
+  CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+else
+  CHROME="$(command -v google-chrome-stable || command -v google-chrome || command -v chromium || true)"
+fi
+[[ -n "$CHROME" ]] || { echo "error: Chrome/Chromium not found" >&2; exit 1; }
+
 OUT_HTML="docs/demo.html"
 OUT_PNG="docs/demo.png"
-TMP_PNG="$(mktemp -t pi-tidy-tools-demo).png"
+TMP_BASE="$(mktemp -t pi-tidy-tools-demo.XXXXXX)"
+TMP_PNG="${TMP_BASE}.png"
+trap 'rm -f "$TMP_BASE" "$TMP_PNG"' EXIT
 
 echo "→ generating HTML from real tool output"
 npx tsx docs/demo-html.ts > "$OUT_HTML"
@@ -29,6 +37,4 @@ echo "→ screenshotting via headless Chrome (transparent backdrop)"
 
 echo "→ cropping to content"
 magick "$TMP_PNG" -trim +repage -bordercolor none -border 12 "$OUT_PNG"
-rm -f "$TMP_PNG"
-
 echo "✓ wrote $OUT_PNG"

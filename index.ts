@@ -49,6 +49,7 @@ import {
 	createWriteTool,
 } from "@earendil-works/pi-coding-agent";
 import { Container, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { CONFIG_PATH, loadTidyMode, loadTidyState, saveTidyEnabled, saveTidyMode, type TidyMode } from "./config.js";
 import {
 	BOLD,
 	CYAN,
@@ -74,17 +75,43 @@ function oneLine(s: string): string {
 	return s.replace(/\s+/g, " ").trim();
 }
 
+/** Fit a rendered line while always preserving a tool's result summary after →. */
+export function fitToolLine(line: string, width: number): string {
+	const max = Math.max(1, width);
+	if (visibleWidth(line) <= max) return line;
+	const arrowIndex = line.indexOf("→");
+	if (arrowIndex < 0) return truncateToWidth(line, max, "…");
+
+	const tail = line.slice(arrowIndex);
+	const tailWidth = visibleWidth(tail);
+	if (tailWidth >= max) return truncateToWidth(tail, max, "…");
+	const head = line.slice(0, arrowIndex).trimEnd();
+	return `${truncateToWidth(head, max - tailWidth - 1, "…")} ${tail}`;
+}
+
 /**
  * A width-aware component: truncates each pre-composed (ANSI-colored) line to the
  * live viewport width so nothing soft-wraps past the gutter. Re-flows on resize
  * because render(width) is re-invoked by the TUI.
  */
 class WidthAwareLines {
-	constructor(private readonly lines: string[]) {}
+	constructor(
+		private readonly source: string[] | (() => string[]),
+		private readonly background?: (text: string) => string,
+	) {}
 	invalidate(): void {}
 	render(width: number): string[] {
 		const max = Math.max(1, width);
-		return this.lines.map((l) => (visibleWidth(l) > max ? truncateToWidth(l, max, "…") : l));
+		const lines = typeof this.source === "function" ? this.source() : this.source;
+		return lines.map((line) => {
+			const fitted = fitToolLine(line, max);
+			if (!this.background) return fitted;
+			const padded = fitted + " ".repeat(Math.max(0, max - visibleWidth(fitted)));
+			// Raw foreground styling uses RESET, which also clears an enclosing
+			// background. Apply the background independently to every reset-delimited
+			// segment so it remains continuous through the full padded line.
+			return padded.split(RESET).map((segment) => this.background!(`${segment}${RESET}`)).join("");
+		});
 	}
 }
 
@@ -99,14 +126,31 @@ function argDetail(name: string, args: Record<string, unknown>): string {
 	return "";
 }
 
+/** Compact elapsed time for an in-progress tool. */
+export function formatElapsed(milliseconds: number): string {
+	const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+	if (seconds < 60) return `${seconds}s`;
+	const minutes = Math.floor(seconds / 60);
+	const remainder = seconds % 60;
+	if (minutes < 60) return `${minutes}m ${remainder.toString().padStart(2, "0")}s`;
+	const hours = Math.floor(minutes / 60);
+	return `${hours}h ${(minutes % 60).toString().padStart(2, "0")}m`;
+}
+
 /** Colored result summary from a finished tool result. */
-function summarize(name: string, result: any, isError: boolean): string {
+function summarize(name: string, result: any, isError: boolean, args: Record<string, unknown> = {}): string {
 	const text = textFromResult(result);
 	if (isError) return `${RED}${text.split("\n")[0] || "error"}${RESET}`;
 	if (name === "read") return `${GREEN}${text.split("\n").length} lines${RESET}`;
 	if (name === "write") {
-		const m = text.match(/wrote (\d+) bytes/);
-		return m ? `${GREEN}wrote ${DIM}${m[1]}b${RESET}` : `${GREEN}written${RESET}`;
+		if (typeof args.content === "string" && !args.content.includes("\0")) {
+			const lines = args.content.length === 0
+				? 0
+				: (args.content.match(/\n/g)?.length ?? 0) + (args.content.endsWith("\n") ? 0 : 1);
+			return `${GREEN}${lines}${RESET} ${DIM}${lines === 1 ? "line" : "lines"}${RESET}`;
+		}
+		const bytes = text.match(/wrote (\d+) bytes/i)?.[1];
+		return bytes ? `${GREEN}${bytes}b${RESET}` : `${GREEN}written${RESET}`;
 	}
 	if (name === "edit") {
 		const diff = result?.details?.diff as string | undefined;
@@ -125,11 +169,14 @@ function summarize(name: string, result: any, isError: boolean): string {
 		return `${exit && exit !== 0 ? `${RED}exit ${exit}` : `${GREEN}done`}${RESET} ${DIM}(${nonEmptyLineCount(text)} lines)${RESET}`;
 	}
 	if (name === "grep") {
-		if (/^No matches found/.test(text.trim())) return `${DIM}0 matches${RESET}`;
+		if (/^No matches found/.test(text.trim())) return `${DIM}0 matches in 0 files${RESET}`;
 		// Count only true match lines (path:lineno:...), not context (path-lineno-...) or -- separators.
-		const matches = text.split("\n").filter((l) => /:\d+:/.test(l)).length;
-		const count = matches || nonEmptyLineCount(text);
-		return `${DIM}${count} ${count === 1 ? "match" : "matches"}${RESET}`;
+		const matchLines = text.split("\n").map((line) => ({ line, match: line.match(/^(.+):\d+:/) })).filter((entry) => entry.match);
+		const count = matchLines.length || nonEmptyLineCount(text);
+		const files = new Set(matchLines.map((entry) => entry.match?.[1])).size;
+		const matchLabel = count === 1 ? "match" : "matches";
+		const fileLabel = files === 1 ? "file" : "files";
+		return `${GREEN}${count} ${matchLabel}${RESET} ${DIM}in${RESET} ${CYAN}${files} ${fileLabel}${RESET}`;
 	}
 	const count = nonEmptyLineCount(text);
 	const noun = name === "find" ? "files" : name === "ls" ? "entries" : "results";
@@ -215,6 +262,23 @@ function expandedLines(name: string, args: Record<string, unknown>, result: any)
 		});
 	}
 
+	// Whole-file writes do not provide a useful diff. Show the actual written
+	// content instead of repeating the generic "Successfully wrote..." result.
+	if (name === "write" && typeof args.content === "string") {
+		if (args.content.length === 0) {
+			out.push(`${INDENT}${DIM}(empty file)${RESET}`);
+			return out;
+		}
+		const splitLines = args.content.split("\n");
+		const contentLines = args.content.endsWith("\n") ? splitLines.slice(0, -1) : splitLines;
+		const lineNumberWidth = String(contentLines.length).length;
+		contentLines.forEach((line, index) => {
+			const lineNumber = String(index + 1).padStart(lineNumberWidth, " ");
+			out.push(`${INDENT}${DIM}${lineNumber} ${RESET}${line}`);
+		});
+		return out;
+	}
+
 	// Prefer the structured diff over the generic "Successfully replaced..." text.
 	const diff = result?.details?.diff as string | undefined;
 	if (diff && diff.trim()) {
@@ -236,9 +300,9 @@ export function buildToolBlock(
 	name: string,
 	args: Record<string, unknown>,
 	result: any,
-	opts: { isError?: boolean; isPartial?: boolean; expanded?: boolean } = {},
+	opts: { isError?: boolean; isPartial?: boolean; expanded?: boolean; elapsedMs?: number; mode?: TidyMode } = {},
 ): string[] {
-	const { isError = false, isPartial = false, expanded = false } = opts;
+	const { isError = false, isPartial = false, expanded = false, elapsedMs = 0, mode = "default" } = opts;
 	const { reasoning, rest } = stripReasoning(args ?? {});
 
 	const mark = isPartial
@@ -246,7 +310,7 @@ export function buildToolBlock(
 		: isError
 			? `${RED}✗${RESET}`
 			: `${GREEN}✓${RESET}`;
-	const summary = isPartial ? `${DIM}…${RESET}` : summarize(name, result, isError);
+	const summary = isPartial ? `${DIM}${formatElapsed(elapsedMs)}${RESET}` : summarize(name, result, isError, rest);
 
 	const { icon, color } = style(name);
 	const headline = oneLine(reasoning || argDetail(name, rest));
@@ -256,10 +320,18 @@ export function buildToolBlock(
 	const line2 = isError || !detail
 		? `${INDENT}${DIM}→${RESET} ${summary}`
 		: `${INDENT}${DIM}${detail}${RESET} ${DIM}→${RESET} ${summary}`;
-	const lines = [
-		`${GUTTER} ${mark} ${color}${icon} ${BOLD}${name}${RESET} ${headline}`,
-		line2,
-	];
+	let lines: string[];
+	if (mode === "reasoning") {
+		lines = [`${GUTTER} ${mark} ${color}${icon} ${BOLD}${name}${RESET} ${headline} ${DIM}→${RESET} ${summary}`];
+	} else if (mode === "result") {
+		const resultDetail = isError || !detail ? "" : ` ${DIM}${detail}${RESET}`;
+		lines = [`${GUTTER} ${mark} ${color}${icon} ${BOLD}${name}${RESET}${resultDetail} ${DIM}→${RESET} ${summary}`];
+	} else {
+		lines = [
+			`${GUTTER} ${mark} ${color}${icon} ${BOLD}${name}${RESET} ${headline}`,
+			line2,
+		];
+	}
 	if (expanded && !isPartial) lines.push(...expandedLines(name, rest, result));
 	return lines;
 }
@@ -269,6 +341,79 @@ const cwd = process.cwd();
 const DIFF_MSG_TYPE = "minimal-turn-diff";
 
 export default function (pi: ExtensionAPI) {
+	const tidyState = loadTidyState();
+	const tidyMode = loadTidyMode();
+
+	// This management command is intentionally the sole registration that remains
+	// while disabled, allowing the extension to be re-enabled without editing files.
+	pi.registerCommand("tidy", {
+		description: "Manage pi-tidy-tools state and layout mode",
+		getArgumentCompletions: (prefix) => {
+			const values = ["on", "off", "toggle", "status", "mode default", "mode reasoning", "mode result", "mode status"];
+			return values.filter((value) => value.startsWith(prefix.trim().toLowerCase())).map((value) => ({ value, label: value }));
+		},
+		handler: async (args, ctx) => {
+			const action = args.trim().toLowerCase();
+			if (action === "status" || action === "mode status") {
+				const detail = tidyState.source === "environment"
+					? "PI_TIDY_TOOLS override"
+					: tidyState.source === "file"
+						? CONFIG_PATH
+						: "default; no config file";
+				ctx.ui.notify(`pi-tidy-tools is ${tidyState.enabled ? "on" : "off"}, mode ${tidyMode} (${detail}).`, "info");
+				return;
+			}
+
+			const modeMatch = action.match(/^mode (default|reasoning|result)$/);
+			if (modeMatch) {
+				const mode = modeMatch[1] as TidyMode;
+				if (mode === tidyMode) {
+					ctx.ui.notify(`pi-tidy-tools mode is already ${mode}.`, "info");
+					return;
+				}
+				try {
+					await saveTidyMode(mode);
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					ctx.ui.notify(`Could not save ${CONFIG_PATH}: ${message}`, "error");
+					return;
+				}
+				ctx.ui.notify(`pi-tidy-tools mode set to ${mode}; reloading.`, "info");
+				await ctx.reload();
+				return;
+			}
+
+			if (action !== "on" && action !== "off" && action !== "toggle") {
+				ctx.ui.notify("Usage: /tidy on|off|toggle|status|mode default|reasoning|result|status", "warning");
+				return;
+			}
+			if (tidyState.source === "environment") {
+				ctx.ui.notify("PI_TIDY_TOOLS overrides persistent settings; change or unset it first.", "warning");
+				return;
+			}
+
+			const enabled = action === "toggle" ? !tidyState.enabled : action === "on";
+			if (enabled === tidyState.enabled) {
+				ctx.ui.notify(`pi-tidy-tools is already ${enabled ? "on" : "off"}.`, "info");
+				return;
+			}
+			try {
+				await saveTidyEnabled(enabled);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				ctx.ui.notify(`Could not save ${CONFIG_PATH}: ${message}`, "error");
+				return;
+			}
+			ctx.ui.notify(`pi-tidy-tools ${enabled ? "enabled" : "disabled"}; reloading.`, "info");
+			await ctx.reload();
+			return;
+		},
+	});
+
+	// Every other registration changes optional behavior and must stay absent in
+	// disabled mode, including schemas, prompt guidelines, hooks, and renderers.
+	if (!tidyState.enabled) return;
+
 	// --- Turn-diff tracking: capture edit/write changes, bucketed per turn, so
 	// `/diff` can recap the last turn's file changes as one combined diff.
 	// NOTE: tool_execution_end has NO args — only tool_execution_start carries
@@ -276,14 +421,20 @@ export default function (pi: ExtensionAPI) {
 	let currentTurn: TurnDiff[] = [];
 	let lastTurn: TurnDiff[] = [];
 	const pathByCallId = new Map<string, string>();
+	const startedAtByCallId = new Map<string, number>();
+	const elapsedTimerByCallId = new Map<string, ReturnType<typeof setInterval>>();
 
 	pi.on("tool_execution_start", async (e: any) => {
+		startedAtByCallId.set(e.toolCallId, Date.now());
 		if ((e.toolName === "edit" || e.toolName === "write") && typeof e?.args?.path === "string") {
 			pathByCallId.set(e.toolCallId, e.args.path);
 		}
 	});
 
 	pi.on("tool_execution_end", async (e: any) => {
+		const elapsedTimer = elapsedTimerByCallId.get(e.toolCallId);
+		if (elapsedTimer) clearInterval(elapsedTimer);
+		elapsedTimerByCallId.delete(e.toolCallId);
 		if (e.toolName !== "edit" && e.toolName !== "write") return;
 		const path = pathByCallId.get(e.toolCallId);
 		pathByCallId.delete(e.toolCallId);
@@ -293,13 +444,14 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("turn_end", async () => {
-		if (currentTurn.length > 0) {
-			lastTurn = currentTurn;
-			currentTurn = [];
-		}
+		lastTurn = currentTurn;
+		currentTurn = [];
 		// toolCallIds never span turns; drop any entries whose end never fired
 		// (e.g. an interrupted/aborted call) so the map can't grow unbounded.
 		pathByCallId.clear();
+		startedAtByCallId.clear();
+		for (const timer of elapsedTimerByCallId.values()) clearInterval(timer);
+		elapsedTimerByCallId.clear();
 	});
 
 	// Render the recap message as width-aware colored lines.
@@ -350,8 +502,8 @@ export default function (pi: ExtensionAPI) {
 			name,
 			label: name,
 			description: tool.description,
-			parameters: withReasoning(tool.parameters),
-			promptGuidelines: [
+			parameters: tidyMode === "result" ? tool.parameters : withReasoning(tool.parameters),
+			promptGuidelines: tidyMode === "result" ? [] : [
 				`Always pass a "reasoning" phrase to ${name}: state the GOAL/intent, not the file or command (those are shown already).`,
 			],
 			renderShell: "self",
@@ -362,24 +514,42 @@ export default function (pi: ExtensionAPI) {
 				return tool.execute(id, rest, sig, up);
 			},
 
-			// renderCall + renderResult BOTH get composed into the tool component,
-			// so rendering the block in each yields two copies. Render nothing here;
-			// renderResult owns the whole block and handles the running state via
-			// its `isPartial` flag.
-			renderCall: () => new Container(),
+			// The call slot owns the running block, so tools that never stream partial
+			// results still appear immediately with a live elapsed timer.
+			renderCall: (args: any, theme: any, context: any) => {
+				if (!context?.isPartial) return new Container();
+				const toolCallId = context.toolCallId as string;
+				if (!elapsedTimerByCallId.has(toolCallId)) {
+					const timer = setInterval(() => context.invalidate(), 1000);
+					timer.unref?.();
+					elapsedTimerByCallId.set(toolCallId, timer);
+				}
+				const startedAt = startedAtByCallId.get(toolCallId) ?? Date.now();
+				return new WidthAwareLines(
+					() => buildToolBlock(name, args ?? {}, {}, {
+						isPartial: true,
+						elapsedMs: Date.now() - startedAt,
+						mode: tidyMode,
+					}),
+					(text) => theme.bg("toolPendingBg", text),
+				);
+			},
 
-			// Two-line block; handles running (isPartial) → done/error, and expanded
-			// (C-o) appends the tool's real output.
-			renderResult: (result: any, options: any, _theme: any, context: any) => {
-				// isError lives on the render CONTEXT (from result.isError), not on the
-				// result object passed as arg 1 (that only has content/details). Reading
-				// result.isError would always be undefined → failed edits render green.
+			// The result slot stays empty for streaming partials to avoid duplicating
+			// the running call block, then replaces it with the settled output.
+			renderResult: (result: any, options: any, theme: any, context: any) => {
+				if (options?.isPartial) return new Container();
+				const isError = context?.isError ?? result?.isError ?? false;
 				const lines = buildToolBlock(name, context?.args ?? {}, result, {
-					isError: context?.isError ?? result?.isError ?? false,
-					isPartial: options?.isPartial ?? false,
+					isError,
 					expanded: options?.expanded ?? false,
+					mode: tidyMode,
 				});
-				return new WidthAwareLines(lines);
+
+				// Keep the self-rendered, zero-spacing layout while restoring only Pi's
+				// native tool-state background across the full transcript width.
+				const background = isError ? "toolErrorBg" : "toolSuccessBg";
+				return new WidthAwareLines(lines, (text) => theme.bg(background, text));
 			},
 		});
 	}

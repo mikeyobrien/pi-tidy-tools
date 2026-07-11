@@ -1,5 +1,9 @@
 node_modules/
 package-lock.json
 *.log
+*.tgz
 .agents/
+.pi-subagents/
+.test-dist/
 docs/demo.html
+docs/modes.html

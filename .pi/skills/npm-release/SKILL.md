@@ -1,36 +1,43 @@
 ---
 name: npm-release
-description: Creates and verifies a new @mobrienv/pi-tidy-tools release, maintains CHANGELOG.md, and publishes through GitHub Releases and npm Trusted Publishing. Use when asked to prepare changelog entries, cut, publish, or monitor a patch, minor, major, or explicit-version release for this repository.
+description: Releases one @mobrienv/pi-tidy-* workspace through GitHub and npm Trusted Publishing. Use when asked to prepare changelog entries, cut, publish, or monitor a patch, minor, major, or explicit-version release.
 compatibility: Requires Node.js 22.19+, npm, git, GitHub CLI authentication, and push access to mikeyobrien/pi-tidy-tools.
 ---
 
 # npm Release
 
-Release `@mobrienv/pi-tidy-tools` through `.github/workflows/publish.yml`. Maintain `CHANGELOG.md` using Keep a Changelog 1.1.0 and SemVer. GitHub Releases trigger tokenless npm Trusted Publishing with provenance.
-
-## Safety rules
-
-- Run only from the repository root.
-- Never request, store, print, or configure an npm token. Publishing uses GitHub OIDC.
-- Do not publish directly with `npm publish`.
-- Do not overwrite or reuse a version, tag, or changelog heading.
-- Stop if the working tree is dirty, the current branch is not `main`, validation fails, `main` cannot push, or the target npm version already exists.
-- Do not use `--force`, rewrite tags, amend unrelated commits, or bypass tests.
-- Ask when the release level/version is ambiguous. Default to `patch` only when the user explicitly requests the next release without specifying a level.
-- Changelog content is user-facing: describe observable behavior, not implementation mechanics.
+Release one workspace through `.github/workflows/publish.yml`. Every package owns its manifest, version, changelog, and package-qualified tag. GitHub Releases trigger tokenless npm Trusted Publishing with provenance.
 
 ## Inputs
 
-Accept one of:
+Resolve:
 
-- `patch`, `minor`, or `major`
-- An explicit semver such as `0.2.0`
+1. Package: `pi-tidy-<name>` or `@mobrienv/pi-tidy-<name>`
+2. Version: `patch`, `minor`, `major`, or an explicit SemVer
 
-Normalize `v0.2.0` to `0.2.0` before use.
+If the package is omitted, infer it only when the repository has exactly one publishable workspace; otherwise ask. Normalize the package to:
+
+```text
+SLUG=pi-tidy-<name>
+PACKAGE=@mobrienv/$SLUG
+DIR=packages/$SLUG
+```
+
+Normalize `v0.2.0` to `0.2.0`. The release tag is `$SLUG-v<TARGET>`.
+
+## Safety
+
+- Run from the repository root with a clean `main` synchronized to `origin/main`.
+- Publish only through a GitHub Release and `.github/workflows/publish.yml`; local `npm publish` is outside this process.
+- Use GitHub OIDC. Keep npm tokens absent from prompts, files, output, and workflow configuration.
+- Preserve independent package versions. Update only the selected manifest, its changelog, and the root lockfile.
+- Stop on ambiguous input, failed validation, an existing npm version/tag/changelog heading, or a package with no user-visible changes.
+- Preserve history: annotated tags are immutable; commits are not amended or force-pushed.
+- Changelog entries describe observable behavior, with implementation-only work omitted.
 
 ## Changelog contract
 
-`CHANGELOG.md` follows this shape:
+The selected package owns `$DIR/CHANGELOG.md`, using Keep a Changelog 1.1.0 and SemVer:
 
 ```markdown
 # Changelog
@@ -45,202 +52,152 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [X.Y.Z] - YYYY-MM-DD
 
 ### Added
+
 - User-visible addition.
 
-### Changed
-- User-visible behavior change.
-
-### Fixed
-- User-visible correction.
-
-[Unreleased]: https://github.com/mikeyobrien/pi-tidy-tools/compare/vX.Y.Z...HEAD
-[X.Y.Z]: https://github.com/mikeyobrien/pi-tidy-tools/compare/vPREVIOUS...vX.Y.Z
+[Unreleased]: https://github.com/mikeyobrien/pi-tidy-tools/compare/SLUG-vX.Y.Z...HEAD
+[X.Y.Z]: https://github.com/mikeyobrien/pi-tidy-tools/compare/PREVIOUS_TAG...SLUG-vX.Y.Z
 ```
 
-Use standard sections in this order and omit empty sections: `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`.
+Use sections in this order and omit empty sections: `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`.
 
-Entry rules:
-
-- Write one concise user-facing change per bullet.
-- Do not copy Conventional Commit prefixes into entries.
-- Do not mention internal helper names, tests, refactors, file paths, dependency mechanics, or CI unless users must act on them.
-- Include commands, config keys, and public API names only when users need them.
-- Deprecations must name the replacement or migration path.
-- Put breaking changes first and label them **BREAKING**.
-- Sort by user impact, not commit chronology.
-- Omit internal-only changes and changes added then reverted before release.
-- Do not rely only on commit subjects. Inspect the code diff as the primary source and use commits for intent.
+Each bullet carries one user-visible change. Put breaking changes first and label them **BREAKING**. Name migration paths for deprecations. Keep internal helpers, tests, refactors, file paths, CI mechanics, and reverted work out of the changelog unless users must act on them. Inspect code changes as the primary source and commits as intent.
 
 ## Procedure
 
-### 1. Preflight
+### 1. Resolve and preflight
+
+List publishable workspaces and resolve the input before changing files:
 
 ```bash
+npm pkg get name version private --workspaces
 git status --short
 git branch --show-current
 git fetch origin main --tags
 git rev-list --left-right --count origin/main...main
 gh auth status
-npm view @mobrienv/pi-tidy-tools version --json
+npm view "$PACKAGE" version --json
 ```
 
-Require an empty working tree, branch `main`, no ahead/behind count, and valid GitHub authentication. Local npm authentication is not required because publishing uses OIDC.
+Require `$DIR/package.json`, package name exactly `$PACKAGE`, an empty working tree, branch `main`, no ahead/behind count, and valid GitHub authentication. Local npm authentication is unnecessary.
 
-Confirm `.github/workflows/publish.yml` has `id-token: write`, uses environment `npm`, and contains no `NODE_AUTH_TOKEN` or `NPM_TOKEN` reference.
+Confirm `.github/workflows/publish.yml` has `id-token: write`, uses environment `npm`, resolves release tags to an allowlisted workspace path, publishes with `--workspace`, and contains no `NODE_AUTH_TOKEN` or `NPM_TOKEN` reference.
 
 ### 2. Determine and guard the target
 
-Read the version from `package.json`. Calculate the requested SemVer bump without modifying files. For an explicit version, use it exactly and require it to be greater than the current version.
+Read the current version from `$DIR/package.json`. Calculate the requested bump without editing files. An explicit version must be greater than the current version.
 
-Identify the previous release tag:
-
-```bash
-git tag --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1
-```
-
-Guard the target:
+Find the latest package-qualified release tag:
 
 ```bash
-git rev-parse -q --verify "refs/tags/v<TARGET>"
-npm view "@mobrienv/pi-tidy-tools@<TARGET>" version --json
+git tag --list "$SLUG-v*" --sort=-version:refname | head -1
 ```
 
-Both must report absence. npm `E404` means expected absence; any other npm error is a failure.
+For `pi-tidy-tools` only, if no package-qualified tag exists, use the latest historical `vX.Y.Z` tag as `PREVIOUS_TAG`. Other packages with no tag are first releases.
 
-### 3. Analyze release changes
-
-Use both signals:
+Set `TAG="$SLUG-v$TARGET"`, then guard it:
 
 ```bash
-git diff "v<PREVIOUS>"..HEAD --stat
-git diff "v<PREVIOUS>"..HEAD -- index.ts config.ts render.ts README.md package.json
-git log "v<PREVIOUS>"..HEAD --oneline --no-merges
+git rev-parse -q --verify "refs/tags/$TAG"
+npm view "$PACKAGE@$TARGET" version --json
 ```
 
-Read relevant full diffs. Classify observable changes into Keep a Changelog sections. Code behavior is primary; commit subjects only explain intent.
+Both must report absence. npm `E404` is expected absence; any other registry error stops the release.
 
-If no user-visible changes exist, stop rather than publishing an empty release.
+### 3. Analyze package changes
 
-### 4. Prepare release metadata
-
-Create `CHANGELOG.md` with the contract above if absent. Otherwise preserve existing prose and released sections.
-
-- Keep an empty `## [Unreleased]` heading at the top.
-- Move existing Unreleased entries into `## [TARGET] - YYYY-MM-DD`.
-- Add missing user-visible entries found during diff review without duplicating existing entries.
-- Use the current UTC date.
-- Update compare links:
-  - `[Unreleased]` compares `vTARGET...HEAD`.
-  - `[TARGET]` compares `vPREVIOUS...vTARGET`.
-  - For the first tag, link the version to the repository tree at `vTARGET`.
-
-Update package versions without creating a commit or tag yet:
+Use the selected package seam:
 
 ```bash
-npm version <TARGET> --no-git-tag-version
+git diff "$PREVIOUS_TAG"..HEAD --stat -- "$DIR"
+git diff "$PREVIOUS_TAG"..HEAD -- "$DIR"
+git log "$PREVIOUS_TAG"..HEAD --oneline --no-merges -- "$DIR"
 ```
 
-This must update both `package.json` and `package-lock.json`.
+For a first release, inspect the package tree and relevant repository history instead of diffing a missing tag. Account for every user-visible change in `$DIR`; shared root changes belong in this changelog only when they alter this package's observable behavior.
 
-Extract only the new version section, excluding `[Unreleased]` and bottom reference links, into `/tmp/pi-tidy-tools-release-vTARGET.md`. Use this as GitHub Release notes. Do not commit the temporary file.
+Complete this step when every observable change is represented once and implementation-only changes are excluded. Stop on an empty release.
 
-Review the resulting changelog section for implementation leakage and accuracy before continuing.
+### 4. Prepare metadata
 
-### 5. Validate the candidate
+Create `$DIR/CHANGELOG.md` with the contract if absent. Otherwise preserve released sections and move current Unreleased entries into `## [TARGET] - YYYY-MM-DD`, using the current UTC date. Add missing entries found during diff review without duplication.
+
+Update links:
+
+- `[Unreleased]` compares `$TAG...HEAD`.
+- `[TARGET]` compares `$PREVIOUS_TAG...$TAG`.
+- A first release links `[TARGET]` to the repository tree at `$TAG`.
+
+Update only the selected version:
+
+```bash
+npm version "$TARGET" --workspace "$PACKAGE" --no-git-tag-version
+```
+
+Confirm `$DIR/package.json` and the workspace entry in `package-lock.json` both report `TARGET`.
+
+Extract the new changelog section, excluding `[Unreleased]` and reference links, to `/tmp/$SLUG-release-v$TARGET.md`. Review it for accuracy and implementation leakage.
+
+### 5. Validate
 
 ```bash
 npm ci
 npm test
 npm run check
-npm pack --dry-run
+npm pack --workspace "$PACKAGE" --dry-run
+npm pack --workspace "$PACKAGE" --dry-run --json
 git diff --check
-```
-
-Inspect pack output. It should contain only allowlisted runtime files and documentation images. Confirm:
-
-- `package.json` and `package-lock.json` both report `TARGET`.
-- `CHANGELOG.md` has one non-empty `## [TARGET] - YYYY-MM-DD` section.
-- `[Unreleased]` and version compare links are correct.
-- Release notes exactly represent the target changelog section.
-
-### 6. Commit, tag, and push
-
-Stage only intended release metadata:
-
-```bash
-git add package.json package-lock.json CHANGELOG.md
-git commit -m "chore: release vTARGET"
-git tag -a "vTARGET" -m "vTARGET"
-git push origin main --follow-tags
-```
-
-Verify the annotated tag points to the release commit. Do not include unrelated files.
-
-### 7. Create the GitHub Release
-
-```bash
-gh release create "vTARGET" \
-  --verify-tag \
-  --notes-file "/tmp/pi-tidy-tools-release-vTARGET.md" \
-  --title "vTARGET"
-```
-
-Delete the temporary notes file after GitHub accepts the release. The release event triggers `.github/workflows/publish.yml`.
-
-### 8. Track publishing to completion
-
-Locate the release run whose `headBranch` is `vTARGET`:
-
-```bash
-gh run list \
-  --workflow publish.yml \
-  --event release \
-  --limit 5 \
-  --json databaseId,headBranch,status,conclusion,url
-```
-
-Then block:
-
-```bash
-gh run watch <RUN_ID> --exit-status
-```
-
-On failure:
-
-```bash
-gh run view <RUN_ID> --log-failed
-```
-
-Do not retry blindly or create another version. Diagnose first and ask before taking corrective release action.
-
-### 9. Verify npm and repository state
-
-Allow for brief registry propagation, then run:
-
-```bash
-npm view @mobrienv/pi-tidy-tools version dist.integrity --json
-gh run view <RUN_ID> --json conclusion,url,headSha
-gh release view "vTARGET" --json url,tagName
 git status --short
 ```
 
-Success requires workflow conclusion `success`, npm version exactly `TARGET`, a non-empty integrity value, the expected GitHub Release, and a clean working tree.
+Inspect the selected tarball allowlist, package identity, Pi manifest resources, and repository metadata. Confirm one non-empty target changelog section, correct compare links, exact release notes, and no changed package metadata outside the selected workspace except `package-lock.json`.
+
+### 6. Commit and tag
+
+Stage only selected release metadata:
+
+```bash
+git add "$DIR/package.json" "$DIR/CHANGELOG.md" package-lock.json
+git commit -m "chore($SLUG): release v$TARGET"
+git tag -a "$TAG" -m "$PACKAGE v$TARGET"
+git push origin main --follow-tags
+```
+
+Verify the annotated tag points to the release commit.
+
+### 7. Create and monitor the GitHub Release
+
+```bash
+gh release create "$TAG" \
+  --verify-tag \
+  --notes-file "/tmp/$SLUG-release-v$TARGET.md" \
+  --title "$PACKAGE v$TARGET"
+rm "/tmp/$SLUG-release-v$TARGET.md"
+```
+
+Locate the release-triggered workflow run whose `headBranch` is `$TAG`, then block until completion:
+
+```bash
+gh run list --workflow publish.yml --event release --limit 10 \
+  --json databaseId,headBranch,status,conclusion,url
+gh run watch <RUN_ID> --exit-status
+```
+
+On failure, inspect `gh run view <RUN_ID> --log-failed`. Diagnose before proposing any retry or corrective version.
+
+### 8. Verify publication
+
+Allow for registry propagation, then require all checks to agree:
+
+```bash
+npm view "$PACKAGE" version dist.integrity --json
+gh run view <RUN_ID> --json conclusion,url,headSha
+gh release view "$TAG" --json url,tagName
+git status --short
+```
+
+Success means npm reports exactly `TARGET` with non-empty integrity, the workflow succeeded for `$TAG`, the GitHub Release exists, and the working tree is clean.
 
 ## Final report
 
-Report concisely:
-
-- Published package and version
-- Changelog sections included
-- Release commit and tag
-- GitHub Release URL
-- Workflow URL and conclusion
-- Validation performed
-- npm integrity value
-- Warnings or follow-up work
-
-Tell the user the work is on `main` and can be viewed with:
-
-```bash
-git checkout main
-```
+Report the package/version, changelog sections, release commit/tag, GitHub Release URL, workflow URL/conclusion, validation, npm integrity, and residual risks.

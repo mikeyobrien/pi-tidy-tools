@@ -1,10 +1,13 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createEditTool, createGrepTool, createReadTool } from "@earendil-works/pi-coding-agent";
-import { ToolExecutionComponent } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/tool-execution.js";
-import { initTheme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { buildToolBlock } from "../index.js";
+
+const codingAgentDist = dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent")));
+const { ToolExecutionComponent } = await import(pathToFileURL(join(codingAgentDist, "modes/interactive/components/tool-execution.js")).href);
+const { initTheme } = await import(pathToFileURL(join(codingAgentDist, "modes/interactive/theme/theme.js")).href);
 
 const PALETTE: Record<string, string> = {
 	"31": "#f7768e", "32": "#9ece6a", "33": "#e0af68", "35": "#bb9af7", "36": "#7dcfff",

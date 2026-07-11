@@ -1,16 +1,24 @@
-name: Publish to npm
+name: Publish package to npm
 
 on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      package:
+        description: Package slug, for example pi-tidy-tools
+        required: true
+        default: pi-tidy-tools
+      version:
+        description: Exact package version to publish
+        required: true
 
 permissions:
   contents: read
   id-token: write
 
 concurrency:
-  group: npm-publish-${{ github.ref }}
+  group: npm-publish-${{ github.event.release.tag_name || inputs.package }}
   cancel-in-progress: false
 
 jobs:
@@ -31,15 +39,56 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Validate
+      - name: Resolve package
+        shell: bash
+        env:
+          INPUT_PACKAGE: ${{ inputs.package }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "release" ]]; then
+            tag="$GITHUB_REF_NAME"
+            if [[ ! "$tag" =~ ^(pi-tidy-[a-z0-9-]+)-v([0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?)$ ]]; then
+              echo "Release tag must match pi-tidy-<name>-v<version>: $tag" >&2
+              exit 1
+            fi
+            slug="${BASH_REMATCH[1]}"
+            expected_version="${BASH_REMATCH[2]}"
+          else
+            slug="$INPUT_PACKAGE"
+            expected_version="$INPUT_VERSION"
+            if [[ ! "$slug" =~ ^pi-tidy-[a-z0-9-]+$ ]]; then
+              echo "Package must match pi-tidy-<name>: $slug" >&2
+              exit 1
+            fi
+          fi
+
+          manifest="packages/$slug/package.json"
+          if [[ ! -f "$manifest" ]]; then
+            echo "Unknown package workspace: $slug" >&2
+            exit 1
+          fi
+
+          package_name="$(node -p "require('./$manifest').name")"
+          package_version="$(node -p "require('./$manifest').version")"
+          if [[ "$package_name" != "@mobrienv/$slug" ]]; then
+            echo "Manifest name must be @mobrienv/$slug, got $package_name" >&2
+            exit 1
+          fi
+          if [[ "$package_version" != "$expected_version" ]]; then
+            echo "Requested version $expected_version does not match $package_name@$package_version" >&2
+            exit 1
+          fi
+
+          {
+            echo "PACKAGE_NAME=$package_name"
+            echo "PACKAGE_VERSION=$package_version"
+          } >> "$GITHUB_ENV"
+
+      - name: Validate workspaces
         run: |
           npm test
           npm run check
-
-      - name: Verify release tag
-        if: github.event_name == 'release'
-        run: |
-          node -e "const p=require('./package.json'); if (process.env.GITHUB_REF_NAME !== 'v'+p.version) { console.error('Release tag must be v'+p.version); process.exit(1) }"
+          npm pack --workspace "$PACKAGE_NAME" --dry-run
 
       - name: Publish with provenance
-        run: npm publish --access public --provenance
+        run: npm publish --workspace "$PACKAGE_NAME" --access public --provenance

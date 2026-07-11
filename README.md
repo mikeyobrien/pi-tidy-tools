@@ -1,176 +1,33 @@
-# pi-tidy-tools
+# pi-tidy
 
-[![npm version](https://img.shields.io/npm/v/%40mobrienv%2Fpi-tidy-tools)](https://www.npmjs.com/package/@mobrienv/pi-tidy-tools)
+A monorepo for focused, independently installable packages that make [pi](https://github.com/earendil-works/pi-mono) easier to follow.
 
-**See what your pi agent is doing at a glance.** Restyles [pi](https://github.com/earendil-works/pi-mono)'s
-built-in tools into compact, configurable blocks so the transcript reads like
-a narrative, not a wall of boxes.
+## Packages
 
-Restyles pi's built-in tools (`read` `write` `edit` `bash` `grep` `find` `ls`)
-with a two-line default plus optional one-line reasoning and result layouts.
+| Package | Purpose |
+|---|---|
+| [`@mobrienv/pi-tidy-tools`](packages/pi-tidy-tools) | Compact, reason-first rendering for Pi's built-in tools |
 
-## Before and after
+Future packages follow the `@mobrienv/pi-tidy-*` naming convention, including `pi-tidy-advisor` and focused `pi-tidy-<tool-name>` packages. Each package owns its runtime, documentation, tests, version, changelog, and npm release.
 
-The same successful `read`, `grep`, and `edit` calls rendered by native pi and
-pi-tidy-tools:
-
-![Native pi tool cards compared with compact pi-tidy-tools output](docs/comparison.png)
-
-- **Line 1** — status mark, tool icon/name, and the model's **goal/reasoning** for the call.
-- **Line 2** — the concrete target (path/command/pattern) and a colored result summary.
-
-Execution delegates to pi's built-in tools unchanged. The extension replaces
-their TUI rendering and, in reasoning-enabled modes, augments their schemas with
-a required goal phrase.
-
-## In action
-
-![pi-tidy-tools transcript showing successful and failed tool calls](docs/demo.png)
-
-## Reasoning headline
-
-In `default` and `reasoning` modes, each wrapped tool gains a required `reasoning`
-parameter that the model fills with the *goal* behind the call (not a restatement
-of the file or command, which is already shown). `result` mode leaves the native
-tool schema unchanged and does not request reasoning.
-
-## Expand for detail (`ctrl+o`)
-
-Collapsed blocks show the two-line summary. Expanding a tool (`ctrl+o`,
-`app.tools.expand`) appends its full output:
-
-- **edit** — the colored, line-numbered diff
-- **write** — the written content with line numbers
-- **bash** — the full (multi-line) command input, then its output
-- **read/grep/…** — the raw result text
-
-## `/diff` — last-turn changes
-
-`/diff` (or **`ctrl+shift+o`**) recaps successful `edit`/`write` changes from the
-immediately preceding turn as colored line-by-line diffs, including new files and
-whole-file overwrites.
-
-![`/diff` recap of the last turn's edit and write changes](docs/diff.png)
-
-> `ctrl+shift+o` also maps to the built-in `app.tree.filter.cycleBackward`; in the
-> main transcript it triggers `/diff`. Rebind in `keybindings.json` if you prefer.
-
-## Enable or disable persistently
-
-The extension is enabled by default. Use the management command to change or
-inspect its startup state:
-
-```text
-/tidy on
-/tidy off
-/tidy toggle
-/tidy status
-/tidy mode default
-/tidy mode reasoning
-/tidy mode result
-/tidy mode status
-```
-
-Layout modes:
-
-- `default` — reasoning headline, then target and result on line two
-- `reasoning` — one line with the reasoning and summarized result
-- `result` — one line with the target and summarized result; no reasoning parameter is requested
-
-![Tidy Tools layout modes](docs/modes.png)
-
-A successful change is saved to `~/.pi/agent/pi-tidy-tools.json` and reloads pi's
-extensions immediately. While disabled, `/tidy` remains available, but all seven
-tool overrides, reasoning prompts, diff hooks, `/diff`, its shortcut, and custom
-rendering are absent.
-
-For temporary or managed environments, `PI_TIDY_TOOLS` overrides the file. It
-accepts `on`/`off`, `true`/`false`, `yes`/`no`, or `1`/`0`. Unset the variable
-before using `/tidy on|off|toggle`; `/tidy status` reports when the override is
-active. A missing, unreadable, or malformed config defaults to enabled.
-
-## Styling
-
-Mirrors a clean, theme-agnostic palette + icon mapping:
-
-| Tools                    | Icon | Color   |
-|--------------------------|------|---------|
-| `read` `grep` `find` `ls`| 📖   | cyan    |
-| `write` `edit`           | ✏️   | yellow  |
-| `bash`                   | ⚡   | magenta |
-
-- Paths collapse `$HOME` → `~`
-- `edit` shows `+adds/-dels`; text `write` shows line count; `bash` shows status + elapsed time
-- `grep` shows `N matches in M files`; `find`/`ls` show file or entry counts
-- Every line is truncated to the live terminal width (ANSI-aware) so nothing wraps past the gutter
-- Pi's native pending/success/error background colors remain, without restoring its padding or extra spacing
-
-Raw ANSI is intentional for the foreground palette; tool backgrounds follow the active Pi theme.
-
-## Scope
-
-Only the seven built-in tools are restyled. MCP / third-party tools keep their
-default rendering — pi does not expose a way to override a foreign tool's renderer
-without owning its execution.
-
-## Install
-
-Install the published [npm package](https://www.npmjs.com/package/@mobrienv/pi-tidy-tools) with pi:
-
-```bash
-pi install npm:@mobrienv/pi-tidy-tools
-```
-
-Restart pi or run `/reload` in an existing session. To update later:
-
-```bash
-pi update --extension npm:@mobrienv/pi-tidy-tools
-```
-
-To remove it:
-
-```bash
-pi remove npm:@mobrienv/pi-tidy-tools
-```
-
-## Local development
-
-Quick-test a local checkout:
-
-```bash
-pi -e ./index.ts
-```
-
-Or install a local checkout through `~/.pi/agent/settings.json`:
-
-```json
-{
-  "packages": ["/absolute/path/to/pi-tidy-tools"]
-}
-```
-
-or drop the directory in `~/.pi/agent/extensions/pi-tidy-tools/`.
+There is no published umbrella runtime package. Install only the Pi packages you want. The private root manifest keeps existing local-checkout installs pointed at `pi-tidy-tools`; published packages remain independent.
 
 ## Develop
 
+Install once at the repository root and validate every workspace:
+
 ```bash
 npm install
-npm test        # native Node test runner
-npm run check   # tsc --noEmit
+npm test
+npm run check
 ```
 
-## Regenerating screenshots
-
-`docs/comparison.png`, `docs/demo.png`, `docs/diff.png`, and `docs/modes.png` are
-generated from **real** renderer output (no hand-typed ANSI): the scripts run the
-built-in tools, render them through the actual extension (or native pi cards for
-the comparison), and screenshot the result via headless Chrome.
+Target one package during development:
 
 ```bash
-bash docs/comparison.sh # native vs tidy comparison
-bash docs/demo.sh       # full tidy transcript
-bash docs/diff.sh       # /diff last-turn recap
-bash docs/modes.sh      # layout-mode comparison
+npm test --workspace @mobrienv/pi-tidy-tools
+npm run check --workspace @mobrienv/pi-tidy-tools
+npm pack --workspace @mobrienv/pi-tidy-tools --dry-run
 ```
 
-All four generators require Google Chrome/Chromium and ImageMagick.
+Publishable packages live at `packages/pi-tidy-<name>` and use the npm name `@mobrienv/pi-tidy-<name>`. Releases use package-qualified tags such as `pi-tidy-tools-v0.1.3` so every package can version and publish independently.

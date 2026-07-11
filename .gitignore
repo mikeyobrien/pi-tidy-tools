@@ -4,7 +4,7 @@ node_modules/
 .agents/
 .pi-subagents/
 .test-dist/
-docs/comparison.html
-docs/demo.html
-docs/diff.html
-docs/modes.html
+packages/*/docs/comparison.html
+packages/*/docs/demo.html
+packages/*/docs/diff.html
+packages/*/docs/modes.html

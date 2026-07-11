@@ -5,19 +5,30 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { buildEnvelope } from "./envelope.js";
 import { SnapshotComponent } from "./render.js";
-import { runChild } from "./runner.js";
+import { launchRuntime, runChild, type SharedLaunchContext } from "./runner.js";
 import { concurrencyCap, Scheduler } from "./scheduler.js";
 import { createRunStore, saveRun } from "./store.js";
-import type { ChildState, RunDetails } from "./types.js";
+import { inheritRuntimePlan, type ChildState, type RunDetails } from "./types.js";
 
 export { buildEnvelope } from "./envelope.js";
 export { concurrencyCap, Scheduler } from "./scheduler.js";
 export { renderLines } from "./render.js";
+export { buildChildArgs, launchRuntime } from "./runner.js";
+export { inheritRuntimePlan } from "./types.js";
+export type { ChildRuntimePlan, RuntimeProvenance } from "./types.js";
 
 function publicDetails(details: RunDetails): RunDetails {
  return {
   ...details,
-  children: details.children.map((child) => ({ ...child, prompt: "", response: "", activities: [...child.activities], activeTools: child.activeTools.map((tool) => ({ ...tool })) })),
+  children: details.children.map((child) => ({
+   ...child,
+   prompt: "",
+   response: "",
+   activities: [...child.activities],
+   activeTools: child.activeTools.map((tool) => ({ ...tool })),
+   // Independent snapshot of the child-owned plan (never share the live object).
+   ...(child.runtimePlan ? { runtimePlan: { ...child.runtimePlan } } : {}),
+  })),
  };
 }
 
@@ -43,17 +54,28 @@ export default function extension(pi: ExtensionAPI): void {
    if (!ctx.model) throw new Error("subagent requires a resolved parent model");
    const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
    const runDir = await createRunStore(getAgentDir(), runId);
-   const model = `${ctx.model.provider}/${ctx.model.id}`;
-   const thinking = pi.getThinkingLevel();
+   // Snapshot parent runtime once; never mutate parent model/thinking APIs.
+   const parentProvider = ctx.model.provider;
+   const parentModelId = ctx.model.id;
+   const parentThinking = pi.getThinkingLevel();
+   const parentModel = `${parentProvider}/${parentModelId}`;
    const activeTools = pi.getActiveTools().filter((name) => name !== "subagent");
    const projectTrusted = ctx.isProjectTrusted();
+   const shared: SharedLaunchContext = { cwd: ctx.cwd, tools: activeTools, runDir, approved: projectTrusted };
    const children: ChildState[] = params.agents.map((request, index) => {
     const id = `child-${String(index + 1).padStart(3, "0")}`;
-    return { index, id, label: request.label || "agent", reason: request.reason, prompt: request.prompt, status: "queued", model: ctx.model!.id, thinking, toolCount: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, providerTraffic: 0, tokens: 0, activities: [], activeTools: [], eventCount: 0, response: "", artifactPath: join(runDir, `${id}.md`) };
+    // Each child owns an independent inherited plan object (no shared mutable reference).
+    const runtimePlan = inheritRuntimePlan({ provider: parentProvider, modelId: parentModelId, thinking: parentThinking });
+    return {
+     index, id, label: request.label || "agent", reason: request.reason, prompt: request.prompt, status: "queued",
+     model: runtimePlan.modelId, thinking: runtimePlan.thinking, runtimePlan,
+     toolCount: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, providerTraffic: 0, tokens: 0,
+     activities: [], activeTools: [], eventCount: 0, response: "", artifactPath: join(runDir, `${id}.md`),
+    };
    });
    const details: RunDetails = {
     schemaVersion: 1, runId, runDir, cwd: ctx.cwd, createdAt: new Date().toISOString(), cap: scheduler.cap,
-    runtime: { provider: ctx.model.provider, modelId: ctx.model.id, model, thinking, activeTools, projectTrusted }, children,
+    runtime: { provider: parentProvider, modelId: parentModelId, model: parentModel, thinking: parentThinking, activeTools, projectTrusted }, children,
    };
    await saveRun(details, false);
    let updateTimer: ReturnType<typeof setTimeout> | undefined;
@@ -71,7 +93,12 @@ export default function extension(pi: ExtensionAPI): void {
     if (callController.signal.aborted) {
      child.status = "not-started"; child.error = "Cancelled before start"; child.endedAt = Date.now(); changed(true); return child;
     }
-    try { return await scheduler.schedule(toolCallId, () => runChild(child, { cwd: ctx.cwd, model, thinking, tools: activeTools, runDir, approved: projectTrusted }, callController.signal, changed)); }
+    try {
+     const plan = child.runtimePlan;
+     if (!plan) throw new Error(`child ${child.id} missing runtime plan`);
+     // Launch args come from this child's owned plan, not a shared closed-over model/thinking pair.
+     return await scheduler.schedule(toolCallId, () => runChild(child, launchRuntime(plan, shared), callController.signal, changed));
+    }
     catch (error) {
      if (/Could not (start Pi RPC|maintain durable)/.test(error instanceof Error ? error.message : String(error))) { abort(); throw error; }
      child.status = callController.signal.aborted ? "not-started" : "failed"; child.error = error instanceof Error ? error.message : String(error); child.endedAt = Date.now(); changed(true); return child;

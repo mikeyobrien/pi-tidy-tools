@@ -14,7 +14,7 @@ export async function saveRun(details: RunDetails, completed = true): Promise<vo
  const manifest = {
   schemaVersion: 1, runId: details.runId, cwd: details.cwd, createdAt: details.createdAt,
   ...(completed ? { completedAt: new Date().toISOString() } : {}), concurrencyCap: details.cap, runtime: details.runtime,
-  children: details.children.map(({ prompt, response: _response, streamingLine: _streamingLine, activeTools: _activeTools, ...child }) => ({ ...child, prompt, eventPath: `${child.id}.jsonl` })),
+  children: details.children.map(({ prompt, response: _response, streamingLine: _streamingLine, activeTools: _activeTools, runtimePlan: _runtimePlan, ...child }) => ({ ...child, prompt, eventPath: `${child.id}.jsonl` })),
  };
  await writeFile(join(details.runDir, "run.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
  await Promise.all(details.children.flatMap((child) => [

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import extension, { buildEnvelope, concurrencyCap, renderLines, Scheduler } from "../index.js";
+import extension, { buildEnvelope, concurrencyCap, inheritRuntimePlan, launchRuntime, renderLines, Scheduler } from "../index.js";
 import { SnapshotComponent } from "../render.js";
 import { buildChildArgs } from "../runner.js";
 
@@ -24,6 +24,76 @@ async function fixture<T>(fn: (root: string) => Promise<T>): Promise<T> {
   await rm(root, { recursive: true, force: true });
  }
 }
+
+test("two inherited children independently own equivalent runtime plans and launch from them", async () => fixture(async (root) => {
+ const parent = { provider: "fake", modelId: "model-x", thinking: "medium" };
+ const planA = inheritRuntimePlan(parent);
+ const planB = inheritRuntimePlan(parent);
+ assert.notEqual(planA, planB);
+ assert.deepEqual(planA, planB);
+ assert.deepEqual(planA, { provider: "fake", modelId: "model-x", model: "fake/model-x", thinking: "medium", provenance: "parent" });
+ const shared = { cwd: root, tools: ["read"], runDir: join(root, "run"), approved: true };
+ const launchA = launchRuntime(planA, shared);
+ const launchB = launchRuntime(planB, shared);
+ assert.notEqual(launchA, launchB);
+ assert.deepEqual(launchA, { ...shared, model: "fake/model-x", thinking: "medium" });
+ assert.deepEqual(buildChildArgs(launchA), buildChildArgs(launchB));
+ assert.deepEqual(buildChildArgs(launchA), ["--mode", "rpc", "--no-session", "--approve", "--model", "fake/model-x", "--thinking", "medium", "--tools", "read"]);
+
+ let thinkingReads = 0;
+ let setModelCalls = 0;
+ let setThinkingCalls = 0;
+ let tool: any;
+ const pi = {
+  registerTool(value: any) { tool = value; },
+  on() {},
+  getThinkingLevel: () => { thinkingReads++; return "medium"; },
+  getActiveTools: () => ["read", "subagent"],
+  setModel() { setModelCalls++; },
+  setThinkingLevel() { setThinkingCalls++; },
+ };
+ extension(pi as any);
+ const result = await tool.execute("two-inherit", { agents: [
+  { label: "left", reason: "inherit left", prompt: "first" },
+  { label: "right", reason: "inherit right", prompt: "first" },
+ ] }, undefined, undefined, context(root));
+ const [left, right] = result.details.children;
+ assert.equal(left.model, "model-x");
+ assert.equal(right.model, "model-x");
+ assert.equal(left.thinking, "medium");
+ assert.equal(right.thinking, "medium");
+ assert.deepEqual([left.status, right.status], ["completed", "completed"]);
+ // AC-001/AC-009: each child carries an independent equivalent inherited plan.
+ assert.ok(left.runtimePlan);
+ assert.ok(right.runtimePlan);
+ assert.notEqual(left.runtimePlan, right.runtimePlan);
+ assert.deepEqual(left.runtimePlan, right.runtimePlan);
+ assert.deepEqual(left.runtimePlan, {
+  provider: "fake", modelId: "model-x", model: "fake/model-x", thinking: "medium", provenance: "parent",
+ });
+ assert.deepEqual(buildChildArgs(launchRuntime(left.runtimePlan, { cwd: root, tools: result.details.runtime.activeTools, runDir: result.details.runDir, approved: true })),
+  ["--mode", "rpc", "--no-session", "--approve", "--model", "fake/model-x", "--thinking", "medium", "--tools", "read"]);
+ assert.deepEqual(buildChildArgs(launchRuntime(right.runtimePlan, { cwd: root, tools: result.details.runtime.activeTools, runDir: result.details.runDir, approved: true })),
+  ["--mode", "rpc", "--no-session", "--approve", "--model", "fake/model-x", "--thinking", "medium", "--tools", "read"]);
+ assert.deepEqual(result.details.runtime, {
+  provider: "fake", modelId: "model-x", model: "fake/model-x", thinking: "medium", activeTools: ["read"], projectTrusted: true,
+ });
+ // AC-005: schema v1 manifests omit runtimePlan and keep prior runtime truth.
+ const run = JSON.parse(await readFile(join(result.details.runDir, "run.json"), "utf8"));
+ assert.equal(run.schemaVersion, 1);
+ assert.deepEqual(run.runtime, result.details.runtime);
+ for (const child of run.children) {
+  assert.equal("runtimePlan" in child, false);
+  assert.equal(child.model, "model-x");
+  assert.equal(child.thinking, "medium");
+ }
+ const rendered = renderLines(result.details).map((line: string) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+ assert.match(rendered[0], /🤖 left\[model-x\|medium\] inherit left/);
+ assert.match(rendered.find((line: string) => line.includes("right")) ?? "", /🤖 right\[model-x\|medium\] inherit right/);
+ assert.ok(thinkingReads >= 1);
+ assert.equal(setModelCalls, 0);
+ assert.equal(setThinkingCalls, 0);
+}));
 
 test("public tool runs ordered all-settled fanout and persists full truth", async () => fixture(async (root) => {
  const { tool } = register(); const snapshots: any[] = [];

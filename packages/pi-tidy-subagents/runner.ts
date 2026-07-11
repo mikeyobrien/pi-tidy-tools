@@ -1,10 +1,17 @@
 import { spawn } from "node:child_process";
 import { buildToolActivityBlock } from "./vendor/pi-tidy-core/index.js";
 import { appendEvent } from "./store.js";
-import type { ChildState, NormalizedEvent } from "./types.js";
+import type { ChildRuntimePlan, ChildState, NormalizedEvent } from "./types.js";
 
-export interface Runtime { cwd: string; model: string; thinking: string; tools: string[]; runDir: string; approved: boolean }
+/** Shared launch context that remains identical across siblings. */
+export interface SharedLaunchContext { cwd: string; tools: string[]; runDir: string; approved: boolean }
+/** Per-child launch runtime: model/thinking come from the child-owned plan. */
+export interface Runtime extends SharedLaunchContext { model: string; thinking: string }
 type Changed = (immediate?: boolean) => void;
+/** Derive spawn runtime from a child-owned plan plus shared working context. */
+export function launchRuntime(plan: Pick<ChildRuntimePlan, "model" | "thinking">, shared: SharedLaunchContext): Runtime {
+ return { ...shared, model: plan.model, thinking: plan.thinking };
+}
 export function buildChildArgs(runtime: Pick<Runtime, "model" | "thinking" | "tools"> & { approved?: boolean }): string[] {
  const toolArgs = runtime.tools.length > 0 ? ["--tools", runtime.tools.join(",")] : ["--no-tools"];
  return ["--mode", "rpc", "--no-session", ...(runtime.approved ? ["--approve"] : []), "--model", runtime.model, "--thinking", runtime.thinking, ...toolArgs];

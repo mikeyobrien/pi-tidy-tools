@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Internal prefactor: every child owns an independent inherited runtime plan used for launch; public inheritance, rendering, and schema v1 manifests are unchanged.
+
 ## [0.1.0] - 2026-07-11
 
 ### Added

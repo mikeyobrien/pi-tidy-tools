@@ -139,13 +139,13 @@ test("routine streaming is capped at 10Hz and lifecycle snapshots flush", async 
  assert.ok(updates <= 9, `40 deltas flooded ${updates} updates`);
 }));
 
-test("running snapshots invalidate once per elapsed second", async () => fixture(async (root) => {
+test("silent running children do not emit timer-only updates", async () => fixture(async (root) => {
  const { tool } = register(); const controller = new AbortController(); let runningUpdates = 0;
  const pending = tool.execute("elapsed", { agents: [{ reason: "observe elapsed", prompt: "hang" }] }, controller.signal, (update: any) => {
   if (update.details.children[0].status === "running") runningUpdates++;
  }, context(root));
  setTimeout(() => controller.abort(), 1150);
- await pending; assert.ok(runningUpdates >= 2, `expected running start and elapsed tick, got ${runningUpdates}`);
+ await pending; assert.equal(runningUpdates, 1);
 }));
 
 test("rejected RPC prompt settles as a child failure", async () => fixture(async (root) => {
@@ -192,22 +192,18 @@ test("renderer preserves native pending and settled state backgrounds", () => {
  const child: any = { index: 0, id: "child", label: "agent", reason: "show a deliberately long running state", prompt: "", status: "running", model: "m", thinking: "off", toolCount: 2, tokens: 2_100, activities: [], activeTools: [], eventCount: 0, response: "", artifactPath: "/x" };
  const details: any = { schemaVersion: 1, runId: "r", runDir: "/r", cwd: "/", createdAt: "now", cap: 1, children: [child] };
  const theme = { bg: (name: string, text: string) => `[${name}]${text}` };
- const renderContext = { state: {}, invalidate() {} };
+ let invalidations = 0;
+ const renderContext = { state: {}, invalidate() { invalidations++; } };
  const pending = tool.renderResult({ details }, { expanded: false, isPartial: true }, theme, renderContext);
  assert.match(pending.render(200)[0], /toolPendingBg/);
- assert.ok((renderContext.state as any).spinnerTimer);
  const frameA = renderLines(details, false, 0)[0].replace(/\x1b\[[0-9;]*m/g, "");
  const frameB = renderLines(details, false, 120)[0].replace(/\x1b\[[0-9;]*m/g, "");
- assert.notEqual(frameA, frameB);
+ assert.equal(frameA, frameB); assert.match(frameA, /●/); assert.equal(invalidations, 0);
  const narrow = pending.render(58)[1].replace(/\x1b\[[0-9;]*m/g, "").replace(/\[toolPendingBg\]/g, "");
  assert.match(narrow, /2 tools/); assert.match(narrow, /2\.1k tok/); assert.match(narrow, /<1s/);
  child.status = "failed";
  assert.match(tool.renderResult({ details }, { expanded: false, isPartial: false }, theme, renderContext).render(200)[0], /toolErrorBg/);
- assert.equal((renderContext.state as any).spinnerTimer, undefined);
- const restoredState = { state: {}, invalidate() {} };
- child.status = "running";
- tool.renderResult({ details }, { expanded: false, isPartial: false }, theme, restoredState);
- assert.equal((restoredState.state as any).spinnerTimer, undefined);
+ assert.equal(invalidations, 0);
 });
 
 test("pure boundaries cover cap FIFO envelope limits and renderer", async () => {

@@ -4,8 +4,7 @@ import type { ChildState, RunDetails } from "./types.js";
 
 const GUTTER = `${DIM}  ┊${RESET}`;
 const ansiPattern = /\x1b\[[0-9;]*m/g;
-const RUNNING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const runningGlyph = (now: number): string => RUNNING_FRAMES[Math.floor(now / 120) % RUNNING_FRAMES.length]!;
+const RUNNING_GLYPH = "●";
 function formatTokens(count: number): string {
  if (count < 1_000) return String(count);
  if (count < 10_000) return `${(count / 1_000).toFixed(1)}k`;
@@ -17,10 +16,10 @@ function usageSummary(child: ChildState): string {
  if (typeof child.input === "number" && typeof child.output === "number") return `↑${formatTokens(child.input)} ↓${formatTokens(child.output)}`;
  return `${formatCount(child.tokens ?? 0)} tok`;
 }
-const statusGlyph = (status: ChildState["status"], now: number): string => {
+const statusGlyph = (status: ChildState["status"]): string => {
  switch (status) {
   case "queued": return `${DIM}○${RESET}`;
-  case "starting": case "running": return `${CYAN}${runningGlyph(now)}${RESET}`;
+  case "starting": case "running": return `${CYAN}${RUNNING_GLYPH}${RESET}`;
   case "completed": return `${GREEN}✓${RESET}`;
   case "warning": return `${YELLOW}!${RESET}`;
   case "failed": return `${RED}✗${RESET}`;
@@ -36,13 +35,13 @@ function isToolFirstLine(line: string): boolean {
  return line.startsWith(`${DIM}·`) || line.startsWith(`${GREEN}✓`) || line.startsWith(`${RED}✗`);
 }
 function isToolSecondLine(line: string): boolean { return line.startsWith(`  ${DIM}`); }
-function collapsedActivity(child: ChildState, now: number): string[] {
+function collapsedActivity(child: ChildState): string[] {
  const activeTools = child.activeTools ?? [];
  if (activeTools.length > 1) {
   const counts = new Map<string, number>();
   for (const tool of activeTools) counts.set(tool.name, (counts.get(tool.name) ?? 0) + 1);
   return [
-   `${CYAN}${runningGlyph(now)}${RESET} ${MAGENTA}◆ ${BOLD}parallel${RESET} ${activeTools.length} tools running`,
+   `${CYAN}${RUNNING_GLYPH}${RESET} ${MAGENTA}◆ ${BOLD}parallel${RESET} ${activeTools.length} tools running`,
    `  ${[...counts].map(([name, count]) => { const tool = style(name); return `${tool.color}${tool.icon} ${BOLD}${name}${RESET} ×${count}`; }).join(` ${DIM}·${RESET} `)}`,
   ];
  }
@@ -66,7 +65,7 @@ function collapsedActivity(child: ChildState, now: number): string[] {
 }
 function isToolActivity(line: string): boolean {
  const plain = line.replace(ansiPattern, "");
- return isToolFirstLine(line) || isToolSecondLine(line) || /^⠋ /.test(plain);
+ return isToolFirstLine(line) || isToolSecondLine(line) || /^● /.test(plain);
 }
 function expandedActivity(child: ChildState): string[] {
  const entries = tail(child).slice(-15);
@@ -78,13 +77,13 @@ export function renderLines(details: RunDetails | undefined, expanded = false, n
  const lines: string[] = [];
  for (const child of details.children) {
   const elapsed = child.startedAt ? (child.endedAt ?? now) - child.startedAt : 0;
-  const identity = `${GUTTER} ${statusGlyph(child.status, now)} ${MAGENTA}🤖${RESET} ${BOLD}${child.label}[${child.model}|${child.thinking}]${RESET} ${child.reason}`;
+  const identity = `${GUTTER} ${statusGlyph(child.status)} ${MAGENTA}🤖${RESET} ${BOLD}${child.label}[${child.model}|${child.thinking}]${RESET} ${child.reason}`;
   const statistics = `${DIM}→ ${child.toolCount ?? 0} tools · ${usageSummary(child)} · ${formatElapsed(elapsed)}${RESET}`;
   const combined = `${identity} ${statistics}`;
   if (width !== undefined && visibleWidth(combined) <= width) lines.push(combined);
   else lines.push(identity, `${GUTTER}   ${statistics}`);
   const activity = tail(child);
-  const entries = expanded && activity.length > 0 ? expandedActivity(child) : collapsedActivity(child, now);
+  const entries = expanded && activity.length > 0 ? expandedActivity(child) : collapsedActivity(child);
   for (const entry of entries) lines.push(`${GUTTER}${isToolActivity(entry) ? "   " : "     "}${entry}`);
  }
  return lines;

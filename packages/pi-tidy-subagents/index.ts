@@ -31,10 +31,8 @@ export default function extension(pi: ExtensionAPI): void {
  if (process.env.PI_TIDY_SUBAGENT_CHILD === "1") return;
  const scheduler = new Scheduler(concurrencyCap());
  const activeCalls = new Set<AbortController>();
- const renderTimers = new Set<ReturnType<typeof setInterval>>();
  pi.on("session_shutdown", () => {
   scheduler.shutdown(); for (const controller of activeCalls) controller.abort(); activeCalls.clear();
-  for (const timer of renderTimers) clearInterval(timer); renderTimers.clear();
  });
  pi.registerTool({
   name: "subagent", label: "subagent", renderShell: "self", executionMode: "parallel",
@@ -65,7 +63,6 @@ export default function extension(pi: ExtensionAPI): void {
     else if (!updateTimer) { updateTimer = setTimeout(emit, 100); updateTimer.unref?.(); }
    };
    emit();
-   const elapsedTimer = setInterval(() => changed(true), 1000); elapsedTimer.unref?.();
    const callController = new AbortController(); activeCalls.add(callController);
    const abort = () => { scheduler.cancel(toolCallId); callController.abort(); };
    signal?.addEventListener("abort", abort, { once: true });
@@ -88,23 +85,15 @@ export default function extension(pi: ExtensionAPI): void {
     abort(); await Promise.allSettled(outcomes);
     throw error;
    } finally {
-    clearInterval(elapsedTimer); if (updateTimer) clearTimeout(updateTimer);
+    if (updateTimer) clearTimeout(updateTimer);
     signal?.removeEventListener("abort", abort); activeCalls.delete(callController);
    }
    const content = buildEnvelope(children);
    return { content: [{ type: "text", text: content }], details: publicDetails(details) };
   },
   renderCall: () => new Container(),
-  renderResult: (result, options, theme, context) => {
+  renderResult: (result, options, theme) => {
    const details = result.details as RunDetails | undefined;
-   const renderState = context.state as { spinnerTimer?: ReturnType<typeof setInterval> };
-   const isRunning = options.isPartial && (details?.children.some((child) => child.status === "starting" || child.status === "running") ?? false);
-   if (isRunning && !renderState.spinnerTimer) {
-    const timer = setInterval(() => context.invalidate(), 120); timer.unref?.();
-    renderState.spinnerTimer = timer; renderTimers.add(timer);
-   } else if (!isRunning && renderState.spinnerTimer) {
-    clearInterval(renderState.spinnerTimer); renderTimers.delete(renderState.spinnerTimer); renderState.spinnerTimer = undefined;
-   }
    const hasFailure = details?.children.some((child) => ["failed", "cancelled", "not-started"].includes(child.status)) ?? false;
    const background = options.isPartial ? "toolPendingBg" : hasFailure ? "toolErrorBg" : "toolSuccessBg";
    return new SnapshotComponent(details, options.expanded, (text) => theme.bg(background, text));

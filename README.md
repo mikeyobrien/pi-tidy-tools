@@ -36,8 +36,8 @@ Collapsed blocks show the two-line summary. Expanding a tool (`ctrl+o`,
 ## `/diff` — last-turn changes
 
 `/diff` (or **`ctrl+shift+o`**) recaps successful `edit`/`write` changes from the
-immediately preceding turn. Edits include colored diffs; whole-file writes are
-listed as overwrites because pi's write result does not provide a line diff.
+immediately preceding turn as colored line-by-line diffs, including new files and
+whole-file overwrites.
 
 > `ctrl+shift+o` also maps to the built-in `app.tree.filter.cycleBackward`; in the
 > main transcript it triggers `/diff`. Rebind in `keybindings.json` if you prefer.

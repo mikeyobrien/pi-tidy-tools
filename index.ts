@@ -47,7 +47,10 @@ import {
 	createLsTool,
 	createReadTool,
 	createWriteTool,
+	generateDiffString,
 } from "@earendil-works/pi-coding-agent";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { Container, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { CONFIG_PATH, loadTidyMode, loadTidyState, saveTidyEnabled, saveTidyMode, type TidyMode } from "./config.js";
 import {
@@ -518,10 +521,32 @@ export default function (pi: ExtensionAPI) {
 			],
 			renderShell: "self",
 
-			// Strip our injected `reasoning`, delegate to the real built-in.
-			execute: (id: string, p: any, sig: any, up: any) => {
+			// Strip our injected `reasoning`, delegate to the real built-in. Writes
+			// use per-call operations so the before-content is read inside Pi's file
+			// mutation queue and can produce the same diff format as edit.
+			execute: async (id: string, p: any, sig: any, up: any) => {
 				const { rest } = stripReasoning(p);
-				return tool.execute(id, rest, sig, up);
+				if (name !== "write") return tool.execute(id, rest, sig, up);
+
+				let diff = "";
+				const writeTool = createWriteTool(cwd, {
+					operations: {
+						mkdir: async (directory: string) => { await mkdir(directory, { recursive: true }); },
+						writeFile: async (path: string, content: string) => {
+							let previous = "";
+							try {
+								previous = await readFile(path, "utf8");
+							} catch (error: any) {
+								if (error?.code !== "ENOENT") throw error;
+							}
+							await mkdir(dirname(path), { recursive: true });
+							await writeFile(path, content, "utf8");
+							diff = generateDiffString(previous, content).diff;
+						},
+					},
+				});
+				const result = await writeTool.execute(id, rest, sig, up);
+				return { ...result, details: { ...(result.details ?? {}), diff } };
 			},
 
 			// The call slot owns the running block, so tools that never stream partial

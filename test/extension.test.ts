@@ -123,6 +123,34 @@ test("expanded writes preserve trailing spaces, blank lines, and empty files", (
 	assert.match(empty[2], /\(empty file\)$/);
 });
 
+test("write execution returns diffs for new files and overwrites", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-tidy-write-diff-"));
+	const target = join(root, "new.txt");
+	const tools = new Map<string, any>();
+	const previous = process.env.PI_TIDY_TOOLS;
+	process.env.PI_TIDY_TOOLS = "on";
+	try {
+		extension({
+			on() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {},
+			registerTool: (tool: any) => tools.set(tool.name, tool),
+		} as any);
+		const write = tools.get("write");
+		const created = await write.execute("create", {
+			path: target, content: "alpha\n", reasoning: "create fixture",
+		});
+		assert.match(created.details.diff, /\+1 alpha/);
+		const overwritten = await write.execute("overwrite", {
+			path: target, content: "beta\n", reasoning: "replace fixture",
+		});
+		assert.match(overwritten.details.diff, /-1 alpha/);
+		assert.match(overwritten.details.diff, /\+1 beta/);
+	} finally {
+		if (previous === undefined) delete process.env.PI_TIDY_TOOLS;
+		else process.env.PI_TIDY_TOOLS = previous;
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 test("diff is cleared after a turn without file changes", async () => {
 	const events = new Map<string, (event?: any) => Promise<void>>();
 	const commands = new Map<string, any>();

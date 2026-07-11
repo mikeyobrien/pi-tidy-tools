@@ -48,7 +48,7 @@ They may differ (for example inherited clamp, or provider-side thinking adjustme
 
 ### Preflight and launch
 
-The complete ordered batch is resolved against Pi's live model registry, configured authentication, and Pi's canonical thinking-capability utilities before any child starts. One invalid model or explicitly unsupported thinking level fails the whole call with no partial run artifacts. After process startup, each child reports RPC state before receiving its prompt; observed model identity must match the resolved selection, and observed thinking becomes the effective compact-render and persistence truth. Delegation itself is disabled in children.
+The complete ordered batch is resolved against Pi's live model registry, configured authentication, and Pi's canonical thinking-capability utilities before any child starts. One invalid model or explicitly unsupported thinking level fails the whole call with no partial run artifacts. After process startup, each child reports RPC state before receiving its prompt; observed model identity must match the resolved selection, and observed thinking becomes the effective compact-render and persistence truth. Delegation itself is disabled only in true child RPC processes (`PI_TIDY_SUBAGENT_CHILD=1` **and** `--mode rpc`); a leaked child env alone does not disable parent sessions, and intentional skips emit a one-line startup diagnostic.
 
 ## Runtime routing guidance
 

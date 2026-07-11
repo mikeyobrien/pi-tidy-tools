@@ -213,8 +213,34 @@ async function runRoutingSetupCommand(
 /** Exported for hermetic command-handler tests. */
 export { runRoutingSetupCommand };
 
+/** One-line startup diagnostic when registration is intentionally skipped in a child RPC process. */
+export const CHILD_SKIP_DIAGNOSTIC =
+ "pi-tidy-subagents: skipping registration in child RPC process (nested subagents disabled)";
+
+/**
+ * True only for processes this package spawned as Pi RPC children.
+ * Ambient `PI_TIDY_SUBAGENT_CHILD=1` alone must not disable parent sessions.
+ */
+export function isChildRpcProcess(
+ env: NodeJS.ProcessEnv = process.env,
+ argv: readonly string[] = process.argv,
+): boolean {
+ if (env.PI_TIDY_SUBAGENT_CHILD !== "1") return false;
+ for (let i = 0; i < argv.length - 1; i++) {
+  if (argv[i] === "--mode" && argv[i + 1] === "rpc") return true;
+ }
+ return false;
+}
+
 export default function extension(pi: ExtensionAPI): void {
- if (process.env.PI_TIDY_SUBAGENT_CHILD === "1") return;
+ // Nested fan-out is disabled only in true child RPC processes (env + --mode rpc).
+ // A leaked PI_TIDY_SUBAGENT_CHILD from a parent process tree must not poison interactive parents.
+ if (isChildRpcProcess()) {
+  console.warn(CHILD_SKIP_DIAGNOSTIC);
+  // Drop the ambient marker after intentional skip so non-RPC descendants under this tree stay usable.
+  delete process.env.PI_TIDY_SUBAGENT_CHILD;
+  return;
+ }
  const scheduler = new Scheduler(concurrencyCap());
  const activeCalls = new Set<AbortController>();
  const routingAtLoad = loadRoutingConfig(getAgentDir());

@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Observational non-blocking routing evaluation suite covering eight task shapes (`test/routing-eval.test.ts`, `docs/routing-eval.md`).
 - Opt-in real-provider heterogeneous child smoke with observed model/thinking before prompt and actionable skip diagnostics.
 
+### Fixed
+
+- Child-only disablement no longer treats ambient `PI_TIDY_SUBAGENT_CHILD=1` alone as a silent full extension no-op. Registration skips only for true child RPC processes (`PI_TIDY_SUBAGENT_CHILD=1` and `--mode rpc`), emits a one-line startup diagnostic, and clears the ambient marker after an intentional skip so non-RPC descendants are not poisoned.
+
 ### Changed
 
 - Compact rendering continues to show each child's model identity and thinking level, now using the observed runtime after startup without routine adjustment noise.

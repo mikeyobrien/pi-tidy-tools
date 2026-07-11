@@ -5,8 +5,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import extension, {
- buildDefaultRoutingConfig, buildEnvelope, clearRoutingConfig, concurrencyCap,
- formatRoutingGuidance, inheritRuntimePlan, launchRuntime, listAuthenticatedModels,
+ buildDefaultRoutingConfig, buildEnvelope, CHILD_SKIP_DIAGNOSTIC, clearRoutingConfig, concurrencyCap,
+ formatRoutingGuidance, inheritRuntimePlan, isChildRpcProcess, launchRuntime, listAuthenticatedModels,
  loadRoutingConfig, MODEL_FIELD_DESCRIPTION, parseExactModelRef, renderLines,
  resolveBatchRuntime, resolveTaskSelection, routingConfigPath, RuntimeResolutionError,
  saveRoutingConfig, Scheduler, STANDARD_TASK_CLASSES, THINKING_FIELD_DESCRIPTION,
@@ -111,6 +111,74 @@ test("parseExactModelRef splits at the first separator", () => {
  assert.equal(parseExactModelRef("/no-provider"), undefined);
  assert.equal(parseExactModelRef("provider/"), undefined);
  assert.equal(parseExactModelRef(""), undefined);
+});
+
+test("isChildRpcProcess requires both child env and --mode rpc", () => {
+ assert.equal(isChildRpcProcess({}, ["node", "pi"]), false);
+ assert.equal(isChildRpcProcess({ PI_TIDY_SUBAGENT_CHILD: "1" }, ["node", "pi"]), false);
+ assert.equal(isChildRpcProcess({ PI_TIDY_SUBAGENT_CHILD: "1" }, ["node", "pi", "--mode", "json"]), false);
+ assert.equal(isChildRpcProcess({}, ["node", "pi", "--mode", "rpc"]), false);
+ assert.equal(isChildRpcProcess({ PI_TIDY_SUBAGENT_CHILD: "0" }, ["node", "pi", "--mode", "rpc"]), false);
+ assert.equal(isChildRpcProcess({ PI_TIDY_SUBAGENT_CHILD: "1" }, ["node", "pi", "--mode", "rpc", "--no-session"]), true);
+ assert.equal(isChildRpcProcess({ PI_TIDY_SUBAGENT_CHILD: "1" }, ["node", "/path/to/pi", "--no-session", "--mode", "rpc"]), true);
+});
+
+test("ambient PI_TIDY_SUBAGENT_CHILD alone still registers parent tool and routing command", () => {
+ const previousChild = process.env.PI_TIDY_SUBAGENT_CHILD;
+ process.env.PI_TIDY_SUBAGENT_CHILD = "1";
+ let tool: any;
+ const commands = new Map<string, any>();
+ const warnings: string[] = [];
+ const originalWarn = console.warn;
+ console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(" ")); };
+ try {
+  extension({
+   registerTool(value: any) { tool = value; },
+   registerCommand(name: string, options: any) { commands.set(name, options); },
+   on() {},
+   getThinkingLevel: () => "medium",
+   getActiveTools: () => ["read"],
+  } as any);
+  assert.equal(tool?.name, "subagent");
+  assert.ok(commands.has("tidy-subagents-routing"));
+  assert.equal(process.env.PI_TIDY_SUBAGENT_CHILD, "1");
+  assert.equal(warnings.length, 0);
+ } finally {
+  console.warn = originalWarn;
+  if (previousChild === undefined) delete process.env.PI_TIDY_SUBAGENT_CHILD;
+  else process.env.PI_TIDY_SUBAGENT_CHILD = previousChild;
+ }
+});
+
+test("true child RPC process skips registration and emits startup diagnostic", () => {
+ const previousChild = process.env.PI_TIDY_SUBAGENT_CHILD;
+ const previousArgv = process.argv;
+ process.env.PI_TIDY_SUBAGENT_CHILD = "1";
+ process.argv = [...previousArgv, "--mode", "rpc", "--no-session"];
+ let tool: any;
+ const commands = new Map<string, any>();
+ const warnings: string[] = [];
+ const originalWarn = console.warn;
+ console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(" ")); };
+ try {
+  extension({
+   registerTool(value: any) { tool = value; },
+   registerCommand(name: string, options: any) { commands.set(name, options); },
+   on() {},
+   getThinkingLevel: () => "medium",
+   getActiveTools: () => ["read"],
+  } as any);
+  assert.equal(tool, undefined);
+  assert.equal(commands.size, 0);
+  assert.ok(warnings.some((line) => line.includes(CHILD_SKIP_DIAGNOSTIC)));
+  // Clear ambient marker after intentional skip so non-RPC descendants are not poisoned.
+  assert.equal(process.env.PI_TIDY_SUBAGENT_CHILD, undefined);
+ } finally {
+  console.warn = originalWarn;
+  process.argv = previousArgv;
+  if (previousChild === undefined) delete process.env.PI_TIDY_SUBAGENT_CHILD;
+  else process.env.PI_TIDY_SUBAGENT_CHILD = previousChild;
+ }
 });
 
 test("two inherited children independently own equivalent runtime plans and launch from them", async () => fixture(async (root) => {

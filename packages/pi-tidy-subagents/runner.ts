@@ -25,10 +25,35 @@ const usageComponents = (usage: any) => ({
  cacheWrite: Number(usage?.cacheWrite ?? usage?.cache_write) || 0,
 });
 
-function applyObservedModel(child: ChildState, provider: string, modelId: string): void {
- const observed = { provider, modelId, model: `${provider}/${modelId}` };
- if (child.runtimePlan) child.runtimePlan = { ...child.runtimePlan, observed };
- // Compact display uses observed identity once known.
+function applyObservedRuntime(child: ChildState, provider: string, modelId: string, thinkingLevel: string | undefined): void {
+ const observed = {
+  provider,
+  modelId,
+  model: `${provider}/${modelId}`,
+  ...(thinkingLevel !== undefined ? { thinking: thinkingLevel } : {}),
+ };
+ if (child.runtimePlan) {
+  let thinkingAdjustment = child.runtimePlan.thinkingAdjustment;
+  let effectiveThinking = child.runtimePlan.thinking;
+  if (thinkingLevel !== undefined) {
+   const resolved = child.runtimePlan.resolvedThinking ?? child.runtimePlan.thinking;
+   // Observed thinking becomes effective truth even when it differs from preflight resolution.
+   if (thinkingLevel !== resolved) {
+    thinkingAdjustment = { from: resolved, to: thinkingLevel, reason: "observed" };
+   }
+   effectiveThinking = thinkingLevel;
+   child.thinking = thinkingLevel;
+  }
+  child.runtimePlan = {
+   ...child.runtimePlan,
+   thinking: effectiveThinking,
+   ...(thinkingAdjustment ? { thinkingAdjustment } : {}),
+   observed,
+  };
+ } else if (thinkingLevel !== undefined) {
+  child.thinking = thinkingLevel;
+ }
+ // Compact display uses observed model identity once known.
  child.model = modelId;
 }
 
@@ -178,7 +203,8 @@ export async function runChild(child: ChildState, runtime: Runtime, signal: Abor
    if (provider !== expectedProvider || modelId !== expectedModelId) {
     throw new Error(`Child startup model mismatch: observed ${provider}/${modelId}, expected ${expectedProvider}/${expectedModelId}`);
    }
-   applyObservedModel(child, provider, modelId);
+   const thinkingLevel = typeof stateData?.thinkingLevel === "string" ? stateData.thinkingLevel : undefined;
+   applyObservedRuntime(child, provider, modelId, thinkingLevel);
    changed(true);
   } catch (error) {
    if (!cancelled) {

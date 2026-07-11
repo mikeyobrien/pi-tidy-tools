@@ -24,7 +24,7 @@ export async function saveRun(details: RunDetails, completed = true): Promise<vo
    ...child,
    prompt,
    eventPath: `${child.id}.jsonl`,
-   // Schema v2: per-child requested / resolved / observed model provenance.
+   // Schema v2: per-child requested / resolved / observed model and thinking provenance.
    ...(runtimePlan ? {
     runtimePlan: {
      provider: runtimePlan.provider,
@@ -32,7 +32,11 @@ export async function saveRun(details: RunDetails, completed = true): Promise<vo
      model: runtimePlan.model,
      thinking: runtimePlan.thinking,
      provenance: runtimePlan.provenance,
+     thinkingProvenance: runtimePlan.thinkingProvenance,
+     resolvedThinking: runtimePlan.resolvedThinking,
      ...(runtimePlan.requestedModel !== undefined ? { requestedModel: runtimePlan.requestedModel } : {}),
+     ...(runtimePlan.requestedThinking !== undefined ? { requestedThinking: runtimePlan.requestedThinking } : {}),
+     ...(runtimePlan.thinkingAdjustment ? { thinkingAdjustment: { ...runtimePlan.thinkingAdjustment } } : {}),
      ...(runtimePlan.observed ? { observed: { ...runtimePlan.observed } } : {}),
     },
    } : {}),

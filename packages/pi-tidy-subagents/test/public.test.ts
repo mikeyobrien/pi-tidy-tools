@@ -13,19 +13,39 @@ import { buildChildArgs } from "../runner.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
+type RegistryEntry = {
+ provider: string;
+ id: string;
+ auth?: boolean;
+ /** Defaults true so ordinary models support the standard thinking ladder. */
+ reasoning?: boolean;
+ thinkingLevelMap?: Partial<Record<string, string | null>>;
+};
+
 /** Injectable in-memory registry used by public-tool tests (zero network). */
-function makeRegistry(entries: Array<{ provider: string; id: string; auth?: boolean }> = [
+function makeRegistry(entries: RegistryEntry[] = [
  { provider: "fake", id: "model-x" },
  { provider: "fake", id: "fast" },
  { provider: "fake", id: "deep/reasoner" },
  { provider: "other", id: "strong" },
  { provider: "other", id: "unauthed", auth: false },
+ // Capability variants for thinking selection coverage.
+ { provider: "fake", id: "non-reason", reasoning: false },
+ { provider: "fake", id: "always-think", thinkingLevelMap: { off: null } },
+ { provider: "fake", id: "sparse", thinkingLevelMap: { off: null, minimal: null, xhigh: "xhigh" } },
+ { provider: "fake", id: "max-only", thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, max: "max" } },
 ]) {
  const models = new Map(entries.map((e) => [`${e.provider}\0${e.id}`, e]));
  return {
   find(provider: string, modelId: string) {
    const hit = models.get(`${provider}\0${modelId}`);
-   return hit ? { provider: hit.provider, id: hit.id } : undefined;
+   if (!hit) return undefined;
+   return {
+    provider: hit.provider,
+    id: hit.id,
+    reasoning: hit.reasoning !== false,
+    thinkingLevelMap: hit.thinkingLevelMap,
+   };
   },
   hasConfiguredAuth(model: { provider: string; id: string }) {
    const hit = models.get(`${model.provider}\0${model.id}`);
@@ -42,7 +62,14 @@ function register(registry = makeRegistry()) {
   getThinkingLevel: () => "medium",
   getActiveTools: () => ["read", "subagent", "mystery"],
  };
- extension(pi as any);
+ // Parent registration must not be suppressed by a leaked child-process env from the agent host.
+ const previousChild = process.env.PI_TIDY_SUBAGENT_CHILD;
+ delete process.env.PI_TIDY_SUBAGENT_CHILD;
+ try { extension(pi as any); }
+ finally {
+  if (previousChild === undefined) delete process.env.PI_TIDY_SUBAGENT_CHILD;
+  else process.env.PI_TIDY_SUBAGENT_CHILD = previousChild;
+ }
  return { tool, shutdown, registry };
 }
 const context = (cwd: string, registry = makeRegistry()) => ({
@@ -50,17 +77,24 @@ const context = (cwd: string, registry = makeRegistry()) => ({
 });
 async function fixture<T>(fn: (root: string) => Promise<T>): Promise<T> {
  const root = await mkdtemp(join(tmpdir(), "tidy-subagents-"));
- const old = { dir: process.env.PI_CODING_AGENT_DIR, exe: process.env.PI_TIDY_SUBAGENT_EXECUTABLE, args: process.env.PI_TIDY_SUBAGENT_ARGS, mismatch: process.env.PI_TIDY_FAKE_RPC_MISMATCH, malformed: process.env.PI_TIDY_FAKE_RPC_MALFORMED_STATE, stateErr: process.env.PI_TIDY_FAKE_RPC_STATE_ERROR, observed: process.env.PI_TIDY_FAKE_RPC_OBSERVED_MODEL };
+ const old = {
+  dir: process.env.PI_CODING_AGENT_DIR, exe: process.env.PI_TIDY_SUBAGENT_EXECUTABLE, args: process.env.PI_TIDY_SUBAGENT_ARGS,
+  mismatch: process.env.PI_TIDY_FAKE_RPC_MISMATCH, malformed: process.env.PI_TIDY_FAKE_RPC_MALFORMED_STATE,
+  stateErr: process.env.PI_TIDY_FAKE_RPC_STATE_ERROR, observed: process.env.PI_TIDY_FAKE_RPC_OBSERVED_MODEL,
+  observedThinking: process.env.PI_TIDY_FAKE_RPC_OBSERVED_THINKING,
+ };
  process.env.PI_CODING_AGENT_DIR = join(root, "agent"); process.env.PI_TIDY_SUBAGENT_EXECUTABLE = process.execPath; process.env.PI_TIDY_SUBAGENT_ARGS = JSON.stringify([join(here, "fake-rpc.mjs")]);
  delete process.env.PI_TIDY_FAKE_RPC_MISMATCH;
  delete process.env.PI_TIDY_FAKE_RPC_MALFORMED_STATE;
  delete process.env.PI_TIDY_FAKE_RPC_STATE_ERROR;
  delete process.env.PI_TIDY_FAKE_RPC_OBSERVED_MODEL;
+ delete process.env.PI_TIDY_FAKE_RPC_OBSERVED_THINKING;
  try { return await fn(root); } finally {
   for (const [key, value] of [
    ["PI_CODING_AGENT_DIR", old.dir], ["PI_TIDY_SUBAGENT_EXECUTABLE", old.exe], ["PI_TIDY_SUBAGENT_ARGS", old.args],
    ["PI_TIDY_FAKE_RPC_MISMATCH", old.mismatch], ["PI_TIDY_FAKE_RPC_MALFORMED_STATE", old.malformed],
    ["PI_TIDY_FAKE_RPC_STATE_ERROR", old.stateErr], ["PI_TIDY_FAKE_RPC_OBSERVED_MODEL", old.observed],
+   ["PI_TIDY_FAKE_RPC_OBSERVED_THINKING", old.observedThinking],
   ] as const) value === undefined ? delete process.env[key] : process.env[key] = value;
   await rm(root, { recursive: true, force: true });
  }
@@ -81,7 +115,10 @@ test("two inherited children independently own equivalent runtime plans and laun
  const planB = inheritRuntimePlan(parent);
  assert.notEqual(planA, planB);
  assert.deepEqual(planA, planB);
- assert.deepEqual(planA, { provider: "fake", modelId: "model-x", model: "fake/model-x", thinking: "medium", provenance: "parent" });
+ assert.deepEqual(planA, {
+  provider: "fake", modelId: "model-x", model: "fake/model-x", thinking: "medium",
+  provenance: "parent", thinkingProvenance: "parent", resolvedThinking: "medium",
+ });
  const shared = { cwd: root, tools: ["read"], runDir: join(root, "run"), approved: true };
  const launchA = launchRuntime(planA, shared);
  const launchB = launchRuntime(planB, shared);
@@ -102,7 +139,13 @@ test("two inherited children independently own equivalent runtime plans and laun
   setModel() { setModelCalls++; },
   setThinkingLevel() { setThinkingCalls++; },
  };
- extension(pi as any);
+ const previousChild = process.env.PI_TIDY_SUBAGENT_CHILD;
+ delete process.env.PI_TIDY_SUBAGENT_CHILD;
+ try { extension(pi as any); }
+ finally {
+  if (previousChild === undefined) delete process.env.PI_TIDY_SUBAGENT_CHILD;
+  else process.env.PI_TIDY_SUBAGENT_CHILD = previousChild;
+ }
  const result = await tool.execute("two-inherit", { agents: [
   { label: "left", reason: "inherit left", prompt: "first" },
   { label: "right", reason: "inherit right", prompt: "first" },
@@ -118,8 +161,10 @@ test("two inherited children independently own equivalent runtime plans and laun
  assert.notEqual(left.runtimePlan, right.runtimePlan);
  assert.equal(left.runtimePlan.provenance, "parent");
  assert.equal(right.runtimePlan.provenance, "parent");
- assert.deepEqual(left.runtimePlan.observed, { provider: "fake", modelId: "model-x", model: "fake/model-x" });
- assert.deepEqual(right.runtimePlan.observed, { provider: "fake", modelId: "model-x", model: "fake/model-x" });
+ assert.deepEqual(left.runtimePlan.observed, { provider: "fake", modelId: "model-x", model: "fake/model-x", thinking: "medium" });
+ assert.deepEqual(right.runtimePlan.observed, { provider: "fake", modelId: "model-x", model: "fake/model-x", thinking: "medium" });
+ assert.equal(left.runtimePlan.thinkingProvenance, "parent");
+ assert.equal(left.runtimePlan.resolvedThinking, "medium");
  assert.deepEqual(buildChildArgs(launchRuntime(left.runtimePlan, { cwd: root, tools: result.details.runtime.activeTools, runDir: result.details.runDir, approved: true })),
   ["--mode", "rpc", "--no-session", "--approve", "--model", "fake/model-x", "--thinking", "medium", "--tools", "read"]);
  assert.deepEqual(result.details.runtime, {
@@ -132,7 +177,9 @@ test("two inherited children independently own equivalent runtime plans and laun
  for (const child of run.children) {
   assert.ok(child.runtimePlan);
   assert.equal(child.runtimePlan.provenance, "parent");
-  assert.deepEqual(child.runtimePlan.observed, { provider: "fake", modelId: "model-x", model: "fake/model-x" });
+  assert.deepEqual(child.runtimePlan.observed, { provider: "fake", modelId: "model-x", model: "fake/model-x", thinking: "medium" });
+  assert.equal(child.runtimePlan.thinkingProvenance, "parent");
+  assert.equal(child.runtimePlan.resolvedThinking, "medium");
   assert.equal(child.model, "model-x");
   assert.equal(child.thinking, "medium");
  }
@@ -175,8 +222,10 @@ test("optional exact model selection, heterogeneous siblings, and schema v2 prov
  assert.equal(fast.model, "fast");
  assert.equal(nested.model, "deep/reasoner");
  assert.equal(other.model, "strong");
- assert.deepEqual(fast.runtimePlan.observed, { provider: "fake", modelId: "fast", model: "fake/fast" });
- assert.deepEqual(nested.runtimePlan.observed, { provider: "fake", modelId: "deep/reasoner", model: "fake/deep/reasoner" });
+ assert.deepEqual(fast.runtimePlan.observed, { provider: "fake", modelId: "fast", model: "fake/fast", thinking: "medium" });
+ assert.deepEqual(nested.runtimePlan.observed, { provider: "fake", modelId: "deep/reasoner", model: "fake/deep/reasoner", thinking: "medium" });
+ assert.equal(fast.runtimePlan.thinkingProvenance, "parent");
+ assert.equal(fast.runtimePlan.resolvedThinking, "medium");
  // Launch args are heterogeneous while order is preserved.
  assert.deepEqual(buildChildArgs(launchRuntime(fast.runtimePlan, { cwd: root, tools: ["read"], runDir: result.details.runDir, approved: true })),
   ["--mode", "rpc", "--no-session", "--approve", "--model", "fake/fast", "--thinking", "medium", "--tools", "read"]);
@@ -191,7 +240,7 @@ test("optional exact model selection, heterogeneous siblings, and schema v2 prov
  assert.equal(run.schemaVersion, 2);
  assert.deepEqual(run.runtime, result.details.runtime);
  assert.equal(run.children[1].runtimePlan.requestedModel, "fake/fast");
- assert.deepEqual(run.children[1].runtimePlan.observed, { provider: "fake", modelId: "fast", model: "fake/fast" });
+ assert.deepEqual(run.children[1].runtimePlan.observed, { provider: "fake", modelId: "fast", model: "fake/fast", thinking: "medium" });
  assert.equal(run.children[2].runtimePlan.modelId, "deep/reasoner");
  // Shared lifecycle: thinking still inherited, tools/cwd shared at run level.
  for (const child of result.details.children) assert.equal(child.thinking, "medium");
@@ -303,11 +352,234 @@ test("resolveBatchRuntime rejects fuzzy and unknown models with child diagnostic
  );
 });
 
+test("thinking-only override, combined model/thinking, and heterogeneous thinking siblings", async () => fixture(async (root) => {
+ const { tool } = register();
+ const result = await tool.execute("think-mix", { agents: [
+  { label: "inherit", reason: "keep parent thinking", prompt: "first" },
+  { label: "low", reason: "thinking only", prompt: "first", thinking: "low" },
+  { label: "both", reason: "model and thinking", prompt: "first", model: "fake/fast", thinking: "high" },
+  { label: "nested", reason: "slash model high", prompt: "first", model: "fake/deep/reasoner", thinking: "minimal" },
+ ] }, undefined, undefined, context(root));
+ assert.deepEqual(result.details.children.map((c: any) => c.status), ["completed", "completed", "completed", "completed"]);
+ const [inherit, low, both, nested] = result.details.children;
+ assert.equal(inherit.thinking, "medium");
+ assert.equal(inherit.runtimePlan.thinkingProvenance, "parent");
+ assert.equal(inherit.runtimePlan.requestedThinking, undefined);
+ assert.equal(inherit.runtimePlan.resolvedThinking, "medium");
+ assert.equal(low.thinking, "low");
+ assert.equal(low.model, "model-x");
+ assert.equal(low.runtimePlan.thinkingProvenance, "request");
+ assert.equal(low.runtimePlan.requestedThinking, "low");
+ assert.equal(low.runtimePlan.resolvedThinking, "low");
+ assert.equal(low.runtimePlan.provenance, "parent");
+ assert.equal(both.thinking, "high");
+ assert.equal(both.model, "fast");
+ assert.equal(both.runtimePlan.provenance, "request");
+ assert.equal(both.runtimePlan.thinkingProvenance, "request");
+ assert.equal(both.runtimePlan.requestedModel, "fake/fast");
+ assert.equal(both.runtimePlan.requestedThinking, "high");
+ assert.equal(nested.thinking, "minimal");
+ assert.equal(nested.model, "deep/reasoner");
+ // Launch args carry each child's resolved thinking.
+ assert.deepEqual(buildChildArgs(launchRuntime(low.runtimePlan, { cwd: root, tools: ["read"], runDir: result.details.runDir, approved: true })),
+  ["--mode", "rpc", "--no-session", "--approve", "--model", "fake/model-x", "--thinking", "low", "--tools", "read"]);
+ assert.deepEqual(buildChildArgs(launchRuntime(both.runtimePlan, { cwd: root, tools: ["read"], runDir: result.details.runDir, approved: true })),
+  ["--mode", "rpc", "--no-session", "--approve", "--model", "fake/fast", "--thinking", "high", "--tools", "read"]);
+ // Compact identity shows effective thinking as [model|thinking] only.
+ const plain = renderLines(result.details).map((line: string) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+ assert.match(plain.find((l: string) => l.includes("inherit[")) ?? "", /🤖 inherit\[model-x\|medium\]/);
+ assert.match(plain.find((l: string) => l.includes("low[")) ?? "", /🤖 low\[model-x\|low\]/);
+ assert.match(plain.find((l: string) => l.includes("both[")) ?? "", /🤖 both\[fast\|high\]/);
+ for (const line of plain.filter((l: string) => l.includes("🤖"))) {
+  assert.doesNotMatch(line, /🤖 \w+\[[^\]]*(clamp|adjust)/i);
+ }
+ // Manifest distinguishes requested/resolved/observed thinking and provenance.
+ const run = JSON.parse(await readFile(join(result.details.runDir, "run.json"), "utf8"));
+ assert.equal(run.children[1].runtimePlan.requestedThinking, "low");
+ assert.equal(run.children[1].runtimePlan.resolvedThinking, "low");
+ assert.equal(run.children[1].runtimePlan.thinking, "low");
+ assert.equal(run.children[1].runtimePlan.thinkingProvenance, "request");
+ assert.equal(run.children[1].runtimePlan.observed.thinking, "low");
+ assert.equal(run.children[2].runtimePlan.requestedThinking, "high");
+ assert.equal(run.children[2].runtimePlan.observed.thinking, "high");
+}));
+
+test("inherited thinking clamps for sparse, always-thinking, and non-reasoning models", async () => fixture(async (root) => {
+ const { tool } = register();
+ // Parent thinking is "medium". Capability models adjust inheritance rather than reject.
+ const result = await tool.execute("inherit-clamp", { agents: [
+  { label: "sparse-high", reason: "sparse map keeps high", prompt: "first", model: "fake/sparse", thinking: "high" },
+  { label: "sparse-inherit", reason: "sparse inherits medium", prompt: "first", model: "fake/sparse" },
+  { label: "always", reason: "cannot disable thinking", prompt: "first", model: "fake/always-think" },
+  { label: "plain", reason: "non-reasoning off", prompt: "first", model: "fake/non-reason" },
+ ] }, undefined, undefined, context(root));
+ // Explicit high is supported on sparse (standard levels except null-mapped).
+ assert.equal(result.details.children[0].status, "completed");
+ assert.equal(result.details.children[0].thinking, "high");
+ assert.equal(result.details.children[0].runtimePlan.thinkingProvenance, "request");
+ // Inherited medium is supported on sparse (off/minimal null, medium available).
+ assert.equal(result.details.children[1].thinking, "medium");
+ assert.equal(result.details.children[1].runtimePlan.thinkingProvenance, "parent");
+ assert.equal(result.details.children[1].runtimePlan.thinkingAdjustment, undefined);
+ // always-think has off:null; parent medium is still supported so no clamp needed.
+ // Force a clamp case: parent high against a model that only has max beyond medium...
+ // For always-think with parent medium: medium is supported → no adjustment.
+ assert.equal(result.details.children[2].thinking, "medium");
+ // Non-reasoning inherits → effective off with adjustment metadata.
+ const plain = result.details.children[3];
+ assert.equal(plain.status, "completed");
+ assert.equal(plain.thinking, "off");
+ assert.equal(plain.runtimePlan.resolvedThinking, "off");
+ assert.equal(plain.runtimePlan.thinkingProvenance, "parent");
+ assert.deepEqual(plain.runtimePlan.thinkingAdjustment, { from: "medium", to: "off", reason: "non-reasoning" });
+ assert.equal(plain.runtimePlan.observed.thinking, "off");
+ assert.deepEqual(buildChildArgs(launchRuntime(plain.runtimePlan, { cwd: root, tools: ["read"], runDir: result.details.runDir, approved: true })),
+  ["--mode", "rpc", "--no-session", "--approve", "--model", "fake/non-reason", "--thinking", "off", "--tools", "read"]);
+ // Compact shows effective off; identity has no adjustment annotation beyond [model|thinking].
+ const rendered = renderLines(result.details).map((line: string) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+ const plainHeader = rendered.find((l: string) => l.includes("plain[")) ?? "";
+ assert.match(plainHeader, /🤖 plain\[non-reason\|off\]/);
+ assert.doesNotMatch(plainHeader, /\[non-reason\|off\|/); // no extra clamp tokens in the identity bracket
+ // Manifest retains adjustment diagnostics.
+ const run = JSON.parse(await readFile(join(result.details.runDir, "run.json"), "utf8"));
+ assert.deepEqual(run.children[3].runtimePlan.thinkingAdjustment, { from: "medium", to: "off", reason: "non-reasoning" });
+ assert.equal(run.children[3].runtimePlan.resolvedThinking, "off");
+ assert.equal(run.children[3].thinking, "off");
+}));
+
+test("inherited clamp when parent level is unsupported by sparse or always-thinking maps", async () => fixture(async (root) => {
+ // Parent thinking "off": sparse and always-think both null-map off → clamp upward.
+ let tool: any;
+ const pi = {
+  registerTool(value: any) { tool = value; },
+  on() {},
+  getThinkingLevel: () => "off",
+  getActiveTools: () => ["read", "subagent"],
+ };
+ const previousChild = process.env.PI_TIDY_SUBAGENT_CHILD;
+ delete process.env.PI_TIDY_SUBAGENT_CHILD;
+ try { extension(pi as any); }
+ finally {
+  if (previousChild === undefined) delete process.env.PI_TIDY_SUBAGENT_CHILD;
+  else process.env.PI_TIDY_SUBAGENT_CHILD = previousChild;
+ }
+ const result = await tool.execute("sparse-clamp", { agents: [
+  { label: "sparse", reason: "clamp off up", prompt: "first", model: "fake/sparse" },
+  { label: "always", reason: "cannot disable", prompt: "first", model: "fake/always-think" },
+ ] }, undefined, undefined, { ...context(root), model: { provider: "fake", id: "model-x" } });
+ // sparse: off+minimal null → clamp off → low
+ const sparse = result.details.children[0];
+ assert.equal(sparse.status, "completed");
+ assert.equal(sparse.thinking, "low");
+ assert.equal(sparse.runtimePlan.resolvedThinking, "low");
+ assert.equal(sparse.runtimePlan.thinkingProvenance, "parent");
+ assert.deepEqual(sparse.runtimePlan.thinkingAdjustment, { from: "off", to: "low", reason: "inherited-clamp" });
+ // always-think: off null → clamp to minimal
+ const always = result.details.children[1];
+ assert.equal(always.status, "completed");
+ assert.equal(always.thinking, "minimal");
+ assert.equal(always.runtimePlan.resolvedThinking, "minimal");
+ assert.deepEqual(always.runtimePlan.thinkingAdjustment, { from: "off", to: "minimal", reason: "inherited-clamp" });
+ assert.deepEqual(buildChildArgs(launchRuntime(always.runtimePlan, { cwd: root, tools: ["read"], runDir: result.details.runDir, approved: true })),
+  ["--mode", "rpc", "--no-session", "--approve", "--model", "fake/always-think", "--thinking", "minimal", "--tools", "read"]);
+}));
+
+test("explicit unsupported thinking fails atomic preflight with alternatives and no artifacts", async () => fixture(async (root) => {
+ const { tool } = register();
+ const agentDir = join(root, "agent", "pi-tidy-subagents", "runs");
+ const cases: Array<{ agents: any[]; match: RegExp }> = [
+  {
+   agents: [
+    { label: "ok", reason: "fine", prompt: "first", thinking: "low" },
+    { label: "bad", reason: "unsupported", prompt: "first", model: "fake/non-reason", thinking: "high" },
+   ],
+   match: /child\[1\] label="bad".*thinking="high".*not supported by "fake\/non-reason".*supported: off/,
+  },
+  {
+   agents: [{ label: "xhigh", reason: "no xhigh map", prompt: "first", model: "fake/fast", thinking: "xhigh" }],
+   match: /child\[0\] label="xhigh".*thinking="xhigh".*not supported by "fake\/fast".*supported:/,
+  },
+  {
+   agents: [{ label: "off-always", reason: "cannot disable", prompt: "first", model: "fake/always-think", thinking: "off" }],
+   match: /child\[0\] label="off-always".*thinking="off".*not supported by "fake\/always-think".*supported: minimal/,
+  },
+  {
+   agents: [{ label: "vocab", reason: "bad token", prompt: "first", thinking: "turbo" }],
+   match: /thinking must be one of Pi's native levels/,
+  },
+ ];
+ for (const testCase of cases) {
+  await assert.rejects(
+   () => tool.execute("think-preflight", { agents: testCase.agents }, undefined, undefined, context(root)),
+   (error: unknown) => {
+    assert.ok(error instanceof RuntimeResolutionError || (error instanceof Error && testCase.match.test(error.message)));
+    assert.match(error instanceof Error ? error.message : String(error), testCase.match);
+    return true;
+   },
+  );
+ }
+ // Atomic: healthy sibling never launched; no partial run artifacts.
+ try {
+  await access(agentDir);
+  const runs = await readdir(agentDir);
+  assert.equal(runs.length, 0, `expected no run artifacts, found ${runs.join(",")}`);
+ } catch (error: any) {
+  assert.equal(error?.code, "ENOENT");
+ }
+ // Direct resolveBatchRuntime surfaces supported alternatives on the diagnostic.
+ assert.throws(
+  () => resolveBatchRuntime(
+   [{ label: "n", model: "fake/non-reason", thinking: "medium" }],
+   { provider: "fake", modelId: "model-x", thinking: "medium" },
+   makeRegistry(),
+  ),
+  (error: unknown) => {
+   assert.ok(error instanceof RuntimeResolutionError);
+   assert.equal(error.diagnostics[0]!.requestedThinking, "medium");
+   assert.match(error.diagnostics[0]!.message, /supported: off/);
+   return true;
+  },
+ );
+}));
+
+test("observed thinking becomes effective truth and records adjustment when it differs", async () => fixture(async (root) => {
+ process.env.PI_TIDY_FAKE_RPC_OBSERVED_THINKING = "low";
+ const { tool } = register();
+ const result = await tool.execute("observe-think", { agents: [
+  { label: "adj", reason: "observed differs", prompt: "first", thinking: "high" },
+ ] }, undefined, undefined, context(root));
+ const child = result.details.children[0];
+ assert.equal(child.status, "completed");
+ // Resolved was high (explicit request); observed low becomes effective display/persist truth.
+ assert.equal(child.runtimePlan.requestedThinking, "high");
+ assert.equal(child.runtimePlan.resolvedThinking, "high");
+ assert.equal(child.thinking, "low");
+ assert.equal(child.runtimePlan.thinking, "low");
+ assert.equal(child.runtimePlan.observed.thinking, "low");
+ assert.deepEqual(child.runtimePlan.thinkingAdjustment, { from: "high", to: "low", reason: "observed" });
+ const plain = renderLines(result.details).map((line: string) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+ assert.match(plain[0], /🤖 adj\[model-x\|low\]/);
+ // Compact identity is only [model|thinking] — no adjustment annotation in the bracket.
+ assert.match(plain[0], /🤖 adj\[model-x\|low\] /);
+ assert.doesNotMatch(plain[0], /🤖 adj\[[^\]]*(clamp|adjust|from)/i);
+ const run = JSON.parse(await readFile(join(result.details.runDir, "run.json"), "utf8"));
+ assert.equal(run.children[0].runtimePlan.thinking, "low");
+ assert.equal(run.children[0].runtimePlan.resolvedThinking, "high");
+ assert.equal(run.children[0].runtimePlan.requestedThinking, "high");
+ assert.deepEqual(run.children[0].runtimePlan.thinkingAdjustment, { from: "high", to: "low", reason: "observed" });
+ // State still precedes prompt.
+ const events = (await readFile(join(result.details.runDir, "child-001.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+ const stateIdx = events.findIndex((e: any) => e.payload?.command === "get_state");
+ const promptIdx = events.findIndex((e: any) => e.payload?.command === "prompt");
+ assert.ok(stateIdx >= 0 && promptIdx > stateIdx);
+ delete process.env.PI_TIDY_FAKE_RPC_OBSERVED_THINKING;
+}));
+
 test("public tool runs ordered all-settled fanout and persists full truth", async () => fixture(async (root) => {
  const { tool } = register(); const snapshots: any[] = [];
  assert.ok(tool.parameters.properties.agents);
  const agentProps = tool.parameters.properties.agents.items.properties;
- assert.deepEqual(Object.keys(agentProps).sort(), ["label", "model", "prompt", "reason"]);
+ assert.deepEqual(Object.keys(agentProps).sort(), ["label", "model", "prompt", "reason", "thinking"]);
  const result = await tool.execute("call-1", { agents: [
   { label: "alpha", reason: "inspect alpha", prompt: "first" },
   { reason: "inspect empty", prompt: "empty" },

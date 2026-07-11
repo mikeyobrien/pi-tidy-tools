@@ -15,10 +15,10 @@ export { buildEnvelope } from "./envelope.js";
 export { concurrencyCap, Scheduler } from "./scheduler.js";
 export { renderLines } from "./render.js";
 export { buildChildArgs, launchRuntime } from "./runner.js";
-export { inheritRuntimePlan } from "./types.js";
+export { inheritRuntimePlan, isThinkingLevel, THINKING_LEVELS } from "./types.js";
 export { parseExactModelRef, resolveBatchRuntime, wrapPiRegistry, RuntimeResolutionError } from "./runtime.js";
-export type { ChildRuntimePlan, RuntimeProvenance } from "./types.js";
-export type { ModelAuthRegistry } from "./runtime.js";
+export type { ChildRuntimePlan, RuntimeProvenance, ThinkingAdjustment, ThinkingLevel } from "./types.js";
+export type { ModelAuthRegistry, ThinkingCapableModel } from "./runtime.js";
 
 function publicDetails(details: RunDetails): RunDetails {
  return {
@@ -33,6 +33,7 @@ function publicDetails(details: RunDetails): RunDetails {
    ...(child.runtimePlan ? {
     runtimePlan: {
      ...child.runtimePlan,
+     ...(child.runtimePlan.thinkingAdjustment ? { thinkingAdjustment: { ...child.runtimePlan.thinkingAdjustment } } : {}),
      ...(child.runtimePlan.observed ? { observed: { ...child.runtimePlan.observed } } : {}),
     },
    } : {}),
@@ -45,6 +46,18 @@ function registryFromContext(ctx: { modelRegistry?: { find(provider: string, mod
  return wrapPiRegistry(ctx.modelRegistry);
 }
 
+const ThinkingEnum = Type.Union([
+ Type.Literal("off"),
+ Type.Literal("minimal"),
+ Type.Literal("low"),
+ Type.Literal("medium"),
+ Type.Literal("high"),
+ Type.Literal("xhigh"),
+ Type.Literal("max"),
+], {
+ description: "Optional Pi thinking level for this child (off|minimal|low|medium|high|xhigh|max). Omission inherits the parent level when the selected model supports it; unsupported inherited levels are adjusted. Explicit unsupported levels fail the whole batch before launch.",
+});
+
 const Parameters = Type.Object({ agents: Type.Array(Type.Object({
  label: Type.Optional(Type.String({ description: "Short display label; defaults to agent" })),
  reason: Type.String({ description: "Short present-tense intent shown in the transcript (ideally ≤12 words, no period)" }),
@@ -52,6 +65,7 @@ const Parameters = Type.Object({ agents: Type.Array(Type.Object({
  model: Type.Optional(Type.String({
   description: "Optional exact registered provider/model-id for this child (parsed at the first '/'; model IDs may contain additional separators). Omission inherits the parent model. Fuzzy patterns, aliases, and profiles are rejected.",
  })),
+ thinking: Type.Optional(ThinkingEnum),
 }), { minItems: 1 }) });
 
 export default function extension(pi: ExtensionAPI): void {
@@ -63,8 +77,12 @@ export default function extension(pi: ExtensionAPI): void {
  });
  pi.registerTool({
   name: "subagent", label: "subagent", renderShell: "self", executionMode: "parallel",
-  description: "Run an ordered synchronous fan-out of isolated child Pi agents. Every agent needs a short reason and verbatim prompt. Children share the working tree; assign non-overlapping writes. Optional per-child model selects an exact registered provider/model-id; omission inherits the parent.",
-  promptGuidelines: ["Use subagent only for independent work. Concurrent children share the working tree; assign non-overlapping mutation scopes or read-only objectives.", "When selecting a child model, pass an exact registered provider/model-id. Omit model to inherit the parent."],
+  description: "Run an ordered synchronous fan-out of isolated child Pi agents. Every agent needs a short reason and verbatim prompt. Children share the working tree; assign non-overlapping writes. Optional per-child model selects an exact registered provider/model-id; optional thinking selects a Pi level. Omission inherits the parent runtime.",
+  promptGuidelines: [
+   "Use subagent only for independent work. Concurrent children share the working tree; assign non-overlapping mutation scopes or read-only objectives.",
+   "When selecting a child model, pass an exact registered provider/model-id. Omit model to inherit the parent.",
+   "When selecting a child thinking level, pass one of off|minimal|low|medium|high|xhigh|max. Omit thinking to inherit the parent level.",
+  ],
   parameters: Parameters,
   execute: async (toolCallId, params, signal, onUpdate, ctx) => {
    if (!ctx.model) throw new Error("subagent requires a resolved parent model");

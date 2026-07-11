@@ -11,7 +11,14 @@ function parseLaunchModel(argv) {
  return { provider: ref.slice(0, slash), id: ref.slice(slash + 1) };
 }
 
+function parseLaunchThinking(argv) {
+ const index = argv.indexOf("--thinking");
+ if (index < 0 || index + 1 >= argv.length) return "medium";
+ return String(argv[index + 1] ?? "medium");
+}
+
 const launchModel = parseLaunchModel(process.argv);
+const launchThinking = parseLaunchThinking(process.argv);
 
 process.stdin.on("data", (chunk) => {
  buffer += chunk.toString("utf8");
@@ -45,6 +52,11 @@ process.stdin.on("data", (chunk) => {
     if (slash > 0) { provider = ref.slice(0, slash); id = ref.slice(slash + 1); }
     else id = ref;
    }
+   // Observed thinking defaults to the launch --thinking arg; env can override for reconciliation tests.
+   let thinkingLevel = launchThinking;
+   if (process.env.PI_TIDY_FAKE_RPC_OBSERVED_THINKING) {
+    thinkingLevel = process.env.PI_TIDY_FAKE_RPC_OBSERVED_THINKING;
+   }
    send({
     type: "response",
     id: command.id,
@@ -52,7 +64,7 @@ process.stdin.on("data", (chunk) => {
     success: true,
     data: {
      model: { provider, id, name: id },
-     thinkingLevel: "medium",
+     thinkingLevel,
      isStreaming: false,
      isCompacting: false,
      steeringMode: "all",

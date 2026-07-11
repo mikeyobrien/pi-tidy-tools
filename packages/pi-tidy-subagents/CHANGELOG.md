@@ -10,13 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Optional per-child exact `provider/model-id` model selection with parent-model inheritance when omitted.
-- Atomic batch preflight against Pi's live model registry and configured authentication before any child launches.
-- Child RPC `get_state` observation before prompting, with startup model mismatch failing that child without a prompt.
-- Schema version 2 run manifests retaining parent runtime plus per-child requested, resolved, and observed model provenance.
+- Optional per-child Pi thinking level (`off|minimal|low|medium|high|xhigh|max`) with parent-level inheritance when omitted.
+- Atomic batch preflight against Pi's live model registry, configured authentication, and canonical thinking capability APIs before any child launches.
+- Explicit unsupported thinking fails the complete batch with the requested model, level, and supported alternatives.
+- Inherited thinking is canonically clamped (non-reasoning → `off`) with adjustment metadata rather than rejected.
+- Child RPC `get_state` observation before prompting, with startup model mismatch failing that child without a prompt and observed thinking becoming the effective rendered/persisted truth.
+- Schema version 2 run manifests retaining parent runtime plus per-child requested, resolved, and observed model/thinking provenance and thinking adjustment metadata.
+- Direct dependency on `@earendil-works/pi-ai` for `getSupportedThinkingLevels` and `clampThinkingLevel`.
 
 ### Changed
 
-- Compact rendering continues to show each child's model identity, now using the observed model after startup.
+- Compact rendering continues to show each child's model identity and thinking level, now using the observed runtime after startup without routine adjustment noise.
 - Internal prefactor retained: every child owns an independent runtime plan used for launch.
 
 ## [0.1.0] - 2026-07-11

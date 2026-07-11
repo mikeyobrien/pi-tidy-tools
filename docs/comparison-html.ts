@@ -58,6 +58,11 @@ function ansiToHtml(input: string): string {
 	return output;
 }
 
+// Wide enough that the native edit diff keeps the replacement on one line.
+// At 58 cols the `typeof token === 'string' && token.length > 0` line wraps
+// mid-expression and looks broken in the before/after screenshot.
+const NATIVE_RENDER_WIDTH = 72;
+
 function nativeBlock(name: string, id: string, args: Record<string, unknown>, result: any, cwd: string): string[] {
 	const component = new ToolExecutionComponent(
 		name, id, args, { showImages: false }, undefined, { requestRender() {} }, cwd,
@@ -65,7 +70,7 @@ function nativeBlock(name: string, id: string, args: Record<string, unknown>, re
 	component.markExecutionStarted();
 	component.setArgsComplete();
 	component.updateResult(result, false);
-	return component.render(58);
+	return component.render(NATIVE_RENDER_WIDTH);
 }
 
 async function main() {
@@ -111,9 +116,9 @@ async function main() {
 	const html = `<!doctype html><html><head><meta charset="utf-8"><style>
 html,body{margin:0;background:transparent}body{display:inline-block}
 .frame{display:flex;gap:30px;padding:52px;background:linear-gradient(135deg,#6d5efc,#c86dd7 48%,#ff7eb3);font-family:"JetBrains Mono","SF Mono",monospace}
-.panel{width:930px;overflow:hidden;border-radius:14px;background:#1a1b26;box-shadow:0 24px 65px rgba(0,0,0,.38)}
+.panel{width:1040px;overflow:hidden;border-radius:14px;background:#1a1b26;box-shadow:0 24px 65px rgba(0,0,0,.38)}
 header{display:flex;align-items:baseline;justify-content:space-between;padding:22px 28px;background:#16171f;border-bottom:1px solid #292b38;color:#c0caf5;font-size:24px;font-weight:700}
-header small{color:#70768b;font-size:16px;font-weight:400}pre{box-sizing:border-box;min-height:410px;margin:0;padding:22px 28px;color:#c0caf5;font:19px/1.55 "JetBrains Mono","SF Mono",monospace;white-space:pre;overflow:hidden}.native-row,.native-gap,.tidy-row,.tidy-gap{display:block;height:1.55em;margin:0}.native-row,.tidy-row{background:rgb(40,50,40)}
+header small{color:#70768b;font-size:16px;font-weight:400}pre{box-sizing:border-box;min-height:410px;margin:0;padding:22px 28px;color:#c0caf5;font:19px/1.55 "JetBrains Mono","SF Mono",monospace;white-space:pre;overflow:hidden}.native-row,.native-gap,.tidy-row,.tidy-gap{display:block;height:1.55em;margin:0;white-space:pre}.native-row,.tidy-row{background:rgb(40,50,40)}
 </style></head><body><main class="frame">${panel("Before — native pi", "default tool cards", native)}${panel("After — pi-tidy-tools", "compact, reason-first", tidy, true)}</main></body></html>`;
 	process.stdout.write(html);
 }

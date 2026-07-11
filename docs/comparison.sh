@@ -19,7 +19,7 @@ trap 'rm -f "$TMP_BASE" "$TMP_PNG" "$OUT_HTML"' EXIT
 printf '%s\n' '→ generating native versus tidy comparison'
 npx tsx docs/comparison-html.ts > "$OUT_HTML"
 "$CHROME" --headless --disable-gpu --hide-scrollbars \
-  --force-device-scale-factor=2 --window-size=2400,1100 \
+  --force-device-scale-factor=2 --window-size=2800,1100 \
   --default-background-color=00000000 \
   --screenshot="$TMP_PNG" \
   "file://$PWD/$OUT_HTML" >/dev/null 2>&1

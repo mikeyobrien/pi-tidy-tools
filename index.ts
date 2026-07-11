@@ -232,16 +232,16 @@ function renderTurnDiffs(diffs: TurnDiff[]): string[] {
 	return lines;
 }
 
-/** Clone a JSON-schema params object and inject a REQUIRED `reasoning` prop. */
-function withReasoning(parameters: any): any {
-	const props = { ...(parameters?.properties ?? {}) };
-	props.reasoning = {
+/** Clone a JSON-schema params object and inject a REQUIRED, first `reasoning` prop. */
+export function withReasoning(parameters: any): any {
+	const reasoning = {
 		type: "string",
 		description:
 			"Short phrase (≤12 words) stating the GOAL behind this call — the why-in-context, not the what. Do NOT restate the file, path, or command (those are already shown next to it); instead give the intent or what you expect to find/confirm. Present-tense, no period. E.g. \"confirm executionStarted is a timestamp\", \"fix the map leak from review\", \"retry match after previous miss\".",
 	};
-	const required = Array.from(new Set([...(parameters?.required ?? []), "reasoning"]));
-	return { ...parameters, properties: props, required };
+	const properties = { reasoning, ...(parameters?.properties ?? {}) };
+	const required = Array.from(new Set(["reasoning", ...(parameters?.required ?? [])]));
+	return { ...parameters, properties, required };
 }
 
 /** Strip our injected `reasoning` before delegating to the real tool. */

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
-import extension, { buildToolBlock, fitToolLine, formatElapsed } from "../index.js";
+import extension, { buildToolBlock, fitToolLine, formatElapsed, withReasoning } from "../index.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -42,6 +42,16 @@ function loadWith(value: string): Registrations {
 	}
 	return registrations;
 }
+
+test("reasoning is the first schema field so it streams before large arguments", () => {
+	const schema = withReasoning({
+		type: "object",
+		properties: { path: { type: "string" }, content: { type: "string" } },
+		required: ["path", "content"],
+	});
+	assert.deepEqual(Object.keys(schema.properties), ["reasoning", "path", "content"]);
+	assert.deepEqual(schema.required, ["reasoning", "path", "content"]);
+});
 
 test("running tools show compact human-readable elapsed time", () => {
 	assert.equal(formatElapsed(0), "<1s");

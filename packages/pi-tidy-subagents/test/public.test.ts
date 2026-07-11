@@ -176,6 +176,44 @@ test("wide view combines child identity reason and metrics on one line", () => {
  assert.equal(rendered[1], "  ┊     - `git diff --check`: passed");
 });
 
+test("multi-child output inserts one blank between siblings and stays tight for one child", () => {
+ const mk = (index: number, label: string, reason: string, activity: string): any => ({
+  index, id: `child-${index}`, label, reason, prompt: "", status: "running", model: "m", thinking: "high",
+  toolCount: index + 1, input: 1000 * (index + 1), output: 100 * (index + 1), cacheRead: 0, cacheWrite: 0,
+  providerTraffic: 1100 * (index + 1), tokens: 1100 * (index + 1), activities: [activity], activeTools: [],
+  eventCount: 0, startedAt: 1, endedAt: 1_001, response: "", artifactPath: `/${label}`,
+ });
+ const single = renderLines({ children: [mk(0, "solo", "stay compact", "solo activity")] } as any, false, 2_000, 120)
+  .map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+ assert.equal(single.some((line) => line === ""), false);
+ assert.match(single[0]!, /🤖 solo\[m\|high\] stay compact/);
+
+ const multi = renderLines({ children: [
+  mk(0, "final-spec-audit", "verify every prior finding", "audit activity"),
+  mk(1, "skill-usability", "validate skill execution", "usability activity"),
+  mk(2, "docs", "summarize the contract", "docs activity"),
+ ] } as any, false, 2_000, 120).map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+ const robotIndexes = multi.map((line, index) => (/🤖/.test(line) ? index : -1)).filter((index) => index >= 0);
+ assert.deepEqual(robotIndexes, [0, 3, 6]);
+ assert.equal(multi[2], "");
+ assert.equal(multi[5], "");
+ assert.equal(multi.filter((line) => line === "").length, 2);
+ assert.match(multi[3]!, /🤖 skill-usability/);
+ assert.match(multi[6]!, /🤖 docs/);
+
+ // Parallel-tool rhythm: the blank is unpainted so sibling cards read as separate blocks.
+ const theme = { bg: (name: string, text: string) => `[${name}]${text}` };
+ const painted = new SnapshotComponent({ children: [
+  mk(0, "left", "left work", "left activity"),
+  mk(1, "right", "right work", "right activity"),
+ ] } as any, false, (text) => theme.bg("toolPendingBg", text)).render(120);
+ assert.equal(painted[2], "");
+ assert.match(painted[0]!, /toolPendingBg/);
+ assert.match(painted[1]!, /toolPendingBg/);
+ assert.doesNotMatch(painted[2]!, /toolPendingBg/);
+ assert.match(painted[3]!, /toolPendingBg/);
+});
+
 test("robot identifies delegated work in every representative status and layout", () => {
  const statuses = ["queued", "starting", "running", "completed", "warning", "failed", "cancelled", "not-started"];
  for (const [index, status] of statuses.entries()) {

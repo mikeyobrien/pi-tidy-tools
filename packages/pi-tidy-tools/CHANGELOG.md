@@ -7,24 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-12
+
 ### Added
 
-- Optional, explicit pi-fff orchestration for separately installed legacy `pi-fff` 0.1.12+ and scoped `@ff-labs/pi-fff` 0.6.0+ on Pi 0.80.6+, with profile-specific tool ownership, journaled setup/status/teardown, project-over-user selection, capability-gated forward compatibility, and fail-closed ownership.
-- Installed-package baseline coverage for both package identities (including scoped tools, commands, flags, lifecycle, renderers, and autocomplete), packed-artifact assertions, a dual-line baseline/newest release matrix, and a real-Pi TUI smoke gate.
+- Optional, explicit orchestration for separately installed legacy `pi-fff` 0.1.12+ and scoped `@ff-labs/pi-fff` 0.6.0+, including confirmed setup/status/teardown, project-over-user selection, lifecycle and autocomplete preservation, compatibility validation, and fail-closed recovery. Legacy custom autocomplete remains last-writer-wins with other editors and requires `/reload` after disabling it.
 
 ### Changed
 
-- Managed scoped `@ff-labs/pi-fff` now executes behind tidy-presented `grep` and `find`; native tidy `read` remains unchanged and raw `ffgrep`/`fffind` names are no longer model-facing.
-- Pi coding-agent and TUI peer ranges now have no upper bound; structurally compatible newer tuples are reported as forward-compatible/unverified until release smoke passes.
-- Settled completion ages have been removed because clock-derived labels made ordinary editor renders repaint historical transcript rows.
+- Managed scoped `@ff-labs/pi-fff` now executes behind tidy-presented `grep` and `find`; native tidy `read` remains unchanged and raw `ffgrep`/`fffind` names are not model-facing.
+- Pi coding-agent and TUI peer ranges no longer have an upper bound; structurally compatible newer tuples are reported as forward-compatible/unverified until release smoke passes.
 
 ### Security
 
-- pi-fff settings transitions preserve exact prior entries in linked sidecars and recover interrupted writes without touching unrelated settings. Teardown is required before package removal; drift requires manual restoration from every recorded `priorEntry` before deleting sidecars and reloading.
-
-### Known limitations
-
-- pi-fff 0.1.12 autocomplete is last-writer-wins with other custom editors, and disabling it live requires `/reload` to restore the prior/default editor.
+- pi-fff settings transitions preserve exact prior entries in linked sidecars, recover interrupted writes without touching unrelated settings, and refuse teardown when managed state has drifted.
 
 ## [0.2.0] - 2026-07-11
 
@@ -50,6 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Elapsed time now advances while large tool arguments are still streaming.
 - Reasoning headlines now appear before large paths, commands, or file contents finish streaming.
 
-[Unreleased]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.2.0...HEAD
+[Unreleased]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.3.0...HEAD
+[0.3.0]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.2.0...pi-tidy-tools-v0.3.0
 [0.2.0]: https://github.com/mikeyobrien/pi-tidy-tools/compare/v0.1.2...pi-tidy-tools-v0.2.0
 [0.1.2]: https://github.com/mikeyobrien/pi-tidy-tools/compare/v0.1.1...v0.1.2

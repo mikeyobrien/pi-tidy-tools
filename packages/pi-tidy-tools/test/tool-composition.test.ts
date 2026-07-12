@@ -84,13 +84,13 @@ test("composed execution preserves receiver and argument identities", async () =
 	assert.equal(observed[5], context);
 });
 
-test("result-mode execution preserves original parameters and prompt metadata identities", () => {
+test("result-mode execution preserves source-owned reasoning schema, parameters, and prompt metadata identities", () => {
 	const promptGuidelines = ["Preserve source guidance."];
 	const params = { path: "alternate.ts", reasoning: "legitimate source reasoning" };
 	let observedParams: unknown;
 	const source = {
 		name: "read",
-		parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+		parameters: { type: "object", properties: { path: { type: "string" }, reasoning: { type: "string", description: "Source semantics" } }, required: ["path"] },
 		promptGuidelines,
 		execute(_id: string, received: unknown) { observedParams = received; },
 	};
@@ -103,19 +103,14 @@ test("result-mode execution preserves original parameters and prompt metadata id
 	assert.equal(composed.parameters, source.parameters);
 });
 
-test("tidy mode does not strip or replace a source-owned reasoning field", () => {
+test("tidy modes reject a source-owned reasoning field instead of suppressing injection", () => {
 	const reasoningSchema = { type: "string", description: "Source semantics" };
 	const parameters = { type: "object", properties: { path: { type: "string" }, reasoning: reasoningSchema }, required: ["path"] };
-	const params = { path: "x", reasoning: "source value" };
-	let observed: unknown;
-	const source = { name: "read", parameters, execute(_id: string, value: unknown) { observed = value; } };
-	const composed = composeSourceTool(source, { mode: "default", reasoningGuideline: guideline });
+	const source = { name: "read", parameters, execute() {} };
 
-	composed.execute("id", params, undefined, undefined, undefined);
-
-	assert.equal(composed.parameters, parameters);
-	assert.equal(composed.parameters.properties.reasoning, reasoningSchema);
-	assert.equal(observed, params);
+	for (const mode of ["default", "reasoning"] as const) {
+		assert.throws(() => composeSourceTool(source, { mode, reasoningGuideline: guideline }), /source schema reserves tidy-owned reasoning/);
+	}
 });
 
 test("composed execution propagates source errors unchanged", () => {

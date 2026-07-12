@@ -40,9 +40,10 @@
   "scripts": {
     "pretest": "node ../../scripts/bundle-core.mjs .",
     "test": "node scripts/test.mjs",
-    "test:pi-fff-installed": "node scripts/pi-fff-installed-fixture.mjs",
+    "test:pi-fff-installed": "node scripts/pi-fff-installed-matrix.mjs",
     "test:pi-fff-release-matrix": "node scripts/pi-fff-release-matrix.mjs",
     "test:pi-fff-tui": "node scripts/pi-fff-tui-smoke.mjs",
+    "probe:pi-fff-installed": "node scripts/pi-fff-nonmutating-probe.mjs",
     "check": "node ../../scripts/bundle-core.mjs . && tsc --noEmit",
     "prepack": "node ../../scripts/bundle-core.mjs .",
     "test:coverage": "c8 npm test",

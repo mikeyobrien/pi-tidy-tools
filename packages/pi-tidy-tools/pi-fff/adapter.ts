@@ -4,6 +4,7 @@ import { VERSION, getAgentDir } from "@earendil-works/pi-coding-agent";
 import semver from "semver";
 import type { SourceToolCompositionOptions, SourceToolDefinition } from "../tool-composition.js";
 import { composeSourceTool } from "../tool-composition.js";
+import { matchPiFffSource, PI_FFF_PACKAGE_PROFILES, type PiFffCapabilityProfile, type PiFffPackageIdentity, type PiFffPackageProfile } from "./profiles.js";
 import {
 	createRunningPiFffLoader,
 	type PiFffLoaderAliases,
@@ -11,11 +12,13 @@ import {
 } from "./loader.js";
 
 export type { PiFffLoaderAliases, PiFffModuleLoader } from "./loader.js";
+export type { PiFffCapabilityProfile, PiFffPackageIdentity } from "./profiles.js";
 
 export type PiFffDiagnosticCode =
 	| "PIFFF_BELOW_MINIMUM"
 	| "PIFFF_CAPABILITY_MISSING"
 	| "PIFFF_CONFIG_MISSING"
+	| "PIFFF_CONFIG_AMBIGUOUS"
 	| "PIFFF_CONFIG_FILTER_REQUIRED"
 	| "PIFFF_SCOPE_SHADOWED_INVALID"
 	| "PIFFF_PACKAGE_MISSING"
@@ -49,8 +52,10 @@ type RegistrationMethod =
 	| "registerMessageRenderer" | "registerEntryRenderer" | "registerProvider"
 	| "unregisterProvider" | "on";
 
-export interface PiFffRegistrationPlan {
+interface PiFffPlanBase {
 	readonly scope: "project" | "user";
+	readonly packageIdentity: PiFffPackageIdentity;
+	readonly profile: PiFffCapabilityProfile;
 	readonly packageRoot: string;
 	readonly entryPath: string;
 	readonly piVersion: string;
@@ -59,8 +64,11 @@ export interface PiFffRegistrationPlan {
 	readonly integrity: "missing" | "registry-unverified" | "verified";
 	readonly diagnostics: readonly PiFffDiagnostic[];
 	readonly trace: readonly RecordedRegistration[];
-	readonly captures: { readonly read: SourceToolDefinition; readonly grep: SourceToolDefinition };
 }
+
+export type PiFffRegistrationPlan =
+	| (PiFffPlanBase & { readonly profile: "legacy"; readonly captureMode: "legacy-pair"; readonly captures: { readonly read: SourceToolDefinition; readonly grep: SourceToolDefinition } })
+	| (PiFffPlanBase & { readonly profile: "scoped"; readonly captureMode: "replay-only"; readonly captures?: never });
 
 export type PiFffResult<T> = { ok: true; plan: T } | { ok: false; diagnostic: PiFffDiagnostic };
 export type ReplayResult = { ok: true } | { ok: false; diagnostic: PiFffDiagnostic };
@@ -90,7 +98,7 @@ export interface BuildPiFffPlanOptions {
 }
 
 const MIN_PI = "0.80.6";
-const MIN_FFF = "0.1.12";
+const PACKAGE_PROFILES = PI_FFF_PACKAGE_PROFILES;
 const REGISTRATION_METHODS: readonly RegistrationMethod[] = [
 	"registerTool", "registerCommand", "registerShortcut", "registerFlag",
 	"registerMessageRenderer", "registerEntryRenderer", "registerProvider", "unregisterProvider", "on",
@@ -101,6 +109,7 @@ export const TIDY_PI_FFF_CONFLICTS: Readonly<PiFffConflictSet> = Object.freeze({
 	shortcuts: Object.freeze(["ctrl+shift+o"]),
 	messageRenderers: Object.freeze(["minimal-turn-diff"]),
 });
+const REQUIRED_NONMUTATING_METHODS = ["getFlag"] as const;
 const MUTATING_METHODS = new Set([
 	"sendMessage", "sendUserMessage", "appendEntry", "setSessionName", "setLabel", "exec",
 	"setActiveTools", "setModel", "setThinkingLevel", "shutdown", "abort", "compact",
@@ -135,11 +144,13 @@ function diagnostic(
 	piFffVersion: string,
 	detail: string,
 	severity: PiFffDiagnostic["severity"] = "error",
+	profile: PiFffPackageProfile = PACKAGE_PROFILES["pi-fff"],
 ): PiFffDiagnostic {
 	const summaries: Record<PiFffDiagnosticCode, string> = {
-		PIFFF_BELOW_MINIMUM: `pi-fff adapter inactive: minimums are Pi ${MIN_PI} and pi-fff ${MIN_FFF}.`,
+		PIFFF_BELOW_MINIMUM: `pi-fff adapter inactive: minimums are Pi ${MIN_PI} and ${profile.identity} ${profile.minimum}.`,
 		PIFFF_CAPABILITY_MISSING: "pi-fff adapter inactive: a required running Pi capability is unavailable.",
-		PIFFF_CONFIG_MISSING: "pi-fff adapter inactive: no managed npm:pi-fff entry is selected.",
+		PIFFF_CONFIG_MISSING: "pi-fff adapter inactive: no managed pi-fff package entry is selected.",
+		PIFFF_CONFIG_AMBIGUOUS: "pi-fff adapter inactive: package identity selection is ambiguous.",
 		PIFFF_CONFIG_FILTER_REQUIRED: "pi-fff adapter inactive: pi-fff must use object form with extensions: [].",
 		PIFFF_SCOPE_SHADOWED_INVALID: "pi-fff adapter inactive: the selected project entry is invalid and shadows user scope.",
 		PIFFF_PACKAGE_MISSING: "pi-fff adapter inactive: the selected managed package is missing.",
@@ -156,10 +167,11 @@ function diagnostic(
 	const actions: Record<PiFffDiagnosticCode, string> = {
 		PIFFF_BELOW_MINIMUM: "Upgrade the below-minimum component, then /reload; this version is outside the supported range, not necessarily broken.",
 		PIFFF_CAPABILITY_MISSING: "Upgrade or reinstall Pi so the named capability is available, then /reload.",
-		PIFFF_CONFIG_MISSING: "Install pi-fff in a managed Pi npm scope, then run /tidy pi-fff setup.",
+		PIFFF_CONFIG_MISSING: "Install pi-fff or @ff-labs/pi-fff in a managed Pi npm scope, then run /tidy pi-fff setup.",
+		PIFFF_CONFIG_AMBIGUOUS: "Keep exactly one pi-fff package identity in each settings scope, then /reload.",
 		PIFFF_CONFIG_FILTER_REQUIRED: "Run /tidy pi-fff setup to set extensions: [], then /reload.",
 		PIFFF_SCOPE_SHADOWED_INVALID: "Fix or remove the selected project entry; tidy will not fall back to user scope.",
-		PIFFF_PACKAGE_MISSING: `Install npm:pi-fff@${MIN_FFF} or newer with extensions: [], then /reload.`,
+		PIFFF_PACKAGE_MISSING: `Install npm:${profile.identity}@${profile.minimum} or newer with extensions: [], then /reload.`,
 		PIFFF_PACKAGE_INVALID: "Reinstall the selected package through Pi, then /reload.",
 		PIFFF_INTEGRITY_UNVERIFIED: "Capability validation continues offline; verify registry integrity during release smoke.",
 		PIFFF_INTEGRITY_MISMATCH: "Reinstall that pi-fff version through Pi, then /reload.",
@@ -192,20 +204,26 @@ async function readSettings(path: string): Promise<any> {
 	} catch { return {}; }
 }
 
-function npmPiFffEntry(settings: any): unknown {
-	if (!Array.isArray(settings?.packages)) return undefined;
-	return settings.packages.find((entry: any) => {
-		const source = typeof entry === "string" ? entry : entry?.source;
-		return typeof source === "string" && /^npm:pi-fff(?:@.+)?$/.test(source);
-	});
+function sourceOf(entry: unknown): string | undefined {
+	if (typeof entry === "string") return entry;
+	return entry && typeof entry === "object" && !Array.isArray(entry) && typeof (entry as any).source === "string" ? (entry as any).source : undefined;
 }
 
-function validateSelectedEntry(entry: unknown): string | undefined {
-	if (!entry || typeof entry !== "object" || Array.isArray(entry)) return "the selected entry is not object form";
+function npmPiFffEntry(settings: any): { entry?: unknown; ambiguous: boolean } {
+	if (!Array.isArray(settings?.packages)) return { ambiguous: false };
+	const entries = settings.packages.filter((entry: unknown) => matchPiFffSource(sourceOf(entry)) !== undefined);
+	return { entry: entries[0], ambiguous: entries.length > 1 };
+}
+
+function validateSelectedEntry(entry: unknown, expected?: PiFffPackageProfile): { failure?: string; profile?: PiFffPackageProfile; version?: string } {
+	if (!entry || typeof entry !== "object" || Array.isArray(entry)) return { failure: "the selected entry is not object form" };
 	const selected = entry as any;
-	if (typeof selected.source !== "string" || !/^npm:pi-fff(?:@.+)?$/.test(selected.source)) return "the selected source is not managed npm:pi-fff";
-	if (!Array.isArray(selected.extensions) || selected.extensions.length !== 0) return "extensions must be exactly []";
-	return undefined;
+	const parsed = matchPiFffSource(selected.source);
+	if (!parsed) return { failure: "the selected source is not a managed pi-fff identity" };
+	if (expected && parsed.packageProfile.identity !== expected.identity) return { failure: `the selected source is not ${expected.identity}` };
+	const selectedProfile = { profile: parsed.packageProfile, version: parsed.version };
+	if (!Array.isArray(selected.extensions) || selected.extensions.length !== 0) return { failure: "extensions must be exactly []", ...selectedProfile };
+	return selectedProfile;
 }
 
 async function canonicalExact(path: string): Promise<string | undefined> {
@@ -225,7 +243,7 @@ type IntegrityCheck =
 	| { status: "registry-unverified" | "verified"; integrity: string }
 	| { status: "mismatch"; detail: string };
 
-async function validateLocalIntegrity(managedRoot: string, manifest: any, registryIntegrity?: string): Promise<IntegrityCheck> {
+async function validateLocalIntegrity(managedRoot: string, manifest: any, profile: PiFffPackageProfile, registryIntegrity?: string): Promise<IntegrityCheck> {
 	let lock: any;
 	try { lock = JSON.parse(await readFile(join(managedRoot, "package-lock.json"), "utf8")); }
 	catch (error: any) {
@@ -233,19 +251,21 @@ async function validateLocalIntegrity(managedRoot: string, manifest: any, regist
 		return { status: "mismatch", detail: `selected lock is unreadable: ${oneLine(error)}` };
 	}
 	if (!lock || typeof lock !== "object") return { status: "mismatch", detail: "selected lock is malformed" };
-	const packageEntry = lock.packages?.["node_modules/pi-fff"];
-	const dependencyEntry = lock.dependencies?.["pi-fff"];
+	const packageKey = `node_modules/${profile.identity}`;
+	const packageEntry = lock.packages?.[packageKey];
+	const dependencyEntry = lock.dependencies?.[profile.identity];
 	const entries = [packageEntry, dependencyEntry].filter((value) => value !== undefined);
-	if (!entries.length) return { status: "mismatch", detail: "selected lock has no pi-fff entry" };
+	if (!entries.length) return { status: "mismatch", detail: `selected lock has no ${profile.identity} entry` };
 	for (const entry of entries) {
-		if (!entry || typeof entry !== "object") return { status: "mismatch", detail: "selected lock pi-fff entry is malformed" };
-		if (entry.name !== undefined && entry.name !== "pi-fff") return { status: "mismatch", detail: "selected lock identity differs from pi-fff" };
+		if (!entry || typeof entry !== "object") return { status: "mismatch", detail: `selected lock ${profile.identity} entry is malformed` };
+		if (entry.name !== undefined && entry.name !== profile.identity) return { status: "mismatch", detail: `selected lock identity differs from ${profile.identity}` };
 		if (entry.version !== manifest.version) return { status: "mismatch", detail: `selected lock version ${String(entry.version)} differs from installed ${manifest.version}` };
 		if (entry.resolved !== undefined) {
 			if (typeof entry.resolved !== "string" || entry.resolved.length === 0) return { status: "mismatch", detail: "selected lock resolved artifact is malformed" };
 			try {
 				const resolvedArtifact = new URL(entry.resolved);
-				if (!resolvedArtifact.pathname.endsWith(`/pi-fff-${manifest.version}.tgz`)) return { status: "mismatch", detail: "selected lock resolved artifact differs from pi-fff identity or version" };
+				const expectedPath = `/${profile.identity}/-/pi-fff-${manifest.version}.tgz`;
+				if (resolvedArtifact.hostname !== "registry.npmjs.org" || decodeURIComponent(resolvedArtifact.pathname) !== expectedPath) return { status: "mismatch", detail: `selected lock resolved artifact differs from ${profile.identity} identity or version` };
 			} catch { return { status: "mismatch", detail: "selected lock resolved artifact is malformed" }; }
 		}
 		if (entry.integrity !== undefined && (typeof entry.integrity !== "string" || !/^(?:sha(?:1|256|384|512)-[A-Za-z0-9+/]+={0,2})(?:\s+sha(?:1|256|384|512)-[A-Za-z0-9+/]+={0,2})*$/.test(entry.integrity))) {
@@ -269,6 +289,7 @@ async function validateLocalIntegrity(managedRoot: string, manifest: any, regist
 
 function validateApi(api: Record<string, any>): string | undefined {
 	for (const method of REGISTRATION_METHODS) if (typeof api?.[method] !== "function") return method;
+	for (const method of REQUIRED_NONMUTATING_METHODS) if (typeof api?.[method] !== "function") return method;
 	if (!api.events || typeof api.events.on !== "function" || typeof api.events.emit !== "function") return "events";
 	return undefined;
 }
@@ -325,11 +346,29 @@ function equivalentPrimitive(schema: unknown, expected: string): boolean {
 	return false;
 }
 
+function objectParameterSchemaFailure(schema: unknown): string | undefined {
+	if (!schema || typeof schema !== "object" || Array.isArray(schema)) return "parameters is not an object schema";
+	const value = schema as Record<string, unknown>;
+	if (!equivalentPrimitive({ type: value.type }, "object")) return "parameters is not an object schema";
+	if (!value.properties || typeof value.properties !== "object" || Array.isArray(value.properties)) return "parameters.properties is malformed";
+	for (const [name, property] of Object.entries(value.properties as Record<string, unknown>)) {
+		if (!name || !property || typeof property !== "object" || Array.isArray(property)) return `parameter ${name || "<empty>"} schema is malformed`;
+	}
+	if (value.required !== undefined) {
+		if (!Array.isArray(value.required) || value.required.some((field) => typeof field !== "string" || !Object.hasOwn(value.properties as object, field))) {
+			return "parameters.required is malformed";
+		}
+	}
+	return undefined;
+}
+
 function schemaFailure(tool: any, name: "read" | "grep"): string | undefined {
 	if (!tool || typeof tool !== "object" || tool.name !== name) return `${name} definition is malformed`;
 	if (typeof tool.execute !== "function") return `${name}.execute is not callable`;
 	const schema = tool.parameters;
-	if (!schema || !equivalentPrimitive({ type: schema.type }, "object") || !schema.properties || typeof schema.properties !== "object") return `${name}.parameters is not an object schema`;
+	const parameterFailure = objectParameterSchemaFailure(schema);
+	if (parameterFailure) return `${name}.${parameterFailure}`;
+	if (Object.hasOwn(schema.properties, "reasoning")) return `${name}.reasoning conflicts with tidy-owned reasoning`;
 	const required = new Set(Array.isArray(schema.required) ? schema.required : []);
 	for (const [field, anchor] of Object.entries(BASELINE[name])) {
 		const property = schema.properties[field];
@@ -344,7 +383,7 @@ function stringArg(call: RecordedRegistration, index: number): string | undefine
 	return typeof call.args[index] === "string" ? call.args[index] as string : undefined;
 }
 
-function validateTrace(trace: readonly RecordedRegistration[], conflicts: PiFffConflictSet | undefined): { read: SourceToolDefinition; grep: SourceToolDefinition } {
+function validateTrace(trace: readonly RecordedRegistration[], profile: PiFffPackageProfile, conflicts: PiFffConflictSet | undefined): { read: SourceToolDefinition; grep: SourceToolDefinition } | undefined {
 	const captures: Partial<Record<"read" | "grep", SourceToolDefinition>> = {};
 	const conflictNames = (key: keyof PiFffConflictSet): string[] => [
 		...(TIDY_PI_FFF_CONFLICTS[key] ?? []),
@@ -356,21 +395,29 @@ function validateTrace(trace: readonly RecordedRegistration[], conflicts: PiFffC
 		entryRenderers: new Set(conflictNames("entryRenderers")), providers: new Set(conflictNames("providers")),
 	};
 	const lifecycle = new Set<string>();
+	const scopedTools = new Set<string>();
+	const scopedCommands = new Set<string>();
+	const scopedFlags = new Set<string>();
 	for (const call of trace) {
 		if (call.method === "unregisterProvider") throw new SurfaceFailure("unregisterProvider cannot be committed transactionally");
 		if (call.method === "registerTool") {
 			if (call.args.length !== 1 || !call.args[0] || typeof call.args[0] !== "object") throw new SurfaceFailure("registerTool arguments are malformed");
 			const tool = call.args[0] as any;
 			if (typeof tool.name !== "string" || typeof tool.description !== "string" || typeof tool.label !== "string" || typeof tool.execute !== "function") throw new SurfaceFailure("tool definition is structurally invalid");
+			const parameterFailure = objectParameterSchemaFailure(tool.parameters);
+			if (parameterFailure) throw new SurfaceFailure(`${tool.name}.${parameterFailure}`);
 			if (tool.name === "read" || tool.name === "grep") {
+				if (profile.profile === "scoped") throw new SurfaceFailure(`scoped ${tool.name} override uses an unsupported capture surface`);
 				const toolName = tool.name as "read" | "grep";
 				if (captures[toolName]) throw new SurfaceFailure(`duplicate ${toolName} capture`);
 				const failure = schemaFailure(tool, toolName); if (failure) throw new SurfaceFailure(failure);
 				captures[toolName] = tool;
 				continue;
 			}
+			if (profile.profile === "scoped" && ["grep", "find", "multi_grep"].includes(tool.name)) throw new SurfaceFailure(`scoped override tool ${tool.name} conflicts with tidy ownership`);
 			if (seen.tools.has(tool.name)) throw new SurfaceFailure(`tool conflict ${tool.name}`);
 			seen.tools.add(tool.name);
+			if (profile.profile === "scoped") scopedTools.add(tool.name);
 			continue;
 		}
 		if (call.method === "on") {
@@ -388,6 +435,8 @@ function validateTrace(trace: readonly RecordedRegistration[], conflicts: PiFffC
 			: call.method === "registerEntryRenderer" ? "entryRenderers" : "providers";
 		if (seen[key].has(name)) throw new SurfaceFailure(`${call.method} conflict ${name}`);
 		seen[key].add(name);
+		if (profile.profile === "scoped" && call.method === "registerCommand") scopedCommands.add(name);
+		if (profile.profile === "scoped" && call.method === "registerFlag") scopedFlags.add(name);
 		const value = call.args[1] as any;
 		if (call.method === "registerCommand" && (call.args.length !== 2 || !value || typeof value.handler !== "function")) throw new SurfaceFailure("command definition is malformed");
 		if (call.method === "registerShortcut" && (call.args.length !== 2 || !value || typeof value.handler !== "function")) throw new SurfaceFailure("shortcut definition is malformed");
@@ -395,9 +444,15 @@ function validateTrace(trace: readonly RecordedRegistration[], conflicts: PiFffC
 		if ((call.method === "registerMessageRenderer" || call.method === "registerEntryRenderer") && (call.args.length !== 2 || typeof value !== "function")) throw new SurfaceFailure("renderer definition is malformed");
 		if (call.method === "registerProvider" && (call.args.length !== 2 || !value || typeof value !== "object")) throw new SurfaceFailure("provider definition is malformed");
 	}
-	if (!captures.read || !captures.grep) throw new SurfaceFailure("exactly one enabled read and grep capture is required");
+	if (profile.profile === "legacy" && (!captures.read || !captures.grep)) throw new SurfaceFailure("exactly one enabled read and grep capture is required");
+	if (profile.profile === "scoped") {
+		if (captures.read || captures.grep) throw new SurfaceFailure("scoped profile cannot capture native tools");
+		for (const name of ["ffgrep", "fffind"]) if (!scopedTools.has(name)) throw new SurfaceFailure(`scoped tool ${name} is required`);
+		for (const name of ["fff-mode", "fff-health", "fff-rescan"]) if (!scopedCommands.has(name)) throw new SurfaceFailure(`scoped command ${name} is required`);
+		for (const name of ["fff-mode", "fff-frecency-db", "fff-history-db", "fff-enable-root-scan"]) if (!scopedFlags.has(name)) throw new SurfaceFailure(`scoped flag ${name} is required`);
+	}
 	if (!lifecycle.has("session_start") || !lifecycle.has("session_shutdown")) throw new SurfaceFailure("session_start and session_shutdown lifecycle anchors are required");
-	return captures as { read: SourceToolDefinition; grep: SourceToolDefinition };
+	return profile.profile === "legacy" ? captures as { read: SourceToolDefinition; grep: SourceToolDefinition } : undefined;
 }
 
 export async function buildPiFffRegistrationPlan(options: BuildPiFffPlanOptions): Promise<PiFffResult<PiFffRegistrationPlan>> {
@@ -409,45 +464,48 @@ export async function buildPiFffRegistrationPlan(options: BuildPiFffPlanOptions)
 
 	const cwd = resolve(options.cwd);
 	const agentDir = resolve(options.agentDir ?? getAgentDir());
-	const projectEntry = options.selection ? undefined : npmPiFffEntry(await readSettings(join(cwd, ".pi", "settings.json")));
-	const userEntry = options.selection ? undefined : npmPiFffEntry(await readSettings(join(agentDir, "settings.json")));
+	const project = options.selection ? { ambiguous: false } : npmPiFffEntry(await readSettings(join(cwd, ".pi", "settings.json")));
+	const user = options.selection ? { ambiguous: false } : npmPiFffEntry(await readSettings(join(agentDir, "settings.json")));
+	if (project.ambiguous || user.ambiguous) return { ok: false, diagnostic: diagnostic("PIFFF_CONFIG_AMBIGUOUS", piVersion, piFffVersion, `${project.ambiguous ? "project" : "user"} settings contains both or duplicate pi-fff identities`) };
+	const projectEntry = project.entry;
+	const userEntry = user.entry;
 	const scope = options.selection?.scope ?? (projectEntry !== undefined ? "project" : userEntry !== undefined ? "user" : undefined);
 	const entry = options.selection?.entry ?? projectEntry ?? userEntry;
 	if (!scope) return { ok: false, diagnostic: diagnostic("PIFFF_CONFIG_MISSING", piVersion, piFffVersion, "no managed npm entry") };
-	const entryFailure = validateSelectedEntry(entry);
-	if (entryFailure) {
+	const selected = validateSelectedEntry(entry);
+	const profile = selected.profile ?? PACKAGE_PROFILES["pi-fff"];
+	if (selected.failure) {
 		const code = scope === "project" && userEntry !== undefined ? "PIFFF_SCOPE_SHADOWED_INVALID" : "PIFFF_CONFIG_FILTER_REQUIRED";
-		return { ok: false, diagnostic: diagnostic(code, piVersion, piFffVersion, entryFailure) };
+		return { ok: false, diagnostic: diagnostic(code, piVersion, piFffVersion, selected.failure, "error", profile) };
 	}
 
 	const managedRoot = scope === "project" ? join(cwd, ".pi", "npm") : join(agentDir, "npm");
-	const packageRoot = join(managedRoot, "node_modules", "pi-fff");
+	const packageRoot = join(managedRoot, "node_modules", ...profile.segments);
 	const canonicalRoot = await canonicalExact(packageRoot);
 	if (!canonicalRoot) {
 		let missing = false;
 		try { await readFile(join(packageRoot, "package.json")); } catch { missing = true; }
-		return { ok: false, diagnostic: diagnostic(missing ? "PIFFF_PACKAGE_MISSING" : "PIFFF_PACKAGE_INVALID", piVersion, piFffVersion, missing ? `selected ${scope} package is absent` : "package root is non-canonical") };
+		return { ok: false, diagnostic: diagnostic(missing ? "PIFFF_PACKAGE_MISSING" : "PIFFF_PACKAGE_INVALID", piVersion, piFffVersion, missing ? `selected ${scope} package is absent` : "package root is non-canonical", "error", profile) };
 	}
 
 	let manifest: any;
 	try { manifest = JSON.parse(await readFile(join(canonicalRoot, "package.json"), "utf8")); }
-	catch (error) { return { ok: false, diagnostic: diagnostic("PIFFF_PACKAGE_INVALID", piVersion, piFffVersion, `manifest: ${oneLine(error)}`) }; }
+	catch (error) { return { ok: false, diagnostic: diagnostic("PIFFF_PACKAGE_INVALID", piVersion, piFffVersion, `manifest: ${oneLine(error)}`, "error", profile) }; }
 	piFffVersion = typeof manifest?.version === "string" ? manifest.version : "unknown";
-	if (!isAtLeast(piFffVersion, MIN_FFF)) return { ok: false, diagnostic: diagnostic("PIFFF_BELOW_MINIMUM", piVersion, piFffVersion, `detected pi-fff ${piFffVersion}`) };
-	if (manifest?.name !== "pi-fff") return { ok: false, diagnostic: diagnostic("PIFFF_PACKAGE_INVALID", piVersion, piFffVersion, "manifest identity is not pi-fff") };
-	const configuredSource = (entry as { source: string }).source;
-	const configuredVersion = configuredSource.slice("npm:pi-fff@".length);
-	if (configuredSource.startsWith("npm:pi-fff@")) {
-		if (!semver.valid(configuredVersion)) return { ok: false, diagnostic: diagnostic("PIFFF_PACKAGE_INVALID", piVersion, piFffVersion, `configured version ${configuredVersion} is not valid SemVer`) };
-		if (configuredVersion !== piFffVersion) return { ok: false, diagnostic: diagnostic("PIFFF_PACKAGE_INVALID", piVersion, piFffVersion, `configured ${configuredVersion} does not match installed ${piFffVersion}`) };
+	if (!isAtLeast(piFffVersion, profile.minimum)) return { ok: false, diagnostic: diagnostic("PIFFF_BELOW_MINIMUM", piVersion, piFffVersion, `detected ${profile.identity} ${piFffVersion}`, "error", profile) };
+	if (manifest?.name !== profile.identity) return { ok: false, diagnostic: diagnostic("PIFFF_PACKAGE_INVALID", piVersion, piFffVersion, `manifest identity is not ${profile.identity}`, "error", profile) };
+	const configuredVersion = selected.version;
+	if (configuredVersion !== undefined) {
+		if (!semver.valid(configuredVersion)) return { ok: false, diagnostic: diagnostic("PIFFF_PACKAGE_INVALID", piVersion, piFffVersion, `configured version ${configuredVersion} is not valid SemVer`, "error", profile) };
+		if (configuredVersion !== piFffVersion) return { ok: false, diagnostic: diagnostic("PIFFF_PACKAGE_INVALID", piVersion, piFffVersion, `configured ${configuredVersion} does not match installed ${piFffVersion}`, "error", profile) };
 	}
-	const integrity = await validateLocalIntegrity(managedRoot, manifest, options.registryIntegrity);
-	if (integrity.status === "mismatch") return { ok: false, diagnostic: diagnostic("PIFFF_INTEGRITY_MISMATCH", piVersion, piFffVersion, integrity.detail) };
+	const integrity = await validateLocalIntegrity(managedRoot, manifest, profile, options.registryIntegrity);
+	if (integrity.status === "mismatch") return { ok: false, diagnostic: diagnostic("PIFFF_INTEGRITY_MISMATCH", piVersion, piFffVersion, integrity.detail, "error", profile) };
 	const extensions = manifest?.pi?.extensions;
-	if (!Array.isArray(extensions) || extensions.length !== 1 || typeof extensions[0] !== "string") return { ok: false, diagnostic: diagnostic("PIFFF_PACKAGE_INVALID", piVersion, piFffVersion, "manifest must declare one current extension entry") };
+	if (!Array.isArray(extensions) || extensions.length !== 1 || typeof extensions[0] !== "string") return { ok: false, diagnostic: diagnostic("PIFFF_PACKAGE_INVALID", piVersion, piFffVersion, "manifest must declare one current extension entry", "error", profile) };
 	const expectedEntry = resolve(canonicalRoot, extensions[0]);
 	const canonicalEntry = await canonicalExact(expectedEntry);
-	if (!canonicalEntry || !pathIsInside(canonicalRoot, canonicalEntry)) return { ok: false, diagnostic: diagnostic("PIFFF_PACKAGE_INVALID", piVersion, piFffVersion, "extension entry escapes or is unavailable") };
+	if (!canonicalEntry || !pathIsInside(canonicalRoot, canonicalEntry)) return { ok: false, diagnostic: diagnostic("PIFFF_PACKAGE_INVALID", piVersion, piFffVersion, "extension entry escapes or is unavailable", "error", profile) };
 
 	let loader = options.loader;
 	let aliases = options.aliases;
@@ -478,21 +536,23 @@ export async function buildPiFffRegistrationPlan(options: BuildPiFffPlanOptions)
 	try { await factory(makeRecorder(options.api, trace, gate)); }
 	catch (error) {
 		const code = error instanceof SurfaceFailure ? "PIFFF_SURFACE_BREAKING" : "PIFFF_FACTORY_FAILED";
-		return { ok: false, diagnostic: diagnostic(code, piVersion, piFffVersion, oneLine(error)) };
+		return { ok: false, diagnostic: diagnostic(code, piVersion, piFffVersion, oneLine(error), "error", profile) };
 	}
-	let captures: { read: SourceToolDefinition; grep: SourceToolDefinition };
-	try { captures = validateTrace(trace, options.conflicts); }
-	catch (error) { return { ok: false, diagnostic: diagnostic("PIFFF_SURFACE_BREAKING", piVersion, piFffVersion, oneLine(error)) }; }
+	let captures: { read: SourceToolDefinition; grep: SourceToolDefinition } | undefined;
+	try { captures = validateTrace(trace, profile, options.conflicts); }
+	catch (error) { return { ok: false, diagnostic: diagnostic("PIFFF_SURFACE_BREAKING", piVersion, piFffVersion, oneLine(error), "error", profile) }; }
 	gate.phase = "planned";
-	const status = compareVersions(piVersion, MIN_PI) === 0 && compareVersions(piFffVersion, MIN_FFF) === 0 ? "verified" : "forward-compatible/unverified";
+	const status: PiFffRegistrationPlan["status"] = compareVersions(piVersion, MIN_PI) === 0 && compareVersions(piFffVersion, profile.verified) === 0 ? "verified" : "forward-compatible/unverified";
 	const infos: PiFffDiagnostic[] = [];
-	if (integrity.status === "registry-unverified") infos.push(diagnostic("PIFFF_INTEGRITY_UNVERIFIED", piVersion, piFffVersion, "local lock identity, version, resolved artifact, and integrity are consistent", "info"));
-	if (status === "forward-compatible/unverified") infos.push(diagnostic("PIFFF_FORWARD_UNVERIFIED", piVersion, piFffVersion, "eligible tuple passed structural capability validation", "info"));
-	const plan: PiFffRegistrationPlan = Object.freeze({
-		scope, packageRoot: canonicalRoot, entryPath: canonicalEntry, piVersion, piFffVersion, status,
-		integrity: integrity.status, diagnostics: Object.freeze(infos),
-		trace: Object.freeze(trace.slice()), captures: Object.freeze(captures),
-	});
+	if (integrity.status === "registry-unverified") infos.push(diagnostic("PIFFF_INTEGRITY_UNVERIFIED", piVersion, piFffVersion, "local lock identity, version, resolved artifact, and integrity are consistent", "info", profile));
+	if (status === "forward-compatible/unverified") infos.push(diagnostic("PIFFF_FORWARD_UNVERIFIED", piVersion, piFffVersion, "eligible tuple passed structural capability validation", "info", profile));
+	const common = {
+		scope, packageIdentity: profile.identity, profile: profile.profile, packageRoot: canonicalRoot, entryPath: canonicalEntry, piVersion, piFffVersion, status,
+		integrity: integrity.status, diagnostics: Object.freeze(infos), trace: Object.freeze(trace.slice()),
+	};
+	const plan: PiFffRegistrationPlan = profile.profile === "legacy"
+		? Object.freeze({ ...common, profile: "legacy" as const, captureMode: "legacy-pair" as const, captures: Object.freeze(captures!) })
+		: Object.freeze({ ...common, profile: "scoped" as const, captureMode: "replay-only" as const });
 	gates.set(plan, gate);
 	return { ok: true, plan };
 }
@@ -514,7 +574,7 @@ function validateResult(value: any, plan: PiFffRegistrationPlan, tool: string): 
 	return value;
 }
 
-function guardedSource(plan: PiFffRegistrationPlan, name: "read" | "grep"): SourceToolDefinition {
+function guardedSource(plan: Extract<PiFffRegistrationPlan, { profile: "legacy" }>, name: "read" | "grep"): SourceToolDefinition {
 	const source = plan.captures[name];
 	return {
 		...source,
@@ -529,6 +589,7 @@ function guardedSource(plan: PiFffRegistrationPlan, name: "read" | "grep"): Sour
 
 /** Apply tidy's schema seam around captured execution without registering it. */
 export function createPiFffComposites(plan: PiFffRegistrationPlan, options: SourceToolCompositionOptions): { read: SourceToolDefinition; grep: SourceToolDefinition } {
+	if (plan.profile !== "legacy") throw new SurfaceFailure("scoped replay-only plans do not expose read/grep captures");
 	return {
 		read: composeSourceTool(guardedSource(plan, "read"), options) as SourceToolDefinition,
 		grep: composeSourceTool(guardedSource(plan, "grep"), options) as SourceToolDefinition,
@@ -539,25 +600,25 @@ export function createPiFffComposites(plan: PiFffRegistrationPlan, options: Sour
 export function replayPiFffRegistrationPlan(
 	plan: PiFffRegistrationPlan,
 	api: Record<string, any>,
-	composites: { read: SourceToolDefinition; grep: SourceToolDefinition },
+	composites?: { read: SourceToolDefinition; grep: SourceToolDefinition },
 ): ReplayResult {
 	const gate = gates.get(plan);
 	if (!gate || gate.phase !== "planned") return { ok: false, diagnostic: diagnostic("PIFFF_FORWARD_PARTIAL", plan.piVersion, plan.piFffVersion, "plan is stale or already replayed", "fatal") };
 	const capability = validateApi(api);
 	if (capability) return { ok: false, diagnostic: diagnostic("PIFFF_CAPABILITY_MISSING", plan.piVersion, plan.piFffVersion, `ExtensionAPI.${capability}`) };
-	const invalidComposite = (["read", "grep"] as const).find((name) => {
+	const invalidComposite = plan.profile === "legacy" ? (["read", "grep"] as const).find((name) => {
 		const tool = composites?.[name];
 		return !tool || tool.name !== name || typeof tool.execute !== "function" || !tool.parameters || typeof tool.parameters !== "object";
-	});
+	}) : undefined;
 	if (invalidComposite) return { ok: false, diagnostic: diagnostic("PIFFF_SURFACE_BREAKING", plan.piVersion, plan.piFffVersion, `${invalidComposite} composite is malformed`) };
 	gate.phase = "committing";
 	let committed = 0;
 	try {
 		for (const call of plan.trace) {
-			const args = call.method === "registerTool" && (call.args[0] as any)?.name === "read"
-				? [composites.read]
-				: call.method === "registerTool" && (call.args[0] as any)?.name === "grep"
-					? [composites.grep] : call.args;
+			const args = plan.profile === "legacy" && call.method === "registerTool" && (call.args[0] as any)?.name === "read"
+				? [composites!.read]
+				: plan.profile === "legacy" && call.method === "registerTool" && (call.args[0] as any)?.name === "grep"
+					? [composites!.grep] : call.args;
 			api[call.method].apply(api, args);
 			committed++;
 		}

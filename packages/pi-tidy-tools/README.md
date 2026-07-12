@@ -20,9 +20,10 @@ pi-tidy-tools:
 - **Line 2** — the concrete target (path/command/pattern) and a colored result summary.
 
 By default, execution delegates to pi's built-in tools unchanged. When the
-optional pi-fff integration below is explicitly set up, separately installed
-pi-fff owns `read`/`grep` execution and lifecycle while tidy still owns their
-reasoning schema and inline rendering.
+optional pi-fff integration below is explicitly set up, legacy `pi-fff` owns
+`read`/`grep` execution while tidy owns their schema/rendering; scoped
+`@ff-labs/pi-fff` instead adds its own FFF tools while tidy keeps native
+`read`/`grep` ownership.
 
 ## In action
 
@@ -92,17 +93,25 @@ active. A missing, unreadable, or malformed config defaults to enabled.
 
 ## Optional pi-fff execution
 
-[pi-fff](https://www.npmjs.com/package/pi-fff) is optional and remains a
-separately installed Pi package. It is not bundled by, or a peer dependency of,
-pi-tidy-tools. The minimum supported tuple is Pi **0.80.6** and pi-fff
-**0.1.12**, with no upper version bound:
+pi-fff is optional and remains a separately installed Pi package. It is not
+bundled by, or a peer dependency of, pi-tidy-tools. Two capability profiles are
+supported, both on Pi **0.80.6+** and with no upper version bound:
+
+- **Legacy:** [`pi-fff`](https://www.npmjs.com/package/pi-fff) **0.1.12+**;
+  captures its enhanced `read`/`grep` and composes tidy presentation.
+- **Scoped:** [`@ff-labs/pi-fff`](https://www.npmjs.com/package/@ff-labs/pi-fff)
+  **0.6.0+**; replays `ffgrep`, `fffind`, optional `fff-multi-grep`, flags,
+  commands, lifecycle, autocomplete, and embedded tool renderers unchanged.
+  Tidy continues to own native `read` and `grep`; override mode is rejected
+  because its `grep`/`find` names conflict with tidy's owned surface.
 
 ```bash
-pi install npm:pi-fff@0.1.12       # user scope
-# or: pi install -l npm:pi-fff@0.1.12  # project scope
+pi install npm:@ff-labs/pi-fff@0.9.6       # user scope
+# or: pi install -l npm:@ff-labs/pi-fff@0.9.6  # project scope
+# Legacy remains supported: pi install npm:pi-fff@0.1.12
 ```
 
-Restart Pi, then explicitly transfer `read`/`grep` ownership:
+Restart Pi, then explicitly let tidy manage pi-fff registration. Legacy setup transfers `read`/`grep` presentation ownership; scoped setup keeps tidy/native `read`/`grep` and replays the separate FFF tools:
 
 ```text
 /tidy pi-fff setup
@@ -118,31 +127,35 @@ Linked `pi-tidy-tools.pi-fff.json` sidecars preserve each exact prior entry.
 After every settings file reaches its target, setup and teardown durably mark all
 linked sidecars `reload-pending`, then await Pi's reload. Replacement startup at
 the target atomically commits setup sidecars or retires teardown sidecars before
-routing tools; the old command frame's post-reload finalization is idempotent. A
-failed or aborted reload leaves the linked pending state intact, and the next
-startup finalizes it at that same safe boundary.
+routing tools; successful post-reload cleanup is idempotent. The old controller
+frame never initializes routing after a requested or rejected reload. A failed
+or aborted reload reports `recovery-pending`, leaves every linked journal pending,
+and only the next actual startup finalizes it at that same safe boundary.
 
 ### Ownership and scope
 
 `/tidy pi-fff status` reports one of these truthful states:
 
 - `absent` — tidy presents native Pi `read`/`grep`.
-- `standalone` — standalone pi-fff owns them; run setup for tidy presentation.
+- `standalone` — legacy pi-fff owns `read`/`grep`; scoped pi-fff leaves them with tidy/native while loading its own tools. Run setup to remove duplicate-extension risk and establish managed routing.
 - `filtered-unmanaged` — neither extension claims them until explicit setup.
-- `managed-compatible` — pi-fff executes and manages its runtime; tidy owns the
-  reasoning schema and rendering.
+- `managed-compatible` — for legacy, pi-fff executes `read`/`grep` and tidy
+  owns their schema/rendering; for scoped, status reports
+  `tidy/native + pi-fff tools` and tidy owns native `read`/`grep`.
 - `managed-invalid` or `recovery-pending` — native Pi owns them; the adapter
   fails closed instead of silently falling back or partly registering.
 - `disabled` — native Pi owns them. Turning tidy off never edits Pi package
   settings; the committed sidecars remain available for later teardown.
 
-Pi package precedence still applies: a project `npm:pi-fff` entry shadows the
-user entry. A broken selected project install is reported and **never** falls
-back to the user copy. Setup nevertheless preflights and journals every
-participant it discovers so teardown can restore both scopes exactly.
+Pi package precedence still applies by selected identity: a project pi-fff
+entry shadows the user entry, with no fallback from a broken project install.
+A settings scope containing both package identities (or duplicates) is
+ambiguous and rejected. Setup preflights and journals every participant it
+discovers; teardown restores the exact source string and entry in each scope.
 
-The exact Pi `0.80.6` × pi-fff `0.1.12` baseline is `verified`. Newer tuples at
-or above both floors are eligible after structural capability validation and
+The exact Pi `0.80.6` × `pi-fff@0.1.12` and Pi `0.80.6` ×
+`@ff-labs/pi-fff@0.9.6` tuples are `verified`. Newer tuples at or above their
+profile floors are eligible after structural capability validation and
 are shown as `forward-compatible/unverified` until that exact tuple passes the
 release smoke matrix. This status is not a claim that a newer release is
 broken. Release maintainers must run:
@@ -176,7 +189,7 @@ and do not copy a project entry into the user scope (or vice versa).
 
 ### Editor caveats
 
-pi-fff `0.1.12` installs a custom autocomplete editor and does not compose with
+Legacy pi-fff `0.1.12` installs a custom autocomplete editor and does not compose with
 another custom editor; it is last-writer-wins. Tidy warns when one is already
 installed. Disable one editor feature and `/reload`. Turning autocomplete off
 in `/fff-features` persists the setting but the current editor remains active

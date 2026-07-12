@@ -9,7 +9,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(here, "..");
 const repoRoot = resolve(packageRoot, "../..");
 const piVersion = process.env.PI_VERSION ?? "0.80.6";
-const piFffVersion = process.env.PI_FFF_VERSION ?? "0.1.12";
+const piFffPackage = process.env.PI_FFF_PACKAGE ?? "pi-fff";
+const piFffVersion = process.env.PI_FFF_VERSION ?? (piFffPackage === "@ff-labs/pi-fff" ? "0.9.6" : "0.1.12");
 const root = await mkdtemp(join(tmpdir(), "pi-tidy-installed-fff-"));
 const harness = join(root, "harness");
 const project = join(root, "project");
@@ -31,7 +32,7 @@ try {
 	for (const npmRoot of [join(agent, "npm"), join(project, ".pi", "npm")]) {
 		await mkdir(npmRoot, { recursive: true });
 		await writeFile(join(npmRoot, "package.json"), JSON.stringify({ private: true }));
-		run("npm", ["install", "--omit=dev", "--omit=peer", "--no-audit", "--no-fund", `pi-fff@${piFffVersion}`], { cwd: npmRoot });
+		run("npm", ["install", "--omit=dev", "--omit=peer", "--no-audit", "--no-fund", `${piFffPackage}@${piFffVersion}`], { cwd: npmRoot });
 	}
 	await mkdir(join(harness, "scripts"), { recursive: true });
 	await cp(join(here, "pi-fff-installed-runner.ts"), join(harness, "scripts", "runner.ts"));
@@ -49,7 +50,7 @@ try {
 	`);
 	const output = run(process.execPath, ["launch.mjs"], {
 		cwd: harness,
-		env: { ...process.env, HOME: root, PI_CODING_AGENT_DIR: agent, FIXTURE_ROOT: root, PI_VERSION: piVersion, PI_FFF_VERSION: piFffVersion },
+		env: { ...process.env, HOME: root, PI_CODING_AGENT_DIR: agent, FIXTURE_ROOT: root, PI_VERSION: piVersion, PI_FFF_PACKAGE: piFffPackage, PI_FFF_VERSION: piFffVersion },
 		timeout: 120_000,
 	});
 	const evidence = JSON.parse(output.slice(output.indexOf("{")));
@@ -57,7 +58,7 @@ try {
 	process.stdout.write(`${JSON.stringify(evidence, null, 2)}\n`);
 } catch (error) {
 	const detail = error?.stderr?.toString?.() || error?.stdout?.toString?.() || error?.stack || String(error);
-	throw new Error(`Installed pi-fff fixture failed for Pi ${piVersion} / pi-fff ${piFffVersion}:\n${detail}`);
+	throw new Error(`Installed pi-fff fixture failed for Pi ${piVersion} / ${piFffPackage} ${piFffVersion}:\n${detail}`);
 } finally {
 	await rm(root, { recursive: true, force: true });
 }

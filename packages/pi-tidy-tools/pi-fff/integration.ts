@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isPlannedPiFffRegistrationPlan, type PiFffRegistrationPlan } from "./adapter.js";
+import { matchPiFffSource, type PiFffCapabilityProfile, type PiFffPackageIdentity } from "./profiles.js";
 
 export type PiFffLifecycleScope = "project" | "user";
 export type PiFffLifecycleAction = "setup" | "status" | "teardown";
@@ -13,6 +14,8 @@ export type PiFffLifecycleDiagnosticCode =
 
 export interface PiFffLifecycleParticipant {
 	readonly scope: PiFffLifecycleScope;
+	readonly packageIdentity: PiFffPackageIdentity;
+	readonly profile: PiFffCapabilityProfile;
 	readonly settingsPath: string;
 	readonly packageRoot: string;
 	readonly entryIndex: number;
@@ -73,6 +76,8 @@ export interface PiFffLifecycle {
 
 interface ParticipantRecord {
 	scope: PiFffLifecycleScope;
+	packageIdentity: PiFffPackageIdentity;
+	profile: PiFffCapabilityProfile;
 	settingsPath: string;
 	entryIndex: number;
 	priorEntry: unknown;
@@ -100,7 +105,6 @@ interface LocatedParticipant extends PiFffLifecycleParticipant {
 }
 
 const JOURNAL_NAME = "pi-tidy-tools.pi-fff.json";
-const PI_FFF_SOURCE = /^npm:pi-fff(?:@.+)?$/;
 const scopes: readonly PiFffLifecycleScope[] = ["project", "user"];
 
 const defaultFs: PiFffLifecycleFs = {
@@ -180,18 +184,21 @@ async function discover(fs: PiFffLifecycleFs, cwd: string, agentDir: string): Pr
 		const packages = settings.packages;
 		if (packages === undefined) continue;
 		if (!Array.isArray(packages)) throw new LifecycleFailure("PIFFF_SETTINGS_DRIFT", `${scope} packages is not an array`);
-		const indexes = packages.map((entry, index) => PI_FFF_SOURCE.test(sourceOf(entry) ?? "") ? index : -1).filter((index) => index >= 0);
-		if (indexes.length > 1) throw new LifecycleFailure("PIFFF_CONFIG_AMBIGUOUS", `${scope} settings contains duplicate npm:pi-fff entries`);
-		if (!indexes.length) continue;
+		const matches = packages.flatMap((entry, index) => {
+			const matched = matchPiFffSource(sourceOf(entry));
+			return matched ? [{ index, packageSource: matched.packageProfile }] : [];
+		});
+		if (matches.length > 1) throw new LifecycleFailure("PIFFF_CONFIG_AMBIGUOUS", `${scope} settings contains both or duplicate pi-fff package identities`);
+		if (!matches.length) continue;
 		if (found.some((participant) => participant.settingsPath === canonical.path)) {
 			throw new LifecycleFailure("PIFFF_CONFIG_AMBIGUOUS", `project and user settings resolve to the same canonical file: ${canonical.path}`);
 		}
-		const entryIndex = indexes[0]!;
+		const { index: entryIndex, packageSource } = matches[0]!;
 		const priorEntry = clone(packages[entryIndex]);
+		const managedRoot = scope === "project" ? join(resolve(cwd), ".pi", "npm") : join(resolve(agentDir), "npm");
 		found.push({
-			scope, settingsPath: canonical.path, packageRoot: scope === "project"
-				? join(resolve(cwd), ".pi", "npm", "node_modules", "pi-fff")
-				: join(resolve(agentDir), "npm", "node_modules", "pi-fff"),
+			scope, packageIdentity: packageSource.identity, profile: packageSource.profile,
+			settingsPath: canonical.path, packageRoot: join(managedRoot, "node_modules", ...packageSource.segments),
 			entryIndex, priorEntry, managedEntry: managedEntry(priorEntry), settingsBytes: canonical.bytes,
 			settings: settings as LocatedParticipant["settings"], mode: canonical.mode,
 			journalPath: join(dirname(candidate), JOURNAL_NAME),
@@ -201,7 +208,7 @@ async function discover(fs: PiFffLifecycleFs, cwd: string, agentDir: string): Pr
 }
 
 function recordOf(participant: PiFffLifecycleParticipant): ParticipantRecord {
-	return { scope: participant.scope, settingsPath: participant.settingsPath, entryIndex: participant.entryIndex, priorEntry: clone(participant.priorEntry), managedEntry: clone(participant.managedEntry) };
+	return { scope: participant.scope, packageIdentity: participant.packageIdentity, profile: participant.profile, settingsPath: participant.settingsPath, entryIndex: participant.entryIndex, priorEntry: clone(participant.priorEntry), managedEntry: clone(participant.managedEntry) };
 }
 
 function journalFor(transactionId: string, participant: LocatedParticipant, participants: LocatedParticipant[]): Journal {
@@ -348,7 +355,7 @@ async function recover(fs: PiFffLifecycleFs, cwd: string, agentDir: string, chec
 	const operation = journals.some((journal) => journal.operation === "teardown") ? "teardown" : "setup";
 	const states = participants.map((participant) => equal(currentEntry(participant), participant.priorEntry) ? "prior" : equal(currentEntry(participant), participant.managedEntry) ? "managed" : "drift");
 	const paths = participants.map((item) => item.settingsPath);
-	if (states.includes("drift")) return result("error", "Recovery is unsafe because a managed entry drifted; restore it manually from the linked sidecars.", { code: "PIFFF_RECOVERY_UNSAFE", manualPaths: paths });
+	if (states.includes("drift")) return result("error", "Recovery is unsafe because a managed entry drifted; restore it manually from the linked sidecars.", { code: "PIFFF_RECOVERY_UNSAFE", manualPaths: paths, participants });
 	const fullyCommittedSetup = operation === "setup" && journals.length === participants.length && journals.every((journal) => journal.phase === "committed") && states.every((state) => state === "managed");
 	if (fullyCommittedSetup) return result("ready", "Managed pi-fff transaction is committed.", { participants });
 	// Pi starts the replacement extension inside the awaited reload call. Reaching
@@ -366,9 +373,12 @@ async function recover(fs: PiFffLifecycleFs, cwd: string, agentDir: string, chec
 			}
 			return result("ready", "Managed pi-fff transaction completed after successful reload.", { participants });
 		} catch (error) {
-			return result("error", `Recovery could not finalize setup: ${error instanceof Error ? error.message : String(error)}`, { code: "PIFFF_RECOVERY_UNSAFE", manualPaths: paths });
+			return result("error", `Recovery could not finalize setup: ${error instanceof Error ? error.message : String(error)}`, { code: "PIFFF_RECOVERY_UNSAFE", manualPaths: paths, participants });
 		}
 	}
+	// A missing subset is intentional crash evidence: settings were fully restored
+	// and teardown journal removal stopped midway. Removing the remainder is safe
+	// and idempotent; requiring the original linked count would strand recovery.
 	const teardownReloadSucceeded = operation === "teardown" && states.every((state) => state === "prior")
 		&& journals.length <= participants.length && journals.every((journal) => journal.phase === "reload-pending");
 	if (teardownReloadSucceeded) {
@@ -379,7 +389,7 @@ async function recover(fs: PiFffLifecycleFs, cwd: string, agentDir: string, chec
 			}
 			return result("ready", "pi-fff teardown completed after successful reload.");
 		} catch (error) {
-			return result("error", `Recovery could not finalize teardown: ${error instanceof Error ? error.message : String(error)}`, { code: "PIFFF_RECOVERY_UNSAFE", manualPaths: paths });
+			return result("error", `Recovery could not finalize teardown: ${error instanceof Error ? error.message : String(error)}`, { code: "PIFFF_RECOVERY_UNSAFE", manualPaths: paths, participants });
 		}
 	}
 	const targetReached = journals.length === participants.length
@@ -393,7 +403,7 @@ async function recover(fs: PiFffLifecycleFs, cwd: string, agentDir: string, chec
 			}
 			return result("recovery-reload-required", "A pi-fff transition reached its target but reload did not complete. Run /reload once before using the integration.", { code: "PIFFF_RECOVERY_RELOAD_REQUIRED", reload: "required", manualPaths: paths, participants });
 		} catch (error) {
-			return result("error", `Recovery could not persist reload-pending state: ${error instanceof Error ? error.message : String(error)}`, { code: "PIFFF_RECOVERY_UNSAFE", manualPaths: paths });
+			return result("error", `Recovery could not persist reload-pending state: ${error instanceof Error ? error.message : String(error)}`, { code: "PIFFF_RECOVERY_UNSAFE", manualPaths: paths, participants });
 		}
 	}
 	try {
@@ -412,9 +422,9 @@ async function recover(fs: PiFffLifecycleFs, cwd: string, agentDir: string, chec
 				if (existing) await updateJournal(fs, participant.journalPath, (journal) => { journal.operation = "setup"; journal.phase = "committed"; });
 			}
 		}
-		return result("recovery-reload-required", "Recovered interrupted pi-fff transaction. Run /reload once before using the integration.", { code: "PIFFF_RECOVERY_RELOAD_REQUIRED", reload: "required", manualPaths: paths });
+		return result("recovery-reload-required", "Recovered interrupted pi-fff transaction. Run /reload once before using the integration.", { code: "PIFFF_RECOVERY_RELOAD_REQUIRED", reload: "required", manualPaths: paths, participants });
 	} catch (error) {
-		return result("error", `Recovery could not proceed safely: ${error instanceof Error ? error.message : String(error)}`, { code: "PIFFF_RECOVERY_UNSAFE", manualPaths: paths });
+		return result("error", `Recovery could not proceed safely: ${error instanceof Error ? error.message : String(error)}`, { code: "PIFFF_RECOVERY_UNSAFE", manualPaths: paths, participants });
 	}
 }
 
@@ -443,10 +453,10 @@ export function createPiFffLifecycle(options: CreatePiFffLifecycleOptions): PiFf
 						return result("error", "An incomplete transaction requires startup recovery before setup.", { code: "PIFFF_TRANSACTION_INCOMPLETE", manualPaths: existing.participants.map((item) => item.settingsPath) });
 					}
 					const participants = await discover(fs, options.cwd, options.agentDir);
-					if (!participants.length) return result("error", "No npm:pi-fff package entries were discovered.", { code: "PIFFF_CONFIG_MISSING" });
+					if (!participants.length) return result("error", "No pi-fff package entries were discovered.", { code: "PIFFF_CONFIG_MISSING" });
 					for (const participant of participants) {
 						const plan = await options.preflight(participant);
-						if (!isPlannedPiFffRegistrationPlan(plan) || plan.scope !== participant.scope || resolve(plan.packageRoot) !== resolve(participant.packageRoot)) {
+						if (!isPlannedPiFffRegistrationPlan(plan) || plan.scope !== participant.scope || plan.packageIdentity !== participant.packageIdentity || plan.profile !== participant.profile || resolve(plan.packageRoot) !== resolve(participant.packageRoot)) {
 							throw new LifecycleFailure("PIFFF_PREFLIGHT_FAILED", `${participant.scope} adapter preflight did not return its genuine complete uncommitted plan`);
 						}
 					}
@@ -471,7 +481,12 @@ export function createPiFffLifecycle(options: CreatePiFffLifecycleOptions): PiFf
 						await checkpoint(`setup:journal:${participant.scope}:reload-pending`);
 					}
 					try { await command.reload(); }
-					catch (error) { throw new LifecycleFailure("PIFFF_RECOVERY_RELOAD_REQUIRED", `Reload did not complete: ${error instanceof Error ? error.message : String(error)}`, participants.map((item) => item.settingsPath)); }
+					catch (error) {
+						return result("error", `Reload did not complete: ${error instanceof Error ? error.message : String(error)}`, {
+							code: "PIFFF_RECOVERY_RELOAD_REQUIRED", reload: "required",
+							manualPaths: participants.map((item) => item.settingsPath), participants,
+						});
+					}
 					for (const participant of participants) {
 						await updateJournal(fs, participant.journalPath, (journal) => { journal.phase = "committed"; });
 						await checkpoint(`setup:journal:${participant.scope}:committed`);
@@ -509,7 +524,12 @@ export function createPiFffLifecycle(options: CreatePiFffLifecycleOptions): PiFf
 					await checkpoint(`teardown:journal:${participant.scope}:reload-pending`);
 				}
 				try { await command.reload(); }
-				catch (error) { throw new LifecycleFailure("PIFFF_RECOVERY_RELOAD_REQUIRED", `Reload did not complete: ${error instanceof Error ? error.message : String(error)}`, participants.map((item) => item.settingsPath)); }
+				catch (error) {
+					return result("error", `Reload did not complete: ${error instanceof Error ? error.message : String(error)}`, {
+						code: "PIFFF_RECOVERY_RELOAD_REQUIRED", reload: "required",
+						manualPaths: participants.map((item) => item.settingsPath), participants,
+					});
+				}
 				for (const participant of participants) { await removeJournal(fs, participant.journalPath); await checkpoint(`teardown:journal:${participant.scope}:removed`); }
 				return result("teardown-committed", "Exact prior pi-fff entries were restored and journals retired.", { reload: "requested", participants });
 			} catch (error) {

@@ -4,9 +4,9 @@
 
 **Decision date:** 2026-07-11
 
-**Minimum versions:** Pi / `@earendil-works/pi-coding-agent` **>=0.80.6** + `pi-fff` **>=0.1.12**, with no upper bound
+**Minimum versions:** Pi / `@earendil-works/pi-coding-agent` **>=0.80.6** + legacy `pi-fff` **>=0.1.12** or scoped `@ff-labs/pi-fff` **>=0.6.0**, with no upper bound
 
-**Verified baseline tuple:** Pi **0.80.6** + `pi-fff` **0.1.12**
+**Verified baseline tuples:** Pi **0.80.6** + `pi-fff` **0.1.12**; Pi **0.80.6** + `@ff-labs/pi-fff` **0.9.6**
 
 ## Executive verdict
 
@@ -14,9 +14,40 @@ Ship a **forward-compatible, capability-validated adapter**, not an exact-versio
 
 The adapter should resolve the active `npm:pi-fff` package from Pi's project or user npm root, construct an isolated loader using the running Pi's available Jiti and aliases, invoke the factory against a transactional recorder, validate Pi and pi-fff capabilities, and commit only after the complete recorded surface is safe. It must capture exactly one compatible `read` and one compatible `grep`, replace those slots with tidy composites, and replay compatible additional registrations in their original order.
 
-The pi-fff contract is the required behavior-bearing baseline, not byte-exact equality with `0.1.12`. Required baseline schema properties and types and callable executors must remain. Additive optional schema fields and metadata are accepted and preserved, including all new prompt metadata. Metadata wording changes alone are compatible. Additional non-overlapping registrations through known Pi registration methods may be recorded and forwarded in order. Missing or type-incompatible baseline fields, duplicate/overlapping built-ins, unknown registration methods, load failures, or a trace that cannot be committed without a known partial-registration risk fail closed before registration.
+The pi-fff contract is the required behavior-bearing baseline, not byte-exact equality with `0.1.12`. Required baseline schema properties and types and callable executors must remain. Additive optional schema fields other than tidy-reserved `reasoning`, and metadata including new prompt metadata, are accepted and preserved. Metadata wording changes alone are compatible. Additional non-overlapping registrations through known Pi registration methods may be recorded and forwarded in order. Missing or type-incompatible baseline fields, a captured source-owned `reasoning`, duplicate/overlapping built-ins, unknown registration methods, load failures, or a trace that cannot be committed without a known partial-registration risk fail closed before registration.
 
 If any pre-commit check fails, the adapter must not replay any pi-fff registration or register pi-fff-backed composites. It leaves Pi's native `read`/`grep` in place, keeps tidy's other five owned overrides and `/tidy`, and emits one stable, actionable diagnostic. This does not mean every unsupported or unverified version is broken: below-minimum versions are outside the policy, while eligible newer versions remain usable when their capabilities validate.
+
+## Scoped package profile addendum (GitHub #28)
+
+The scoped package is a distinct capability profile, not a renamed legacy
+artifact. Direct inspection of the installed `@ff-labs/pi-fff@0.9.6`
+`src/index.ts`, manifest, and npm lock established:
+
+- source identity `npm:@ff-labs/pi-fff` resolves to
+  `node_modules/@ff-labs/pi-fff`; its manifest must identify that exact name;
+- npm lock identity is `node_modules/@ff-labs/pi-fff` (and, for old lock forms,
+  dependency key `@ff-labs/pi-fff`), with resolved artifact path
+  `/@ff-labs/pi-fff/-/pi-fff-<version>.tgz`;
+- default `tools-and-ui` / `tools-only` registers `ffgrep`, `fffind`, optional
+  `fff-multi-grep`, four `fff-*` flags, `/fff-mode`, `/fff-health`,
+  `/fff-rescan`, `session_start`, and `session_shutdown`; custom
+  `renderCall`/`renderResult` functions are embedded in tool definitions;
+- the factory calls `getFlag` while evaluating, so the recorder must expose the
+  real nonmutating getter; command closures capture `appendEntry`, which must
+  remain deferred until replay activates the plan;
+- scoped default mode has no legacy `read`/`grep` capture surface. Tidy owns and
+  registers native `read`/`grep`, while every validated nonconflicting scoped
+  registration is replayed unchanged and status reports
+  `tidy/native + pi-fff tools`;
+- scoped `override` resolves names `grep`, `find`, and optional `multi_grep` and
+  is rejected before replay: `grep` is an unsupported capture surface and
+  `find` conflicts with tidy ownership.
+
+A settings scope containing both identities is ambiguous. Project precedence
+and no-fallback behavior otherwise remain unchanged. Lifecycle journals retain
+the exact source identity and prior string/object entry, so teardown restores
+bytes semantically to the original package entry rather than translating names.
 
 ## Evidence classification
 
@@ -65,7 +96,7 @@ The capability contract, recorder/commit boundary, forward-version policy, diagn
 11. The adapter **MUST** invoke the loaded factory exactly once with a recorder proxy that records known Pi registration methods without forwarding during validation, binds non-registration methods and `events` correctly for later closure use, and prevents provider removal or any other known registration-time operation from escaping the transaction.
 12. Known registration methods are the compatible methods exposed by the validated running Pi API, including baseline `registerTool`, `registerCommand`, `registerShortcut`, `registerFlag`, `registerMessageRenderer`, `registerEntryRenderer`, `registerProvider`, `unregisterProvider`, and `on` where present. A factory access to an unknown registration-like method **MUST** fail as `SURFACE_BREAKING`; it must not be guessed at or forwarded.
 13. After factory resolution and before any Pi registration side effect, the adapter **MUST** validate the complete ordered trace. It **MUST** find exactly one capturable `read` and exactly one capturable `grep`. Missing, duplicate, or overlapping built-in registrations are breaking. Registrations that conflict with tidy-owned built-ins, existing names, commands, handlers, providers, or renderer slots are breaking unless the contract explicitly defines their composition.
-14. For `read` and `grep`, every baseline schema property **MUST** remain with a compatible type and required/optional status, and `execute` **MUST** remain callable. Additive optional properties are compatible and **MUST** be preserved. Removing a baseline field, making an optional baseline field required, changing its accepted type incompatibly, or changing/removing a behavior-bearing callable is `SURFACE_BREAKING`.
+14. For `read` and `grep`, every baseline schema property **MUST** remain with a compatible type and required/optional status, and `execute` **MUST** remain callable. Additive optional properties are compatible and **MUST** be preserved except for the tidy-reserved `reasoning` collision defined in rule 19. Removing a baseline field, making an optional baseline field required, changing its accepted type incompatibly, defining source-owned `reasoning`, or changing/removing a behavior-bearing callable is `SURFACE_BREAKING`.
 15. Metadata text, descriptions, snippets, guidelines, labels, and ordering **MAY** change without breaking compatibility unless a behavior-bearing field disappears or changes type. All current and newly added prompt metadata **MUST** be preserved in the composite; validation **MUST NOT** compare metadata byte-for-byte.
 16. Additional non-overlapping registrations through known Pi registration methods **MAY** be accepted, recorded, and forwarded unchanged in original order. Their definitions and callbacks **MUST** satisfy the running Pi method's structural contract. Unknown methods, duplicate names, overlapping built-ins, unsafe unregistration, registration-time side effects, or ordering/commit requirements that cannot be preserved are breaking.
 17. On success, the adapter **MUST** replay the validated trace once in order, substituting tidy composites at the original `read` and `grep` slots and forwarding every compatible registration unchanged. It **MUST NOT** require exact nine-call equality for newer versions and **MUST NOT** call the factory again.
@@ -73,9 +104,9 @@ The capability contract, recorder/commit boundary, forward-version policy, diagn
 
 ### Captured tools and composite execution
 
-19. The composite **MUST** preserve every pi-fff schema property and its requiredness, every metadata and prompt field, and every additive compatible extension. Tidy may apply only its mode-specific reasoning transformation and tool-named reasoning guidance. In `result` mode it **MUST** retain the current pi-fff schema unchanged.
-20. The composite executor **MUST** remove only tidy's `reasoning` field and call the captured function with the original receiver and unmodified `(toolCallId, params, signal, onUpdate, ctx)` values. It **MUST** return/await the exact pi-fff result and propagate thrown errors unchanged. It **MUST NOT** normalize content, details, updates, fallback behavior, or error signaling.
-21. Runtime guards **MUST** validate settled and partial results as objects with a `content` array whose entries have supported Pi content shapes; if present, `details` and `terminate` **MUST** be preserved. A malformed result is runtime incompatibility and never grounds for silent native fallback.
+19. The composite **MUST** preserve every compatible pi-fff schema property and its requiredness, every metadata and prompt field, and every additive compatible extension. Tidy may apply only its mode-specific reasoning transformation and tool-named reasoning guidance. Because `reasoning` is tidy-owned and required in non-result modes, a captured pi-fff `read` or `grep` schema that defines its own `reasoning` property is `SURFACE_BREAKING`; tidy must never silently suppress its injection. Generic source composition follows the same fail-closed rule outside result mode. In `result` mode composition **MUST** retain a source schema and legitimate source `reasoning` parameters unchanged.
+20. The composite executor **MUST** remove only tidy's injected `reasoning` field and call the captured function with the original receiver and exactly five unmodified argument values `(toolCallId, params, signal, onUpdate, ctx)`, including the original `onUpdate` function identity. It **MUST** return/await the exact pi-fff settled result and propagate thrown errors unchanged. It **MUST NOT** normalize content, details, updates, fallback behavior, or error signaling. Intercepting partial updates would require replacing `onUpdate` and therefore cannot simultaneously satisfy callback identity; exact argument identity is authoritative. Partial updates flow unchanged through pi-fff into Pi and tidy's existing live-rendering path, and are observed by release/runtime tests rather than adapter-guarded.
+21. Runtime guards **MUST** validate settled results as objects with a `content` array whose entries have supported Pi content shapes; if present, `details` and `terminate` **MUST** be preserved. A malformed settled result is runtime incompatibility and never grounds for silent native fallback. The adapter **MUST NOT** wrap `onUpdate` to validate partial updates.
 22. Representative invariants **MUST** cover both baseline result families:
    - `read`: native Pi results on successful/fallback reads; non-throwing text plus `{ resolution }` on path-resolution failure.
    - `grep`: native Pi details on compatibility fallback; FFF text plus `buildGrepDetails` fields (`truncation`, limits, scope, cursor, constraints, suggestion, structured error, disabled feature) on indexed execution.
@@ -202,8 +233,8 @@ These tests are release-blocking and deterministic.
 | Breaking-forward fixtures | removed/type-changed baseline field; optional made required; noncallable executor; duplicate `read`/`grep`; overlapping tool/command; unknown registration method; unsafe unregistration; load failure; partial-commit requirement all fail before replay |
 | Feature state | baseline all-enabled succeeds; missing read, grep, or both produces `SURFACE_BREAKING`; compatible optional feature metadata preserved |
 | Replay | composites replace captures in original slots; all compatible forwarded arguments/handler identities unchanged; additions preserve order; induced unexpected failure produces runtime incompatibility and no later calls |
-| Composite schema | tidy modes retain all baseline and additive schema/prompt metadata; `result` is current-schema identical; metadata text changes do not reject; render ownership remains tidy for captured tools |
-| Executor/results | receiver/five arguments/update identity; strips only reasoning; preserves value/details/`terminate`; errors/abort propagate; exact/fuzzy/missing read and indexed/fallback/error/paginated grep; malformed shapes fail runtime guards |
+| Composite schema | tidy modes retain all compatible baseline/additive schema and prompt metadata while rejecting source-owned `reasoning`; generic `result` composition is current-schema identical; metadata text changes do not reject; render ownership remains tidy for captured tools |
+| Executor/results | receiver/exactly five arguments/original update-callback identity; strips only tidy-injected reasoning; preserves settled value/details/`terminate`; errors/abort propagate; partial updates pass unchanged through Pi/tidy's existing path; exact/fuzzy/missing read and indexed/fallback/error/paginated grep; malformed settled shapes fail runtime guards |
 | Registry/lifecycle | exactly one `read`/`grep`; all validated additional registrations present once; repeated start/shutdown/reload creates no stale runtime, cursor, handler, watcher, or callback |
 | Diagnostics | each taxonomy category snapshots detected versions, safe detail, recovery, single notification; unsupported wording never says below-minimum or unverified versions are automatically broken |
 | Newest releases | CI/release job installs the newest available Pi and newest available pi-fff, runs structural/integration suites, and records `FORWARD_UNVERIFIED` or concrete incompatibility without adding an upper bound |
@@ -222,7 +253,7 @@ Run against the packed tidy artifact. Always test the verified baseline tarball 
 | Real TUI autocomplete | `@partial`, quoted path with spaces, selection insertion, Escape, fallback to Pi path completion, no crash on abort |
 | `/fff-features` | dialog width/focus/keys; cancel leaves state; save changes active tools; built-in enhancement changes after reload; autocomplete-off message tells user to reload |
 | Editor ownership | no competing editor baseline; then editor loaded before/after adapter to confirm warning, last-writer behavior, or a newly validated composition capability |
-| Runtime result semantics | native and FFF read/grep result families, partial updates, errors, aborts, details and `terminate`; guards reject malformed synthetic results |
+| Runtime result semantics | native and FFF read/grep result families, unchanged partial updates through the existing Pi/tidy path, exact update-callback identity, errors, aborts, details and `terminate`; settled-result guards reject malformed synthetic results |
 | Lifecycle | `/reload`, `/new`, `/resume`, `/fork`, and exit; no stale editor, duplicate handler, orphan watcher/native process, locked database, or old-runtime callback |
 | Modes | TUI fully works; RPC commands/notifications work and `custom()` limitation is understood; JSON/print do not hang due to background resources |
 | Native/platform | supported Linux architectures at minimum; macOS and Windows only when claimed, including native addon load and file watching |
@@ -237,7 +268,7 @@ The 2026-07-11 real-TUI probe passed the baseline feature dialog and autocomplet
 2. **Same-shape semantic breaks are not detectable before use.** A forward release can preserve every schema, callable, registration, and result shape while changing executor, lifecycle, prompt, TUI, or fallback meaning. Runtime guards detect malformed shapes, not semantic equivalence; real-TUI/release smoke coverage and runtime observation remain required.
 3. **Evaluation is not sandboxed.** The recorder prevents known Pi registration side effects, not arbitrary module/factory side effects. Baseline `0.1.12` was inspected; forward structural acceptance cannot prove a newer factory is side-effect free.
 4. **Legacy import bridge.** Baseline pi-fff declares wildcard `@mariozechner/*` peers while Pi is `@earendil-works/*`. Aliases remain required when those imports remain. Pi alias/export changes are compatible only if equivalent running-module identity can be constructed. Pi's history confirms cross-root resolution regressions ([Pi PR #1821](https://github.com/earendil-works/pi/pull/1821)); separate TUI copies can split singleton state ([Pi issue #4748](https://github.com/earendil-works/pi/issues/4748)).
-5. **Non-transactional commit.** Pi 0.80.6 has no unregister-tool/command/handler transaction. Validation rejects known partial-commit risks, but an unexpected replay failure after the first registration still requires a full reload.
+5. **Non-transactional commit.** Pi 0.80.6 has no unregister-tool/command/handler transaction. Validation rejects known partial-commit risks, but an unexpected replay failure after the first registration still requires a full reload. During teardown recovery, a partially removed linked journal set is intentional evidence that settings restoration completed and cleanup crashed; recovery idempotently removes the remaining journals rather than treating already-removed sidecars as drift.
 6. **Editor is last-writer-wins at baseline.** `pi-fff@0.1.12` does not compose with or restore a preexisting editor, and live disabling leaves its editor until reload. A future same-shape implementation could alter this behavior; smoke testing must establish it.
 7. **Global config ownership.** Even a project npm install reads/writes feature state through running Pi's `getAgentDir()`. Capability checks establish the root shape, not user expectations about project-local flags.
 8. **Native runtime behavior.** `@ff-labs/fff-node` has platform, watcher, and indexing side effects. Open upstream issues include scanning a home directory/OneDrive ([#6](https://github.com/ShpetimA/pi-fff/issues/6)) and grep scope outside the initial workspace ([#4](https://github.com/ShpetimA/pi-fff/issues/4)). These are pi-fff behavior, not automatically adapter incompatibility, but belong in smoke coverage.

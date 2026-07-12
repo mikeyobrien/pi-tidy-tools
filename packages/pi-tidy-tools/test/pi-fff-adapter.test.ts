@@ -58,6 +58,7 @@ function baselineFactory(extra?: (pi: any) => void) {
 
 async function fixture(options: {
 	projectEntry?: unknown; userEntry?: unknown; projectVersion?: string; userVersion?: string;
+	projectIdentity?: "pi-fff" | "@ff-labs/pi-fff"; userIdentity?: "pi-fff" | "@ff-labs/pi-fff";
 	projectFactory?: ReturnType<typeof baselineFactory>; userFactory?: ReturnType<typeof baselineFactory>;
 	projectManifest?: Record<string, unknown>; userManifest?: Record<string, unknown>;
 	projectLock?: Record<string, unknown>; userLock?: Record<string, unknown>;
@@ -68,20 +69,21 @@ async function fixture(options: {
 	const projectPackage = join(cwd, ".pi", "npm", "node_modules", "pi-fff");
 	const userPackage = join(agentDir, "npm", "node_modules", "pi-fff");
 	const factories = new Map<string, ReturnType<typeof baselineFactory>>();
-	const writeScope = async (scope: "project" | "user", entry: unknown, version: string, supplied: ReturnType<typeof baselineFactory> | undefined, manifest: Record<string, unknown> | undefined, lock: Record<string, unknown> | undefined) => {
+	const writeScope = async (scope: "project" | "user", entry: unknown, version: string, supplied: ReturnType<typeof baselineFactory> | undefined, manifest: Record<string, unknown> | undefined, lock: Record<string, unknown> | undefined, identity: "pi-fff" | "@ff-labs/pi-fff") => {
 		const settings = scope === "project" ? join(cwd, ".pi", "settings.json") : join(agentDir, "settings.json");
-		const packageRoot = scope === "project" ? projectPackage : userPackage;
+		const managedRoot = scope === "project" ? join(cwd, ".pi", "npm") : join(agentDir, "npm");
+		const packageRoot = join(managedRoot, "node_modules", ...identity.split("/"));
 		await mkdir(packageRoot, { recursive: true });
 		await writeFile(settings, JSON.stringify({ packages: [entry] }));
 		await writeFile(join(packageRoot, "index.ts"), "export default function () {}\n");
 		await writeFile(join(packageRoot, "package.json"), JSON.stringify({
-			name: "pi-fff", version, type: "module", pi: { extensions: ["./index.ts"] }, ...manifest,
+			name: identity, version, type: "module", pi: { extensions: ["./index.ts"] }, ...manifest,
 		}));
 		if (lock) await writeFile(join(packageRoot, "..", "..", "package-lock.json"), JSON.stringify(lock));
 		factories.set(await realpath(join(packageRoot, "index.ts")), supplied ?? baselineFactory());
 	};
-	if (options.projectEntry !== undefined) await writeScope("project", options.projectEntry, options.projectVersion ?? "0.1.12", options.projectFactory, options.projectManifest, options.projectLock);
-	if (options.userEntry !== undefined) await writeScope("user", options.userEntry, options.userVersion ?? "0.1.12", options.userFactory, options.userManifest, options.userLock);
+	if (options.projectEntry !== undefined) await writeScope("project", options.projectEntry, options.projectVersion ?? "0.1.12", options.projectFactory, options.projectManifest, options.projectLock, options.projectIdentity ?? "pi-fff");
+	if (options.userEntry !== undefined) await writeScope("user", options.userEntry, options.userVersion ?? "0.1.12", options.userFactory, options.userManifest, options.userLock, options.userIdentity ?? "pi-fff");
 	const imports: string[] = [];
 	const loader: PiFffModuleLoader = {
 		async load(entryPath, aliases) {
@@ -120,6 +122,79 @@ const INTEGRITY = "sha512-YWJjZA==";
 const lockFor = (version = "0.1.12", overrides: Record<string, unknown> = {}) => ({
 	name: "managed-pi-packages", lockfileVersion: 3,
 	packages: { "node_modules/pi-fff": { version, resolved: `https://registry.npmjs.org/pi-fff/-/pi-fff-${version}.tgz`, integrity: INTEGRITY, ...overrides } },
+});
+const scopedFiltered = (version = "0.9.6") => ({ source: `npm:@ff-labs/pi-fff@${version}`, extensions: [] });
+const scopedLock = (version = "0.9.6") => ({
+	name: "managed-pi-packages", lockfileVersion: 3,
+	packages: { "node_modules/@ff-labs/pi-fff": { version, resolved: `https://registry.npmjs.org/@ff-labs/pi-fff/-/pi-fff-${version}.tgz`, integrity: INTEGRITY } },
+	dependencies: { "@ff-labs/pi-fff": { version, resolved: `https://registry.npmjs.org/@ff-labs/pi-fff/-/pi-fff-${version}.tgz`, integrity: INTEGRITY } },
+});
+function scopedFactory(mode: "tools-and-ui" | "tools-only" | "override" = "tools-and-ui") {
+	const source = baselineFactory();
+	const renderCall = () => Symbol.for("call");
+	const renderResult = () => Symbol.for("result");
+	source.factory = (pi: any) => {
+		assert.equal(pi.getFlag("fff-mode"), mode === "tools-and-ui" ? undefined : mode);
+		for (const [name, type] of [["fff-mode", "string"], ["fff-frecency-db", "string"], ["fff-history-db", "string"], ["fff-enable-root-scan", "boolean"]] as const) pi.registerFlag(name, { type });
+		const names = mode === "override" ? ["grep", "find", "multi_grep"] : ["ffgrep", "fffind", "fff-multi-grep"];
+		for (const name of names) pi.registerTool({ name, label: name, description: name, parameters: { type: "object", properties: {} }, execute() { return textResult(name); }, renderCall, renderResult });
+		let append = pi.appendEntry;
+		pi.registerCommand("fff-mode", { handler() { append("fff-mode", { mode: "tools-only" }); } });
+		pi.registerCommand("fff-health", { handler() {} });
+		pi.registerCommand("fff-rescan", { handler() {} });
+		pi.on("session_start", () => {}); pi.on("session_shutdown", () => {});
+	};
+	return { source, renderCall, renderResult };
+}
+
+test("scoped profile discovers, validates, and replays tools unchanged without captures", async () => {
+	const scoped = scopedFactory();
+	const f = await fixture({ userEntry: scopedFiltered(), userVersion: "0.9.6", userIdentity: "@ff-labs/pi-fff", userFactory: scoped.source, userLock: scopedLock() });
+	const real = apiRecorder(); real.api.getFlag = () => undefined; let appended = 0; real.api.appendEntry = () => { appended++; };
+	try {
+		const result = await buildFrom(f, real.api);
+		assert.equal(result.ok, true); if (!result.ok) return;
+		assert.equal(result.plan.packageIdentity, "@ff-labs/pi-fff");
+		assert.equal(result.plan.profile, "scoped");
+		assert.equal(result.plan.captureMode, "replay-only");
+		assert.equal(result.plan.status, "verified");
+		assert.equal("captures" in result.plan, false);
+		assert.equal(real.calls.length, 0);
+		const recordedMode = result.plan.trace.find((call) => call.method === "registerCommand" && call.args[0] === "fff-mode")?.args[1] as any;
+		assert.throws(() => recordedMode.handler(), /registration-time action appendEntry is unsafe/);
+		assert.equal(replayPiFffRegistrationPlan(result.plan, real.api).ok, true);
+		const tools = real.calls.filter((call) => call.method === "registerTool").map((call) => call.args[0] as any);
+		assert.deepEqual(tools.map((tool) => tool.name), ["ffgrep", "fffind", "fff-multi-grep"]);
+		assert.equal(tools[0]?.renderCall, scoped.renderCall); assert.equal(tools[0]?.renderResult, scoped.renderResult);
+		const mode = real.calls.find((call) => call.method === "registerCommand" && call.args[0] === "fff-mode")?.args[1] as any;
+		mode.handler();
+		assert.equal(appended, 1);
+	} finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("scoped tools-only trace remains replay-only", async () => {
+	const toolsOnly = scopedFactory("tools-only");
+	const f = await fixture({ userEntry: scopedFiltered(), userVersion: "0.9.6", userIdentity: "@ff-labs/pi-fff", userFactory: toolsOnly.source });
+	const real = apiRecorder(); real.api.getFlag = () => "tools-only";
+	try {
+		const result = await buildFrom(f, real.api);
+		assert.equal(result.ok, true); if (!result.ok) return;
+		assert.equal(result.plan.captureMode, "replay-only");
+		assert.deepEqual(result.plan.trace.filter((call) => call.method === "registerTool").map((call) => (call.args[0] as any).name), ["ffgrep", "fffind", "fff-multi-grep"]);
+	} finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("scoped override mode and mixed identities fail before replay", async () => {
+	const override = scopedFactory("override");
+	const f = await fixture({ userEntry: scopedFiltered(), userVersion: "0.9.6", userIdentity: "@ff-labs/pi-fff", userFactory: override.source });
+	const real = apiRecorder(); real.api.getFlag = () => "override";
+	try {
+		expectCode(await buildFrom(f, real.api), "PIFFF_SURFACE_BREAKING");
+		assert.equal(real.calls.length, 0);
+		await writeFile(join(f.agentDir, "settings.json"), JSON.stringify({ packages: [scopedFiltered(), filtered()] }));
+		expectCode(await buildFrom(f, real.api), "PIFFF_CONFIG_AMBIGUOUS");
+		assert.equal(real.calls.length, 0);
+	} finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
 test("managed discovery selects canonical project root and never falls back", async () => {
@@ -254,6 +329,16 @@ test("version floors have no upper bound and status is explicit", async () => {
 	}
 });
 
+test("scoped profile enforces 0.6.0 floor independently", async () => {
+	const old = await fixture({ userEntry: scopedFiltered("0.5.9"), userVersion: "0.5.9", userIdentity: "@ff-labs/pi-fff", userFactory: scopedFactory().source });
+	const floor = await fixture({ userEntry: scopedFiltered("0.6.0"), userVersion: "0.6.0", userIdentity: "@ff-labs/pi-fff", userFactory: scopedFactory().source });
+	try {
+		expectCode(await buildFrom(old), "PIFFF_BELOW_MINIMUM");
+		const accepted = await buildFrom(floor); assert.equal(accepted.ok, true);
+		assert.equal(accepted.ok && accepted.plan.status, "forward-compatible/unverified");
+	} finally { await rm(old.root, { recursive: true, force: true }); await rm(floor.root, { recursive: true, force: true }); }
+});
+
 test("SemVer rejects malformed cores and honors prerelease precedence", async () => {
 	const malformedPi = await fixture({ userEntry: filtered() });
 	const leadingFff = await fixture({ userEntry: filtered("01.1.12"), userVersion: "01.1.12" });
@@ -329,9 +414,10 @@ test("async factory and result are awaited exactly once", async () => {
 	} finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
-test("compatible forward additions preserve metadata, identities, and order on replay", async () => {
+test("compatible forward additions preserve metadata, tool schema, identities, and order on replay", async () => {
 	const marker = Symbol("metadata");
 	const extraHandler = () => {};
+	const extraExecute = () => textResult("future");
 	const source = baselineFactory((pi) => {
 		pi.registerShortcut("ctrl+x", { description: "forward", handler: extraHandler });
 	});
@@ -339,6 +425,7 @@ test("compatible forward additions preserve metadata, identities, and order on r
 		pi.registerTool(readTool({ marker, promptGuidelines: ["new prompt"], parameters: { type: "object", properties: { path: { type: "string" }, offset: { type: "number" }, limit: { type: "number" }, encoding: { type: "string" } }, required: ["path"] } }));
 		pi.registerTool(grepTool());
 		pi.on("session_start", extraHandler);
+		pi.registerTool({ name: "future_tool", label: "Future", description: "future", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] }, execute: extraExecute });
 		pi.registerShortcut("ctrl+x", { description: "forward", handler: extraHandler });
 		pi.on("session_shutdown", extraHandler);
 	};
@@ -348,14 +435,18 @@ test("compatible forward additions preserve metadata, identities, and order on r
 		const result = await buildFrom(f, real.api);
 		assert.equal(result.ok, true);
 		if (!result.ok) return;
+		assert.equal(result.plan.profile, "legacy");
+		if (result.plan.profile !== "legacy") return;
 		assert.equal(result.plan.captures.read.marker, marker);
 		assert.ok(result.plan.captures.read.parameters.properties.encoding);
 		const composites = createPiFffComposites(result.plan, { mode: "result", reasoningGuideline: "reason" });
 		const replay = replayPiFffRegistrationPlan(result.plan, real.api, composites);
 		assert.equal(replay.ok, true);
-		assert.deepEqual(real.calls.map((call) => call.method), ["registerTool", "registerTool", "on", "registerShortcut", "on"]);
+		assert.deepEqual(real.calls.map((call) => call.method), ["registerTool", "registerTool", "on", "registerTool", "registerShortcut", "on"]);
 		assert.equal(real.calls[0]?.args[0], composites.read);
 		assert.equal(real.calls[2]?.args[1], extraHandler);
+		assert.equal((real.calls[3]?.args[0] as any).parameters.properties.query.type, "string");
+		assert.equal((real.calls[3]?.args[0] as any).execute, extraExecute);
 	} finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
@@ -364,7 +455,10 @@ test("breaking surface matrix fails closed with stable diagnostics", async (t) =
 		["missing read", (pi) => { pi.registerTool(grepTool()); pi.on("session_start", () => {}); pi.on("session_shutdown", () => {}); }],
 		["missing grep", (pi) => { pi.registerTool(readTool()); pi.on("session_start", () => {}); pi.on("session_shutdown", () => {}); }],
 		["missing both", (pi) => { pi.on("session_start", () => {}); pi.on("session_shutdown", () => {}); }],
-		["noncallable executor", (pi) => { pi.registerTool(readTool({ execute: "no" })); pi.registerTool(grepTool()); pi.on("session_start", () => {}); pi.on("session_shutdown", () => {}); }],
+		["noncallable captured executor", (pi) => { pi.registerTool(readTool({ execute: "no" })); pi.registerTool(grepTool()); pi.on("session_start", () => {}); pi.on("session_shutdown", () => {}); }],
+		["source-owned captured reasoning", (pi) => { pi.registerTool(readTool({ parameters: { type: "object", properties: { path: { type: "string" }, offset: { type: "number" }, limit: { type: "number" }, reasoning: { type: "string" } }, required: ["path"] } })); pi.registerTool(grepTool()); pi.on("session_start", () => {}); pi.on("session_shutdown", () => {}); }],
+		["malformed forwarded parameters", (pi) => { pi.registerTool(readTool()); pi.registerTool(grepTool()); pi.registerTool({ name: "future", label: "Future", description: "future", parameters: { type: "string" }, execute() {} }); pi.on("session_start", () => {}); pi.on("session_shutdown", () => {}); }],
+		["noncallable forwarded executor", (pi) => { pi.registerTool(readTool()); pi.registerTool(grepTool()); pi.registerTool({ name: "future", label: "Future", description: "future", parameters: { type: "object", properties: {} }, execute: null }); pi.on("session_start", () => {}); pi.on("session_shutdown", () => {}); }],
 		["duplicate grep", (pi) => { pi.registerTool(readTool()); pi.registerTool(grepTool()); pi.registerTool(grepTool()); pi.on("session_start", () => {}); pi.on("session_shutdown", () => {}); }],
 		["changed baseline type", (pi) => { pi.registerTool(readTool({ parameters: { type: "object", properties: { path: { type: "number" }, offset: { type: "number" }, limit: { type: "number" } }, required: ["path"] } })); pi.registerTool(grepTool()); pi.on("session_start", () => {}); pi.on("session_shutdown", () => {}); }],
 		["optional made required", (pi) => { pi.registerTool(readTool({ parameters: { type: "object", properties: { path: { type: "string" }, offset: { type: "number" }, limit: { type: "number" } }, required: ["path", "offset"] } })); pi.registerTool(grepTool()); pi.on("session_start", () => {}); pi.on("session_shutdown", () => {}); }],
@@ -511,6 +605,7 @@ test("composite delegation preserves receiver, five arguments, updates, results,
 	const f = await fixture({ userEntry: filtered(), userFactory: source });
 	try {
 		const result = await buildFrom(f); assert.equal(result.ok, true); if (!result.ok) return;
+		assert.equal(result.plan.profile, "legacy"); if (result.plan.profile !== "legacy") return;
 		const composites = createPiFffComposites(result.plan, { mode: "default", reasoningGuideline: "reason" });
 		const params = { path: "x", reasoning: "find x", extra: { same: true } };
 		const actual = await composites.read.execute("id", params, signal, update, context);

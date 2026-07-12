@@ -3,8 +3,8 @@ import test from "node:test";
 import { createPiFffIntegrationController } from "../pi-fff/controller.js";
 import type { PiFffLifecycle, PiFffLifecycleParticipant, PiFffLifecycleResult } from "../pi-fff/integration.js";
 
-const participant = (entry: unknown): PiFffLifecycleParticipant => ({
-	scope: "project", settingsPath: "/fixture/.pi/settings.json", packageRoot: "/fixture/.pi/npm/node_modules/pi-fff",
+const participant = (entry: unknown, profile: "legacy" | "scoped" = "legacy"): PiFffLifecycleParticipant => ({
+	scope: "project", packageIdentity: profile === "scoped" ? "@ff-labs/pi-fff" : "pi-fff", profile, settingsPath: "/fixture/.pi/settings.json", packageRoot: profile === "scoped" ? "/fixture/.pi/npm/node_modules/@ff-labs/pi-fff" : "/fixture/.pi/npm/node_modules/pi-fff",
 	entryIndex: 0, priorEntry: entry, managedEntry: typeof entry === "object" ? { ...(entry as object), extensions: [] } : { source: entry, extensions: [] },
 });
 const ready = (participants?: readonly PiFffLifecycleParticipant[]): PiFffLifecycleResult => ({ outcome: "ready", message: "ready", reload: "none", participants });
@@ -33,6 +33,36 @@ test("controller classifies absent, standalone, and filtered unmanaged without l
 		assert.equal(plan.skipTidyTools.has("read"), state !== "absent");
 		assert.equal(plan.notice !== undefined, state !== "absent");
 	});
+});
+
+test("scoped unmanaged ownership distinguishes loaded and filtered tools", async () => {
+	for (const [entry, owner] of [
+		["npm:@ff-labs/pi-fff@0.9.6", "tidy/native + pi-fff tools"],
+		[{ source: "npm:@ff-labs/pi-fff@0.9.6", extensions: [] }, "tidy/native"],
+	] as const) {
+		const scoped = participant(entry, "scoped");
+		const controller = createPiFffIntegrationController({ pi: api, cwd: "/fixture", agentDir: "/agent", lifecycle: lifecycle(ready(), [scoped]) });
+		const startup = await controller.initialize(true);
+		assert.equal(startup.status.owner, owner);
+		assert.deepEqual([...startup.skipTidyTools], []);
+	}
+});
+
+test("scoped controller keeps tidy native read and grep while routing pi-fff tools", async () => {
+	const managed = participant({ source: "npm:@ff-labs/pi-fff@0.9.6", extensions: [] }, "scoped");
+	const controller = createPiFffIntegrationController({
+		pi: api, cwd: "/fixture", agentDir: "/agent", lifecycle: lifecycle(ready([managed])),
+		buildPlan: async () => ({ ok: true, plan: {
+			scope: "project", packageIdentity: "@ff-labs/pi-fff", profile: "scoped", captureMode: "replay-only", packageRoot: managed.packageRoot,
+			entryPath: `${managed.packageRoot}/src/index.ts`, piVersion: "0.80.6", piFffVersion: "0.9.6", status: "verified", integrity: "missing", diagnostics: [], trace: [],
+		} as any }),
+	});
+	const startup = await controller.initialize(true);
+	assert.equal(startup.status.owner, "tidy/native + pi-fff tools");
+	assert.equal(startup.status.packageIdentity, "@ff-labs/pi-fff");
+	assert.equal(startup.status.profile, "scoped");
+	assert.deepEqual([...startup.skipTidyTools], []);
+	assert.match(startup.status.action, /native read\/grep/);
 });
 
 test("controller suppresses informational compatibility notices and closes adapter failures", async () => {
@@ -99,6 +129,41 @@ test("disabled ownership distinguishes standalone, filtered, and managed states"
 	});
 });
 
+test("controller does not initialize in old command frames for requested or required reloads", async (t) => {
+	for (const reload of ["requested", "required"] as const) await t.test(reload, async () => {
+		let initializations = 0;
+		const commandLifecycle: PiFffLifecycle = {
+			async initialize() { initializations++; return ready(); },
+			async run() {
+				return reload === "requested"
+					? { outcome: "setup-committed", message: "reloaded", reload }
+					: { outcome: "error", code: "PIFFF_RECOVERY_RELOAD_REQUIRED", message: "reload rejected", reload };
+			},
+		};
+		const controller = createPiFffIntegrationController({ pi: api, cwd: "/fixture", agentDir: "/agent", lifecycle: commandLifecycle });
+		const result = await controller.run("setup", { enabled: true });
+		assert.equal(initializations, 0);
+		assert.equal(result.reload, reload);
+		if (reload === "required") {
+			assert.equal(result.status.state, "recovery-pending");
+			assert.equal(result.status.diagnostic?.code, "PIFFF_RECOVERY_RELOAD_REQUIRED");
+		}
+	});
+});
+
+test("scoped recovery keeps tidy native tools registered", async () => {
+	const scoped = participant({ source: "npm:@ff-labs/pi-fff@0.9.6", extensions: [] }, "scoped");
+	const recovering: PiFffLifecycle = {
+		async initialize() { return { outcome: "recovery-reload-required", code: "PIFFF_RECOVERY_RELOAD_REQUIRED", message: "pending", reload: "required", participants: [scoped] }; },
+		async run() { throw new Error("not used"); },
+	};
+	const controller = createPiFffIntegrationController({ pi: api, cwd: "/fixture", agentDir: "/agent", lifecycle: recovering });
+	const startup = await controller.initialize(true);
+	assert.deepEqual([...startup.skipTidyTools], []);
+	assert.equal(startup.status.owner, "tidy/native");
+	assert.equal(startup.status.profile, "scoped");
+});
+
 test("disabled initialization still performs safety recovery but claims no ordinary tools", async () => {
 	let initialized = 0;
 	const recovering: PiFffLifecycle = {
@@ -108,7 +173,7 @@ test("disabled initialization still performs safety recovery but claims no ordin
 	const controller = createPiFffIntegrationController({ pi: api, cwd: "/fixture", agentDir: "/agent", lifecycle: recovering });
 	const plan = await controller.initialize(false);
 	assert.equal(initialized, 1);
-	assert.equal(plan.status.state, "disabled");
+	assert.equal(plan.status.state, "recovery-pending");
 	assert.equal(plan.status.owner, "native Pi");
 	assert.equal(plan.notice?.message.includes("/reload"), true);
 	assert.deepEqual([...plan.skipTidyTools], ["read", "grep"]);

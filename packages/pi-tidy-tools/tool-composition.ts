@@ -52,7 +52,10 @@ export function composeSourceTool<T extends SourceToolDefinition>(
 	const resultMode = options.mode === "result";
 	const sourceHasReasoning = !!source.parameters?.properties
 		&& Object.hasOwn(source.parameters.properties, "reasoning");
-	const injectReasoning = !resultMode && !sourceHasReasoning;
+	if (!resultMode && sourceHasReasoning) {
+		throw new Error(`${source.name} source schema reserves tidy-owned reasoning`);
+	}
+	const injectReasoning = !resultMode;
 	const composed = {
 		...source,
 		parameters: injectReasoning ? withReasoning(source.parameters) : source.parameters,

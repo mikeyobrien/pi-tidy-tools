@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { buildPiFffRegistrationPlan } from "../pi-fff/adapter.js";
+import { createPiFffIntegrationController } from "../pi-fff/controller.js";
 import {
 	createPiFffLifecycle,
 	type PiFffLifecycleParticipant,
@@ -11,6 +12,8 @@ import {
 } from "../pi-fff/integration.js";
 
 const entry = (scope: string) => ({ source: `npm:pi-fff@0.1.12`, extensions: ["index.ts"], scope, extra: { keep: true } });
+const scopedEntry = (scope: string) => ({ source: `npm:@ff-labs/pi-fff@0.9.6`, extensions: ["src/index.ts"], scope, extra: { keep: true } });
+const identityOf = (value: any) => String(typeof value === "string" ? value : value?.source).startsWith("npm:@ff-labs/pi-fff") ? "@ff-labs/pi-fff" as const : "pi-fff" as const;
 
 async function fixture(options: { project?: unknown; user?: unknown; projectMode?: number; symlinkProject?: boolean } = {}) {
 	const root = await mkdtemp(join(tmpdir(), "tidy-fff-lifecycle-"));
@@ -32,18 +35,29 @@ async function fixture(options: { project?: unknown; user?: unknown; projectMode
 	if (options.project !== undefined) await writeSettings("project", options.project, options.projectMode);
 	if (options.user !== undefined) await writeSettings("user", options.user);
 	for (const scope of ["project", "user"] as const) if (options[scope] !== undefined) {
-		const packageRoot = scope === "project" ? join(cwd, ".pi", "npm", "node_modules", "pi-fff") : join(agentDir, "npm", "node_modules", "pi-fff");
-		await mkdir(packageRoot, { recursive: true });
-		await writeFile(join(packageRoot, "package.json"), JSON.stringify({ name: "pi-fff", version: "0.1.12", pi: { extensions: ["./index.ts"] } }));
-		await writeFile(join(packageRoot, "index.ts"), "export default () => {}\n");
+		const identity = identityOf(options[scope]);
+		const managedRoot = scope === "project" ? join(cwd, ".pi", "npm") : join(agentDir, "npm");
+		const packageRoot = join(managedRoot, "node_modules", ...identity.split("/"));
+		const extension = identity === "pi-fff" ? "./index.ts" : "./src/index.ts";
+		await mkdir(join(packageRoot, dirname(extension)), { recursive: true });
+		await writeFile(join(packageRoot, "package.json"), JSON.stringify({ name: identity, version: identity === "pi-fff" ? "0.1.12" : "0.9.6", pi: { extensions: [extension] } }));
+		await writeFile(join(packageRoot, extension), "export default () => {}\n");
 	}
 	const preflighted: string[] = [];
-	const api: any = { events: { on() {}, emit() {} } };
+	const api: any = { events: { on() {}, emit() {} }, getFlag() { return undefined; } };
 	for (const method of ["registerTool", "registerCommand", "registerShortcut", "registerFlag", "registerMessageRenderer", "registerEntryRenderer", "registerProvider", "unregisterProvider", "on"]) api[method] = () => {};
 	const tool = (name: "read" | "grep") => ({ name, label: name, description: name, parameters: { type: "object", properties: name === "read" ? { path: { type: "string" }, offset: { type: "number" }, limit: { type: "number" } } : { pattern: { type: "string" }, mode: { type: "string" }, path: { type: "string" }, glob: { type: "string" }, constraints: { type: "string" }, cursor: { type: "string" }, outputMode: { type: "string" }, ignoreCase: { type: "boolean" }, literal: { type: "boolean" }, context: { type: "number" }, limit: { type: "number" } }, required: [name === "read" ? "path" : "pattern"] }, execute() { return { content: [{ type: "text", text: "ok" }] }; } });
 	const preflight = async (participant: PiFffLifecycleParticipant) => {
 		preflighted.push(participant.scope);
-		const built = await buildPiFffRegistrationPlan({ cwd, agentDir, piVersion: "0.80.6", api, selection: { scope: participant.scope, entry: participant.managedEntry }, loader: { async load() { return (pi: any) => { pi.registerTool(tool("read")); pi.registerTool(tool("grep")); pi.on("session_start", () => {}); pi.on("session_shutdown", () => {}); }; } } });
+		const built = await buildPiFffRegistrationPlan({ cwd, agentDir, piVersion: "0.80.6", api, selection: { scope: participant.scope, entry: participant.managedEntry }, loader: { async load() { return (pi: any) => {
+			if (participant.profile === "legacy") { pi.registerTool(tool("read")); pi.registerTool(tool("grep")); }
+			else {
+				for (const [name, type] of [["fff-mode", "string"], ["fff-frecency-db", "string"], ["fff-history-db", "string"], ["fff-enable-root-scan", "boolean"]] as const) pi.registerFlag(name, { type });
+				for (const name of ["ffgrep", "fffind"]) pi.registerTool({ name, label: name, description: name, parameters: { type: "object", properties: {} }, execute() {} });
+				for (const name of ["fff-mode", "fff-health", "fff-rescan"]) pi.registerCommand(name, { handler() {} });
+			}
+			pi.on("session_start", () => {}); pi.on("session_shutdown", () => {});
+		}; } } });
 		if (!built.ok) throw new Error(built.diagnostic.summary);
 		return built.plan;
 	};
@@ -59,6 +73,34 @@ async function setup(f: Awaited<ReturnType<typeof fixture>>, confirm = async (_p
 	const result = await f.lifecycle().run("setup", { enabled: true, confirm, reload: async () => { reloads++; } });
 	return { result, reloads };
 }
+
+test("scoped setup and teardown preserve exact source identity", async () => {
+	const projectPrior = scopedEntry("project");
+	const userPrior = "npm:@ff-labs/pi-fff@0.9.6";
+	const f = await fixture({ project: projectPrior, user: userPrior });
+	try {
+		const { result } = await setup(f);
+		assert.equal(result.outcome, "setup-committed");
+		assert.deepEqual(result.participants?.map((item) => [item.scope, item.packageIdentity, item.profile]), [["project", "@ff-labs/pi-fff", "scoped"], ["user", "@ff-labs/pi-fff", "scoped"]]);
+		assert.deepEqual((await json(f.paths.project)).packages[0], { ...projectPrior, extensions: [] });
+		assert.deepEqual((await json(f.paths.user)).packages[0], { source: userPrior, extensions: [] });
+		const torn = await f.lifecycle().run("teardown", { enabled: true, confirm: async () => true, reload: async () => {} });
+		assert.equal(torn.outcome, "teardown-committed");
+		assert.deepEqual((await json(f.paths.project)).packages[0], projectPrior);
+		assert.equal((await json(f.paths.user)).packages[0], userPrior);
+	} finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("both package identities in one scope are ambiguous", async () => {
+	const f = await fixture();
+	try {
+		await writeFile(f.paths.user, JSON.stringify({ packages: ["npm:pi-fff@0.1.12", "npm:@ff-labs/pi-fff@0.9.6"] }));
+		const before = await readFile(f.paths.user);
+		const result = await f.lifecycle().run("setup", { enabled: true, confirm: async () => true, reload: async () => {} });
+		assert.equal(result.code, "PIFFF_CONFIG_AMBIGUOUS");
+		assert.deepEqual(await readFile(f.paths.user), before);
+	} finally { await rm(f.root, { recursive: true, force: true }); }
+});
 
 test("setup preflights every participant before confirmation or writes and preserves exact entry fields", async () => {
 	const f = await fixture({ project: entry("project"), user: "npm:pi-fff@0.1.12", projectMode: 0o640 });
@@ -161,6 +203,7 @@ test("failed setup and teardown reloads remain pending until fresh startup conve
 		try {
 			const failed = await f.lifecycle().run("setup", { enabled: true, confirm: async () => true, reload: async () => { throw new DOMException("aborted", "AbortError"); } });
 			assert.equal(failed.code, "PIFFF_RECOVERY_RELOAD_REQUIRED");
+			assert.equal(failed.reload, "required");
 			for (const scope of ["project", "user"] as const) assert.equal((await json(sidecar(f.paths[scope]))).phase, "reload-pending");
 			const recovered = await f.lifecycle().initialize(true);
 			assert.equal(recovered.outcome, "ready");
@@ -174,6 +217,7 @@ test("failed setup and teardown reloads remain pending until fresh startup conve
 			await setup(f);
 			const failed = await f.lifecycle().run("teardown", { enabled: false, confirm: async () => true, reload: async () => { throw new Error("reload failed"); } });
 			assert.equal(failed.code, "PIFFF_RECOVERY_RELOAD_REQUIRED");
+			assert.equal(failed.reload, "required");
 			for (const scope of ["project", "user"] as const) assert.equal((await json(sidecar(f.paths[scope]))).phase, "reload-pending");
 			const recovered = await f.lifecycle().initialize(false);
 			assert.equal(recovered.outcome, "ready");
@@ -181,6 +225,27 @@ test("failed setup and teardown reloads remain pending until fresh startup conve
 			for (const scope of ["project", "user"] as const) await assert.rejects(readFile(sidecar(f.paths[scope])), /ENOENT/);
 		} finally { await rm(f.root, { recursive: true, force: true }); }
 	});
+});
+
+test("controller command frame leaves rejected reload pending until fresh controller startup", async () => {
+	const f = await fixture({ project: entry("project"), user: entry("user") });
+	try {
+		const oldFrame = createPiFffIntegrationController({ pi: {}, cwd: f.cwd, agentDir: f.agentDir, lifecycle: f.lifecycle() });
+		const command = await oldFrame.run("setup", {
+			enabled: true, confirm: async () => true,
+			reload: async () => { throw new Error("reload rejected"); },
+		});
+		assert.equal(command.reload, "required");
+		assert.equal(command.status.state, "recovery-pending");
+		assert.equal(command.status.owner, "native Pi");
+		for (const scope of ["project", "user"] as const) assert.equal((await json(sidecar(f.paths[scope]))).phase, "reload-pending");
+
+		const freshFrame = createPiFffIntegrationController({ pi: {}, cwd: f.cwd, agentDir: f.agentDir, lifecycle: f.lifecycle() });
+		const startup = await freshFrame.initialize(false);
+		assert.equal(startup.status.state, "disabled");
+		assert.equal(startup.status.journal, "committed (inactive)");
+		for (const scope of ["project", "user"] as const) assert.equal((await json(sidecar(f.paths[scope]))).phase, "committed");
+	} finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
 test("startup finalization checkpoint failures resume idempotently", async (t) => {

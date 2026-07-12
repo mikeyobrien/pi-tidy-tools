@@ -10,7 +10,7 @@ const packageRoot = resolve(here, "..");
 const repoRoot = resolve(packageRoot, "../..");
 const profile = process.env.PI_FFF_TUI_PROFILE;
 if (!profile) {
-	const profiles = ["legacy", "scoped"];
+	const profiles = ["legacy", "scoped-floor", "scoped-current"];
 	const results = profiles.map((item) => {
 		const output = execFileSync(process.execPath, [fileURLToPath(import.meta.url)], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024, env: { ...process.env, PI_FFF_TUI_PROFILE: item } });
 		return JSON.parse(output.slice(output.indexOf("{")));
@@ -18,7 +18,8 @@ if (!profile) {
 	console.log(JSON.stringify({ mode: "passed", profiles: results }, null, 2));
 	process.exit(0);
 }
-const scoped = profile === "scoped";
+const scoped = profile.startsWith("scoped-");
+if (profile !== "legacy" && !scoped) throw new Error(`Unknown PI_FFF_TUI_PROFILE: ${profile}`);
 const root = await mkdtemp(join(tmpdir(), `pi-tidy-fff-tui-${profile}-`));
 const harness = join(root, "harness");
 const project = join(root, "project");
@@ -31,7 +32,7 @@ const cardEvidencePath = join(root, "tidy-card-evidence.jsonl");
 const lifecyclePath = join(root, "lifecycle.jsonl");
 const piVersion = "0.80.6";
 const piFffPackage = scoped ? "@ff-labs/pi-fff" : "pi-fff";
-const piFffVersion = scoped ? "0.9.6" : "0.1.12";
+const piFffVersion = profile === "scoped-floor" ? "0.6.0" : scoped ? "0.9.6" : "0.1.12";
 let child;
 let rootRemoved = false;
 

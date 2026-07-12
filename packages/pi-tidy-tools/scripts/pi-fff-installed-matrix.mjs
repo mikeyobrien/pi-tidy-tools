@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 const fixture = join(dirname(fileURLToPath(import.meta.url)), "pi-fff-installed-fixture.mjs");
 const profiles = [
 	{ packageIdentity: "pi-fff", version: "0.1.12" },
+	{ packageIdentity: "@ff-labs/pi-fff", version: "0.6.0" },
 	{ packageIdentity: "@ff-labs/pi-fff", version: "0.9.6" },
 ];
 const evidence = profiles.map(({ packageIdentity, version }) => {

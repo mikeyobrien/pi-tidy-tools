@@ -17,7 +17,7 @@ function runTuple(label, piVersion, packageIdentity, piFffVersion) {
 
 const baselines = [
 	{ label: "legacy verified", pi: "0.80.6", packageIdentity: "pi-fff", fff: "0.1.12" },
-	{ label: "scoped verified", pi: "0.80.6", packageIdentity: "@ff-labs/pi-fff", fff: "0.9.6" },
+	{ label: "scoped floor", pi: "0.80.6", packageIdentity: "@ff-labs/pi-fff", fff: "0.6.0" },
 ];
 const tuples = [...baselines];
 let newestPi;

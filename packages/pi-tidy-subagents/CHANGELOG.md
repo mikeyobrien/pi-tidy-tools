@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Compact rendering continues to show each child's model identity and thinking level, now using the observed runtime after startup without routine adjustment noise.
+- Multi-child fan-out now inserts one unpainted blank line between sibling agents so parallel children scan like parallel tool cards (gap punches through the shared state background); single-child output stays tight.
 - Public docs cover inheritance, overrides, heterogeneous fan-out, clamp/error policy, startup observation, provenance, requested/resolved/observed, and routing setup.
 - Document optional model/thinking as an idiomatic **override hierarchy** (most specific wins): explicit tool-call fields → user turn instructions → AGENTS.md / project agent instructions → optional `/tidy-subagents-routing` map → schema defaults / promptGuidelines → parent inheritance when omitted (no AGENTS.md auto-read or injection).
 - Internal prefactor retained: every child owns an independent runtime plan used for launch.

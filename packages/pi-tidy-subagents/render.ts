@@ -75,7 +75,9 @@ function expandedActivity(child: ChildState): string[] {
 export function renderLines(details: RunDetails | undefined, expanded = false, now = Date.now(), width?: number): string[] {
  if (!details) return [];
  const lines: string[] = [];
- for (const child of details.children) {
+ for (const [index, child] of details.children.entries()) {
+  // Multi-child fan-out mirrors parallel tool cards: one blank between siblings.
+  if (index > 0) lines.push("");
   const elapsed = child.startedAt ? (child.endedAt ?? now) - child.startedAt : 0;
   const identity = `${GUTTER} ${statusGlyph(child.status)} ${MAGENTA}🤖${RESET} ${BOLD}${child.label}[${child.model}|${child.thinking}]${RESET} ${child.reason}`;
   const statistics = `${DIM}→ ${child.toolCount ?? 0} tools · ${usageSummary(child)} · ${formatElapsed(elapsed)}${RESET}`;
@@ -104,6 +106,8 @@ export class SnapshotComponent {
  render(width: number): string[] {
   const max = Math.max(1, width);
   return renderLines(this.details, this.expanded, Date.now(), max).map((line) => {
+   // Sibling separators stay unpainted so they read as real gaps between parallel tool cards.
+   if (line.length === 0) return "";
    const fitted = fitDisplayLine(line, max); const padded = fitted + " ".repeat(Math.max(0, max - visibleWidth(fitted)));
    if (!this.background) return fitted;
    return padded.split(RESET).map((segment) => this.background!(`${segment}${RESET}`)).join("");

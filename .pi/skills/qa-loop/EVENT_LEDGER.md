@@ -36,7 +36,7 @@ Each round follows this order:
 5. Parent appends `round.closed`. Its outcome is derived from scenario statuses: `blocked` wins over `findings`, which wins over `no-findings`.
 6. Parent either starts the next round or appends `run.closed`.
 
-A human-signoff closure includes every non-fixed finding in `acceptedOpenFindingIds`. A no-findings closure requires a final unblocked `no-findings` round and every historical finding verified fixed.
+A human-signoff closure includes every non-fixed finding in `acceptedOpenFindingIds`. Every closure records structured final verification checks with command, status, exit code, and evidence. A no-findings closure requires a final unblocked `no-findings` round, every historical finding verified fixed, and every final verification check passed with exit code 0.
 
 ## Stable identity
 

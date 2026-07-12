@@ -40,19 +40,26 @@
   "scripts": {
     "pretest": "node ../../scripts/bundle-core.mjs .",
     "test": "node scripts/test.mjs",
+    "test:pi-fff-installed": "node scripts/pi-fff-installed-fixture.mjs",
+    "test:pi-fff-release-matrix": "node scripts/pi-fff-release-matrix.mjs",
+    "test:pi-fff-tui": "node scripts/pi-fff-tui-smoke.mjs",
     "check": "node ../../scripts/bundle-core.mjs . && tsc --noEmit",
     "prepack": "node ../../scripts/bundle-core.mjs .",
     "test:coverage": "c8 npm test",
     "test:mutation": "stryker run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.80.6 <0.81.0",
-    "@earendil-works/pi-tui": ">=0.80.6 <0.81.0"
+    "@earendil-works/pi-coding-agent": ">=0.80.6",
+    "@earendil-works/pi-tui": ">=0.80.6"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.80.6",
     "@earendil-works/pi-tui": "0.80.6",
     "@types/node": "22.10.2",
+    "@types/semver": "^7.7.1",
     "typescript": "5.6.3"
+  },
+  "dependencies": {
+    "semver": "^7.8.5"
   }
 }

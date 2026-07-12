@@ -1,6 +1,7 @@
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { VERSION, getAgentDir } from "@earendil-works/pi-coding-agent";
+import semver from "semver";
 import type { SourceToolCompositionOptions, SourceToolDefinition } from "../tool-composition.js";
 import { composeSourceTool } from "../tool-composition.js";
 import {
@@ -171,41 +172,12 @@ function oneLine(value: unknown): string {
 	return String(value instanceof Error ? value.message : value).split(/\r?\n/, 1)[0]!.slice(0, 240);
 }
 
-interface SemVer { core: readonly [string, string, string]; prerelease: readonly string[] }
-
-function parseVersion(value: string): SemVer | undefined {
-	const match = value.match(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/);
-	if (!match) return undefined;
-	return { core: [match[1]!, match[2]!, match[3]!], prerelease: match[4]?.split(".") ?? [] };
-}
-
-function compareNumeric(left: string, right: string): number {
-	return left.length === right.length ? left.localeCompare(right) : left.length - right.length;
-}
-
 function compareVersions(left: string, right: string): number | undefined {
-	const a = parseVersion(left), b = parseVersion(right);
-	if (!a || !b) return undefined;
-	for (let index = 0; index < 3; index++) {
-		const comparison = compareNumeric(a.core[index]!, b.core[index]!);
-		if (comparison) return comparison;
-	}
-	if (!a.prerelease.length || !b.prerelease.length) return Number(!a.prerelease.length) - Number(!b.prerelease.length);
-	for (let index = 0; index < Math.max(a.prerelease.length, b.prerelease.length); index++) {
-		const ai = a.prerelease[index], bi = b.prerelease[index];
-		if (ai === undefined || bi === undefined) return ai === undefined ? -1 : 1;
-		if (ai === bi) continue;
-		const an = /^\d+$/.test(ai), bn = /^\d+$/.test(bi);
-		if (an && bn) return compareNumeric(ai, bi);
-		if (an !== bn) return an ? -1 : 1;
-		return ai.localeCompare(bi);
-	}
-	return 0;
+	return semver.valid(left) && semver.valid(right) ? semver.compare(left, right) : undefined;
 }
 
 function isAtLeast(value: string, floor: string): boolean {
-	const comparison = compareVersions(value, floor);
-	return comparison !== undefined && comparison >= 0;
+	return semver.valid(value) !== null && semver.gte(value, floor);
 }
 
 async function readSettings(path: string): Promise<any> {
@@ -444,7 +416,7 @@ export async function buildPiFffRegistrationPlan(options: BuildPiFffPlanOptions)
 	const configuredSource = (entry as { source: string }).source;
 	const configuredVersion = configuredSource.slice("npm:pi-fff@".length);
 	if (configuredSource.startsWith("npm:pi-fff@")) {
-		if (!parseVersion(configuredVersion)) return { ok: false, diagnostic: diagnostic("PIFFF_PACKAGE_INVALID", piVersion, piFffVersion, `configured version ${configuredVersion} is not valid SemVer`) };
+		if (!semver.valid(configuredVersion)) return { ok: false, diagnostic: diagnostic("PIFFF_PACKAGE_INVALID", piVersion, piFffVersion, `configured version ${configuredVersion} is not valid SemVer`) };
 		if (configuredVersion !== piFffVersion) return { ok: false, diagnostic: diagnostic("PIFFF_PACKAGE_INVALID", piVersion, piFffVersion, `configured ${configuredVersion} does not match installed ${piFffVersion}`) };
 	}
 	const integrity = await validateLocalIntegrity(managedRoot, manifest, options.registryIntegrity);

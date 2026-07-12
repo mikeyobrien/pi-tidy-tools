@@ -173,6 +173,12 @@ export function createPiFffIntegrationController(options: CreatePiFffControllerO
 				commit(createComposite) {
 					if (committed) return;
 					committed = true;
+					// Baseline pi-fff is last-writer-wins: it replaces, rather than wraps,
+					// an editor already installed by another extension.
+					options.pi.on("session_start", (_event: unknown, ctx: any) => {
+						if (typeof ctx?.ui?.getEditorComponent?.() !== "function" || !ctx.ui.getEditorComponent()) return;
+						ctx.ui.notify("pi-fff will replace an existing custom editor. Disable one editor feature and /reload; editor composition is not supported by this tuple.", "warning");
+					});
 					const composites = { read: createComposite(plan.captures.read), grep: createComposite(plan.captures.grep) };
 					const replay = replayPiFffRegistrationPlan(plan, options.pi, composites);
 					if (!replay.ok) throw Object.assign(new Error(replay.diagnostic.summary), { diagnostic: replay.diagnostic });

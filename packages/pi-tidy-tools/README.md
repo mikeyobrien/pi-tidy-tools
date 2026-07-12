@@ -19,9 +19,10 @@ pi-tidy-tools:
 - **Line 1** — status mark, tool icon/name, the model's **goal/reasoning**, and the settled call's compact relative age.
 - **Line 2** — the concrete target (path/command/pattern) and a colored result summary.
 
-Execution delegates to pi's built-in tools unchanged. The extension replaces
-their TUI rendering and, in reasoning-enabled modes, augments their schemas with
-a required goal phrase.
+By default, execution delegates to pi's built-in tools unchanged. When the
+optional pi-fff integration below is explicitly set up, separately installed
+pi-fff owns `read`/`grep` execution and lifecycle while tidy still owns their
+reasoning schema and inline rendering.
 
 ## In action
 
@@ -88,6 +89,93 @@ For temporary or managed environments, `PI_TIDY_TOOLS` overrides the file. It
 accepts `on`/`off`, `true`/`false`, `yes`/`no`, or `1`/`0`. Unset the variable
 before using `/tidy on|off|toggle`; `/tidy status` reports when the override is
 active. A missing, unreadable, or malformed config defaults to enabled.
+
+## Optional pi-fff execution
+
+[pi-fff](https://www.npmjs.com/package/pi-fff) is optional and remains a
+separately installed Pi package. It is not bundled by, or a peer dependency of,
+pi-tidy-tools. The minimum supported tuple is Pi **0.80.6** and pi-fff
+**0.1.12**, with no upper version bound:
+
+```bash
+pi install npm:pi-fff@0.1.12       # user scope
+# or: pi install -l npm:pi-fff@0.1.12  # project scope
+```
+
+Restart Pi, then explicitly transfer `read`/`grep` ownership:
+
+```text
+/tidy pi-fff setup
+/tidy pi-fff status
+/tidy pi-fff teardown
+```
+
+Setup previews every discovered user/project settings change and requires
+confirmation. It first validates every installed participant, then atomically
+changes each pi-fff package entry to object form with `extensions: []`. This
+prevents standalone pi-fff and tidy's adapter from registering the same tools.
+Linked `pi-tidy-tools.pi-fff.json` sidecars preserve each exact prior entry.
+Setup and teardown reload Pi after commit.
+
+### Ownership and scope
+
+`/tidy pi-fff status` reports one of these truthful states:
+
+- `absent` — tidy presents native Pi `read`/`grep`.
+- `standalone` — standalone pi-fff owns them; run setup for tidy presentation.
+- `filtered-unmanaged` — neither extension claims them until explicit setup.
+- `managed-compatible` — pi-fff executes and manages its runtime; tidy owns the
+  reasoning schema and rendering.
+- `managed-invalid` or `recovery-pending` — native Pi owns them; the adapter
+  fails closed instead of silently falling back or partly registering.
+- `disabled` — native Pi owns them. Turning tidy off never edits Pi package
+  settings; the committed sidecars remain available for later teardown.
+
+Pi package precedence still applies: a project `npm:pi-fff` entry shadows the
+user entry. A broken selected project install is reported and **never** falls
+back to the user copy. Setup nevertheless preflights and journals every
+participant it discovers so teardown can restore both scopes exactly.
+
+The exact Pi `0.80.6` × pi-fff `0.1.12` baseline is `verified`. Newer tuples at
+or above both floors are eligible after structural capability validation and
+are shown as `forward-compatible/unverified` until that exact tuple passes the
+release smoke matrix. This status is not a claim that a newer release is
+broken. Release maintainers must run:
+
+```bash
+npm run test:pi-fff-release-matrix --workspace @mobrienv/pi-tidy-tools -- --latest
+npm run test:pi-fff-tui --workspace @mobrienv/pi-tidy-tools
+```
+
+The first command requires npm registry access and tests baseline/newest mixed
+tuples; an unavailable registry is a **blocked release gate**, never a silently
+skipped pass. The ordinary installed fixture is hermetic with respect to tuple
+selection and runs the pinned baseline.
+
+### Drift, recovery, and removal
+
+Interrupted setup/teardown is recovered at startup before ordinary ownership is
+claimed. A safe recovery asks for one `/reload`; drift or malformed/missing
+linked state fails closed and `/tidy pi-fff status` reports the concrete settings
+paths requiring manual attention. Do not edit managed package entries or
+sidecars independently.
+
+Always run `/tidy pi-fff teardown` **before** removing pi-tidy-tools or pi-fff.
+Teardown restores the exact prior package entries, including sibling fields and
+standalone extension filters. If automatic recovery says manual restoration is
+required, inspect every linked `pi-tidy-tools.pi-fff.json`, restore each
+`priorEntry` at its recorded `entryIndex` in the recorded `settingsPath`, remove
+the sidecars only after all scopes agree, and then run `/reload`. Keep backups
+and do not copy a project entry into the user scope (or vice versa).
+
+### Editor caveats
+
+pi-fff `0.1.12` installs a custom autocomplete editor and does not compose with
+another custom editor; it is last-writer-wins. Tidy warns when one is already
+installed. Disable one editor feature and `/reload`. Turning autocomplete off
+in `/fff-features` persists the setting but the current editor remains active
+until `/reload`. These are pi-fff editor/lifecycle constraints; tidy does not
+take over or mask them.
 
 ## Styling
 

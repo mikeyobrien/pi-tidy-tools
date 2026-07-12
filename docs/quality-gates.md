@@ -80,8 +80,8 @@ The first accepted ratchet baseline after adopting this policy is:
 | Package             | Statements | Branches | Functions |  Lines | Mutation |
 | ------------------- | ---------: | -------: | --------: | -----: | -------: |
 | `pi-tidy-core`      |       100% |     100% |      100% |   100% |   97.17% |
-| `pi-tidy-subagents` |       100% |   95.65% |      100% |   100% |   81.22% |
-| `pi-tidy-tools`     |     98.92% |   94.72% |    97.22% | 98.92% |   80.86% |
+| `pi-tidy-subagents` |     99.65% |   94.79% |      100% | 99.65% |   83.45% |
+| `pi-tidy-tools`     |     98.92% |   94.72% |    97.22% | 98.92% |   81.01% |
 
 Future changes must meet both the fixed floors and this no-regression baseline.
 

@@ -318,6 +318,7 @@ test("multiple children preserve exact header-child line ordering", () => {
   assert.deepEqual(rendered, [
     "  ┊ ✓ 🤖 alpha[m|off] first → 0 tools · ↑12 ↓3 · <1s",
     "  ┊     alpha child",
+    "",
     "  ┊ ✗ 🤖 beta[m|off] second → 0 tools · ↑12 ↓3 · <1s",
     "  ┊     beta child",
   ]);

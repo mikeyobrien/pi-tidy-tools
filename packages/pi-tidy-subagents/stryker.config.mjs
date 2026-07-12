@@ -22,10 +22,12 @@ export default {
   checkers: ["typescript"],
   tsconfigFile: "tsconfig.json",
   mutate: [
-    "index.ts",
+    "config.ts",
     "envelope.ts",
+    "index.ts",
     "render.ts",
     "runner.ts",
+    "runtime.ts",
     "scheduler.ts",
     "store.ts",
   ],

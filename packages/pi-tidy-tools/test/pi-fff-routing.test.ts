@@ -93,6 +93,28 @@ test("controller suppresses informational compatibility notices and closes adapt
 	assert.equal(closed.skipTidyTools.has("read"), true);
 });
 
+test("controller returns actionable ambiguity for status and setup instead of throwing", async () => {
+	const ambiguity: PiFffLifecycleResult = {
+		outcome: "error", code: "PIFFF_CONFIG_AMBIGUOUS",
+		message: "Keep one pi-fff package identity across project and user settings.", reload: "none",
+	};
+	const ambiguousLifecycle: PiFffLifecycle = {
+		async initialize() { return ready(); },
+		async run() { return ambiguity; },
+	};
+	const controller = createPiFffIntegrationController({ pi: api, cwd: "/fixture", agentDir: "/agent", lifecycle: ambiguousLifecycle });
+	const statusResult = await controller.run("status", { enabled: true });
+	assert.equal(statusResult.level, "error");
+	assert.equal(statusResult.status.diagnostic?.code, "PIFFF_CONFIG_AMBIGUOUS");
+	assert.match(statusResult.message, /one pi-fff package identity across project and user settings/i);
+	assert.match(statusResult.status.action, /project and user settings/i);
+
+	const setupResult = await controller.run("setup", { enabled: true });
+	assert.equal(setupResult.level, "error");
+	assert.match(setupResult.message, /^PIFFF_CONFIG_AMBIGUOUS:.*one pi-fff package identity across project and user settings/i);
+	assert.equal(setupResult.status.diagnostic?.code, "PIFFF_CONFIG_AMBIGUOUS");
+});
+
 test("repeated status uses initialized routing without re-evaluating the factory", async () => {
 	const managed = participant({ source: "npm:pi-fff@0.1.12", extensions: [] });
 	let builds = 0;

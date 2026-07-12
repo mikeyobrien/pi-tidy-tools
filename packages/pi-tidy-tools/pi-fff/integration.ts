@@ -204,6 +204,13 @@ async function discover(fs: PiFffLifecycleFs, cwd: string, agentDir: string): Pr
 			journalPath: join(dirname(candidate), JOURNAL_NAME),
 		});
 	}
+	if (new Set(found.map((participant) => participant.packageIdentity)).size > 1) {
+		throw new LifecycleFailure(
+			"PIFFF_CONFIG_AMBIGUOUS",
+			"Project and user settings select different pi-fff package identities; keep one pi-fff package identity across project and user settings, then retry.",
+			found.map((participant) => participant.settingsPath),
+		);
+	}
 	return found;
 }
 
@@ -437,10 +444,15 @@ export function createPiFffLifecycle(options: CreatePiFffLifecycleOptions): PiFf
 		initialize,
 		async run(action, command): Promise<PiFffLifecycleResult> {
 			if (action === "status") {
-				const recovery = await initialize(command.enabled);
-				if (recovery.outcome !== "ready") return recovery;
-				const participants = await discover(fs, options.cwd, options.agentDir);
-				return result("status", participants.length ? `pi-fff is configured in ${participants.map((item) => item.scope).join(" and ")} scope.` : "pi-fff is not configured.", { participants });
+				try {
+					const recovery = await initialize(command.enabled);
+					if (recovery.outcome !== "ready") return recovery;
+					const participants = await discover(fs, options.cwd, options.agentDir);
+					return result("status", participants.length ? `pi-fff is configured in ${participants.map((item) => item.scope).join(" and ")} scope.` : "pi-fff is not configured.", { participants });
+				} catch (error) {
+					const failure = error instanceof LifecycleFailure ? error : new LifecycleFailure("PIFFF_SETTINGS_DRIFT", error instanceof Error ? error.message : String(error));
+					return result("error", failure.message, { code: failure.code, manualPaths: failure.manualPaths });
+				}
 			}
 			if (action === "setup") {
 				if (!command.enabled) return result("error", "Enable tidy before pi-fff setup.", { code: "PIFFF_SETUP_DISABLED" });

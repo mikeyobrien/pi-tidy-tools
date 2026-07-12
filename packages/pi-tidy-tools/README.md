@@ -147,11 +147,13 @@ and only the next actual startup finalizes it at that same safe boundary.
 - `disabled` — native Pi owns them. Turning tidy off never edits Pi package
   settings; the committed sidecars remain available for later teardown.
 
-Pi package precedence still applies by selected identity: a project pi-fff
-entry shadows the user entry, with no fallback from a broken project install.
-A settings scope containing both package identities (or duplicates) is
-ambiguous and rejected. Setup preflights and journals every participant it
-discovers; teardown restores the exact source string and entry in each scope.
+Pi package precedence still applies when every participating scope selects the
+same identity: a project pi-fff entry shadows the user entry, with no fallback
+from a broken project install. All project and user participants must select one
+global package identity (`pi-fff` or `@ff-labs/pi-fff`); mixed identities across
+scopes, both identities within one scope, and duplicates are ambiguous and
+rejected. Setup preflights and journals every participant it discovers;
+teardown restores the exact source string and entry in each scope.
 
 The exact Pi `0.80.6` × `pi-fff@0.1.12` and Pi `0.80.6` ×
 `@ff-labs/pi-fff@0.9.6` tuples are `verified`. Newer tuples at or above their

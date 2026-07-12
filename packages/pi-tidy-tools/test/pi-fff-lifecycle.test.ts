@@ -102,6 +102,36 @@ test("both package identities in one scope are ambiguous", async () => {
 	} finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
+test("mixed package identities across scopes fail before preflight, confirmation, or writes", async (t) => {
+	for (const [name, project, user] of [
+		["project scoped and user legacy", scopedEntry("project"), entry("user")],
+		["project legacy and user scoped", entry("project"), scopedEntry("user")],
+	] as const) await t.test(name, async () => {
+		const f = await fixture({ project, user });
+		try {
+			const before = await Promise.all([readFile(f.paths.project), readFile(f.paths.user)]);
+			const status = await f.lifecycle().run("status", { enabled: true });
+			let confirmations = 0; let reloads = 0;
+			const setupResult = await f.lifecycle().run("setup", {
+				enabled: true,
+				confirm: async () => { confirmations++; return true; },
+				reload: async () => { reloads++; },
+			});
+			for (const result of [status, setupResult]) {
+				assert.equal(result.outcome, "error");
+				assert.equal(result.code, "PIFFF_CONFIG_AMBIGUOUS");
+				assert.match(result.message, /one pi-fff package identity across project and user settings/i);
+			}
+			assert.deepEqual(f.preflighted, []);
+			assert.equal(confirmations, 0); assert.equal(reloads, 0);
+			assert.deepEqual(await Promise.all([readFile(f.paths.project), readFile(f.paths.user)]), before);
+			for (const path of [sidecar(f.paths.project), sidecar(f.paths.user)]) {
+				await assert.rejects(lstat(path), (error: any) => error?.code === "ENOENT");
+			}
+		} finally { await rm(f.root, { recursive: true, force: true }); }
+	});
+});
+
 test("setup preflights every participant before confirmation or writes and preserves exact entry fields", async () => {
 	const f = await fixture({ project: entry("project"), user: "npm:pi-fff@0.1.12", projectMode: 0o640 });
 	try {

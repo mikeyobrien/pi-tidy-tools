@@ -170,12 +170,13 @@ test("restored settled tools clear timers started during call hydration", async 
     };
     const theme = { bg: (_name: string, text: string) => text };
     bash.renderCall(args, theme, context);
-    bash.renderResult(
+    const newlySettled = bash.renderResult(
       { content: [{ type: "text", text: "done" }] },
       { isPartial: false, expanded: false },
       theme,
       { ...context, isPartial: false, isError: false }
     );
+    assert.doesNotMatch(renderedLines(newlySettled).join("\n"), /\bago\b/);
     assert.equal(cleared, true);
     const restored = bash.renderResult(
       {
@@ -196,12 +197,12 @@ test("restored settled tools clear timers started during call hydration", async 
         .replace(/\x1b\[[0-9;]*m/g, ""),
       /done in 7s/
     );
-    assert.match(
+    assert.doesNotMatch(
       restored
         .render(200)
         .join("\n")
         .replace(/\x1b\[[0-9;]*m/g, ""),
-      /\(1h3m ago\)/
+      /\bago\b/
     );
   } finally {
     globalThis.setInterval = originalSetInterval;
@@ -209,83 +210,45 @@ test("restored settled tools clear timers started during call hydration", async 
   }
 });
 
-test("settled ages never invalidate an idle transcript or steal scroll", async () => {
+test("settled extension rows stay byte-stable across six ordinary editor renders", async () => {
   const harness = await registerEnabledExtension();
   const originalNow = Date.now;
-  const originalSetTimeout = globalThis.setTimeout;
-  let now = 1_000;
-  let invalidations = 0;
-  const timers: unknown[] = [];
+  let now = 10_000_000;
   Date.now = () => now;
-  globalThis.setTimeout = ((...args: unknown[]) => {
-    timers.push(args);
-    return { unref() {} };
-  }) as any;
   try {
     const bash = harness.tools.get("bash");
-    const context = {
-      isPartial: true,
-      toolCallId: "idle-scroll",
-      args: { command: "true", reasoning: "finish quickly" },
-      invalidate() { invalidations += 1; },
-    };
     const theme = { bg: (_name: string, text: string) => text };
-    await harness.events.get("tool_execution_start")!({
-      toolName: "bash", toolCallId: context.toolCallId, args: context.args,
-    });
-    const augmented = await harness.events.get("tool_result")!({
-      toolName: "bash", toolCallId: context.toolCallId, details: {},
-    });
-    const settled = bash.renderResult(
-      { content: [{ type: "text", text: "done" }], details: augmented.details },
-      { isPartial: false, expanded: false }, theme,
-      { ...context, isPartial: false, isError: false }
-    );
-    assert.match(renderedLines(settled).join("\n"), /\(<1m ago\)/);
-    assert.equal(timers.length, 0);
-    now += 60_000;
-    assert.equal(invalidations, 0);
-    assert.match(renderedLines(settled).join("\n"), /\(1m ago\)/);
-  } finally {
-    Date.now = originalNow;
-    globalThis.setTimeout = originalSetTimeout;
-  }
-});
-
-test("restored ages remain truthful without background redraw timers", async () => {
-  const harness = await registerEnabledExtension();
-  const originalNow = Date.now;
-  const originalSetTimeout = globalThis.setTimeout;
-  let now = 100_000;
-  let invalidations = 0;
-  const timers: unknown[] = [];
-  Date.now = () => now;
-  globalThis.setTimeout = ((...args: unknown[]) => {
-    timers.push(args);
-    return { unref() {} };
-  }) as any;
-  try {
-    const restored = harness.tools.get("bash").renderResult(
+    const rows = Array.from({ length: 24 }, (_, index) => bash.renderResult(
       {
         content: [{ type: "text", text: "done" }],
-        details: { piTidyElapsedMs: 1_000, piTidyCompletedAt: now },
+        details: {
+          piTidyElapsedMs: 8_000,
+          // Old sessions may retain this retired metadata.
+          piTidyCompletedAt: now - index * 59_000,
+        },
       },
       { isPartial: false, expanded: false },
-      { bg: (_name: string, text: string) => text },
+      theme,
       {
-        isPartial: false, isError: false, toolCallId: "restored-age",
-        args: { command: "true", reasoning: "restore prior output" },
-        invalidate() { invalidations += 1; },
+        isPartial: false,
+        isError: false,
+        toolCallId: `restored-${index}`,
+        args: { command: "sleep 8", reasoning: `restore row ${index}` },
       }
-    );
-    assert.match(renderedLines(restored).join("\n"), /\(<1m ago\)/);
-    assert.equal(timers.length, 0);
-    now += 60_000;
-    assert.equal(invalidations, 0);
-    assert.match(renderedLines(restored).join("\n"), /\(1m ago\)/);
+    ));
+    for (const width of [120, 72]) {
+      const transcript = () => rows.flatMap((row) => row.render(width)).join("\n");
+      const baseline = transcript();
+      assert.doesNotMatch(withoutAnsi(baseline), /\bago\b/);
+      assert.match(withoutAnsi(baseline), /done in 8s/);
+
+      for (let key = 0; key < 6; key++) {
+        now += 61_000;
+        assert.equal(transcript(), baseline, `${width}-column ordinary key ${key + 1} changed settled transcript bytes`);
+      }
+    }
   } finally {
     Date.now = originalNow;
-    globalThis.setTimeout = originalSetTimeout;
   }
 });
 
@@ -323,7 +286,6 @@ test("tool results persist elapsed duration for reload", async () => {
     assert.deepEqual(patch.details, {
       existing: true,
       piTidyElapsedMs: 7_000,
-      piTidyCompletedAt: 8_000,
     });
   } finally {
     Date.now = originalNow;
@@ -387,52 +349,26 @@ test("settled bash summaries report duration instead of output line count", () =
   assert.doesNotMatch(plain, /lines/);
 });
 
-test("tool blocks support default reasoning and result layouts with durable ages", () => {
+test("tool blocks support default reasoning and result layouts without completion ages", () => {
   const args = { path: "index.ts", reasoning: "update the renderer" };
   const result = {
     content: [{ type: "text", text: "Successfully replaced text" }],
-    details: { diff: "+new\n-old" },
+    details: { diff: "+new\n-old", piTidyCompletedAt: 1_000 },
   };
   const plain = (mode: "default" | "reasoning" | "result") =>
-    buildToolBlock("edit", args, result, {
-      mode,
-      completedAt: 1_000,
-      now: 3_781_000,
-    }).map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+    buildToolBlock("edit", args, result, { mode })
+      .map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
   const defaultBlock = plain("default");
-  assert.equal(defaultBlock.length, 2);
-  assert.match(defaultBlock[0], /update the renderer \(1h3m ago\)$/);
-  assert.match(defaultBlock[1], /index\.ts → \+1\/-1$/);
-  const reasoningBlock = plain("reasoning");
-  assert.equal(reasoningBlock.length, 1);
-  assert.match(
-    reasoningBlock[0],
-    /update the renderer \(1h3m ago\) → \+1\/-1$/
-  );
+  assert.deepEqual(defaultBlock, [
+    "  ┊ ✓ ✏️ edit update the renderer",
+    "  ┊   index.ts → +1/-1",
+  ]);
+  assert.deepEqual(plain("reasoning"), [
+    "  ┊ ✓ ✏️ edit update the renderer → +1/-1",
+  ]);
   const resultBlock = plain("result");
-  assert.equal(resultBlock.length, 1);
-  assert.match(resultBlock[0], /index\.ts \(1h3m ago\) → \+1\/-1$/);
-  assert.doesNotMatch(resultBlock[0], /update the renderer/);
-});
-
-test("tool ages stay compact from fresh output through old sessions", () => {
-  const plainAge = (ageMs: number) =>
-    buildToolBlock(
-      "read",
-      { path: "a.ts", reasoning: "inspect fixture" },
-      { content: [{ type: "text", text: "one" }] },
-      { completedAt: 10_000, now: 10_000 + ageMs }
-    )[0].replace(/\x1b\[[0-9;]*m/g, "");
-  assert.match(plainAge(0), /\(<1m ago\)$/);
-  assert.match(plainAge(59 * 60_000), /\(59m ago\)$/);
-  assert.match(plainAge((24 + 2) * 60 * 60_000), /\(1d2h ago\)$/);
-  assert.match(plainAge((365 + 60) * 24 * 60 * 60_000), /\(1y2mo ago\)$/);
-  const legacy = buildToolBlock(
-    "read",
-    { path: "a.ts", reasoning: "inspect fixture" },
-    { content: [{ type: "text", text: "one" }] }
-  )[0].replace(/\x1b\[[0-9;]*m/g, "");
-  assert.doesNotMatch(legacy, / ago\)/);
+  assert.deepEqual(resultBlock, ["  ┊ ✓ ✏️ edit index.ts → +1/-1"]);
+  assert.doesNotMatch(resultBlock[0], /\bago\b|update the renderer/);
 });
 
 test("expanded writes show numbered content instead of the generic success message", () => {

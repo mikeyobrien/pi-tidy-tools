@@ -54,7 +54,7 @@ Every finding, scenario, and verification carries at least one evidence referenc
 {"kind":"capture","ref":"artifacts/reload-fixed.txt","sha256":"<optional lowercase SHA-256>"}
 ```
 
-Allowed kinds are `capture`, `command`, `file`, and `note`. Paths are relative to the run directory. Copy canonical harness captures from `/tmp/pi-tidy-qa/artifacts/` into the run's `artifacts/` directory before appending their events. For visual claims, reference the native `.png` emitted by agent-tty's pinned `ghostty-web` renderer and pair it with the semantic `.txt` snapshot when useful. Do not use ANSI-to-HTML/CSS conversion as canonical evidence. `run.started.tooling` records `agent-tty` 0.5.0, its Node 24-26 runtime, and the isolated `/tmp/pi-tidy-qa/agent-tty` home; the validator still reads historical tmux ledgers for compatibility.
+Allowed kinds are `capture`, `command`, `file`, and `note`. Paths are relative to the run directory. Copy canonical harness captures from `$PI_TIDY_QA_ROOT/artifacts/` into the run's `artifacts/` directory before appending their events. For visual claims, reference the native `.png` emitted by agent-tty's pinned `ghostty-web` renderer and pair it with the semantic `.txt` snapshot when useful. Do not use ANSI-to-HTML/CSS conversion as canonical evidence. `run.started.tooling` records `agent-tty` 0.5.0, its Node 24-26 runtime, and matched `/tmp/pi-tidy-qa-<run-id>/agent-tty` and `/tmp/pi-tidy-qa-<run-id>/sessions` paths; the validator still reads historical tmux ledgers for compatibility.
 
 ## Fragment examples
 

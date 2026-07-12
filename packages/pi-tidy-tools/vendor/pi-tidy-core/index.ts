@@ -39,6 +39,23 @@ export function formatElapsed(milliseconds: number): string {
   if (minutes < 60) return `${minutes}m ${(seconds % 60).toString().padStart(2, "0")}s`;
   return `${Math.floor(minutes / 60)}h ${(minutes % 60).toString().padStart(2, "0")}m`;
 }
+/** Compact age using at most the two largest useful units. */
+export function formatAge(milliseconds: number): string {
+  const minutes = Math.floor(Math.max(0, milliseconds) / 60_000);
+  if (minutes < 1) return "<1m";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h${minutes % 60 ? `${minutes % 60}m` : ""}`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d${hours % 24 ? `${hours % 24}h` : ""}`;
+  if (days < 365) {
+    const months = Math.floor(days / 30);
+    return `${months}mo${days % 30 ? `${days % 30}d` : ""}`;
+  }
+  const years = Math.floor(days / 365);
+  const remainingMonths = Math.floor((days % 365) / 30);
+  return `${years}y${remainingMonths ? `${remainingMonths}mo` : ""}`;
+}
 export function describeTool(name: string, args: Record<string, unknown>): string {
   if (name === "bash" && typeof args.command === "string") return oneLine(args.command);
   if ((name === "grep" || name === "find") && typeof args.pattern === "string") return oneLine(typeof args.path === "string" ? `${args.pattern} in ${args.path}` : args.pattern);

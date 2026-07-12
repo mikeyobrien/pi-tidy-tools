@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-root="/tmp/pi-tidy-qa"
+root="${PI_TIDY_QA_ROOT:-/tmp/pi-tidy-qa}"
+[[ "$root" = /* ]] || { echo "PI_TIDY_QA_ROOT must be absolute" >&2; exit 2; }
+case "$root" in /tmp/pi-tidy-qa|/tmp/pi-tidy-qa-*) ;; *) echo "PI_TIDY_QA_ROOT must be /tmp/pi-tidy-qa or /tmp/pi-tidy-qa-*" >&2; exit 2;; esac
 sessions="$root/sessions"
 artifacts="$root/artifacts"
 qa_home="$root/home"
@@ -18,6 +20,8 @@ Usage: pi-tui-harness.sh <command> [args]
 
   preflight                         Verify agent-tty 0.5.0, Node 24-26, renderers, and Pi
   reset                             Destroy the session and remove isolated QA state
+
+Set PI_TIDY_QA_ROOT=/tmp/pi-tidy-qa-<run> to isolate concurrent QA runs.
   start [cols] [rows] [pi args...]  Start Pi (defaults: 120 36)
   send <text>                       Type literal text and press Enter
   key <key> [...]                   Send keys such as C-o, C-c, Escape
@@ -105,8 +109,9 @@ process.stdout.write(JSON.stringify({driver:"agent-tty",agentTtyVersion:version.
     ;;
   reset)
     destroy_session
-    case "$root" in /tmp/pi-tidy-qa) rm -rf -- "$root" ;; *) echo "refusing unsafe QA root: $root" >&2; exit 2 ;; esac
-    emit reset '{"removed":"/tmp/pi-tidy-qa"}'
+    case "$root" in /tmp/pi-tidy-qa|/tmp/pi-tidy-qa-*) rm -rf -- "$root" ;; *) echo "refusing unsafe QA root: $root" >&2; exit 2 ;; esac
+    result="$(ROOT="$root" node -e 'process.stdout.write(JSON.stringify({removed:process.env.ROOT}))')"
+    emit reset "$result"
     ;;
   start)
     cols="${1:-120}"; rows="${2:-36}"; assert_dimensions "$cols" "$rows"
@@ -134,7 +139,7 @@ NODE
       pi --session-dir "$sessions" --approve "$@")"
     sid="$(printf '%s' "$create_json" | json_value result.sessionId)"
     printf '%s\n' "$sid" > "$session_file"
-    result="$(SID="$sid" COLS="$cols" ROWS="$rows" node -e 'process.stdout.write(JSON.stringify({sessionId:process.env.SID,cols:Number(process.env.COLS),rows:Number(process.env.ROWS),agentTtyHome:"/tmp/pi-tidy-qa/agent-tty",sessionDir:"/tmp/pi-tidy-qa/sessions"}))')"
+    result="$(SID="$sid" COLS="$cols" ROWS="$rows" ROOT="$root" node -e 'process.stdout.write(JSON.stringify({sessionId:process.env.SID,cols:Number(process.env.COLS),rows:Number(process.env.ROWS),agentTtyHome:`${process.env.ROOT}/agent-tty`,sessionDir:`${process.env.ROOT}/sessions`}))')"
     emit start "$result"
     ;;
   send)

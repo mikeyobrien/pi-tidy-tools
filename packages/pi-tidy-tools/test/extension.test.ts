@@ -62,8 +62,10 @@ test("restored settled tools clear timers started during call hydration", () => 
   bash.renderCall(args, theme, context);
   bash.renderResult({ content: [{ type: "text", text: "done" }] }, { isPartial: false, expanded: false }, theme, { ...context, isPartial: false, isError: false });
   assert.equal(cleared, true);
-  const restored = bash.renderResult({ content: [{ type: "text", text: "done" }], details: { piTidyElapsedMs: 7_000 } }, { isPartial: false, expanded: false }, theme, { ...context, toolCallId: "reloaded", isPartial: false, isError: false });
-  assert.match(restored.render(200).join("\n").replace(/\x1b\[[0-9;]*m/g, ""), /done in 7s/);
+  const restored = bash.renderResult({ content: [{ type: "text", text: "done" }], details: { piTidyElapsedMs: 7_000, piTidyCompletedAt: Date.now() - 3_780_000 } }, { isPartial: false, expanded: false }, theme, { ...context, toolCallId: "reloaded", isPartial: false, isError: false });
+  const restoredText = restored.render(200).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  assert.match(restoredText, /\(1h3m ago\)/);
+  assert.match(restoredText, /done in 7s/);
  } finally {
   globalThis.setInterval = originalSetInterval; globalThis.clearInterval = originalClearInterval;
  }
@@ -82,7 +84,7 @@ test("tool results persist elapsed duration for reload", async () => {
   await handlers.get("tool_execution_start")!({ toolName: "bash", toolCallId: "duration", args: { command: "npm test" } });
   now = 8_000;
   const patch = await handlers.get("tool_result")!({ toolName: "bash", toolCallId: "duration", details: { existing: true } });
-  assert.deepEqual(patch.details, { existing: true, piTidyElapsedMs: 7_000 });
+  assert.deepEqual(patch.details, { existing: true, piTidyElapsedMs: 7_000, piTidyCompletedAt: 8_000 });
  } finally { Date.now = originalNow; }
 });
 
@@ -124,22 +126,36 @@ test("settled bash summaries report duration instead of output line count", () =
 	assert.doesNotMatch(plain, /lines/);
 });
 
-test("tool blocks support default reasoning and result layouts", () => {
+test("tool blocks support default reasoning and result layouts with durable ages", () => {
 	const args = { path: "index.ts", reasoning: "update the renderer" };
 	const result = { content: [{ type: "text", text: "Successfully replaced text" }], details: { diff: "+new\n-old" } };
-	const plain = (mode: "default" | "reasoning" | "result") => buildToolBlock("edit", args, result, { mode })
+	const plain = (mode: "default" | "reasoning" | "result") => buildToolBlock("edit", args, result, { mode, completedAt: 1_000, now: 3_781_000 })
 		.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
 	const defaultBlock = plain("default");
 	assert.equal(defaultBlock.length, 2);
-	assert.match(defaultBlock[0], /update the renderer$/);
+	assert.match(defaultBlock[0], /update the renderer \(1h3m ago\)$/);
 	assert.match(defaultBlock[1], /index\.ts → \+1\/-1$/);
 	const reasoningBlock = plain("reasoning");
 	assert.equal(reasoningBlock.length, 1);
-	assert.match(reasoningBlock[0], /update the renderer → \+1\/-1$/);
+	assert.match(reasoningBlock[0], /update the renderer \(1h3m ago\) → \+1\/-1$/);
 	const resultBlock = plain("result");
 	assert.equal(resultBlock.length, 1);
-	assert.match(resultBlock[0], /index\.ts → \+1\/-1$/);
+	assert.match(resultBlock[0], /index\.ts \(1h3m ago\) → \+1\/-1$/);
 	assert.doesNotMatch(resultBlock[0], /update the renderer/);
+});
+
+test("tool ages stay compact from fresh output through old sessions", () => {
+	const plainAge = (ageMs: number) => buildToolBlock("read", { path: "a.ts", reasoning: "inspect fixture" }, { content: [{ type: "text", text: "one" }] }, {
+		completedAt: 10_000,
+		now: 10_000 + ageMs,
+	})[0].replace(/\x1b\[[0-9;]*m/g, "");
+	assert.match(plainAge(0), /\(<1m ago\)$/);
+	assert.match(plainAge(59 * 60_000), /\(59m ago\)$/);
+	assert.match(plainAge((24 + 2) * 60 * 60_000), /\(1d2h ago\)$/);
+	assert.match(plainAge((365 + 60) * 24 * 60 * 60_000), /\(1y2mo ago\)$/);
+	const legacy = buildToolBlock("read", { path: "a.ts", reasoning: "inspect fixture" }, { content: [{ type: "text", text: "one" }] })[0]
+		.replace(/\x1b\[[0-9;]*m/g, "");
+	assert.doesNotMatch(legacy, / ago\)/);
 });
 
 test("expanded writes show numbered content instead of the generic success message", () => {
@@ -287,6 +303,35 @@ test("narrow grep lines always preserve the match and file summary", () => {
 	}, result);
 	const fitted = fitToolLine(block[1], 38).replace(/\x1b\[[0-9;]*m/g, "");
 	assert.match(fitted, /3 matches in 2 files$/);
+});
+
+test("narrow settled headers preserve age across layouts and failures", () => {
+	const args = { command: "a-very-long-command-that-never-fits", reasoning: "inspect a deliberately long historical command" };
+	const result = { content: [{ type: "text", text: "Command failed with exit code 1" }] };
+	for (const mode of ["default", "reasoning", "result"] as const) {
+		const line = buildToolBlock("bash", args, result, { mode, isError: true, elapsedMs: 2_000, completedAt: 1_000, now: 3_781_000 })[0];
+		const fitted = fitToolLine(line, 45).replace(/\x1b\[[0-9;]*m/g, "");
+		assert.match(fitted, /\(1h3m ago\)/, `${mode} lost its age`);
+		if (mode !== "default") assert.match(fitted, /error in 2s$/, `${mode} lost its result`);
+	}
+});
+
+test("failed bash result mode retains its target, age, status, and duration", () => {
+	const command = 'sh -c "printf failure-output; exit 7"';
+	const result = { content: [{ type: "text", text: "failure-output" }] };
+	for (const expanded of [false, true]) {
+		const block = buildToolBlock("bash", { command }, result, { mode: "result", expanded, isError: true, elapsedMs: 750, completedAt: 1_000, now: 31_000 });
+		for (const width of [120, 72]) {
+			const fitted = fitToolLine(block[0]!, width).replace(/\x1b\[[0-9;]*m/g, "");
+			assert.match(fitted, width === 120 ? /sh -c .*failure-output; exit 7/ : /sh -c .*failure-output/, `${width}-column ${expanded ? "expanded" : "collapsed"} result lost command`);
+			assert.match(fitted, /\(<1m ago\)/);
+			assert.match(fitted, /→ error in <1s$/);
+			assert.ok(fitted.length <= width);
+		}
+		if (expanded) assert.match(block.slice(1).join("\n"), /failure-output/);
+	}
+	const success = buildToolBlock("bash", { command: "printf success-output" }, { content: [{ type: "text", text: "success-output" }] }, { mode: "result", elapsedMs: 1_000, completedAt: 1_000, now: 31_000 });
+	assert.match(fitToolLine(success[0]!, 72).replace(/\x1b\[[0-9;]*m/g, ""), /printf success-output \(<1m ago\) → done in 1s$/);
 });
 
 test("disabled startup keeps only the tidy management command", () => {

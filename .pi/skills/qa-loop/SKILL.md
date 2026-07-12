@@ -30,9 +30,10 @@ This step is complete when every item has an explicit answer or named out-of-sco
 
 Read `.pi/skills/pi-tidy-tools-ethos/SKILL.md` and the charter-relevant package documentation. Inspect `git status --short`; treat existing changes as user-owned.
 
-Use `.pi/skills/qa-loop/scripts/pi-tui-harness.sh` as the canonical real-user driver. It wraps external `agent-tty@0.5.0` with an isolated Home Registry, a dedicated Pi session directory, literal keystrokes, Ghostty-rendered waits, controlled viewport sizes, semantic text snapshots, and native Ghostty PNG screenshots. `agent-tty` remains a QA prerequisite—not a product dependency—because it requires Node 24-26 while the product supports Node 22.19+. Run:
+Use `.pi/skills/qa-loop/scripts/pi-tui-harness.sh` as the canonical real-user driver. It wraps external `agent-tty@0.5.0` with an isolated Home Registry, a dedicated Pi session directory, literal keystrokes, Ghostty-rendered waits, controlled viewport sizes, semantic text snapshots, and native Ghostty PNG screenshots. `agent-tty` remains a QA prerequisite—not a product dependency—because it requires Node 24-26 while the product supports Node 22.19+. Choose a filename-safe run-specific root so concurrent worktrees cannot share driver, Pi session, configuration, or artifact state. Export it for every harness command, then run:
 
 ```bash
+export PI_TIDY_QA_ROOT="/tmp/pi-tidy-qa-<run-id>"
 .pi/skills/qa-loop/scripts/pi-tui-harness.sh preflight
 .pi/skills/qa-loop/scripts/pi-tui-harness.sh reset
 ```
@@ -41,9 +42,9 @@ The fixed viewport matrix is `120x36` baseline and `72x24` narrow. Drive text wi
 
 ### Hermetic contract
 
-Every scenario starts from declared state and is reproducible independently. Keep mutable QA state within `/tmp/pi-tidy-qa/` and `.pi/qa-runs/<run-id>/`; the fixer may additionally change only its authorized worktree scope. Treat the checked-out source, pinned harness, declared provider/model credentials, and explicitly named network calls as inputs. Record every external input in the charter or evidence. Use controlled fixtures, fixed viewport/environment values, isolated HOME/config/session paths, observable-state waits, and explicit cleanup. Compare pre/post worktree and user-configuration state so leaked mutation becomes a finding. Real-provider calls are the declared external dependency for product interaction; all automated regression tests use fakes, temporary directories, controlled clocks, and zero network/provider access, and pass independently of execution order.
+Every scenario starts from declared state and is reproducible independently. Keep mutable QA state within the declared `/tmp/pi-tidy-qa-<run-id>/` and `.pi/qa-runs/<run-id>/`; the fixer may additionally change only its authorized worktree scope. Treat the checked-out source, pinned harness, declared provider/model credentials, and explicitly named network calls as inputs. Record every external input in the charter or evidence. Use controlled fixtures, fixed viewport/environment values, isolated HOME/config/session paths, observable-state waits, and explicit cleanup. Compare pre/post worktree and user-configuration state so leaked mutation becomes a finding. Real-provider calls are the declared external dependency for product interaction; all automated regression tests use fakes, temporary directories, controlled clocks, and zero network/provider access, and pass independently of execution order.
 
-Copy harness `.txt` and `.png` captures used as evidence from `/tmp/pi-tidy-qa/artifacts/` into the run's `artifacts/` directory. Treat the native PNG as canonical visual evidence; do not convert ANSI to HTML or reconstruct terminal rows with CSS. Record the reported Pi, agent-tty, and agent-tty Node versions plus `/tmp/pi-tidy-qa/agent-tty` in `run.started`.
+Copy harness `.txt` and `.png` captures used as evidence from `$PI_TIDY_QA_ROOT/artifacts/` into the run's `artifacts/` directory. Treat the native PNG as canonical visual evidence; do not convert ANSI to HTML or reconstruct terminal rows with CSS. Record the reported Pi, agent-tty, and agent-tty Node versions plus the reported run-specific agent-tty home and session directory in `run.started`.
 
 This step is complete when preflight passes, external inputs and permitted mutable paths are recorded, pre-run state is captured, and the QA agent can be given the charter, product entry points, safety boundary, harness contract, run directory, round number, available finding IDs, and current worktree state without guessing.
 

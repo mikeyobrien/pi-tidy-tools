@@ -16,7 +16,7 @@ pi-tidy-tools:
 
 ![Native pi tool cards compared with compact pi-tidy-tools output](docs/comparison.png)
 
-- **Line 1** — status mark, tool icon/name, and the model's **goal/reasoning** for the call.
+- **Line 1** — status mark, tool icon/name, the model's **goal/reasoning**, and the settled call's compact relative age.
 - **Line 2** — the concrete target (path/command/pattern) and a colored result summary.
 
 Execution delegates to pi's built-in tools unchanged. The extension replaces
@@ -99,6 +99,7 @@ Mirrors a clean, theme-agnostic palette + icon mapping:
 | `write` `edit`           | ✏️   | yellow  |
 | `bash`                   | ⚡   | magenta |
 
+- Settled calls show a compact completion age such as `(<1m ago)` or `(1h3m ago)`; the timestamp persists with the result across session restarts
 - Paths collapse `$HOME` → `~`
 - `edit` shows `+adds/-dels`; text `write` shows line count; `bash` shows status + elapsed time
 - `grep` shows `N matches in M files`; `find`/`ls` show file or entry counts

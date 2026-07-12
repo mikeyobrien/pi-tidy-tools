@@ -58,6 +58,7 @@ import {
 	RED,
 	RESET,
 	formatAge,
+	grepResultCounts,
 	nonEmptyLineCount,
 	shortPath,
 	style,
@@ -202,11 +203,7 @@ function summarize(
 		return `${status}${RESET} ${DIM}in ${formatElapsed(elapsedMs)}${RESET}`;
 	}
 	if (name === "grep") {
-		if (/^No matches found/.test(text.trim())) return `${DIM}0 matches in 0 files${RESET}`;
-		// Count only true match lines (path:lineno:...), not context (path-lineno-...) or -- separators.
-		const matchLines = text.split("\n").map((line) => ({ line, match: line.match(/^(.+):\d+:/) })).filter((entry) => entry.match);
-		const count = matchLines.length || nonEmptyLineCount(text);
-		const files = new Set(matchLines.map((entry) => entry.match?.[1])).size;
+		const { matches: count, files } = grepResultCounts(text);
 		const matchLabel = count === 1 ? "match" : "matches";
 		const fileLabel = files === 1 ? "file" : "files";
 		return `${GREEN}${count} ${matchLabel}${RESET} ${DIM}in${RESET} ${CYAN}${files} ${fileLabel}${RESET}`;
@@ -478,50 +475,6 @@ export function createTidyExtension(dependencies: TidyExtensionDependencies = {}
 		const pathByCallId = new Map<string, string>();
 		const startedAtByCallId = new Map<string, number>();
 		const elapsedTimerByCallId = new Map<string, ReturnType<typeof setInterval>>();
-		const ageRefreshByCallId = new Map<string, { completedAt: number; invalidate: () => void }>();
-		let ageRefreshTimer: ReturnType<typeof setTimeout> | undefined;
-		let ageRefreshAt: number | undefined;
-		const nextAgeRefreshAt = (completedAt: number, now: number): number => {
-			const age = Math.max(0, now - completedAt);
-			if (age < 24 * 60 * 60_000) return completedAt + (Math.floor(age / 60_000) + 1) * 60_000;
-			if (age < 30 * 24 * 60 * 60_000) return completedAt + (Math.floor(age / 3_600_000) + 1) * 3_600_000;
-			return completedAt + (Math.floor(age / 86_400_000) + 1) * 86_400_000;
-		};
-		const ageRefreshCadence = (now: number): number => {
-			let cadence = 86_400_000;
-			for (const { completedAt } of ageRefreshByCallId.values()) {
-				const age = Math.max(0, now - completedAt);
-				if (age < 24 * 60 * 60_000) return 60_000;
-				if (age < 30 * 24 * 60 * 60_000) cadence = 3_600_000;
-			}
-			return cadence;
-		};
-		const scheduleAgeRefreshAt = (next: number): void => {
-			if (ageRefreshByCallId.size === 0) return;
-			if (ageRefreshTimer && ageRefreshAt !== undefined && ageRefreshAt <= next) return;
-			if (ageRefreshTimer) clearTimeout(ageRefreshTimer);
-			ageRefreshAt = next;
-			ageRefreshTimer = setTimeout(() => {
-				ageRefreshTimer = undefined;
-				ageRefreshAt = undefined;
-				const refreshNow = Date.now();
-				for (const { invalidate } of ageRefreshByCallId.values()) invalidate();
-				scheduleAgeRefreshAt(refreshNow + ageRefreshCadence(refreshNow));
-			}, Math.max(1, next - Date.now()));
-			ageRefreshTimer.unref?.();
-		};
-		const registerAgeRefresh = (id: string, completedAt: number, invalidate: () => void): void => {
-			const previous = ageRefreshByCallId.get(id);
-			const unchanged = previous?.completedAt === completedAt;
-			ageRefreshByCallId.set(id, { completedAt, invalidate });
-			if (!unchanged) scheduleAgeRefreshAt(nextAgeRefreshAt(completedAt, Date.now()));
-		};
-		const clearAgeRefresh = (): void => {
-			if (ageRefreshTimer) clearTimeout(ageRefreshTimer);
-			ageRefreshTimer = undefined;
-			ageRefreshAt = undefined;
-			ageRefreshByCallId.clear();
-		};
 		const ownedTools = new Set<string>();
 
 		const decorate = (source: SourceToolDefinition): SourceToolDefinition => {
@@ -547,7 +500,6 @@ export function createTidyExtension(dependencies: TidyExtensionDependencies = {}
 					const elapsedMs = Number.isFinite(persisted) ? persisted : started === undefined ? 0 : Date.now() - started;
 					const persistedCompletedAt = Number(result?.details?.piTidyCompletedAt);
 					const completedAt = Number.isFinite(persistedCompletedAt) ? persistedCompletedAt : undefined;
-					if (id && completedAt !== undefined && typeof context?.invalidate === "function") registerAgeRefresh(id, completedAt, () => context.invalidate());
 					const lines = () => buildToolBlock(name, context?.args ?? {}, result, { isError, expanded: options?.expanded ?? false, elapsedMs, completedAt, mode: tidyMode });
 					return new WidthAwareLines(lines, (text) => theme.bg(isError ? "toolErrorBg" : "toolSuccessBg", text));
 				},
@@ -581,7 +533,6 @@ export function createTidyExtension(dependencies: TidyExtensionDependencies = {}
 		pi.on("session_shutdown", async () => {
 			for (const timer of elapsedTimerByCallId.values()) clearInterval(timer);
 			elapsedTimerByCallId.clear();
-			clearAgeRefresh();
 		});
 		pi.registerMessageRenderer(DIFF_MSG_TYPE, (message: any) => new WidthAwareLines(message.details?.rows ?? String(message.content ?? "").split("\n")));
 		const showLastTurnDiff = (ctx: any) => {

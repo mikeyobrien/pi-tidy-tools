@@ -216,7 +216,7 @@ Mirrors a clean, theme-agnostic palette + icon mapping:
 | `write` `edit`           | ✏️   | yellow  |
 | `bash`                   | ⚡   | magenta |
 
-- Settled calls show a compact completion age such as `(<1m ago)` or `(1h3m ago)`; it keeps advancing while displayed, including after `/reload` or session resume, and the timestamp persists with the result
+- Settled calls show a compact completion age such as `(<1m ago)` or `(1h3m ago)`; the timestamp persists across `/reload` or session resume and is recalculated on the next natural view refresh without interrupting idle scrolling
 - Paths collapse `$HOME` → `~`
 - `edit` shows `+adds/-dels`; text `write` shows line count; `bash` shows status + elapsed time
 - `grep` shows `N matches in M files`; `find`/`ls` show file or entry counts

@@ -209,93 +209,63 @@ test("restored settled tools clear timers started during call hydration", async 
   }
 });
 
-test("settled tool completion ages advance while the turn remains active", async () => {
+test("settled ages never invalidate an idle transcript or steal scroll", async () => {
   const harness = await registerEnabledExtension();
   const originalNow = Date.now;
   const originalSetTimeout = globalThis.setTimeout;
-  const originalClearTimeout = globalThis.clearTimeout;
   let now = 1_000;
   let invalidations = 0;
-  const timers: Array<{ callback: () => void; delay: number; unref(): void }> =
-    [];
-  const cleared: unknown[] = [];
+  const timers: unknown[] = [];
   Date.now = () => now;
-  globalThis.setTimeout = ((callback: () => void, delay: number) => {
-    const timer = { callback, delay, unref() {} };
-    timers.push(timer);
-    return timer;
+  globalThis.setTimeout = ((...args: unknown[]) => {
+    timers.push(args);
+    return { unref() {} };
   }) as any;
-  globalThis.clearTimeout = ((timer: unknown) => cleared.push(timer)) as any;
   try {
     const bash = harness.tools.get("bash");
     const context = {
       isPartial: true,
-      toolCallId: "advancing-age",
+      toolCallId: "idle-scroll",
       args: { command: "true", reasoning: "finish quickly" },
-      invalidate() {
-        invalidations += 1;
-      },
+      invalidate() { invalidations += 1; },
     };
     const theme = { bg: (_name: string, text: string) => text };
     await harness.events.get("tool_execution_start")!({
-      toolName: "bash",
-      toolCallId: context.toolCallId,
-      args: context.args,
-    });
-    await harness.events.get("tool_execution_end")!({
-      toolName: "bash",
-      toolCallId: context.toolCallId,
+      toolName: "bash", toolCallId: context.toolCallId, args: context.args,
     });
     const augmented = await harness.events.get("tool_result")!({
-      toolName: "bash",
-      toolCallId: context.toolCallId,
-      details: {},
+      toolName: "bash", toolCallId: context.toolCallId, details: {},
     });
     const settled = bash.renderResult(
       { content: [{ type: "text", text: "done" }], details: augmented.details },
-      { isPartial: false, expanded: false },
-      theme,
+      { isPartial: false, expanded: false }, theme,
       { ...context, isPartial: false, isError: false }
     );
     assert.match(renderedLines(settled).join("\n"), /\(<1m ago\)/);
-    assert.equal(timers[0]!.delay, 60_000);
-
+    assert.equal(timers.length, 0);
     now += 60_000;
-    timers[0]!.callback();
-    assert.equal(invalidations, 1);
+    assert.equal(invalidations, 0);
     assert.match(renderedLines(settled).join("\n"), /\(1m ago\)/);
-
-    await harness.events.get("turn_end")!();
-    assert.equal(cleared.includes(timers.at(-1)), false);
-    await harness.events.get("session_shutdown")!();
-    assert.ok(cleared.includes(timers.at(-1)));
   } finally {
     Date.now = originalNow;
     globalThis.setTimeout = originalSetTimeout;
-    globalThis.clearTimeout = originalClearTimeout;
   }
 });
 
-test("restored settled completion ages continue advancing after reload", async () => {
+test("restored ages remain truthful without background redraw timers", async () => {
   const harness = await registerEnabledExtension();
   const originalNow = Date.now;
   const originalSetTimeout = globalThis.setTimeout;
-  const originalClearTimeout = globalThis.clearTimeout;
   let now = 100_000;
   let invalidations = 0;
-  const timers: Array<{ callback: () => void; delay: number; unref(): void }> =
-    [];
-  const cleared: unknown[] = [];
+  const timers: unknown[] = [];
   Date.now = () => now;
-  globalThis.setTimeout = ((callback: () => void, delay: number) => {
-    const timer = { callback, delay, unref() {} };
-    timers.push(timer);
-    return timer;
+  globalThis.setTimeout = ((...args: unknown[]) => {
+    timers.push(args);
+    return { unref() {} };
   }) as any;
-  globalThis.clearTimeout = ((timer: unknown) => cleared.push(timer)) as any;
   try {
-    const bash = harness.tools.get("bash");
-    const restored = bash.renderResult(
+    const restored = harness.tools.get("bash").renderResult(
       {
         content: [{ type: "text", text: "done" }],
         details: { piTidyElapsedMs: 1_000, piTidyCompletedAt: now },
@@ -303,89 +273,19 @@ test("restored settled completion ages continue advancing after reload", async (
       { isPartial: false, expanded: false },
       { bg: (_name: string, text: string) => text },
       {
-        isPartial: false,
-        isError: false,
-        toolCallId: "restored-age",
+        isPartial: false, isError: false, toolCallId: "restored-age",
         args: { command: "true", reasoning: "restore prior output" },
-        invalidate() {
-          invalidations += 1;
-        },
+        invalidate() { invalidations += 1; },
       }
     );
     assert.match(renderedLines(restored).join("\n"), /\(<1m ago\)/);
-    assert.equal(timers[0]!.delay, 60_000);
-
+    assert.equal(timers.length, 0);
     now += 60_000;
-    timers[0]!.callback();
-    assert.equal(invalidations, 1);
+    assert.equal(invalidations, 0);
     assert.match(renderedLines(restored).join("\n"), /\(1m ago\)/);
-
-    await harness.events.get("session_shutdown")!();
-    assert.ok(cleared.includes(timers.at(-1)));
   } finally {
     Date.now = originalNow;
     globalThis.setTimeout = originalSetTimeout;
-    globalThis.clearTimeout = originalClearTimeout;
-  }
-});
-
-test("restored rows coalesce age refreshes into one redraw window", async () => {
-  const harness = await registerEnabledExtension();
-  const originalNow = Date.now;
-  const originalSetTimeout = globalThis.setTimeout;
-  const originalClearTimeout = globalThis.clearTimeout;
-  let now = 120_000;
-  const timers: Array<{
-    callback: () => void;
-    delay: number;
-    cleared: boolean;
-    unref(): void;
-  }> = [];
-  Date.now = () => now;
-  globalThis.setTimeout = ((callback: () => void, delay: number) => {
-    const timer = { callback, delay, cleared: false, unref() {} };
-    timers.push(timer);
-    return timer;
-  }) as any;
-  globalThis.clearTimeout = ((timer: (typeof timers)[number]) => {
-    timer.cleared = true;
-  }) as any;
-  try {
-    const bash = harness.tools.get("bash");
-    for (const [index, completedAt] of [58_000, 59_000, 60_000].entries()) {
-      bash.renderResult(
-        {
-          content: [{ type: "text", text: "done" }],
-          details: { piTidyElapsedMs: 1_000, piTidyCompletedAt: completedAt },
-        },
-        { isPartial: false, expanded: false },
-        { bg: (_name: string, text: string) => text },
-        {
-          isPartial: false,
-          isError: false,
-          toolCallId: `restored-${index}`,
-          args: { command: "true", reasoning: "restore prior output" },
-          invalidate() {},
-        }
-      );
-    }
-
-    const windowEndsAt = now + 60_000;
-    let refreshCallbacks = 0;
-    while (true) {
-      const timer = [...timers].reverse().find((candidate) => !candidate.cleared);
-      if (!timer || now + timer.delay > windowEndsAt) break;
-      timer.cleared = true;
-      now += timer.delay;
-      timer.callback();
-      refreshCallbacks += 1;
-    }
-    assert.equal(refreshCallbacks, 1);
-    await harness.events.get("session_shutdown")!();
-  } finally {
-    Date.now = originalNow;
-    globalThis.setTimeout = originalSetTimeout;
-    globalThis.clearTimeout = originalClearTimeout;
   }
 });
 

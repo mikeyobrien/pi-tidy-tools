@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Managed scoped `@ff-labs/pi-fff` now executes behind tidy-presented `grep` and `find`; native tidy `read` remains unchanged and raw `ffgrep`/`fffind` names are no longer model-facing.
 - Pi coding-agent and TUI peer ranges now have no upper bound; structurally compatible newer tuples are reported as forward-compatible/unverified until release smoke passes.
 
+### Fixed
+
+- Settled completion ages no longer invalidate an idle transcript and force a scrolled viewport back to the bottom; ages remain accurate on the next natural refresh.
+
 ### Security
 
 - pi-fff settings transitions preserve exact prior entries in linked sidecars and recover interrupted writes without touching unrelated settings. Teardown is required before package removal; drift requires manual restoration from every recorded `priorEntry` before deleting sidecars and reloading.

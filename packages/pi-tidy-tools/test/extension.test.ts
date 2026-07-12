@@ -293,6 +293,66 @@ test("restored settled completion ages continue advancing after reload", async (
   }
 });
 
+test("restored rows coalesce age refreshes into one redraw window", async () => {
+  const harness = await registerEnabledExtension();
+  const originalNow = Date.now;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  let now = 120_000;
+  const timers: Array<{
+    callback: () => void;
+    delay: number;
+    cleared: boolean;
+    unref(): void;
+  }> = [];
+  Date.now = () => now;
+  globalThis.setTimeout = ((callback: () => void, delay: number) => {
+    const timer = { callback, delay, cleared: false, unref() {} };
+    timers.push(timer);
+    return timer;
+  }) as any;
+  globalThis.clearTimeout = ((timer: (typeof timers)[number]) => {
+    timer.cleared = true;
+  }) as any;
+  try {
+    const bash = harness.tools.get("bash");
+    for (const [index, completedAt] of [58_000, 59_000, 60_000].entries()) {
+      bash.renderResult(
+        {
+          content: [{ type: "text", text: "done" }],
+          details: { piTidyElapsedMs: 1_000, piTidyCompletedAt: completedAt },
+        },
+        { isPartial: false, expanded: false },
+        { bg: (_name: string, text: string) => text },
+        {
+          isPartial: false,
+          isError: false,
+          toolCallId: `restored-${index}`,
+          args: { command: "true", reasoning: "restore prior output" },
+          invalidate() {},
+        }
+      );
+    }
+
+    const windowEndsAt = now + 60_000;
+    let refreshCallbacks = 0;
+    while (true) {
+      const timer = [...timers].reverse().find((candidate) => !candidate.cleared);
+      if (!timer || now + timer.delay > windowEndsAt) break;
+      timer.cleared = true;
+      now += timer.delay;
+      timer.callback();
+      refreshCallbacks += 1;
+    }
+    assert.equal(refreshCallbacks, 1);
+    await harness.events.get("session_shutdown")!();
+  } finally {
+    Date.now = originalNow;
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+  }
+});
+
 test("tool results persist elapsed duration for reload", async () => {
   const handlers = new Map<string, (event: any) => Promise<any>>();
   const previous = process.env.PI_TIDY_TOOLS;

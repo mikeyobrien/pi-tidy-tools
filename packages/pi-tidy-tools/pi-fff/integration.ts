@@ -437,14 +437,10 @@ export function createPiFffLifecycle(options: CreatePiFffLifecycleOptions): PiFf
 						await checkpoint(`setup:journal:${participant.scope}:settings-written`);
 					}
 					for (const participant of participants) {
-						await updateJournal(fs, participant.journalPath, (journal) => { journal.phase = "reload-pending"; });
-						await checkpoint(`setup:journal:${participant.scope}:reload-pending`);
-					}
-					await command.reload();
-					for (const participant of participants) {
 						await updateJournal(fs, participant.journalPath, (journal) => { journal.phase = "committed"; });
 						await checkpoint(`setup:journal:${participant.scope}:committed`);
 					}
+					await command.reload();
 					return result("setup-committed", "Every pi-fff participant is filtered and journaled.", { reload: "requested", participants });
 				} catch (error) {
 					const failure = error instanceof LifecycleFailure ? error : new LifecycleFailure("PIFFF_PREFLIGHT_FAILED", error instanceof Error ? error.message : String(error));
@@ -473,12 +469,8 @@ export function createPiFffLifecycle(options: CreatePiFffLifecycleOptions): PiFf
 					await updateJournal(fs, participant.journalPath, (journal) => { journal.phase = "restored"; });
 					await checkpoint(`teardown:journal:${participant.scope}:restored`);
 				}
-				for (const participant of participants) {
-					await updateJournal(fs, participant.journalPath, (journal) => { journal.phase = "reload-pending"; });
-					await checkpoint(`teardown:journal:${participant.scope}:reload-pending`);
-				}
-				await command.reload();
 				for (const participant of participants) { await removeJournal(fs, participant.journalPath); await checkpoint(`teardown:journal:${participant.scope}:removed`); }
+				await command.reload();
 				return result("teardown-committed", "Exact prior pi-fff entries were restored and journals retired.", { reload: "requested", participants });
 			} catch (error) {
 				const failure = error instanceof LifecycleFailure ? error : new LifecycleFailure("PIFFF_TRANSACTION_INCOMPLETE", error instanceof Error ? error.message : String(error));

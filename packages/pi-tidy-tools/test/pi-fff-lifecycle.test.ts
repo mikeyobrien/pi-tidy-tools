@@ -217,7 +217,7 @@ test("interrupted teardown rolls back managed state; fully restored teardown onl
 	}
 });
 
-test("reload capability is required before mutation and reload-pending survives disabled startup", async () => {
+test("reload capability is required before mutation and committed setup survives disabled startup", async () => {
 	const f = await fixture({ user: entry("user") });
 	try {
 		const before = await readFile(f.paths.user);
@@ -226,11 +226,11 @@ test("reload capability is required before mutation and reload-pending survives 
 		assert.deepEqual(await readFile(f.paths.user), before);
 		await assert.rejects(readFile(sidecar(f.paths.user)), /ENOENT/);
 		let reloads = 0;
-		await f.lifecycle({ checkpoint: (name: string) => { if (name === "setup:journal:user:reload-pending") throw new Error("crash"); } }).run("setup", { enabled: true, confirm: async () => true, reload: async () => { reloads++; } });
+		await f.lifecycle({ checkpoint: (name: string) => { if (name === "setup:journal:user:committed") throw new Error("crash"); } }).run("setup", { enabled: true, confirm: async () => true, reload: async () => { reloads++; } });
 		assert.equal(reloads, 0);
 		const recovered = await f.lifecycle().initialize(false);
-		assert.equal(recovered.outcome, "recovery-reload-required");
-		assert.equal(recovered.reload, "required");
+		assert.equal(recovered.outcome, "ready");
+		assert.equal(recovered.reload, "none");
 	} finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
@@ -279,7 +279,6 @@ test("failure injection at every journal/write/phase boundary remains recoverabl
 		"setup:journal:project:prepared", "setup:journal:user:prepared",
 		"setup:settings:project:written", "setup:journal:project:settings-written",
 		"setup:settings:user:written", "setup:journal:user:settings-written",
-		"setup:journal:project:reload-pending", "setup:journal:user:reload-pending",
 		"setup:journal:project:committed", "setup:journal:user:committed",
 	];
 	for (const point of points) {
@@ -290,7 +289,7 @@ test("failure injection at every journal/write/phase boundary remains recoverabl
 			assert.equal(result.outcome, "error", point);
 			const recovery = await f.lifecycle().initialize(true);
 			assert.ok(["recovery-reload-required", "ready"].includes(recovery.outcome), point);
-			const committed = points.indexOf(point) >= points.indexOf("setup:journal:project:reload-pending");
+			const committed = points.indexOf(point) >= points.indexOf("setup:journal:user:committed");
 			assert.deepEqual((await json(f.paths.project)).packages[0], committed ? { ...entry("project"), extensions: [] } : entry("project"), point);
 			assert.deepEqual((await json(f.paths.user)).packages[0], committed ? { ...entry("user"), extensions: [] } : entry("user"), point);
 			for (const dir of [dirname(f.paths.project), dirname(f.paths.user)]) assert.equal((await readdir(dir)).some((name) => name.includes(".tmp-")), false, point);
@@ -303,7 +302,6 @@ test("teardown failure injection rolls partial restoration back and retires comp
 		"teardown:journal:project:prepared", "teardown:journal:user:prepared",
 		"teardown:settings:project:written", "teardown:journal:project:restored",
 		"teardown:settings:user:written", "teardown:journal:user:restored",
-		"teardown:journal:project:reload-pending", "teardown:journal:user:reload-pending",
 		"teardown:journal:project:removed", "teardown:journal:user:removed",
 	];
 	for (const point of points) {

@@ -4,16 +4,67 @@
   "description": "Compact synchronous RPC subagent fan-out for Pi.",
   "license": "MIT",
   "author": "Mikey O'Brien <m@mobrienv.dev>",
-  "repository": { "type": "git", "url": "https://github.com/mikeyobrien/pi-tidy-tools.git", "directory": "packages/pi-tidy-subagents" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mikeyobrien/pi-tidy-tools.git",
+    "directory": "packages/pi-tidy-subagents"
+  },
   "homepage": "https://github.com/mikeyobrien/pi-tidy-tools/tree/main/packages/pi-tidy-subagents#readme",
   "bugs": "https://github.com/mikeyobrien/pi-tidy-tools/issues",
-  "engines": { "node": ">=22.19.0" },
-  "keywords": ["pi-package", "pi", "extension", "subagents", "delegation"],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "extension",
+    "subagents",
+    "delegation"
+  ],
   "type": "module",
-  "files": ["index.ts", "envelope.ts", "render.ts", "runner.ts", "scheduler.ts", "store.ts", "types.ts", "vendor/**/*.ts", "README.md", "CHANGELOG.md", "LICENSE", "docs/*.png"],
-  "pi": { "extensions": ["./index.ts"] },
-  "scripts": { "pretest": "node ../../scripts/bundle-core.mjs .", "test": "node --import tsx --test test/*.test.ts", "check": "node ../../scripts/bundle-core.mjs . && tsc --noEmit", "prepack": "node ../../scripts/bundle-core.mjs .", "smoke": "PI_TIDY_REAL_SMOKE=1 node --import tsx --test test/smoke.test.ts" },
-  "dependencies": { "typebox": "1.1.38" },
-  "peerDependencies": { "@earendil-works/pi-coding-agent": ">=0.80.6 <0.81.0", "@earendil-works/pi-tui": ">=0.80.6 <0.81.0" },
-  "devDependencies": { "@earendil-works/pi-coding-agent": "0.80.6", "@earendil-works/pi-tui": "0.80.6", "@types/node": "22.10.2", "tsx": "^4.20.0", "typescript": "5.6.3" }
+  "files": [
+    "index.ts",
+    "config.ts",
+    "envelope.ts",
+    "render.ts",
+    "runner.ts",
+    "runtime.ts",
+    "scheduler.ts",
+    "store.ts",
+    "types.ts",
+    "vendor/**/*.ts",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "docs/*.png",
+    "docs/routing-eval.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "pretest": "node ../../scripts/bundle-core.mjs .",
+    "test": "node --import tsx --test test/*.test.ts",
+    "check": "node ../../scripts/bundle-core.mjs . && tsc --noEmit",
+    "prepack": "node ../../scripts/bundle-core.mjs .",
+    "smoke": "PI_TIDY_REAL_SMOKE=1 node --import tsx --test test/smoke.test.ts",
+    "routing-eval": "PI_TIDY_ROUTING_EVAL=1 node --import tsx --test test/routing-eval.test.ts"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.80.6",
+    "typebox": "1.1.38"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.80.6 <0.81.0",
+    "@earendil-works/pi-tui": ">=0.80.6 <0.81.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.80.6",
+    "@earendil-works/pi-tui": "0.80.6",
+    "@types/node": "22.10.2",
+    "tsx": "^4.20.0",
+    "typescript": "5.6.3"
+  }
 }

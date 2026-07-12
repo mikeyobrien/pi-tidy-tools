@@ -8,6 +8,7 @@ import test from "node:test";
 import extension, {
   buildToolBlock,
   buildTurnDiffBlock,
+  createTidyExtension,
   fitToolLine,
   formatElapsed,
   withReasoning,
@@ -23,7 +24,42 @@ interface Registrations {
   tools: string[];
 }
 
-function loadWith(value: string): Registrations {
+const absentIntegration = () => ({
+  async initialize() {
+    return {
+      status: {
+        state: "absent" as const,
+        owner: "tidy/native" as const,
+        scopes: [],
+        tuple: "unavailable" as const,
+        journal: "none",
+        action: "Install pi-fff before setup.",
+      },
+      skipTidyTools: new Set<"read" | "grep">(),
+      commit() {},
+    };
+  },
+  async run() {
+    return {
+      message: "pi-fff is not installed.",
+      level: "info" as const,
+      reload: "none" as const,
+      status: {
+        state: "absent" as const,
+        owner: "tidy/native" as const,
+        scopes: [],
+        tuple: "unavailable" as const,
+        journal: "none",
+        action: "Install pi-fff before setup.",
+      },
+    };
+  },
+});
+const hermeticExtension = createTidyExtension({
+  createIntegration: absentIntegration,
+});
+
+async function loadWith(value: string): Promise<Registrations> {
   const registrations: Registrations = {
     events: [],
     commands: new Map(),
@@ -43,7 +79,7 @@ function loadWith(value: string): Registrations {
   const previous = process.env.PI_TIDY_TOOLS;
   process.env.PI_TIDY_TOOLS = value;
   try {
-    extension(pi as any);
+    await hermeticExtension(pi as any);
   } finally {
     if (previous === undefined) delete process.env.PI_TIDY_TOOLS;
     else process.env.PI_TIDY_TOOLS = previous;
@@ -60,7 +96,7 @@ interface ExtensionHarness {
   messages: any[];
 }
 
-function registerEnabledExtension(): ExtensionHarness {
+async function registerEnabledExtension(): Promise<ExtensionHarness> {
   const harness: ExtensionHarness = {
     events: new Map(),
     commands: new Map(),
@@ -72,7 +108,7 @@ function registerEnabledExtension(): ExtensionHarness {
   const previous = process.env.PI_TIDY_TOOLS;
   process.env.PI_TIDY_TOOLS = "on";
   try {
-    extension({
+    await hermeticExtension({
       on: (name: string, handler: any) => harness.events.set(name, handler),
       registerCommand: (name: string, options: any) =>
         harness.commands.set(name, options),
@@ -95,12 +131,12 @@ const withoutAnsi = (text: string): string =>
 const renderedLines = (component: any, width = 200): string[] =>
   component.render(width).map((line: string) => withoutAnsi(line).trimEnd());
 
-test("restored settled tools clear timers started during call hydration", () => {
+test("restored settled tools clear timers started during call hydration", async () => {
   const tools = new Map<string, any>();
   const previous = process.env.PI_TIDY_TOOLS;
   process.env.PI_TIDY_TOOLS = "on";
   try {
-    extension({
+    await hermeticExtension({
       on() {},
       registerCommand() {},
       registerShortcut() {},
@@ -134,12 +170,13 @@ test("restored settled tools clear timers started during call hydration", () => 
     };
     const theme = { bg: (_name: string, text: string) => text };
     bash.renderCall(args, theme, context);
-    bash.renderResult(
+    const newlySettled = bash.renderResult(
       { content: [{ type: "text", text: "done" }] },
       { isPartial: false, expanded: false },
       theme,
       { ...context, isPartial: false, isError: false }
     );
+    assert.doesNotMatch(renderedLines(newlySettled).join("\n"), /\bago\b/);
     assert.equal(cleared, true);
     const restored = bash.renderResult(
       {
@@ -160,12 +197,12 @@ test("restored settled tools clear timers started during call hydration", () => 
         .replace(/\x1b\[[0-9;]*m/g, ""),
       /done in 7s/
     );
-    assert.match(
+    assert.doesNotMatch(
       restored
         .render(200)
         .join("\n")
         .replace(/\x1b\[[0-9;]*m/g, ""),
-      /\(1h3m ago\)/
+      /\bago\b/
     );
   } finally {
     globalThis.setInterval = originalSetInterval;
@@ -173,183 +210,45 @@ test("restored settled tools clear timers started during call hydration", () => 
   }
 });
 
-test("settled tool completion ages advance while the turn remains active", async () => {
+test("settled extension rows stay byte-stable across six ordinary editor renders", async () => {
   const harness = await registerEnabledExtension();
   const originalNow = Date.now;
-  const originalSetTimeout = globalThis.setTimeout;
-  const originalClearTimeout = globalThis.clearTimeout;
-  let now = 1_000;
-  let invalidations = 0;
-  const timers: Array<{ callback: () => void; delay: number; unref(): void }> =
-    [];
-  const cleared: unknown[] = [];
+  let now = 10_000_000;
   Date.now = () => now;
-  globalThis.setTimeout = ((callback: () => void, delay: number) => {
-    const timer = { callback, delay, unref() {} };
-    timers.push(timer);
-    return timer;
-  }) as any;
-  globalThis.clearTimeout = ((timer: unknown) => cleared.push(timer)) as any;
   try {
     const bash = harness.tools.get("bash");
-    const context = {
-      isPartial: true,
-      toolCallId: "advancing-age",
-      args: { command: "true", reasoning: "finish quickly" },
-      invalidate() {
-        invalidations += 1;
-      },
-    };
     const theme = { bg: (_name: string, text: string) => text };
-    await harness.events.get("tool_execution_start")!({
-      toolName: "bash",
-      toolCallId: context.toolCallId,
-      args: context.args,
-    });
-    await harness.events.get("tool_execution_end")!({
-      toolName: "bash",
-      toolCallId: context.toolCallId,
-    });
-    const augmented = await harness.events.get("tool_result")!({
-      toolName: "bash",
-      toolCallId: context.toolCallId,
-      details: {},
-    });
-    const settled = bash.renderResult(
-      { content: [{ type: "text", text: "done" }], details: augmented.details },
-      { isPartial: false, expanded: false },
-      theme,
-      { ...context, isPartial: false, isError: false }
-    );
-    assert.match(renderedLines(settled).join("\n"), /\(<1m ago\)/);
-    assert.equal(timers[0]!.delay, 60_000);
-
-    now += 60_000;
-    timers[0]!.callback();
-    assert.equal(invalidations, 1);
-    assert.match(renderedLines(settled).join("\n"), /\(1m ago\)/);
-
-    await harness.events.get("turn_end")!();
-    assert.equal(cleared.includes(timers.at(-1)), false);
-    await harness.events.get("session_shutdown")!();
-    assert.ok(cleared.includes(timers.at(-1)));
-  } finally {
-    Date.now = originalNow;
-    globalThis.setTimeout = originalSetTimeout;
-    globalThis.clearTimeout = originalClearTimeout;
-  }
-});
-
-test("restored settled completion ages continue advancing after reload", async () => {
-  const harness = await registerEnabledExtension();
-  const originalNow = Date.now;
-  const originalSetTimeout = globalThis.setTimeout;
-  const originalClearTimeout = globalThis.clearTimeout;
-  let now = 100_000;
-  let invalidations = 0;
-  const timers: Array<{ callback: () => void; delay: number; unref(): void }> =
-    [];
-  const cleared: unknown[] = [];
-  Date.now = () => now;
-  globalThis.setTimeout = ((callback: () => void, delay: number) => {
-    const timer = { callback, delay, unref() {} };
-    timers.push(timer);
-    return timer;
-  }) as any;
-  globalThis.clearTimeout = ((timer: unknown) => cleared.push(timer)) as any;
-  try {
-    const bash = harness.tools.get("bash");
-    const restored = bash.renderResult(
+    const rows = Array.from({ length: 24 }, (_, index) => bash.renderResult(
       {
         content: [{ type: "text", text: "done" }],
-        details: { piTidyElapsedMs: 1_000, piTidyCompletedAt: now },
+        details: {
+          piTidyElapsedMs: 8_000,
+          // Old sessions may retain this retired metadata.
+          piTidyCompletedAt: now - index * 59_000,
+        },
       },
       { isPartial: false, expanded: false },
-      { bg: (_name: string, text: string) => text },
+      theme,
       {
         isPartial: false,
         isError: false,
-        toolCallId: "restored-age",
-        args: { command: "true", reasoning: "restore prior output" },
-        invalidate() {
-          invalidations += 1;
-        },
+        toolCallId: `restored-${index}`,
+        args: { command: "sleep 8", reasoning: `restore row ${index}` },
       }
-    );
-    assert.match(renderedLines(restored).join("\n"), /\(<1m ago\)/);
-    assert.equal(timers[0]!.delay, 60_000);
+    ));
+    for (const width of [120, 72]) {
+      const transcript = () => rows.flatMap((row) => row.render(width)).join("\n");
+      const baseline = transcript();
+      assert.doesNotMatch(withoutAnsi(baseline), /\bago\b/);
+      assert.match(withoutAnsi(baseline), /done in 8s/);
 
-    now += 60_000;
-    timers[0]!.callback();
-    assert.equal(invalidations, 1);
-    assert.match(renderedLines(restored).join("\n"), /\(1m ago\)/);
-
-    await harness.events.get("session_shutdown")!();
-    assert.ok(cleared.includes(timers.at(-1)));
+      for (let key = 0; key < 6; key++) {
+        now += 61_000;
+        assert.equal(transcript(), baseline, `${width}-column ordinary key ${key + 1} changed settled transcript bytes`);
+      }
+    }
   } finally {
     Date.now = originalNow;
-    globalThis.setTimeout = originalSetTimeout;
-    globalThis.clearTimeout = originalClearTimeout;
-  }
-});
-
-test("restored rows coalesce age refreshes into one redraw window", async () => {
-  const harness = await registerEnabledExtension();
-  const originalNow = Date.now;
-  const originalSetTimeout = globalThis.setTimeout;
-  const originalClearTimeout = globalThis.clearTimeout;
-  let now = 120_000;
-  const timers: Array<{
-    callback: () => void;
-    delay: number;
-    cleared: boolean;
-    unref(): void;
-  }> = [];
-  Date.now = () => now;
-  globalThis.setTimeout = ((callback: () => void, delay: number) => {
-    const timer = { callback, delay, cleared: false, unref() {} };
-    timers.push(timer);
-    return timer;
-  }) as any;
-  globalThis.clearTimeout = ((timer: (typeof timers)[number]) => {
-    timer.cleared = true;
-  }) as any;
-  try {
-    const bash = harness.tools.get("bash");
-    for (const [index, completedAt] of [58_000, 59_000, 60_000].entries()) {
-      bash.renderResult(
-        {
-          content: [{ type: "text", text: "done" }],
-          details: { piTidyElapsedMs: 1_000, piTidyCompletedAt: completedAt },
-        },
-        { isPartial: false, expanded: false },
-        { bg: (_name: string, text: string) => text },
-        {
-          isPartial: false,
-          isError: false,
-          toolCallId: `restored-${index}`,
-          args: { command: "true", reasoning: "restore prior output" },
-          invalidate() {},
-        }
-      );
-    }
-
-    const windowEndsAt = now + 60_000;
-    let refreshCallbacks = 0;
-    while (true) {
-      const timer = [...timers].reverse().find((candidate) => !candidate.cleared);
-      if (!timer || now + timer.delay > windowEndsAt) break;
-      timer.cleared = true;
-      now += timer.delay;
-      timer.callback();
-      refreshCallbacks += 1;
-    }
-    assert.equal(refreshCallbacks, 1);
-    await harness.events.get("session_shutdown")!();
-  } finally {
-    Date.now = originalNow;
-    globalThis.setTimeout = originalSetTimeout;
-    globalThis.clearTimeout = originalClearTimeout;
   }
 });
 
@@ -358,7 +257,7 @@ test("tool results persist elapsed duration for reload", async () => {
   const previous = process.env.PI_TIDY_TOOLS;
   process.env.PI_TIDY_TOOLS = "on";
   try {
-    extension({
+    await hermeticExtension({
       on: (name: string, handler: any) => handlers.set(name, handler),
       registerCommand() {},
       registerShortcut() {},
@@ -387,7 +286,6 @@ test("tool results persist elapsed duration for reload", async () => {
     assert.deepEqual(patch.details, {
       existing: true,
       piTidyElapsedMs: 7_000,
-      piTidyCompletedAt: 8_000,
     });
   } finally {
     Date.now = originalNow;
@@ -451,52 +349,26 @@ test("settled bash summaries report duration instead of output line count", () =
   assert.doesNotMatch(plain, /lines/);
 });
 
-test("tool blocks support default reasoning and result layouts with durable ages", () => {
+test("tool blocks support default reasoning and result layouts without completion ages", () => {
   const args = { path: "index.ts", reasoning: "update the renderer" };
   const result = {
     content: [{ type: "text", text: "Successfully replaced text" }],
-    details: { diff: "+new\n-old" },
+    details: { diff: "+new\n-old", piTidyCompletedAt: 1_000 },
   };
   const plain = (mode: "default" | "reasoning" | "result") =>
-    buildToolBlock("edit", args, result, {
-      mode,
-      completedAt: 1_000,
-      now: 3_781_000,
-    }).map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+    buildToolBlock("edit", args, result, { mode })
+      .map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
   const defaultBlock = plain("default");
-  assert.equal(defaultBlock.length, 2);
-  assert.match(defaultBlock[0], /update the renderer \(1h3m ago\)$/);
-  assert.match(defaultBlock[1], /index\.ts → \+1\/-1$/);
-  const reasoningBlock = plain("reasoning");
-  assert.equal(reasoningBlock.length, 1);
-  assert.match(
-    reasoningBlock[0],
-    /update the renderer \(1h3m ago\) → \+1\/-1$/
-  );
+  assert.deepEqual(defaultBlock, [
+    "  ┊ ✓ ✏️ edit update the renderer",
+    "  ┊   index.ts → +1/-1",
+  ]);
+  assert.deepEqual(plain("reasoning"), [
+    "  ┊ ✓ ✏️ edit update the renderer → +1/-1",
+  ]);
   const resultBlock = plain("result");
-  assert.equal(resultBlock.length, 1);
-  assert.match(resultBlock[0], /index\.ts \(1h3m ago\) → \+1\/-1$/);
-  assert.doesNotMatch(resultBlock[0], /update the renderer/);
-});
-
-test("tool ages stay compact from fresh output through old sessions", () => {
-  const plainAge = (ageMs: number) =>
-    buildToolBlock(
-      "read",
-      { path: "a.ts", reasoning: "inspect fixture" },
-      { content: [{ type: "text", text: "one" }] },
-      { completedAt: 10_000, now: 10_000 + ageMs }
-    )[0].replace(/\x1b\[[0-9;]*m/g, "");
-  assert.match(plainAge(0), /\(<1m ago\)$/);
-  assert.match(plainAge(59 * 60_000), /\(59m ago\)$/);
-  assert.match(plainAge((24 + 2) * 60 * 60_000), /\(1d2h ago\)$/);
-  assert.match(plainAge((365 + 60) * 24 * 60 * 60_000), /\(1y2mo ago\)$/);
-  const legacy = buildToolBlock(
-    "read",
-    { path: "a.ts", reasoning: "inspect fixture" },
-    { content: [{ type: "text", text: "one" }] }
-  )[0].replace(/\x1b\[[0-9;]*m/g, "");
-  assert.doesNotMatch(legacy, / ago\)/);
+  assert.deepEqual(resultBlock, ["  ┊ ✓ ✏️ edit index.ts → +1/-1"]);
+  assert.doesNotMatch(resultBlock[0], /\bago\b|update the renderer/);
 });
 
 test("expanded writes show numbered content instead of the generic success message", () => {
@@ -606,7 +478,7 @@ test("write execution returns diffs for new files and overwrites", async () => {
   const previous = process.env.PI_TIDY_TOOLS;
   process.env.PI_TIDY_TOOLS = "on";
   try {
-    extension({
+    await hermeticExtension({
       on() {},
       registerCommand() {},
       registerShortcut() {},
@@ -641,7 +513,7 @@ test("diff is cleared after a turn without file changes", async () => {
   const previous = process.env.PI_TIDY_TOOLS;
   process.env.PI_TIDY_TOOLS = "on";
   try {
-    extension({
+    await hermeticExtension({
       on: (name: string, handler: any) => events.set(name, handler),
       registerCommand: (name: string, options: any) =>
         commands.set(name, options),
@@ -717,8 +589,8 @@ test("narrow grep lines always preserve the match and file summary", () => {
   assert.match(fitted, /3 matches in 2 files$/);
 });
 
-test("disabled startup keeps only the tidy management command", () => {
-  const registrations = loadWith("off");
+test("disabled startup keeps only the tidy management command", async () => {
+  const registrations = await loadWith("off");
   assert.deepEqual([...registrations.commands.keys()], ["tidy"]);
   assert.deepEqual(registrations.events, []);
   assert.deepEqual(registrations.shortcuts, []);
@@ -726,8 +598,47 @@ test("disabled startup keeps only the tidy management command", () => {
   assert.deepEqual(registrations.tools, []);
 });
 
-test("enabled startup preserves every optional registration", () => {
-  const registrations = loadWith("on");
+test("scoped startup exposes native read and FFF-backed tidy grep/find without raw names", async () => {
+  const registered: any[] = [];
+  const grepSchema = { type: "object", properties: { pattern: { type: "string" } }, required: ["pattern"] };
+  const findSchema = { type: "object", properties: { pattern: { type: "string" } }, required: ["pattern"] };
+  const rawRenderer = () => ({ render: () => ["raw"] });
+  const scopedExtension = createTidyExtension({
+    loadState: () => ({ enabled: true, source: "default" }),
+    loadMode: () => "default",
+    createIntegration: () => ({
+      async initialize() {
+        return {
+          status: { state: "managed-compatible", owner: "tidy/native read + FFF-executed tidy grep/find", scopes: ["project"], journal: "committed", action: "raw hidden" },
+          skipTidyTools: new Set(["grep", "find"]),
+          commit(decorate: (source: any) => any) {
+            registered.push(decorate({ name: "grep", label: "ffgrep", description: "FFF grep", parameters: grepSchema, execute() { return { content: [{ type: "text", text: "hit" }] }; }, renderCall: rawRenderer, renderResult: rawRenderer }));
+            registered.push(decorate({ name: "find", label: "fffind", description: "FFF find", parameters: findSchema, execute() { return { content: [{ type: "text", text: "file.ts" }] }; }, renderCall: rawRenderer, renderResult: rawRenderer }));
+          },
+        } as any;
+      },
+      async run() { throw new Error("unused"); },
+    }),
+  });
+  const tools: any[] = [];
+  await scopedExtension({
+    on() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {},
+    registerTool(tool: any) { tools.push(tool); }, sendMessage() {},
+  } as any);
+  tools.push(...registered);
+  const names = tools.map((tool) => tool.name);
+  for (const name of ["read", "grep", "find"]) assert.equal(names.filter((value) => value === name).length, 1);
+  assert.equal(names.includes("ffgrep"), false); assert.equal(names.includes("fffind"), false);
+  const read = tools.find((tool) => tool.name === "read");
+  const grep = tools.find((tool) => tool.name === "grep"); const find = tools.find((tool) => tool.name === "find");
+  assert.notEqual(read.parameters, grepSchema); assert.notEqual(read.parameters, findSchema);
+  assert.equal(grep.parameters.required[0], "reasoning"); assert.equal(find.parameters.required[0], "reasoning");
+  assert.equal(grep.renderShell, "self"); assert.equal(find.renderShell, "self");
+  assert.notEqual(grep.renderCall, rawRenderer); assert.notEqual(find.renderResult, rawRenderer);
+});
+
+test("enabled startup preserves every optional registration", async () => {
+  const registrations = await loadWith("on");
   assert.deepEqual([...registrations.commands.keys()], ["tidy", "diff"]);
   assert.deepEqual(registrations.events, [
     "tool_execution_start",
@@ -750,7 +661,7 @@ test("enabled startup preserves every optional registration", () => {
 });
 
 test("status reports an active environment override without reloading", async () => {
-  const registrations = loadWith("off");
+  const registrations = await loadWith("off");
   const notices: string[] = [];
   let reloads = 0;
   await registrations.commands.get("tidy").handler("status", {
@@ -763,6 +674,82 @@ test("status reports an active environment override without reloading", async ()
   assert.equal(reloads, 0);
 });
 
+test("pi-fff setup previews exact changes and awaits one reload", async () => {
+  const setup = createTidyExtension({
+    loadState: () => ({ enabled: true, source: "default" }),
+    loadMode: () => "default",
+    createIntegration: () =>
+      ({
+        async initialize() {
+          return {
+            status: {
+              state: "absent",
+              owner: "tidy/native",
+              scopes: [],
+              journal: "none",
+              action: "Install pi-fff before setup.",
+            },
+            skipTidyTools: new Set(),
+            commit() {},
+          };
+        },
+        async run(action: string, options: any) {
+          assert.equal(action, "setup");
+          assert.equal(
+            await options.confirm({
+              action: "setup",
+              changes: [
+                {
+                  scope: "user",
+                  settingsPath: "/agent/settings.json",
+                  before: "npm:pi-fff@0.1.12",
+                  after: {
+                    source: "npm:pi-fff@0.1.12",
+                    extensions: [],
+                  },
+                },
+              ],
+            }),
+            true
+          );
+          await options.reload();
+          return { reload: "requested" };
+        },
+      }) as any,
+  });
+  const commands = new Map<string, any>();
+  await setup({
+    on() {},
+    registerCommand: (name: string, options: any) =>
+      commands.set(name, options),
+    registerShortcut() {},
+    registerMessageRenderer() {},
+    registerTool() {},
+  } as any);
+  const notices: Array<[string, string]> = [];
+  let reloads = 0;
+  await commands.get("tidy").handler("pi-fff setup", {
+    hasUI: true,
+    ui: {
+      confirm: async (title: string, body: string) => {
+        assert.equal(title, "pi-fff setup");
+        assert.equal(
+          body,
+          'user: /agent/settings.json\n"npm:pi-fff@0.1.12" → {"source":"npm:pi-fff@0.1.12","extensions":[]}'
+        );
+        return true;
+      },
+      notify: (message: string, level: string) =>
+        notices.push([message, level]),
+    },
+    reload: async () => {
+      reloads++;
+    },
+  });
+  assert.deepEqual(notices, [["pi-fff setup committed; reloading.", "info"]]);
+  assert.equal(reloads, 1);
+});
+
 test("a successful state change persists and reloads exactly once", async () => {
   const home = await mkdtemp(join(tmpdir(), "pi-tidy-home-"));
   const script = `
@@ -772,7 +759,7 @@ test("a successful state change persists and reloads exactly once", async () => 
 			on() {}, registerShortcut() {}, registerMessageRenderer() {}, registerTool() {},
 			registerCommand(name, options) { commands.set(name, options); }
 		};
-		extension(pi);
+		await extension(pi);
 		let reloads = 0;
 		await commands.get("tidy").handler("off", {
 			ui: { notify() {} },
@@ -798,8 +785,8 @@ test("a successful state change persists and reloads exactly once", async () => 
   }
 });
 
-test("registered renderers summarize native result shapes for every owned tool", () => {
-  const { tools } = registerEnabledExtension();
+test("registered renderers summarize native result shapes for every owned tool", async () => {
+  const { tools } = await registerEnabledExtension();
   const backgrounds: string[] = [];
   const theme = {
     bg: (name: string, text: string) => {
@@ -904,8 +891,8 @@ test("registered renderers summarize native result shapes for every owned tool",
   );
 });
 
-test("registered result renderers tolerate absent optional inputs", () => {
-  const { tools } = registerEnabledExtension();
+test("registered result renderers tolerate absent optional inputs", async () => {
+  const { tools } = await registerEnabledExtension();
   const backgrounds: string[] = [];
   const theme = {
     bg: (name: string, text: string) => {
@@ -923,8 +910,8 @@ test("registered result renderers tolerate absent optional inputs", () => {
   assert.ok(backgrounds.every((name) => name === "toolSuccessBg"));
 });
 
-test("registered renderers expose expanded native details and empty partial slots", () => {
-  const { tools } = registerEnabledExtension();
+test("registered renderers expose expanded native details and empty partial slots", async () => {
+  const { tools } = await registerEnabledExtension();
   const theme = { bg: (_name: string, text: string) => text };
   const bash = tools.get("bash");
   const partial = bash.renderResult({}, { isPartial: true }, theme, {});
@@ -978,7 +965,7 @@ test("registered renderers expose expanded native details and empty partial slot
 });
 
 test("registered call and event lifecycle owns timers and turn-local diffs", async () => {
-  const harness = registerEnabledExtension();
+  const harness = await registerEnabledExtension();
   const originalSetInterval = globalThis.setInterval;
   const originalClearInterval = globalThis.clearInterval;
   const timers: object[] = [];
@@ -1110,14 +1097,16 @@ test("registered call and event lifecycle owns timers and turn-local diffs", asy
   }
 });
 
-test("registered message renderer fits stored and restored recap rows", () => {
-  const renderer =
-    registerEnabledExtension().renderers.get("minimal-turn-diff")!;
+test("registered message renderer fits stored and restored recap rows", async () => {
+  const renderer = (await registerEnabledExtension()).renderers.get(
+    "minimal-turn-diff"
+  )!;
   const stored = renderer({
     details: {
       rows: ["a very long line without a summary", "long target → result"],
     },
   });
+  stored.invalidate();
   const storedLines = renderedLines(stored, 12);
   assert.deepEqual(storedLines, ["a very long…", "lo… → result"]);
   const tiny = renderedLines(stored, 3);
@@ -1132,7 +1121,7 @@ test("registered non-write execution strips reasoning before native delegation",
   const target = join(root, "fixture.txt");
   try {
     await writeFile(target, "alpha\nbeta\n", "utf8");
-    const read = registerEnabledExtension().tools.get("read");
+    const read = (await registerEnabledExtension()).tools.get("read");
     const result = await read.execute("read", {
       path: target,
       reasoning: "inspect fixture",
@@ -1156,7 +1145,7 @@ test("result mode keeps native schemas and management commands preserve state", 
   const script = `
 		const { default: extension } = await import(${JSON.stringify(new URL("../index.js", import.meta.url).href)});
 		const commands = new Map(), tools = new Map(), notices = [];
-		extension({
+		await extension({
 			on() {}, registerShortcut() {}, registerMessageRenderer() {}, sendMessage() {},
 			registerCommand(name, options) { commands.set(name, options); },
 			registerTool(tool) { tools.set(tool.name, tool); }
@@ -1172,6 +1161,7 @@ test("result mode keeps native schemas and management commands preserve state", 
 		const read = tools.get("read");
 		console.log(JSON.stringify({
 			hasReasoning: Object.hasOwn(read.parameters.properties, "reasoning"),
+			hasPromptGuidelines: Object.hasOwn(read, "promptGuidelines"),
 			guidelines: read.promptGuidelines,
 			notices,
 			reloads
@@ -1187,7 +1177,8 @@ test("result mode keeps native schemas and management commands preserve state", 
     );
     const observed = JSON.parse(stdout.trim());
     assert.equal(observed.hasReasoning, false);
-    assert.deepEqual(observed.guidelines, []);
+    assert.equal(observed.hasPromptGuidelines, false);
+    assert.equal(observed.guidelines, undefined);
     assert.equal(observed.reloads, 2);
     assert.ok(
       observed.notices.some((notice: string) => /mode result/.test(notice))
@@ -1208,7 +1199,7 @@ test("result mode keeps native schemas and management commands preserve state", 
 });
 
 test("environment overrides reject persistent state changes", async () => {
-  const registrations = loadWith("off");
+  const registrations = await loadWith("off");
   const notices: string[] = [];
   const context = {
     ui: { notify: (message: string) => notices.push(message) },
@@ -1453,13 +1444,29 @@ test("buildTurnDiffBlock renders exact singular, separators, and diff semantics"
   );
 });
 
-test("registered APIs expose exact completions and reason-first tool metadata", () => {
-  const harness = registerEnabledExtension();
+test("registered APIs expose exact completions and reason-first tool metadata", async () => {
+  const harness = await registerEnabledExtension();
   const tidy = harness.commands.get("tidy");
-  assert.equal(tidy.description, "Manage pi-tidy-tools state and layout mode");
-  assert.deepEqual(tidy.getArgumentCompletions(" MODE R"), [
+  assert.equal(
+    tidy.description,
+    "Manage pi-tidy-tools state, layout, and pi-fff integration"
+  );
+  assert.deepEqual(tidy.getArgumentCompletions(""), [
+    { value: "on", label: "on" },
+    { value: "off", label: "off" },
+    { value: "toggle", label: "toggle" },
+    { value: "status", label: "status" },
+    { value: "mode default", label: "mode default" },
     { value: "mode reasoning", label: "mode reasoning" },
     { value: "mode result", label: "mode result" },
+    { value: "mode status", label: "mode status" },
+    { value: "pi-fff setup", label: "pi-fff setup" },
+    { value: "pi-fff status", label: "pi-fff status" },
+    { value: "pi-fff teardown", label: "pi-fff teardown" },
+  ]);
+  assert.deepEqual(tidy.getArgumentCompletions(" PI-FFF S"), [
+    { value: "pi-fff setup", label: "pi-fff setup" },
+    { value: "pi-fff status", label: "pi-fff status" },
   ]);
   assert.deepEqual(tidy.getArgumentCompletions("missing"), []);
   assert.equal(

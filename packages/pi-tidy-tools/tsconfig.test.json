@@ -6,5 +6,5 @@
     "rootDir": ".",
     "sourceMap": true
   },
-  "include": ["index.ts", "config.ts", "render.ts", "test/**/*.test.ts"]
+  "include": ["index.ts", "config.ts", "render.ts", "tool-composition.ts", "pi-fff/**/*.ts", "test/**/*.test.ts"]
 }

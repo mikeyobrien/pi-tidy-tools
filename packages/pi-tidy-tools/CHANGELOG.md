@@ -9,7 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Settled tool headers now show a compact completion age that remains accurate after session reloads.
+- Optional, explicit pi-fff orchestration for separately installed legacy `pi-fff` 0.1.12+ and scoped `@ff-labs/pi-fff` 0.6.0+ on Pi 0.80.6+, with profile-specific tool ownership, journaled setup/status/teardown, project-over-user selection, capability-gated forward compatibility, and fail-closed ownership.
+- Installed-package baseline coverage for both package identities (including scoped tools, commands, flags, lifecycle, renderers, and autocomplete), packed-artifact assertions, a dual-line baseline/newest release matrix, and a real-Pi TUI smoke gate.
+
+### Changed
+
+- Managed scoped `@ff-labs/pi-fff` now executes behind tidy-presented `grep` and `find`; native tidy `read` remains unchanged and raw `ffgrep`/`fffind` names are no longer model-facing.
+- Pi coding-agent and TUI peer ranges now have no upper bound; structurally compatible newer tuples are reported as forward-compatible/unverified until release smoke passes.
+- Settled completion ages have been removed because clock-derived labels made ordinary editor renders repaint historical transcript rows.
+
+### Security
+
+- pi-fff settings transitions preserve exact prior entries in linked sidecars and recover interrupted writes without touching unrelated settings. Teardown is required before package removal; drift requires manual restoration from every recorded `priorEntry` before deleting sidecars and reloading.
+
+### Known limitations
+
+- pi-fff 0.1.12 autocomplete is last-writer-wins with other custom editors, and disabling it live requires `/reload` to restore the prior/default editor.
 
 ## [0.2.0] - 2026-07-11
 

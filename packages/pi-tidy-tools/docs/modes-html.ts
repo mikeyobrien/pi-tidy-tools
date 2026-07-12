@@ -61,7 +61,7 @@ async function main() {
 		const lines = buildToolBlock("edit", {
 			path: "src/cache.ts",
 			reasoning: "add types to the cache",
-		}, result, { mode, completedAt: 1_000, now: 3_781_000 });
+		}, result, { mode });
 		return `<section class="mode"><h2>${mode}</h2><p>${description}</p><pre>${ansiToHtml(lines.join("\n"))}</pre></section>`;
 	}).join("");
 

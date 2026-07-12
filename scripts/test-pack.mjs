@@ -12,9 +12,22 @@ try {
   const tarball = join(temp, packed[0].filename);
   const listing = execFileSync("tar", ["-tzf", tarball], { encoding: "utf8" });
   if (!listing.includes("package/vendor/pi-tidy-core/index.ts")) throw new Error(`${name} omitted its bundled tidy core`);
+  if (name === "@mobrienv/pi-tidy-tools") {
+   for (const file of ["package/tool-composition.ts", "package/pi-fff/adapter.ts", "package/pi-fff/controller.ts", "package/pi-fff/integration.ts", "package/pi-fff/loader.ts"]) {
+    if (!listing.includes(file)) throw new Error(`${name} omitted runtime file ${file}`);
+   }
+   if (listing.includes("prototype") || listing.includes("package/scripts/") || listing.includes("pi-fff-installed")) throw new Error(`${name} shipped test/prototype files`);
+  }
 
   const manifest = JSON.parse(execFileSync("tar", ["-xOzf", tarball, "package/package.json"], { encoding: "utf8" }));
   if (manifest.dependencies?.["@mobrienv/pi-tidy-core"]) throw new Error(`${name} leaked a private workspace dependency`);
+  if (name === "@mobrienv/pi-tidy-tools") {
+   if (!manifest.dependencies?.semver) throw new Error(`${name} omitted semver runtime dependency`);
+   if (manifest.dependencies?.["pi-fff"] || manifest.peerDependencies?.["pi-fff"] || manifest.bundledDependencies?.includes("pi-fff")) throw new Error(`${name} must not depend on, peer, or bundle pi-fff`);
+   for (const peer of ["@earendil-works/pi-coding-agent", "@earendil-works/pi-tui"]) {
+    if (manifest.peerDependencies?.[peer] !== ">=0.80.6") throw new Error(`${name} peer ${peer} must have no upper bound`);
+   }
+  }
 
   const installDir = join(temp, name.split("/").at(-1));
   mkdirSync(installDir);

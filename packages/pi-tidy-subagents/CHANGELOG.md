@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-12
+
 ### Added
 
 - Optional per-child exact `provider/model-id` model selection with parent-model inheritance when omitted.
@@ -16,11 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Inherited thinking is canonically clamped (non-reasoning → `off`) with adjustment metadata rather than rejected.
 - Child RPC `get_state` observation before prompting, with startup model mismatch failing that child without a prompt and observed thinking becoming the effective rendered/persisted truth.
 - Schema version 2 run manifests retaining parent runtime plus per-child requested, resolved, and observed model/thinking provenance and thinking adjustment metadata.
-- Direct dependency on `@earendil-works/pi-ai` for `getSupportedThinkingLevels` and `clampThinkingLevel`.
 - Short thinking-primary schema defaults and prompt guidelines (exact IDs, omit inherits, reject aliases/profiles/fuzzy).
 - Structured agent-dir routing map (`pi-tidy-subagents/routing.json`) with atomic load/save and thinking-primary task-class defaults.
 - `/tidy-subagents-routing` slash command (`setup|defaults|status|clear`) to build the map from authenticated models without mutating parent session model/thinking.
-- Observational non-blocking routing evaluation suite covering eight task shapes (`test/routing-eval.test.ts`, `docs/routing-eval.md`).
+- Observational non-blocking routing evaluation suite covering eight task shapes.
 - Opt-in real-provider heterogeneous child smoke with observed model/thinking before prompt and actionable skip diagnostics.
 
 ### Fixed
@@ -29,11 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Compact rendering continues to show each child's model identity and thinking level, now using the observed runtime after startup without routine adjustment noise.
-- Multi-child fan-out now inserts one unpainted blank line between sibling agents so parallel children scan like parallel tool cards (gap punches through the shared state background); single-child output stays tight.
-- Public docs cover inheritance, overrides, heterogeneous fan-out, clamp/error policy, startup observation, provenance, requested/resolved/observed, and routing setup.
-- Document optional model/thinking as an idiomatic **override hierarchy** (most specific wins): explicit tool-call fields → user turn instructions → AGENTS.md / project agent instructions → optional `/tidy-subagents-routing` map → schema defaults / promptGuidelines → parent inheritance when omitted (no AGENTS.md auto-read or injection).
-- Internal prefactor retained: every child owns an independent runtime plan used for launch.
+- Compact rendering shows each child's effective/observed model identity and thinking level without routine adjustment noise.
+- Multi-child fan-out inserts one unpainted blank line between sibling agents so parallel children scan like parallel tool cards; single-child output stays tight.
+- Public docs cover inheritance, overrides, heterogeneous fan-out, clamp/error policy, startup observation, provenance, requested/resolved/observed, routing setup, and the override hierarchy (tool fields → user turn → AGENTS.md → routing map → schema defaults → inherit).
 
 ## [0.1.0] - 2026-07-11
 
@@ -44,5 +43,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Compact adaptive rendering with live child activity, progressive disclosure, directional provider usage, and elapsed duration.
 - Bounded ordered parent results plus persistent versioned manifests, responses, normalized events, and exact provider usage for every child.
 
-[Unreleased]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-subagents-v0.1.0...HEAD
+[Unreleased]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-subagents-v0.2.0...HEAD
+[0.2.0]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-subagents-v0.1.0...pi-tidy-subagents-v0.2.0
 [0.1.0]: https://github.com/mikeyobrien/pi-tidy-tools/tree/pi-tidy-subagents-v0.1.0/packages/pi-tidy-subagents

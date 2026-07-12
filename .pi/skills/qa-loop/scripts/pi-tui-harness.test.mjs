@@ -64,6 +64,19 @@ test("canonical wrapper drives an isolated agent-tty lifecycle and native eviden
   assert.match(log, /ARGS=.*destroy fixture-session --json/);
 });
 
+test("an explicit QA root isolates concurrent worktree runs", async () => {
+  const { env, temp } = await fixture();
+  const root = join(tmpdir(), `pi-tidy-qa-${temp.split("/").pop()}`);
+  const isolated = { ...env, PI_TIDY_QA_ROOT: root };
+  invoke(["reset"], isolated); invoke(["start", "120", "36"], isolated);
+  const capture = JSON.parse(invoke(["capture", "isolated"], isolated).stdout).result;
+  assert.equal(capture.textPath, join(root, "artifacts", "isolated.txt"));
+  assert.equal(capture.pngPath, join(root, "artifacts", "isolated.png"));
+  const log = await readFile(env.FAKE_LOG, "utf8");
+  assert.match(log, new RegExp(`HOME=${root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/agent-tty`));
+  invoke(["stop"], isolated); invoke(["reset"], isolated);
+});
+
 test("preflight rejects any agent-tty version other than 0.5.0", async () => {
   const { env, temp } = await fixture();
   const cli = join(temp, "bin", "agent-tty");

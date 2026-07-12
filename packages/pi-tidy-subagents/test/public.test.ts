@@ -148,6 +148,35 @@ test("silent running children do not emit timer-only updates", async () => fixtu
  await pending; assert.equal(runningUpdates, 1);
 }));
 
+test("child exit terminalizes an active tool immediately and after transcript reload", async () => fixture(async (root) => {
+ const { tool } = register();
+ const result = await tool.execute("tool-crash", { agents: [{ reason: "crash during a tool", prompt: "tool-crash" }] }, undefined, undefined, context(root));
+ const child = result.details.children[0];
+ assert.equal(child.status, "failed");
+ assert.deepEqual(child.activeTools, []);
+ assert.match(child.activities.join("\n").replace(/\x1b\[[0-9;]*m/g, ""), /✗ .*bash crash the parent process\n  kill -9 \$PPID → error in/);
+ assert.doesNotMatch(child.activities.join("\n").replace(/\x1b\[[0-9;]*m/g, ""), /running/);
+ const renderNow = child.endedAt + 30_000;
+ for (const expanded of [false, true]) {
+  const immediate = renderLines(result.details, expanded, renderNow).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  const restored = renderLines(JSON.parse(JSON.stringify(result.details)), expanded, renderNow).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  assert.match(immediate, /✗ .*bash crash the parent process/);
+  assert.doesNotMatch(immediate, /running/);
+  assert.equal(restored, immediate);
+ }
+}));
+
+test("terminal child rendering defensively interrupts stale active tools", () => {
+ const base: any = { index: 0, id: "stale", label: "failed", reason: "resume failed child", prompt: "", model: "m", thinking: "off", toolCount: 1, input: 0, output: 0, activities: ["\x1b[2m·\x1b[0m bash crash parent", "  \x1b[2mkill -9 $PPID\x1b[0m \x1b[2m→\x1b[0m \x1b[2mrunning\x1b[0m"], activeTools: [{ id: "tool", name: "bash", activityIndex: 0 }], eventCount: 1, startedAt: 1_000, endedAt: 2_000, response: "", error: "exited", artifactPath: "/stale" };
+ for (const status of ["failed", "cancelled", "warning", "completed"] as const) for (const expanded of [false, true]) for (const retainsMetadata of [true, false]) {
+  const child = { ...base, status, ...(retainsMetadata ? {} : { activeTools: undefined }) };
+  const plain = renderLines({ children: [child] } as any, expanded, 3_000, 120).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  assert.match(plain, /✗ bash crash parent/);
+  assert.match(plain, /→ interrupted/);
+  assert.doesNotMatch(plain, /running/);
+ }
+});
+
 test("rejected RPC prompt settles as a child failure", async () => fixture(async (root) => {
  const { tool } = register();
  const result = await tool.execute("rejected", { agents: [{ reason: "test rejection", prompt: "reject" }] }, undefined, undefined, context(root));
@@ -166,13 +195,32 @@ test("renderer accepts pre-reload child details without usage components or acti
  assert.doesNotThrow(() => renderLines(legacy));
  const lines = renderLines(legacy).map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
  assert.match(lines[0], /🤖 agent\[m\|off\] resume old output/);
+ assert.doesNotMatch(lines[0], / ago\)/);
  assert.match(lines[1], /10 tok/);
 });
 
-test("wide view combines child identity reason and metrics on one line", () => {
- const child: any = { index: 0, id: "wide", label: "fixer-recovery", reason: "recover missing repair ledger after interrupted fixer", prompt: "", status: "completed", model: "gpt-5.6-sol", thinking: "high", toolCount: 31, input: 99_000, output: 3_700, cacheRead: 500_000, cacheWrite: 0, providerTraffic: 602_700, tokens: 602_700, activities: ["- `git diff --check`: passed", "- Fragment schema: exactly two valid `fix.applied` events, no `seq`"], activeTools: [], eventCount: 0, startedAt: 1, endedAt: 139_001, response: "", artifactPath: "/wide" };
+test("settled child output shows its durable completion age", () => {
+ const child: any = { index: 0, id: "restored", label: "auditor", reason: "verify persisted output", prompt: "", status: "completed", model: "m", thinking: "off", toolCount: 1, input: 10, output: 2, activities: ["verified"], activeTools: [], eventCount: 0, startedAt: 1_000, endedAt: 3_000, response: "", artifactPath: "/old" };
+ const lines = renderLines({ children: [child] } as any, false, 3_783_000, 120).map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+ assert.match(lines[0], /verify persisted output \(1h3m ago\)/);
+ assert.match(lines[0], /→ 1 tools/);
+ const originalNow = Date.now; Date.now = () => 3_783_000;
+ try {
+  for (const status of ["completed", "warning", "failed", "cancelled", "not-started"] as const) {
+   child.status = status;
+   const narrow = new SnapshotComponent({ children: [child] } as any, false).render(52)[0]!.replace(/\x1b\[[0-9;]*m/g, "").trimEnd();
+   assert.match(narrow, /\(1h3m ago\)$/, `${status} lost its age`);
+  }
+ } finally { Date.now = originalNow; }
+ child.status = "running";
+ assert.doesNotMatch(renderLines({ children: [child] } as any, false, 3_783_000, 120)[0]!, / ago\)/);
+});
+
+test("wide view combines child identity reason age and metrics on one line", () => {
+ const now = Date.now();
+ const child: any = { index: 0, id: "wide", label: "fixer-recovery", reason: "recover missing repair ledger after interrupted fixer", prompt: "", status: "completed", model: "gpt-5.6-sol", thinking: "high", toolCount: 31, input: 99_000, output: 3_700, cacheRead: 500_000, cacheWrite: 0, providerTraffic: 602_700, tokens: 602_700, activities: ["- `git diff --check`: passed", "- Fragment schema: exactly two valid `fix.applied` events, no `seq`"], activeTools: [], eventCount: 0, startedAt: now - 3_919_000, endedAt: now - 3_780_000, response: "", artifactPath: "/wide" };
  const rendered = new SnapshotComponent({ children: [child] } as any, false).render(180).map((line) => line.replace(/\x1b\[[0-9;]*m/g, "").trimEnd());
- assert.equal(rendered[0], "  ┊ ✓ 🤖 fixer-recovery[gpt-5.6-sol|high] recover missing repair ledger after interrupted fixer → 31 tools · ↑99k ↓3.7k · 2m 19s");
+ assert.equal(rendered[0], "  ┊ ✓ 🤖 fixer-recovery[gpt-5.6-sol|high] recover missing repair ledger after interrupted fixer (1h3m ago) → 31 tools · ↑99k ↓3.7k · 2m 19s");
  assert.equal(rendered[1], "  ┊     - `git diff --check`: passed");
 });
 

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Settled child headers now show a compact completion age that remains accurate after session reloads.
+
 ### Changed
 
 - Multi-child fan-out now inserts one unpainted blank line between sibling agents so parallel children scan like parallel tool cards (gap punches through the shared state background); single-child output stays tight.

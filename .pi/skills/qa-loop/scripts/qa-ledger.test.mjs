@@ -44,6 +44,18 @@ test("canonical writer sequences fragments and renders a stable report", async (
   assert.equal(first, second); assert.match(first, /F001 \| high \| high \| fixed/); assert.match(first, /Closed by \*\*no-findings\*\*/); assert.match(first, /reload\.completed-bash/);
 });
 
+test("run tooling accepts a matched safe per-run QA root", async () => {
+  const root = await mkdtemp(join(tmpdir(), "qa-ledger-")), runDir = join(root, "Q006"), init = join(root, "init.jsonl");
+  await save(init, [{ ...started, runId: "Q006", tooling: { ...started.tooling, agentTtyHome: "/tmp/pi-tidy-qa-Q006/agent-tty", sessionDir: "/tmp/pi-tidy-qa-Q006/sessions" } }]);
+  run(["init", runDir, init]); run(["validate", runDir]);
+});
+
+test("run tooling rejects mismatched per-run QA roots", async () => {
+  const root = await mkdtemp(join(tmpdir(), "qa-ledger-")), runDir = join(root, "Q007"), init = join(root, "init.jsonl");
+  await save(init, [{ ...started, runId: "Q007", tooling: { ...started.tooling, agentTtyHome: "/tmp/pi-tidy-qa-Q007/agent-tty", sessionDir: "/tmp/pi-tidy-qa-other/sessions" } }]);
+  assert.match(run(["init", runDir, init], 1).stderr, /sessionDir must share/);
+});
+
 test("run tooling rejects an unpinned agent-tty version", async () => {
   const root = await mkdtemp(join(tmpdir(), "qa-ledger-")), runDir = join(root, "Q005"), init = join(root, "init.jsonl");
   await save(init, [{ ...started, runId: "Q005", tooling: { ...started.tooling, agentTtyVersion: "0.5.1" } }]);

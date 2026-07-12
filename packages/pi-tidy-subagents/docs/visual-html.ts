@@ -29,11 +29,15 @@ function paint(lines: string[], bg: string): string {
  }).join("");
 }
 
+const screenshotNow = Date.now();
 const base = (index: number, status: ChildState["status"], label: string, reason: string): ChildState => {
  const input = status === "queued" ? 0 : index * 1234, output = status === "queued" ? 0 : index * 169;
  const cacheRead = status === "queued" ? 0 : index * 2048, cacheWrite = status === "queued" ? 0 : index * 12;
  const providerTraffic = input + output + cacheRead + cacheWrite;
- return { index, id: `child-${index}`, label, reason, prompt: "", status, model: "sonnet-4", thinking: "high", toolCount: status === "queued" ? 0 : index, input, output, cacheRead, cacheWrite, providerTraffic, tokens: providerTraffic, activities: [], activeTools: [], eventCount: 0, response: "", artifactPath: "" };
+ const active = status === "starting" || status === "running";
+ const settled = !active && status !== "queued";
+ const endedAt = screenshotNow - 3_780_000;
+ return { index, id: `child-${index}`, label, reason, prompt: "", status, model: "sonnet-4", thinking: "high", toolCount: status === "queued" ? 0 : index, input, output, cacheRead, cacheWrite, providerTraffic, tokens: providerTraffic, activities: [], activeTools: [], eventCount: 0, response: "", artifactPath: "", ...(active ? { startedAt: screenshotNow - index * 10_000 } : {}), ...(settled ? { startedAt: endedAt - index * 10_000, endedAt } : {}) };
 };
 const readRunning = buildToolActivityBlock("read", { path: "src/index.ts", reasoning: "inspect the extension entrypoint" }, "running");
 const grepRunning = buildToolActivityBlock("grep", { pattern: "scheduler", path: "src", reasoning: "find scheduler ownership" }, "running");

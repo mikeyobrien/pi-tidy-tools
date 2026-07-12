@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { buildToolActivityBlock, describeTool, fitLine, formatElapsed, shortPath, summarizeToolActivity } from "../index.js";
+import { buildToolActivityBlock, describeTool, fitLine, formatAge, formatElapsed, shortPath, summarizeToolActivity } from "../index.js";
 test("shared primitives stay compact", () => {
   assert.equal(formatElapsed(64_000), "1m 04s");
+  assert.equal(formatAge(0), "<1m");
+  assert.equal(formatAge(3_780_000), "1h3m");
+  assert.equal(formatAge(26 * 60 * 60_000), "1d2h");
+  assert.equal(formatAge(425 * 24 * 60 * 60_000), "1y2mo");
   assert.equal(describeTool("grep", { pattern: "x", path: "src" }), "x in src");
   assert.equal(summarizeToolActivity("mcp", {}, "running"), "· mcp");
   assert.equal(summarizeToolActivity("read", { path: "a.ts" }, "success", { content: [{ type: "text", text: "a\nb" }] }), "✓ read a.ts → 2 lines");

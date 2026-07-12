@@ -61,6 +61,7 @@ import {
 	MAGENTA,
 	RED,
 	RESET,
+	formatAge,
 	nonEmptyLineCount,
 	shortPath,
 	style,
@@ -78,17 +79,26 @@ function oneLine(s: string): string {
 	return s.replace(/\s+/g, " ").trim();
 }
 
-/** Fit a rendered line while always preserving a tool's result summary after →. */
+/** Fit a rendered line while preserving its age and useful result tail. */
 export function fitToolLine(line: string, width: number): string {
 	const max = Math.max(1, width);
 	if (visibleWidth(line) <= max) return line;
 	const arrowIndex = line.indexOf("→");
-	if (arrowIndex < 0) return truncateToWidth(line, max, "…");
+	const ageIndex = line.lastIndexOf(`${DIM}(`);
+	let tailIndex = ageIndex >= 0 && (arrowIndex < 0 || ageIndex < arrowIndex) ? ageIndex : arrowIndex;
+	if (tailIndex < 0) return truncateToWidth(line, max, "…");
 
-	const tail = line.slice(arrowIndex);
-	const tailWidth = visibleWidth(tail);
+	let tail = line.slice(tailIndex);
+	let tailWidth = visibleWidth(tail);
+	// If an age plus result cannot physically fit, preserve the decision-useful
+	// result rather than replacing it with decoration.
+	if (tailWidth >= max && arrowIndex >= 0 && tailIndex !== arrowIndex) {
+		tailIndex = arrowIndex;
+		tail = line.slice(tailIndex);
+		tailWidth = visibleWidth(tail);
+	}
 	if (tailWidth >= max) return truncateToWidth(tail, max, "…");
-	const head = line.slice(0, arrowIndex).trimEnd();
+	const head = line.slice(0, tailIndex).trimEnd();
 	return `${truncateToWidth(head, max - tailWidth - 1, "…")} ${tail}`;
 }
 
@@ -348,9 +358,9 @@ export function buildToolBlock(
 	name: string,
 	args: Record<string, unknown>,
 	result: any,
-	opts: { isError?: boolean; isPartial?: boolean; expanded?: boolean; elapsedMs?: number; mode?: TidyMode } = {},
+	opts: { isError?: boolean; isPartial?: boolean; expanded?: boolean; elapsedMs?: number; completedAt?: number; now?: number; mode?: TidyMode } = {},
 ): string[] {
-	const { isError = false, isPartial = false, expanded = false, elapsedMs = 0, mode = "default" } = opts;
+	const { isError = false, isPartial = false, expanded = false, elapsedMs = 0, completedAt, now = Date.now(), mode = "default" } = opts;
 	const { reasoning, rest } = stripReasoning(args ?? {});
 
 	const mark = isPartial
@@ -365,6 +375,9 @@ export function buildToolBlock(
 	const { icon, color } = style(name);
 	const headline = oneLine(reasoning || argDetail(name, rest));
 	const detail = argDetail(name, rest);
+	const age = !isPartial && Number.isFinite(completedAt)
+		? ` ${DIM}(${formatAge(now - completedAt!)} ago)${RESET}`
+		: "";
 	// Keep the target on failures too; width fitting preserves the useful error
 	// tail while the command/path answers what actually failed.
 	const line2 = !detail
@@ -372,13 +385,13 @@ export function buildToolBlock(
 		: `${INDENT}${DIM}${detail}${RESET} ${DIM}→${RESET} ${summary}`;
 	let lines: string[];
 	if (mode === "reasoning") {
-		lines = [`${GUTTER} ${mark} ${color}${icon} ${BOLD}${name}${RESET} ${headline} ${DIM}→${RESET} ${summary}`];
+		lines = [`${GUTTER} ${mark} ${color}${icon} ${BOLD}${name}${RESET} ${headline}${age} ${DIM}→${RESET} ${summary}`];
 	} else if (mode === "result") {
-		const resultDetail = isError || !detail ? "" : ` ${DIM}${detail}${RESET}`;
-		lines = [`${GUTTER} ${mark} ${color}${icon} ${BOLD}${name}${RESET}${resultDetail} ${DIM}→${RESET} ${summary}`];
+		const resultDetail = !detail ? "" : ` ${DIM}${detail}${RESET}`;
+		lines = [`${GUTTER} ${mark} ${color}${icon} ${BOLD}${name}${RESET}${resultDetail}${age} ${DIM}→${RESET} ${summary}`];
 	} else {
 		lines = [
-			`${GUTTER} ${mark} ${color}${icon} ${BOLD}${name}${RESET} ${headline}`,
+			`${GUTTER} ${mark} ${color}${icon} ${BOLD}${name}${RESET} ${headline}${age}`,
 			line2,
 		];
 	}
@@ -497,7 +510,12 @@ export default function (pi: ExtensionAPI) {
 		if (!Object.hasOwn(builtinTools, e.toolName)) return;
 		const startedAt = startedAtByCallId.get(e.toolCallId);
 		if (startedAt === undefined) return;
-		return { details: { ...(e.details ?? {}), piTidyElapsedMs: Math.max(0, Date.now() - startedAt) } };
+		const completedAt = Date.now();
+		return { details: {
+			...(e.details ?? {}),
+			piTidyElapsedMs: Math.max(0, completedAt - startedAt),
+			piTidyCompletedAt: completedAt,
+		} };
 	});
 
 	pi.on("turn_end", async () => {
@@ -631,10 +649,13 @@ export default function (pi: ExtensionAPI) {
 				const elapsedMs = Number.isFinite(persistedElapsed)
 					? persistedElapsed
 					: startedAt === undefined ? 0 : Date.now() - startedAt;
-				const lines = buildToolBlock(name, context?.args ?? {}, result, {
+				const persistedCompletedAt = Number(result?.details?.piTidyCompletedAt);
+				const completedAt = Number.isFinite(persistedCompletedAt) ? persistedCompletedAt : undefined;
+				const lines = () => buildToolBlock(name, context?.args ?? {}, result, {
 					isError,
 					expanded: options?.expanded ?? false,
 					elapsedMs,
+					completedAt,
 					mode: tidyMode,
 				});
 

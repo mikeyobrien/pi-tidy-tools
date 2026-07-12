@@ -15,6 +15,10 @@ process.stdin.on("data", (chunk) => {
   send({ type: "agent_start" });
   if (prompt === "hang") continue;
   if (prompt === "crash") { process.stderr.write("provider failed"); process.exit(7); continue; }
+  if (prompt === "tool-crash") {
+   send({ type: "tool_execution_start", toolCallId: "crash-tool", toolName: "bash", args: { command: "kill -9 $PPID", reasoning: "crash the parent process" } });
+   process.stderr.write("child exited during bash"); process.exit(9); continue;
+  }
   if (prompt === "stream") {
    let count = 0;
    const timer = setInterval(() => {

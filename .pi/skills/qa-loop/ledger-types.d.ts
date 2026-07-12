@@ -34,8 +34,8 @@ export interface RunStarted extends EventBase<"run.started"> {
     driver: "agent-tty";
     harness: ".pi/skills/qa-loop/scripts/pi-tui-harness.sh";
     viewports: ["120x36", "72x24"];
-    sessionDir: "/tmp/pi-tidy-qa/sessions";
-    agentTtyHome: "/tmp/pi-tidy-qa/agent-tty";
+    sessionDir: `/tmp/pi-tidy-qa${string}/sessions`;
+    agentTtyHome: `/tmp/pi-tidy-qa${string}/agent-tty`;
     piVersion: string;
     agentTtyVersion: "0.5.0";
     nodeVersion: string;

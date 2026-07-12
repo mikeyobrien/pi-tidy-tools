@@ -1,5 +1,5 @@
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { BOLD, CYAN, DIM, GREEN, MAGENTA, RED, RESET, YELLOW, fitLine, formatCount, formatElapsed, style } from "./vendor/pi-tidy-core/index.js";
+import { BOLD, CYAN, DIM, GREEN, MAGENTA, RED, RESET, YELLOW, fitLine, formatAge, formatCount, formatElapsed, style } from "./vendor/pi-tidy-core/index.js";
 import type { ChildState, RunDetails } from "./types.js";
 
 const GUTTER = `${DIM}  ┊${RESET}`;
@@ -72,6 +72,21 @@ function expandedActivity(child: ChildState): string[] {
  if (entries.length > 0 && isToolSecondLine(entries[0]!)) entries.shift();
  return entries;
 }
+function terminalView(child: ChildState): ChildState {
+ if (["queued", "starting", "running"].includes(child.status)) return child;
+ const activities = [...(child.activities ?? [])];
+ const indexes = new Set((child.activeTools ?? []).map((tool) => tool.activityIndex));
+ for (let index = 0; index < activities.length - 1; index++) {
+  if (activities[index]?.startsWith(`${DIM}·${RESET}`) && activities[index + 1]?.includes(`${DIM}running${RESET}`)) indexes.add(index);
+ }
+ for (const index of indexes) {
+  const first = activities[index];
+  const second = activities[index + 1];
+  if (first?.startsWith(`${DIM}·${RESET}`)) activities[index] = `${RED}✗${RESET}${first.slice(`${DIM}·${RESET}`.length)}`;
+  if (second) activities[index + 1] = second.replace(`${DIM}running${RESET}`, `${RED}interrupted${RESET}`);
+ }
+ return indexes.size > 0 || (child.activeTools?.length ?? 0) > 0 ? { ...child, activities, activeTools: [] } : child;
+}
 export function renderLines(details: RunDetails | undefined, expanded = false, now = Date.now(), width?: number): string[] {
  if (!details) return [];
  const lines: string[] = [];
@@ -79,25 +94,36 @@ export function renderLines(details: RunDetails | undefined, expanded = false, n
   // Multi-child fan-out mirrors parallel tool cards: one blank between siblings.
   if (index > 0) lines.push("");
   const elapsed = child.startedAt ? (child.endedAt ?? now) - child.startedAt : 0;
-  const identity = `${GUTTER} ${statusGlyph(child.status)} ${MAGENTA}🤖${RESET} ${BOLD}${child.label}[${child.model}|${child.thinking}]${RESET} ${child.reason}`;
+  const settled = !["queued", "starting", "running"].includes(child.status);
+  const age = settled && Number.isFinite(child.endedAt)
+   ? ` ${DIM}(${formatAge(now - child.endedAt!)} ago)${RESET}`
+   : "";
+  const identity = `${GUTTER} ${statusGlyph(child.status)} ${MAGENTA}🤖${RESET} ${BOLD}${child.label}[${child.model}|${child.thinking}]${RESET} ${child.reason}${age}`;
   const statistics = `${DIM}→ ${child.toolCount ?? 0} tools · ${usageSummary(child)} · ${formatElapsed(elapsed)}${RESET}`;
   const combined = `${identity} ${statistics}`;
   if (width !== undefined && visibleWidth(combined) <= width) lines.push(combined);
   else lines.push(identity, `${GUTTER}   ${statistics}`);
-  const activity = tail(child);
-  const entries = expanded && activity.length > 0 ? expandedActivity(child) : collapsedActivity(child);
+  const displayChild = terminalView(child);
+  const activity = tail(displayChild);
+  const entries = expanded && activity.length > 0 ? expandedActivity(displayChild) : collapsedActivity(displayChild);
   for (const entry of entries) lines.push(`${GUTTER}${isToolActivity(entry) ? "   " : "     "}${entry}`);
  }
  return lines;
 }
 function fitDisplayLine(line: string, width: number): string {
- const marker = `${DIM}→ `;
- const markerIndex = line.indexOf(marker);
- if (markerIndex < 0 || visibleWidth(line) <= width) return fitLine(line, width);
- const tail = line.slice(markerIndex);
- const tailWidth = visibleWidth(tail);
+ if (visibleWidth(line) <= width) return line;
+ const arrowIndex = line.indexOf(`${DIM}→ `);
+ const ageIndex = line.lastIndexOf(`${DIM}(`);
+ let tailIndex = ageIndex >= 0 && (arrowIndex < 0 || ageIndex < arrowIndex) ? ageIndex : arrowIndex;
+ if (tailIndex < 0) return fitLine(line, width);
+ let tail = line.slice(tailIndex);
+ let tailWidth = visibleWidth(tail);
+ // Metrics remain more useful than age when both cannot physically fit.
+ if (tailWidth >= width && arrowIndex >= 0 && tailIndex !== arrowIndex) {
+  tailIndex = arrowIndex; tail = line.slice(tailIndex); tailWidth = visibleWidth(tail);
+ }
  if (tailWidth >= width) return fitLine(tail, width);
- const head = line.slice(0, markerIndex).trimEnd();
+ const head = line.slice(0, tailIndex).trimEnd();
  return `${truncateToWidth(head, width - tailWidth - 1, "…")} ${tail}`;
 }
 export class SnapshotComponent {

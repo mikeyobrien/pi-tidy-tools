@@ -36,6 +36,16 @@ export async function runChild(child: ChildState, runtime: Runtime, signal: Abor
    for (const tool of child.activeTools) tool.activityIndex--;
   }
  };
+ const terminalizeActiveTools = () => {
+  for (const active of child.activeTools) {
+   const block = buildToolActivityBlock(active.name, toolArgs.get(active.id) ?? {}, "error", {
+    content: [{ type: "text", text: child.error || "Interrupted when child process exited" }], isError: true,
+   }, Date.now() - (toolStartedAt.get(active.id) ?? Date.now()));
+   if (active.activityIndex >= 0) child.activities.splice(active.activityIndex, 2, ...block);
+   else appendActivities(...block);
+  }
+  child.activeTools = []; toolArgs.clear(); toolStartedAt.clear();
+ };
  const abort = () => {
   cancelled = true; child.status = "cancelled"; changed(true);
   if (proc.stdin.writable) proc.stdin.write(`${JSON.stringify({ type: "abort" })}\n`);
@@ -112,11 +122,15 @@ export async function runChild(child: ChildState, runtime: Runtime, signal: Abor
  const code = await new Promise<number | null>((resolve) => proc.once("close", resolve));
  await writes; signal?.removeEventListener("abort", abort);
  child.endedAt = Date.now();
- if (parseFailure) throw new Error(`Could not maintain durable child event stream: ${parseFailure instanceof Error ? parseFailure.message : String(parseFailure)}`);
+ if (parseFailure) {
+  terminalizeActiveTools();
+  throw new Error(`Could not maintain durable child event stream: ${parseFailure instanceof Error ? parseFailure.message : String(parseFailure)}`);
+ }
  if (cancelled) child.error = "Cancelled";
  else if (promptFailure) { child.status = "failed"; child.error = promptFailure; }
  else if (!settled) { child.status = "failed"; child.error = stderr.trim() || `Pi RPC exited ${code ?? "by signal"} before settling`; }
  else if (!child.response.trim()) { child.status = "warning"; child.error = "Child completed without assistant output"; }
  else child.status = "completed";
+ terminalizeActiveTools();
  changed(true); return child;
 }

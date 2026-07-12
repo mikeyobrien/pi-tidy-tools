@@ -54,7 +54,9 @@ function validateEvent(event, { fragment = false } = {}) {
       const tooling = object(event.tooling, "run.started.tooling");
       if (tooling.driver === "agent-tty") {
         exactKeys(tooling, ["driver", "harness", "viewports", "sessionDir", "agentTtyHome", "piVersion", "agentTtyVersion", "nodeVersion"], "run.started.tooling");
-        assert(tooling.agentTtyHome === "/tmp/pi-tidy-qa/agent-tty", "tooling.agentTtyHome must be canonical");
+        const homeMatch = tooling.agentTtyHome?.match(/^(\/tmp\/pi-tidy-qa(?:-[a-zA-Z0-9._-]+)?)\/agent-tty$/);
+        assert(homeMatch, "tooling.agentTtyHome must use a safe canonical or per-run root");
+        assert(tooling.sessionDir === `${homeMatch[1]}/sessions`, "tooling.sessionDir must share the agent-tty per-run root");
         assert(tooling.agentTtyVersion === "0.5.0", "tooling.agentTtyVersion must be 0.5.0");
         assert(/^v?(2[4-6])\./.test(tooling.nodeVersion), "tooling.nodeVersion must be Node 24-26");
         string(tooling.nodeVersion, "tooling.nodeVersion");
@@ -65,7 +67,7 @@ function validateEvent(event, { fragment = false } = {}) {
       }
       assert(tooling.harness === ".pi/skills/qa-loop/scripts/pi-tui-harness.sh", "tooling.harness must be canonical");
       assert(JSON.stringify(tooling.viewports) === JSON.stringify(["120x36", "72x24"]), "tooling.viewports must be canonical");
-      assert(tooling.sessionDir === "/tmp/pi-tidy-qa/sessions", "tooling.sessionDir must be canonical");
+      if (tooling.driver === "tmux") assert(tooling.sessionDir === "/tmp/pi-tidy-qa/sessions", "legacy tmux tooling.sessionDir must be canonical");
       string(tooling.piVersion, "tooling.piVersion"); break;
     }
     case "round.started": keys("round", "objective"); round(); enumValues(event.objective, ["initial", "retest", "post-fix"], "round.started.objective"); break;

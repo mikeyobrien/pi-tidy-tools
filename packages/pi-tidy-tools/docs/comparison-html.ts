@@ -103,7 +103,7 @@ async function main() {
 	];
 
 	const native = calls.flatMap((call, index) => nativeBlock(call.name, String(index), call.args, call.result, directory));
-	const tidy = calls.flatMap((call) => ["", ...buildToolBlock(call.name, { ...call.args, reasoning: call.reasoning }, call.result)]);
+	const tidy = calls.flatMap((call) => ["", ...buildToolBlock(call.name, { ...call.args, reasoning: call.reasoning }, call.result, { completedAt: 1_000, now: 3_781_000 })]);
 	rmSync(directory, { recursive: true, force: true });
 
 	const panel = (label: string, subtitle: string, lines: string[], tidyPanel = false) => {

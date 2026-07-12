@@ -98,12 +98,13 @@ async function main() {
 		rBashFail = { content: [{ type: "text", text: String(e?.message ?? e) }], isError: true };
 	}
 
+	const age = { completedAt: 1_000, now: 3_781_000 };
 	const blocks: string[][] = [
-		buildToolBlock("read", { path: rel, reasoning: "check current verifyToken flow" }, rRead),
-		buildToolBlock("grep", { pattern: "verifyToken", path: "src", reasoning: "find every call site" }, rGrep),
-		buildToolBlock("edit", { path: rel, reasoning: "tighten the token type check" }, rEdit),
-		buildToolBlock("bash", { command: "npm test", reasoning: "run the suite to confirm green" }, rBashOk),
-		buildToolBlock("bash", { command: "npm run lint", reasoning: "lint the changed files" }, rBashFail, { isError: true }),
+		buildToolBlock("read", { path: rel, reasoning: "check current verifyToken flow" }, rRead, age),
+		buildToolBlock("grep", { pattern: "verifyToken", path: "src", reasoning: "find every call site" }, rGrep, age),
+		buildToolBlock("edit", { path: rel, reasoning: "tighten the token type check" }, rEdit, age),
+		buildToolBlock("bash", { command: "npm test", reasoning: "run the suite to confirm green" }, rBashOk, age),
+		buildToolBlock("bash", { command: "npm run lint", reasoning: "lint the changed files" }, rBashFail, { ...age, isError: true }),
 	];
 
 	rmSync(dir, { recursive: true, force: true });

@@ -1,11 +1,12 @@
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import {
 	buildPiFffRegistrationPlan,
+	createPiFffCompositeSources,
 	replayPiFffRegistrationPlan,
-	TIDY_PI_FFF_CONFLICTS,
 	type PiFffCapabilityProfile,
 	type PiFffDiagnostic,
 	type PiFffPackageIdentity,
+	type PiFffRegistrationPlan,
 } from "./adapter.js";
 import type { SourceToolDefinition } from "../tool-composition.js";
 import {
@@ -23,7 +24,7 @@ export type PiFffRoutingState =
 
 export interface PiFffRoutingStatus {
 	readonly state: PiFffRoutingState;
-	readonly owner: "tidy/native" | "standalone pi-fff" | "tidy/pi-fff" | "native Pi" | "tidy/native + pi-fff tools" | "native Pi + pi-fff tools";
+	readonly owner: "tidy/native" | "standalone pi-fff" | "tidy/pi-fff" | "native Pi" | "tidy/native read + FFF-executed tidy grep/find" | "native Pi + pi-fff tools" | "unsafe partial registration; reload required";
 	readonly scopes: readonly ("project" | "user")[];
 	readonly packageIdentity?: PiFffPackageIdentity;
 	readonly profile?: PiFffCapabilityProfile;
@@ -37,7 +38,7 @@ export interface PiFffRoutingStatus {
 
 export interface PiFffStartupPlan {
 	readonly status: PiFffRoutingStatus;
-	readonly skipTidyTools: ReadonlySet<"read" | "grep">;
+	readonly skipTidyTools: ReadonlySet<"read" | "grep" | "find">;
 	readonly notice?: { readonly message: string; readonly level: "warning" | "error" };
 	commit(createComposite: (source: SourceToolDefinition) => SourceToolDefinition): void;
 }
@@ -66,9 +67,10 @@ export interface CreatePiFffControllerOptions {
 	buildPlan?: typeof buildPiFffRegistrationPlan;
 }
 
-const SKIP = new Set<"read" | "grep">(["read", "grep"]);
-const NONE = new Set<"read" | "grep">();
-const skipFor = (participant?: PiFffLifecycleParticipant) => participant?.profile === "scoped" ? NONE : SKIP;
+const SKIP_LEGACY = new Set<"read" | "grep" | "find">(["read", "grep"]);
+const SKIP_SCOPED = new Set<"read" | "grep" | "find">(["grep", "find"]);
+const NONE = new Set<"read" | "grep" | "find">();
+const skipFor = (participant?: PiFffLifecycleParticipant) => participant?.profile === "scoped" ? NONE : SKIP_LEGACY;
 
 function selected(participants: readonly PiFffLifecycleParticipant[]): PiFffLifecycleParticipant | undefined {
 	return participants.find((item) => item.scope === "project") ?? participants.find((item) => item.scope === "user");
@@ -88,6 +90,18 @@ function adapterDiagnostic(value: PiFffDiagnostic): PiFffRoutingStatus["diagnost
 	return { code: value.code, severity: value.severity, detail: value.detail };
 }
 
+function partialReplayDiagnostic(plan: PiFffRegistrationPlan, error: unknown): PiFffDiagnostic {
+	const forwarded = error && typeof error === "object" ? (error as { diagnostic?: PiFffDiagnostic }).diagnostic : undefined;
+	if (forwarded?.code === "PIFFF_FORWARD_PARTIAL") return { ...forwarded, severity: "fatal" };
+	const detail = forwarded ? `${forwarded.code}: ${forwarded.detail}` : error instanceof Error ? error.message : String(error);
+	return {
+		code: "PIFFF_FORWARD_PARTIAL", severity: "fatal",
+		summary: "pi-fff registration replay failed; reload is required.", detail,
+		action: "Stop using the affected integration and /reload before using FFF tools.",
+		piVersion: plan.piVersion, piFffVersion: plan.piFffVersion,
+	};
+}
+
 function statusFromLifecycle(value: PiFffLifecycleResult, enabled: boolean): PiFffRoutingStatus {
 	const recovery = value.reload === "required";
 	const active = selected(value.participants ?? []);
@@ -98,9 +112,10 @@ function statusFromLifecycle(value: PiFffLifecycleResult, enabled: boolean): PiF
 		tuple: "unavailable",
 		journal: recovery ? "reload pending" : value.code ? "unsafe/incomplete" : "none",
 		diagnostic: lifecycleDiagnostic(value),
-		action: recovery ? "Run /reload once."
+		action: recovery ? `${active?.profile === "scoped" && enabled ? "Native tidy read/grep/find remain active; raw FFF names are hidden. " : ""}Run /reload once.`
 			: value.code === "PIFFF_CONFIG_AMBIGUOUS" ? "Keep one pi-fff package identity across project and user settings, then run /tidy pi-fff status or setup again."
-				: "Use /tidy pi-fff status for safe recovery paths.",
+				: active?.profile === "scoped" && enabled ? "Native tidy read/grep/find remain active; raw FFF names are hidden. Use /tidy pi-fff status for safe recovery paths."
+					: "Use /tidy pi-fff status for safe recovery paths.",
 	};
 }
 
@@ -122,7 +137,7 @@ function detailed(status: PiFffRoutingStatus): string {
 }
 
 export function concisePiFffStatus(status: PiFffRoutingStatus): string {
-	return `pi-fff ${status.state}; read/grep: ${status.owner}`;
+	return `pi-fff ${status.state}; tools: ${status.owner}`;
 }
 
 export function formatPiFffStatus(status: PiFffRoutingStatus): string { return detailed(status); }
@@ -134,7 +149,7 @@ export function createPiFffIntegrationController(options: CreatePiFffControllerO
 		cwd: options.cwd,
 		agentDir,
 		preflight: async (participant) => {
-			const built = await buildPlan({ cwd: options.cwd, agentDir, api: options.pi, selection: { scope: participant.scope, entry: participant.managedEntry }, conflicts: TIDY_PI_FFF_CONFLICTS });
+			const built = await buildPlan({ cwd: options.cwd, agentDir, api: options.pi, selection: { scope: participant.scope, entry: participant.managedEntry } });
 			if (!built.ok) throw Object.assign(new Error(built.diagnostic.summary), { diagnostic: built.diagnostic });
 			return built.plan;
 		},
@@ -179,34 +194,45 @@ export function createPiFffIntegrationController(options: CreatePiFffControllerO
 			if (!managed) {
 				const active = selected(participants)!;
 				const filtered = isFiltered(active.priorEntry);
-				current = { state: filtered ? "filtered-unmanaged" : "standalone", owner: active.profile === "scoped" ? (filtered ? "tidy/native" : "tidy/native + pi-fff tools") : filtered ? "native Pi" : "standalone pi-fff", scopes: participants.map((item) => item.scope), packageIdentity: active.packageIdentity, profile: active.profile, tuple: "unavailable", journal: "none", diagnostic: { code: "PIFFF_SETUP_REQUIRED", severity: "warning", detail: "Explicit setup is required before tidy can manage this package." }, action: "Run /tidy pi-fff setup." };
+				current = { state: filtered ? "filtered-unmanaged" : "standalone", owner: active.profile === "scoped" ? (filtered ? "tidy/native" : "native Pi + pi-fff tools") : filtered ? "native Pi" : "standalone pi-fff", scopes: participants.map((item) => item.scope), packageIdentity: active.packageIdentity, profile: active.profile, tuple: "unavailable", journal: "none", diagnostic: { code: "PIFFF_SETUP_REQUIRED", severity: "warning", detail: "Explicit setup is required before tidy can manage this package." }, action: "Run /tidy pi-fff setup." };
 				return { status: current, skipTidyTools: skipFor(active), notice: { message: "pi-fff is not managed by tidy; run /tidy pi-fff setup.", level: "warning" }, commit() {} };
 			}
-			const built = await buildPlan({ cwd: options.cwd, agentDir, api: options.pi, conflicts: TIDY_PI_FFF_CONFLICTS });
+			const built = await buildPlan({ cwd: options.cwd, agentDir, api: options.pi });
 			if (!built.ok) {
 				const active = selected(participants);
-				current = { state: "managed-invalid", owner: active?.profile === "scoped" ? "tidy/native" : "native Pi", scopes: participants.map((item) => item.scope), packageIdentity: active?.packageIdentity, profile: active?.profile, piVersion: built.diagnostic.piVersion, piFffVersion: built.diagnostic.piFffVersion, tuple: "unavailable", journal: "committed", diagnostic: adapterDiagnostic(built.diagnostic), action: `${built.diagnostic.action} Or run /tidy pi-fff teardown.` };
+				current = { state: "managed-invalid", owner: active?.profile === "scoped" ? "tidy/native" : "native Pi", scopes: participants.map((item) => item.scope), packageIdentity: active?.packageIdentity, profile: active?.profile, piVersion: built.diagnostic.piVersion, piFffVersion: built.diagnostic.piFffVersion, tuple: "unavailable", journal: "committed", diagnostic: adapterDiagnostic(built.diagnostic), action: `${active?.profile === "scoped" ? "Native tidy read/grep/find remain active; raw FFF names are hidden. " : ""}${built.diagnostic.action} Or run /tidy pi-fff teardown.` };
 				return { status: current, skipTidyTools: skipFor(active), notice: built.diagnostic.severity === "info" ? undefined : { message: `${built.diagnostic.summary} ${current.action}`, level: "error" }, commit() {} };
 			}
 			const plan = built.plan;
-			current = { state: "managed-compatible", owner: plan.profile === "scoped" ? "tidy/native + pi-fff tools" : "tidy/pi-fff", scopes: participants.map((item) => item.scope), packageIdentity: plan.packageIdentity, profile: plan.profile, piVersion: plan.piVersion, piFffVersion: plan.piFffVersion, tuple: plan.status, journal: "committed", diagnostic: plan.diagnostics[0] ? adapterDiagnostic(plan.diagnostics[0]) : undefined, action: plan.profile === "scoped" ? "Tidy owns native read/grep; pi-fff tools remain available. Use status or teardown." : "Use /tidy pi-fff status or teardown." };
+			current = { state: "managed-compatible", owner: plan.profile === "scoped" ? "tidy/native read + FFF-executed tidy grep/find" : "tidy/pi-fff", scopes: participants.map((item) => item.scope), packageIdentity: plan.packageIdentity, profile: plan.profile, piVersion: plan.piVersion, piFffVersion: plan.piFffVersion, tuple: plan.status, journal: "committed", diagnostic: plan.diagnostics[0] ? adapterDiagnostic(plan.diagnostics[0]) : undefined, action: plan.profile === "scoped" ? "Native tidy read remains; FFF executes tidy-presented grep/find; raw ffgrep/fffind names are hidden. Use status or teardown." : "Use /tidy pi-fff status or teardown." };
 			let committed = false;
 			return {
-				status: current, skipTidyTools: plan.profile === "scoped" ? NONE : SKIP,
+				status: current, skipTidyTools: plan.profile === "scoped" ? SKIP_SCOPED : SKIP_LEGACY,
 				commit(createComposite) {
 					if (committed) return;
 					committed = true;
-					if (plan.profile === "legacy") {
-						// Legacy pi-fff is last-writer-wins: it replaces, rather than wraps,
-						// an editor already installed by another extension.
-						options.pi.on("session_start", (_event: unknown, ctx: any) => {
-							if (typeof ctx?.ui?.getEditorComponent?.() !== "function" || !ctx.ui.getEditorComponent()) return;
-							ctx.ui.notify("pi-fff will replace an existing custom editor. Disable one editor feature and /reload; editor composition is not supported by this tuple.", "warning");
-						});
+					try {
+						if (plan.profile === "legacy") {
+							// Legacy pi-fff is last-writer-wins: it replaces, rather than wraps,
+							// an editor already installed by another extension.
+							options.pi.on("session_start", (_event: unknown, ctx: any) => {
+								if (typeof ctx?.ui?.getEditorComponent?.() !== "function" || !ctx.ui.getEditorComponent()) return;
+								ctx.ui.notify("pi-fff will replace an existing custom editor. Disable one editor feature and /reload; editor composition is not supported by this tuple.", "warning");
+							});
+						}
+						const sources = createPiFffCompositeSources(plan);
+						const composites = Object.fromEntries(Object.entries(sources).map(([name, source]) => [name, createComposite(source)])) as any;
+						const replay = replayPiFffRegistrationPlan(plan, options.pi, composites);
+						if (!replay.ok) throw Object.assign(new Error(replay.diagnostic.summary), { diagnostic: replay.diagnostic });
+					} catch (error) {
+						const fatal = partialReplayDiagnostic(plan, error);
+						current = {
+							...current, state: "managed-invalid", owner: "unsafe partial registration; reload required",
+							tuple: "unavailable", journal: "unsafe partial registration; reload required",
+							diagnostic: adapterDiagnostic(fatal), action: "Stop using tools and /reload; registration ownership is unsafe until Pi restarts.",
+						};
+						throw Object.assign(new Error(fatal.summary, { cause: error }), { diagnostic: fatal });
 					}
-					const composites = plan.profile === "legacy" ? { read: createComposite(plan.captures.read), grep: createComposite(plan.captures.grep) } : undefined;
-					const replay = replayPiFffRegistrationPlan(plan, options.pi, composites);
-					if (!replay.ok) throw Object.assign(new Error(replay.diagnostic.summary), { diagnostic: replay.diagnostic });
 				},
 			};
 		},

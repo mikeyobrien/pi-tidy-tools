@@ -8,6 +8,7 @@ import {
 	buildPiFffRegistrationPlan,
 	createPiFffComposites,
 	replayPiFffRegistrationPlan,
+	TIDY_PI_FFF_CONFLICTS,
 	type PiFffDiagnostic,
 	type PiFffModuleLoader,
 } from "../pi-fff/adapter.js";
@@ -130,6 +131,28 @@ const scopedLock = (version = "0.9.6") => ({
 	packages: { "node_modules/@ff-labs/pi-fff": { version, resolved: `https://registry.npmjs.org/@ff-labs/pi-fff/-/pi-fff-${version}.tgz`, integrity: INTEGRITY } },
 	dependencies: { "@ff-labs/pi-fff": { version, resolved: `https://registry.npmjs.org/@ff-labs/pi-fff/-/pi-fff-${version}.tgz`, integrity: INTEGRITY } },
 });
+function scopedTool(name: string, overrides: Record<string, unknown> = {}) {
+	const capture = name === "ffgrep" || name === "fffind";
+	const properties: Record<string, unknown> = capture ? {
+		pattern: { type: "string" }, path: { type: "string" }, exclude: { anyOf: [{ type: "string" }, { type: "array", items: { type: "string" } }] },
+		limit: { type: "number" }, cursor: { type: "string" },
+	} : { pattern: { type: "string" }, optional: { type: "number" } };
+	if (name === "ffgrep") Object.assign(properties, { caseSensitive: { type: "boolean" }, context: { type: "number" } });
+	return {
+		name, label: name, description: `${name} metadata`, promptSnippet: `${name} snippet`, promptGuidelines: [`${name} guideline`],
+		parameters: { type: "object", properties, required: ["pattern"] },
+		execute() { return textResult(name); }, renderCall() {}, renderResult() {}, ...overrides,
+	};
+}
+
+function registerScopedSurface(pi: any, tools: any[], extra?: (pi: any) => void, flags: readonly (readonly [string, "string" | "boolean"])[] = [["fff-mode", "string"], ["fff-frecency-db", "string"], ["fff-history-db", "string"], ["fff-enable-root-scan", "boolean"]]) {
+	for (const [name, type] of flags) pi.registerFlag(name, { type });
+	for (const tool of tools) pi.registerTool(tool);
+	extra?.(pi);
+	for (const name of ["fff-mode", "fff-health", "fff-rescan"]) pi.registerCommand(name, { handler() {} });
+	pi.on("session_start", () => {}); pi.on("session_shutdown", () => {});
+}
+
 function scopedFactory(mode: "tools-and-ui" | "tools-only" | "override" = "tools-and-ui") {
 	const source = baselineFactory();
 	const renderCall = () => Symbol.for("call");
@@ -138,7 +161,7 @@ function scopedFactory(mode: "tools-and-ui" | "tools-only" | "override" = "tools
 		assert.equal(pi.getFlag("fff-mode"), mode === "tools-and-ui" ? undefined : mode);
 		for (const [name, type] of [["fff-mode", "string"], ["fff-frecency-db", "string"], ["fff-history-db", "string"], ["fff-enable-root-scan", "boolean"]] as const) pi.registerFlag(name, { type });
 		const names = mode === "override" ? ["grep", "find", "multi_grep"] : ["ffgrep", "fffind", "fff-multi-grep"];
-		for (const name of names) pi.registerTool({ name, label: name, description: name, parameters: { type: "object", properties: {} }, execute() { return textResult(name); }, renderCall, renderResult });
+		for (const name of names) pi.registerTool(scopedTool(name, { renderCall, renderResult }));
 		let append = pi.appendEntry;
 		pi.registerCommand("fff-mode", { handler() { append("fff-mode", { mode: "tools-only" }); } });
 		pi.registerCommand("fff-health", { handler() {} });
@@ -148,7 +171,7 @@ function scopedFactory(mode: "tools-and-ui" | "tools-only" | "override" = "tools
 	return { source, renderCall, renderResult };
 }
 
-test("scoped profile discovers, validates, and replays tools unchanged without captures", async () => {
+test("scoped profile captures raw pair and substitutes public tidy names in trace order", async () => {
 	const scoped = scopedFactory();
 	const f = await fixture({ userEntry: scopedFiltered(), userVersion: "0.9.6", userIdentity: "@ff-labs/pi-fff", userFactory: scoped.source, userLock: scopedLock() });
 	const real = apiRecorder(); real.api.getFlag = () => undefined; let appended = 0; real.api.appendEntry = () => { appended++; };
@@ -156,32 +179,165 @@ test("scoped profile discovers, validates, and replays tools unchanged without c
 		const result = await buildFrom(f, real.api);
 		assert.equal(result.ok, true); if (!result.ok) return;
 		assert.equal(result.plan.packageIdentity, "@ff-labs/pi-fff");
-		assert.equal(result.plan.profile, "scoped");
-		assert.equal(result.plan.captureMode, "replay-only");
+		assert.equal(result.plan.profile, "scoped"); if (result.plan.profile !== "scoped") return;
+		assert.equal(result.plan.captureMode, "scoped-pair");
 		assert.equal(result.plan.status, "verified");
-		assert.equal("captures" in result.plan, false);
+		assert.equal(result.plan.captures.grep.name, "ffgrep");
+		assert.equal(result.plan.captures.find.name, "fffind");
 		assert.equal(real.calls.length, 0);
 		const recordedMode = result.plan.trace.find((call) => call.method === "registerCommand" && call.args[0] === "fff-mode")?.args[1] as any;
 		assert.throws(() => recordedMode.handler(), /registration-time action appendEntry is unsafe/);
-		assert.equal(replayPiFffRegistrationPlan(result.plan, real.api).ok, true);
+		const composites = createPiFffComposites(result.plan, { mode: "default", reasoningGuideline: "State the goal." });
+		assert.equal(replayPiFffRegistrationPlan(result.plan, real.api, composites).ok, true);
 		const tools = real.calls.filter((call) => call.method === "registerTool").map((call) => call.args[0] as any);
-		assert.deepEqual(tools.map((tool) => tool.name), ["ffgrep", "fffind", "fff-multi-grep"]);
-		assert.equal(tools[0]?.renderCall, scoped.renderCall); assert.equal(tools[0]?.renderResult, scoped.renderResult);
+		assert.deepEqual(tools.map((tool) => tool.name), ["grep", "find", "fff-multi-grep"]);
+		assert.equal(tools.filter((tool) => ["ffgrep", "fffind"].includes(tool.name)).length, 0);
+		assert.equal(tools[0], composites.grep); assert.equal(tools[1], composites.find);
+		assert.equal(composites.grep.renderCall, scoped.renderCall); assert.equal(composites.grep.renderResult, scoped.renderResult);
 		const mode = real.calls.find((call) => call.method === "registerCommand" && call.args[0] === "fff-mode")?.args[1] as any;
 		mode.handler();
 		assert.equal(appended, 1);
 	} finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
-test("scoped tools-only trace remains replay-only", async () => {
+test("scoped tools-only trace captures the same explicit pair", async () => {
 	const toolsOnly = scopedFactory("tools-only");
 	const f = await fixture({ userEntry: scopedFiltered(), userVersion: "0.9.6", userIdentity: "@ff-labs/pi-fff", userFactory: toolsOnly.source });
 	const real = apiRecorder(); real.api.getFlag = () => "tools-only";
 	try {
 		const result = await buildFrom(f, real.api);
 		assert.equal(result.ok, true); if (!result.ok) return;
-		assert.equal(result.plan.captureMode, "replay-only");
+		assert.equal(result.plan.captureMode, "scoped-pair");
 		assert.deepEqual(result.plan.trace.filter((call) => call.method === "registerTool").map((call) => (call.args[0] as any).name), ["ffgrep", "fffind", "fff-multi-grep"]);
+	} finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("scoped 0.6.0 schema and newer optional additions both validate", async () => {
+	const grep = scopedTool("ffgrep", { parameters: { type: "object", properties: {
+		pattern: { type: "string" }, path: { type: "string" }, literal: { type: "boolean" }, context: { type: "number" }, limit: { type: "number" }, cursor: { type: "string" },
+	}, required: ["pattern"] } });
+	const find = scopedTool("fffind", { parameters: { type: "object", properties: { pattern: { type: "string" }, path: { type: "string" }, limit: { type: "number" } }, required: ["pattern"] } });
+	const source = baselineFactory(); source.factory = (pi: any) => registerScopedSurface(pi, [grep, find], undefined, [["fff-mode", "string"], ["fff-frecency-db", "string"], ["fff-history-db", "string"]]);
+	const f = await fixture({ userEntry: scopedFiltered("0.6.0"), userVersion: "0.6.0", userIdentity: "@ff-labs/pi-fff", userFactory: source });
+	try {
+		const result = await buildFrom(f); assert.equal(result.ok, true); if (!result.ok || result.plan.profile !== "scoped") return;
+		assert.equal(result.plan.captures.grep.parameters.properties.literal.type, "boolean");
+		assert.equal(result.plan.captures.find.parameters.properties.cursor, undefined);
+	} finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("scoped 0.9.5+ requires the fourth current flag", async () => {
+	const source = baselineFactory(); source.factory = (pi: any) => registerScopedSurface(pi, [scopedTool("ffgrep"), scopedTool("fffind")], undefined, [["fff-mode", "string"], ["fff-frecency-db", "string"], ["fff-history-db", "string"]]);
+	const f = await fixture({ userEntry: scopedFiltered("0.9.5"), userVersion: "0.9.5", userIdentity: "@ff-labs/pi-fff", userFactory: source });
+	try { expectCode(await buildFrom(f), "PIFFF_SURFACE_BREAKING"); }
+	finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("scoped composites preserve metadata, schemas by mode, and exact execution semantics", async () => {
+	const signal = new AbortController().signal;
+	const update = () => {};
+	const context = { cwd: "/scoped" };
+	const settled = textResult("scoped result", { totalMatched: 2 });
+	let observed: unknown[] = [];
+	const grep = scopedTool("ffgrep", { marker: Symbol.for("grep"), execute(this: unknown, ...args: unknown[]) { observed = [this, ...args]; (args[3] as Function)(textResult("update")); return settled; } });
+	const find = scopedTool("fffind");
+	const source = baselineFactory(); source.factory = (pi: any) => registerScopedSurface(pi, [grep, find]);
+	const f = await fixture({ userEntry: scopedFiltered(), userVersion: "0.9.6", userIdentity: "@ff-labs/pi-fff", userFactory: source });
+	try {
+		const result = await buildFrom(f); assert.equal(result.ok, true); if (!result.ok || result.plan.profile !== "scoped") return;
+		assert.equal(result.plan.captures.grep, grep); assert.equal(result.plan.captures.find, find);
+		const resultMode = createPiFffComposites(result.plan, { mode: "result", reasoningGuideline: "reason" });
+		assert.equal(resultMode.grep.parameters, grep.parameters);
+		assert.equal(resultMode.grep.promptGuidelines, grep.promptGuidelines);
+		assert.equal(resultMode.grep.name, "grep"); assert.equal(resultMode.find.name, "find");
+		const defaults = createPiFffComposites(result.plan, { mode: "default", reasoningGuideline: "reason" });
+		assert.equal(defaults.grep.parameters.required[0], "reasoning");
+		assert.deepEqual(defaults.grep.promptGuidelines, [...grep.promptGuidelines, "reason"]);
+		const params = { reasoning: "search index", pattern: "needle", optional: 1, nested: { same: true } };
+		const updates: unknown[] = [];
+		const onUpdate = (value: unknown) => { updates.push(value); update(); };
+		assert.equal(await defaults.grep.execute("id", params, signal, onUpdate, context), settled);
+		assert.equal(observed[0], grep); assert.equal(observed.length, 6);
+		assert.equal(observed[1], "id"); assert.deepEqual(observed[2], { pattern: "needle", optional: 1, nested: params.nested });
+		assert.equal((observed[2] as any).nested, params.nested); assert.equal(observed[3], signal); assert.equal(observed[4], onUpdate); assert.equal(observed[5], context);
+		assert.equal(updates.length, 1);
+		const aborted = new DOMException("aborted", "AbortError");
+		find.execute = () => { throw aborted; };
+		assert.throws(() => defaults.find.execute("id", { pattern: "x", reasoning: "find x" }, signal, update, context), (error) => error === aborted);
+	} finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("scoped capture failures and target conflicts fail before replay", async (t) => {
+	const cases: Array<[string, any[], Record<string, unknown> | undefined]> = [
+		["missing ffgrep", [scopedTool("fffind")], undefined],
+		["missing fffind", [scopedTool("ffgrep")], undefined],
+		["duplicate ffgrep", [scopedTool("ffgrep"), scopedTool("ffgrep"), scopedTool("fffind")], undefined],
+		["duplicate fffind", [scopedTool("ffgrep"), scopedTool("fffind"), scopedTool("fffind")], undefined],
+		["malformed definition", [scopedTool("ffgrep", { parameters: { type: "string" } }), scopedTool("fffind")], undefined],
+		["missing baseline property", [scopedTool("ffgrep", { parameters: { type: "object", properties: { pattern: { type: "string" } }, required: ["pattern"] } }), scopedTool("fffind")], undefined],
+		["narrowed primitive property", [scopedTool("ffgrep", { parameters: { ...scopedTool("ffgrep").parameters, properties: { ...scopedTool("ffgrep").parameters.properties, path: { type: "string", enum: ["src"] } } } }), scopedTool("fffind")], undefined],
+		["malformed prompt guidance", [scopedTool("ffgrep", { promptGuidelines: ["valid", 42] }), scopedTool("fffind")], undefined],
+		["source reasoning", [scopedTool("ffgrep", { parameters: { type: "object", properties: { reasoning: { type: "string" } } } }), scopedTool("fffind")], undefined],
+		["target grep conflict", [scopedTool("ffgrep"), scopedTool("fffind")], { tools: ["grep"] }],
+		["target find conflict", [scopedTool("ffgrep"), scopedTool("fffind")], { tools: ["find"] }],
+	];
+	for (const [name, tools, conflicts] of cases) await t.test(name, async () => {
+		const source = baselineFactory(); source.factory = (pi: any) => registerScopedSurface(pi, tools);
+		const f = await fixture({ userEntry: scopedFiltered(), userVersion: "0.9.6", userIdentity: "@ff-labs/pi-fff", userFactory: source });
+		const real = apiRecorder();
+		try {
+			const result = await buildPiFffRegistrationPlan({ cwd: f.cwd, agentDir: f.agentDir, piVersion: "0.80.6", api: real.api, loader: f.loader, conflicts });
+			expectCode(result, "PIFFF_SURFACE_BREAKING"); assert.equal(real.calls.length, 0);
+		} finally { await rm(f.root, { recursive: true, force: true }); }
+	});
+});
+
+test("legacy compatible-forward find addition conflicts before replay", async () => {
+	const source = baselineFactory((pi) => pi.registerTool(scopedTool("find")));
+	const f = await fixture({ userEntry: filtered("0.2.0"), userVersion: "0.2.0", userFactory: source });
+	const real = apiRecorder();
+	try {
+		const result = await buildPiFffRegistrationPlan({ cwd: f.cwd, agentDir: f.agentDir, piVersion: "0.81.0", api: real.api, loader: f.loader });
+		expectCode(result, "PIFFF_SURFACE_BREAKING");
+		assert.equal(real.calls.length, 0);
+	} finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("scoped production static conflicts allow substitutions while caller targets fail", async (t) => {
+	assert.deepEqual(TIDY_PI_FFF_CONFLICTS, {
+		tools: ["write", "edit", "bash", "ls"], commands: ["tidy", "diff"],
+		shortcuts: ["ctrl+shift+o"], messageRenderers: ["minimal-turn-diff"],
+	});
+	const source = baselineFactory(); source.factory = (pi: any) => registerScopedSurface(pi, [scopedTool("ffgrep"), scopedTool("fffind")]);
+	for (const [name, conflicts, expected] of [
+		["production static configuration", undefined, true],
+		["caller grep conflict", { tools: ["grep"] }, false],
+		["caller find conflict", { tools: ["find"] }, false],
+	] as const) await t.test(name, async () => {
+		const f = await fixture({ userEntry: scopedFiltered(), userVersion: "0.9.6", userIdentity: "@ff-labs/pi-fff", userFactory: source });
+		const real = apiRecorder();
+		try {
+			const result = await buildPiFffRegistrationPlan({ cwd: f.cwd, agentDir: f.agentDir, piVersion: "0.80.6", api: real.api, loader: f.loader, conflicts });
+			assert.equal(result.ok, expected);
+			if (!expected) expectCode(result, "PIFFF_SURFACE_BREAKING");
+			assert.equal(real.calls.length, 0);
+		} finally { await rm(f.root, { recursive: true, force: true }); }
+	});
+});
+
+test("scoped compatible additions replay once around substituted slots", async () => {
+	const before = () => textResult("before"); const after = () => {};
+	const source = baselineFactory(); source.factory = (pi: any) => registerScopedSurface(pi, [
+		scopedTool("future-before", { execute: before }), scopedTool("ffgrep"), scopedTool("future-middle"), scopedTool("fffind"),
+	], (recording) => recording.registerShortcut("ctrl+f", { handler: after }));
+	const f = await fixture({ userEntry: scopedFiltered("1.0.0"), userVersion: "1.0.0", userIdentity: "@ff-labs/pi-fff", userFactory: source });
+	const real = apiRecorder();
+	try {
+		const result = await buildFrom(f, real.api); assert.equal(result.ok, true); if (!result.ok || result.plan.profile !== "scoped") return;
+		const composites = createPiFffComposites(result.plan, { mode: "result", reasoningGuideline: "reason" });
+		assert.equal(replayPiFffRegistrationPlan(result.plan, real.api, composites).ok, true);
+		assert.deepEqual(real.calls.slice(4, 9).map((call) => call.method === "registerTool" ? (call.args[0] as any).name : `${call.method}:${call.args[0]}`), ["future-before", "grep", "future-middle", "find", "registerShortcut:ctrl+f"]);
+		assert.equal((real.calls[4]!.args[0] as any).execute, before); assert.equal((real.calls[8]!.args[1] as any).handler, after);
 	} finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
@@ -460,6 +616,7 @@ test("async factory and result are awaited exactly once", async () => {
 	try {
 		const result = await buildFrom(f);
 		assert.equal(result.ok, true); assert.equal(calls, 1); if (!result.ok) return;
+		assert.equal(result.plan.profile, "legacy"); if (result.plan.profile !== "legacy") return;
 		const tools = createPiFffComposites(result.plan, { mode: "result", reasoningGuideline: "reason" });
 		assert.equal(await tools.read.execute("id", { path: "x" }, undefined, undefined, {}), expected);
 	} finally { await rm(f.root, { recursive: true, force: true }); }
@@ -682,6 +839,7 @@ test("malformed settled results fail closed without native retry", async () => {
 	const f = await fixture({ userEntry: filtered(), userFactory: source });
 	try {
 		const result = await buildFrom(f); assert.equal(result.ok, true); if (!result.ok) return;
+		assert.equal(result.plan.profile, "legacy"); if (result.plan.profile !== "legacy") return;
 		const tools = createPiFffComposites(result.plan, { mode: "result", reasoningGuideline: "reason" });
 		assert.throws(() => tools.read.execute("id", { path: "x" }, undefined, undefined, {}), (error: any) => error?.code === "PIFFF_EXEC_RESULT_INVALID");
 		assert.equal(executions, 1);
@@ -705,6 +863,7 @@ test("partial updates preserve callback, object identity, and source behavior na
 	const f = await fixture({ userEntry: filtered(), userFactory: source });
 	try {
 		const result = await buildFrom(f); assert.equal(result.ok, true); if (!result.ok) return;
+		assert.equal(result.plan.profile, "legacy"); if (result.plan.profile !== "legacy") return;
 		const tools = createPiFffComposites(result.plan, { mode: "result", reasoningGuideline: "reason" });
 		const actual = await tools.read.execute("id", { path: "x" }, undefined, (value: unknown) => observed.push(value), {});
 		assert.equal(actual, settled);
@@ -733,6 +892,7 @@ test("read and grep result families preserve native and FFF details", async () =
 	const f = await fixture({ userEntry: filtered(), userFactory: source });
 	try {
 		const result = await buildFrom(f); assert.equal(result.ok, true); if (!result.ok) return;
+		assert.equal(result.plan.profile, "legacy"); if (result.plan.profile !== "legacy") return;
 		const tools = createPiFffComposites(result.plan, { mode: "result", reasoningGuideline: "reason" });
 		assert.equal(await tools.read.execute("1", {}, undefined, undefined, {}), families[0]);
 		assert.equal(await tools.read.execute("2", {}, undefined, undefined, {}), families[1]);

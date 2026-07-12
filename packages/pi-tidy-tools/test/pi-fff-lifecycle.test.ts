@@ -53,7 +53,11 @@ async function fixture(options: { project?: unknown; user?: unknown; projectMode
 			if (participant.profile === "legacy") { pi.registerTool(tool("read")); pi.registerTool(tool("grep")); }
 			else {
 				for (const [name, type] of [["fff-mode", "string"], ["fff-frecency-db", "string"], ["fff-history-db", "string"], ["fff-enable-root-scan", "boolean"]] as const) pi.registerFlag(name, { type });
-				for (const name of ["ffgrep", "fffind"]) pi.registerTool({ name, label: name, description: name, parameters: { type: "object", properties: {} }, execute() {} });
+				for (const name of ["ffgrep", "fffind"]) {
+				const properties: Record<string, unknown> = { pattern: { type: "string" }, path: { type: "string" }, exclude: { anyOf: [{ type: "string" }, { type: "array", items: { type: "string" } }] }, limit: { type: "number" }, cursor: { type: "string" } };
+				if (name === "ffgrep") Object.assign(properties, { caseSensitive: { type: "boolean" }, context: { type: "number" } });
+				pi.registerTool({ name, label: name, description: name, parameters: { type: "object", properties, required: ["pattern"] }, execute() {} });
+			}
 				for (const name of ["fff-mode", "fff-health", "fff-rescan"]) pi.registerCommand(name, { handler() {} });
 			}
 			pi.on("session_start", () => {}); pi.on("session_shutdown", () => {});

@@ -762,6 +762,45 @@ test("disabled startup keeps only the tidy management command", async () => {
   assert.deepEqual(registrations.tools, []);
 });
 
+test("scoped startup exposes native read and FFF-backed tidy grep/find without raw names", async () => {
+  const registered: any[] = [];
+  const grepSchema = { type: "object", properties: { pattern: { type: "string" } }, required: ["pattern"] };
+  const findSchema = { type: "object", properties: { pattern: { type: "string" } }, required: ["pattern"] };
+  const rawRenderer = () => ({ render: () => ["raw"] });
+  const scopedExtension = createTidyExtension({
+    loadState: () => ({ enabled: true, source: "default" }),
+    loadMode: () => "default",
+    createIntegration: () => ({
+      async initialize() {
+        return {
+          status: { state: "managed-compatible", owner: "tidy/native read + FFF-executed tidy grep/find", scopes: ["project"], journal: "committed", action: "raw hidden" },
+          skipTidyTools: new Set(["grep", "find"]),
+          commit(decorate: (source: any) => any) {
+            registered.push(decorate({ name: "grep", label: "ffgrep", description: "FFF grep", parameters: grepSchema, execute() { return { content: [{ type: "text", text: "hit" }] }; }, renderCall: rawRenderer, renderResult: rawRenderer }));
+            registered.push(decorate({ name: "find", label: "fffind", description: "FFF find", parameters: findSchema, execute() { return { content: [{ type: "text", text: "file.ts" }] }; }, renderCall: rawRenderer, renderResult: rawRenderer }));
+          },
+        } as any;
+      },
+      async run() { throw new Error("unused"); },
+    }),
+  });
+  const tools: any[] = [];
+  await scopedExtension({
+    on() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {},
+    registerTool(tool: any) { tools.push(tool); }, sendMessage() {},
+  } as any);
+  tools.push(...registered);
+  const names = tools.map((tool) => tool.name);
+  for (const name of ["read", "grep", "find"]) assert.equal(names.filter((value) => value === name).length, 1);
+  assert.equal(names.includes("ffgrep"), false); assert.equal(names.includes("fffind"), false);
+  const read = tools.find((tool) => tool.name === "read");
+  const grep = tools.find((tool) => tool.name === "grep"); const find = tools.find((tool) => tool.name === "find");
+  assert.notEqual(read.parameters, grepSchema); assert.notEqual(read.parameters, findSchema);
+  assert.equal(grep.parameters.required[0], "reasoning"); assert.equal(find.parameters.required[0], "reasoning");
+  assert.equal(grep.renderShell, "self"); assert.equal(find.renderShell, "self");
+  assert.notEqual(grep.renderCall, rawRenderer); assert.notEqual(find.renderResult, rawRenderer);
+});
+
 test("enabled startup preserves every optional registration", async () => {
   const registrations = await loadWith("on");
   assert.deepEqual([...registrations.commands.keys()], ["tidy", "diff"]);

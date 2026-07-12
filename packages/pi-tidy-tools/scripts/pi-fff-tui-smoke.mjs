@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn, execFileSync } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,7 +8,18 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(here, "..");
 const repoRoot = resolve(packageRoot, "../..");
-const root = await mkdtemp(join(tmpdir(), "pi-tidy-fff-tui-"));
+const profile = process.env.PI_FFF_TUI_PROFILE;
+if (!profile) {
+	const profiles = ["legacy", "scoped"];
+	const results = profiles.map((item) => {
+		const output = execFileSync(process.execPath, [fileURLToPath(import.meta.url)], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024, env: { ...process.env, PI_FFF_TUI_PROFILE: item } });
+		return JSON.parse(output.slice(output.indexOf("{")));
+	});
+	console.log(JSON.stringify({ mode: "passed", profiles: results }, null, 2));
+	process.exit(0);
+}
+const scoped = profile === "scoped";
+const root = await mkdtemp(join(tmpdir(), `pi-tidy-fff-tui-${profile}-`));
 const harness = join(root, "harness");
 const project = join(root, "project");
 const agent = join(root, "agent");
@@ -16,9 +27,11 @@ const packDir = join(root, "pack");
 const settingsPath = join(project, ".pi", "settings.json");
 const journalPath = join(project, ".pi", "pi-tidy-tools.pi-fff.json");
 const observationPath = join(root, "tool-observations.jsonl");
+const cardEvidencePath = join(root, "tidy-card-evidence.jsonl");
 const lifecyclePath = join(root, "lifecycle.jsonl");
 const piVersion = "0.80.6";
-const piFffVersion = "0.1.12";
+const piFffPackage = scoped ? "@ff-labs/pi-fff" : "pi-fff";
+const piFffVersion = scoped ? "0.9.6" : "0.1.12";
 let child;
 let rootRemoved = false;
 
@@ -47,10 +60,10 @@ try {
 	await writeFile(join(harness, "package.json"), JSON.stringify({ private: true, type: "module" }));
 	run("npm", ["install", "--no-audit", "--no-fund", "--ignore-scripts", `@earendil-works/pi-coding-agent@${piVersion}`, tarball], { cwd: harness });
 	await writeFile(join(project, ".pi", "npm", "package.json"), JSON.stringify({ private: true }));
-	run("npm", ["install", "--omit=dev", "--omit=peer", "--no-audit", "--no-fund", `pi-fff@${piFffVersion}`], { cwd: join(project, ".pi", "npm") });
+	run("npm", ["install", "--omit=dev", "--omit=peer", "--no-audit", "--no-fund", `${piFffPackage}@${piFffVersion}`], { cwd: join(project, ".pi", "npm") });
 
-	const priorEntry = { source: `npm:pi-fff@${piFffVersion}`, extensions: ["./index.ts"] };
-	const entry = { source: `npm:pi-fff@${piFffVersion}`, extensions: [] };
+	const priorEntry = { source: `npm:${piFffPackage}@${piFffVersion}`, extensions: ["./index.ts"] };
+	const entry = { source: `npm:${piFffPackage}@${piFffVersion}`, extensions: [] };
 	await writeFile(settingsPath, JSON.stringify({ packages: [entry] }, null, 2) + "\n");
 	const participant = { scope: "project", settingsPath, entryIndex: 0, priorEntry, managedEntry: entry };
 	await writeFile(journalPath, JSON.stringify({
@@ -64,6 +77,7 @@ try {
 import { appendFileSync } from "node:fs";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 const observationPath=${JSON.stringify(observationPath)};
+const scoped=${JSON.stringify(scoped)};
 function message(model) { return { role:"assistant", content:[], api:model.api, provider:model.provider, model:model.id, usage:{input:1,output:1,cacheRead:0,cacheWrite:0,totalTokens:2,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}, stopReason:"stop", timestamp:Date.now() }; }
 function textOf(message) { return Array.isArray(message?.content) ? message.content.filter(x=>x?.type==="text").map(x=>x.text).join(" ") : String(message?.content ?? ""); }
 function stepOf(context) { return textOf([...context.messages].reverse().find(m=>m.role==="user")).replace(/[^a-z ]/gi,"").trim(); }
@@ -74,15 +88,17 @@ function stream(model, context) {
   const last=context.messages.at(-1);
   if (last?.role === "toolResult") {
    const step=stepOf(context);
-   appendFileSync(observationPath,JSON.stringify({step,content:last.content,details:last.details,isError:last.isError})+"\\n");
+   const availableTools=(context.tools ?? []).map(tool=>tool.name);
+   appendFileSync(observationPath,JSON.stringify({step,content:last.content,details:last.details,isError:last.isError,availableTools})+"\\n");
    const text="SMOKE_RESULT_OBSERVED "+step;
    out.content.push({type:"text",text});
    stream.push({type:"text_start",contentIndex:0,partial:out}); stream.push({type:"text_delta",contentIndex:0,delta:text,partial:out}); stream.push({type:"text_end",contentIndex:0,content:text,partial:out});
   } else {
    const prompt=textOf(last); let name="read", args={path:"nested/path with spaces/space marker.txt",reasoning:"verify native exact read"};
-   if (prompt.includes("fuzzy")) args={path:"space marker",reasoning:"verify fuzzy read"};
-   if (prompt.includes("indexed grep")) { name="grep"; args={pattern:"PI_FFF_TUI_MARKER",mode:"plain",reasoning:"verify indexed grep"}; }
-   if (prompt.includes("fallback grep")) { name="grep"; args={pattern:"PI_FFF_TUI_MARKER",ignoreCase:false,reasoning:"verify native grep fallback"}; }
+   if (!scoped && prompt.includes("fuzzy")) args={path:"space marker",reasoning:"verify fuzzy read"};
+   if (prompt.includes("indexed grep") || prompt.includes("public grep")) { name="grep"; args=scoped?{pattern:"PI_FFF_TUI_MARKER",reasoning:"verify public FFF grep"}:{pattern:"PI_FFF_TUI_MARKER",mode:"plain",reasoning:"verify indexed grep"}; }
+   if (!scoped && prompt.includes("fallback grep")) { name="grep"; args={pattern:"PI_FFF_TUI_MARKER",ignoreCase:false,reasoning:"verify native grep fallback"}; }
+   if (scoped && prompt.includes("public find")) { name="find"; args={pattern:"space marker",reasoning:"verify public FFF find"}; }
    const call={type:"toolCall",id:"smoke-"+Date.now(),name,arguments:args}; out.content.push(call); out.stopReason="toolUse";
    stream.push({type:"toolcall_start",contentIndex:0,partial:out}); stream.push({type:"toolcall_delta",contentIndex:0,delta:JSON.stringify(args),partial:out}); stream.push({type:"toolcall_end",contentIndex:0,toolCall:call,partial:out});
   }
@@ -135,26 +151,35 @@ export default function(pi){
 		throw new Error(`${label}: timed out; records=${JSON.stringify(await jsonLines(path))}`);
 	};
 	const send = async (text, delay = 500) => { child.stdin.write(text); await new Promise((resolveWait) => setTimeout(resolveWait, delay)); };
+	const persistCardEvidence = async (step, tool, after) => {
+		const output = clean(raw.slice(after));
+		if (!new RegExp(`┊[^\\n]*[✓✗][^\\n]*${tool}`).test(output)) throw new Error(`${step}: tidy-rendered ${tool} card was not observed`);
+		await appendFile(cardEvidencePath, JSON.stringify({ profile, step, tool, tidyRendered: true, excerpt: output.split("\n").filter((line) => line.includes("┊")).slice(-4) }) + "\n");
+	};
 
 	await waitForOutput(/deterministic/i, "startup");
-	await waitForOutput(/pi-fff will replace an existing custom editor/, "editor warning");
+	if (!scoped) await waitForOutput(/pi-fff will replace an existing custom editor/, "editor warning");
 	const startup = await waitForRecord(lifecyclePath, (item) => item.event === "session_start" && item.reason === "startup", "startup lifecycle");
 	let checkpoint = raw.length;
-	await send("/fff-features\r", 1000);
-	await waitForOutput(/features|Autocomplete/i, "fff-features dialog", checkpoint);
-	checkpoint = raw.length;
-	await send("\x1b", 300);
+	if (!scoped) {
+		await send("/fff-features\r", 1000);
+		await waitForOutput(/features|Autocomplete/i, "fff-features dialog", checkpoint);
+		checkpoint = raw.length;
+		await send("\x1b", 300);
+	}
 	await send("@space", 1000);
-	await waitForOutput(/space marker\.txt/, "Escape closes dialog and restores editor focus", checkpoint);
+	await waitForOutput(/space marker\.txt/, "autocomplete preserves editor focus", checkpoint);
 	checkpoint = raw.length;
 	await send("\x1b", 200); await send("\x15", 200);
 	await send("exact read\r", 500);
 	await waitForOutput(/SMOKE_RESULT_OBSERVED exact read/, "Escape dismisses autocomplete and permits next submission", checkpoint, 60_000);
+	await persistCardEvidence("exact read", "read", checkpoint);
 
-	for (const prompt of ["fuzzy read", "indexed grep", "fallback grep"]) {
+	for (const [prompt, tool] of (scoped ? [["public grep", "grep"], ["public find", "find"]] : [["fuzzy read", "read"], ["indexed grep", "grep"], ["fallback grep", "grep"]])) {
 		checkpoint = raw.length;
 		await send(prompt + "\r", 500);
 		await waitForOutput(new RegExp(`SMOKE_RESULT_OBSERVED ${prompt}`), prompt, checkpoint, 60_000);
+		await persistCardEvidence(prompt, tool, checkpoint);
 	}
 	const observations = await jsonLines(observationPath);
 	const result = (step) => {
@@ -165,19 +190,29 @@ export default function(pi){
 	};
 	const exact = result("exact read");
 	if (!contentText(exact).includes("PI_FFF_TUI_MARKER")) throw new Error("exact read: native result omitted file content");
-	const fuzzy = result("fuzzy read");
-	if (!contentText(fuzzy).includes("PI_FFF_TUI_MARKER")) throw new Error(`fuzzy read: FFF resolution omitted requested file content (${JSON.stringify(fuzzy)})`);
-	const indexed = result("indexed grep");
-	if (!contentText(indexed).includes("PI_FFF_TUI_MARKER") || semanticDetailKeys(indexed.details).length === 0) throw new Error(`indexed grep: FFF result omitted match content or semantic details (${JSON.stringify(indexed.details)})`);
-	const fallback = result("fallback grep");
-	if (!contentText(fallback).includes("PI_FFF_TUI_MARKER")) throw new Error(`fallback grep: native compatibility result omitted matched content (${JSON.stringify(fallback)})`);
+	const availableTools = exact.availableTools;
+	if (!Array.isArray(availableTools) || !["read", "grep", "find"].every((name) => availableTools.includes(name))) throw new Error(`model-facing public tools unavailable: ${JSON.stringify(availableTools)}`);
+	if (availableTools.includes("ffgrep") || availableTools.includes("fffind")) throw new Error(`raw scoped tools are model-facing: ${JSON.stringify(availableTools)}`);
+	if (scoped) {
+		const publicGrep = result("public grep");
+		if (!contentText(publicGrep).includes("PI_FFF_TUI_MARKER") || semanticDetailKeys(publicGrep.details).length === 0) throw new Error(`public grep: FFF result omitted content or details (${JSON.stringify(publicGrep)})`);
+		const publicFind = result("public find");
+		if (!contentText(publicFind).includes("space marker.txt") || semanticDetailKeys(publicFind.details).length === 0) throw new Error(`public find: FFF result omitted content or details (${JSON.stringify(publicFind)})`);
+	} else {
+		const fuzzy = result("fuzzy read");
+		if (!contentText(fuzzy).includes("PI_FFF_TUI_MARKER")) throw new Error(`fuzzy read: FFF resolution omitted requested file content (${JSON.stringify(fuzzy)})`);
+		const indexed = result("indexed grep");
+		if (!contentText(indexed).includes("PI_FFF_TUI_MARKER") || semanticDetailKeys(indexed.details).length === 0) throw new Error(`indexed grep: FFF result omitted match content or semantic details (${JSON.stringify(indexed.details)})`);
+		const fallback = result("fallback grep");
+		if (!contentText(fallback).includes("PI_FFF_TUI_MARKER")) throw new Error(`fallback grep: native compatibility result omitted matched content (${JSON.stringify(fallback)})`);
+	}
 
 	let lifecycleCount = (await jsonLines(lifecyclePath)).length;
 	checkpoint = raw.length;
 	await send("/reload\r", 1000);
 	await waitForRecord(lifecyclePath, (_item, index) => index >= lifecycleCount && _item.event === "session_shutdown" && _item.reason === "reload", "reload shutdown");
 	await waitForRecord(lifecyclePath, (_item, index) => index >= lifecycleCount && _item.event === "session_start" && _item.reason === "reload" && _item.sessionId === startup.sessionId, "reload restart");
-	await waitForOutput(/pi-fff will replace an existing custom editor/, "reloaded editor warning", checkpoint);
+	if (!scoped) await waitForOutput(/pi-fff will replace an existing custom editor/, "reloaded editor warning", checkpoint);
 
 	lifecycleCount = (await jsonLines(lifecyclePath)).length;
 	await send("/new\r", 1000);
@@ -195,6 +230,7 @@ export default function(pi){
 	if (exitCode !== 0) throw new Error(`Pi TUI exited ${exitCode} after /quit`);
 	try { process.kill(-child.pid, 0); throw new Error("Pi process group remains alive after shutdown"); }
 	catch (error) { if (error?.code !== "ESRCH") throw error; }
+	const cardEvidence = await jsonLines(cardEvidencePath);
 	const movedRoot = `${root}-released`;
 	await rename(root, movedRoot);
 	await rename(movedRoot, root);
@@ -203,14 +239,16 @@ export default function(pi){
 	catch (error) { if (error?.code !== "ENOENT") throw error; }
 	rootRemoved = true;
 
-	console.log(JSON.stringify({ mode: "passed", piVersion, piFffVersion, packedArtifact: true, isolatedRoot: true, evidence: {
-		fffFeatures: "dialog observed; Escape restored editor focus",
+	console.log(JSON.stringify({ mode: "passed", profile, packageIdentity: piFffPackage, piVersion, piFffVersion, packedArtifact: true, isolatedRoot: true, evidence: {
+		fffFeatures: scoped ? "scoped commands/lifecycle active" : "dialog observed; Escape restored editor focus",
 		autocompleteSpacePath: true, autocompleteEscape: "suggestion dismissed; exact-read submission executed",
-		readFamilies: ["native exact content", "FFF fuzzy-resolved content from a non-exact path"],
-		grepFamilies: ["FFF indexed content + semantic details", "native compatibility fallback matched content"],
+		modelFacingTools: { required: ["read", "grep", "find"], rawExcluded: ["ffgrep", "fffind"] },
+		tidyCards: cardEvidence,
+		readFamilies: scoped ? ["native exact content; no fuzzy read"] : ["native exact content", "FFF fuzzy-resolved content from a non-exact path"],
+		grepFamilies: scoped ? ["public FFF grep content + semantic details", "public FFF find content + semantic details"] : ["FFF indexed content + semantic details", "native compatibility fallback matched content"],
 		reload: "shutdown(reload) then start(reload) with same session identity",
 		sessionReplacement: "shutdown(new) then start(new) with distinct session identity",
-		editorWarning: true,
+		editorWarning: !scoped,
 		runtimeCleanup: "shutdown(quit) completed; /quit exited 0; process group gone; fixture root renamed and removed",
 	} }, null, 2));
 } catch (error) {

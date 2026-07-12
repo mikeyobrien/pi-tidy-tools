@@ -547,7 +547,7 @@ export function createTidyExtension(dependencies: TidyExtensionDependencies = {}
 			grep: createGrepTool(cwd) as SourceToolDefinition, find: createFindTool(cwd) as SourceToolDefinition, ls: createLsTool(cwd) as SourceToolDefinition,
 		};
 		for (const [name, source] of Object.entries(sourceTools)) {
-			if (startupPlan.skipTidyTools.has(name as "read" | "grep")) continue;
+			if (startupPlan.skipTidyTools.has(name as "read" | "grep" | "find")) continue;
 			pi.registerTool(decorate(source) as any);
 		}
 		startupPlan.commit(decorate);

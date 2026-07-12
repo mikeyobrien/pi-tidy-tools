@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import semver from "semver";
 import {
 	buildPiFffRegistrationPlan,
 	createPiFffComposites,
@@ -14,6 +15,7 @@ const agentDir = join(root, "agent");
 const expectedScope: Record<Scope, "user" | "project"> = { user: "user", project: "project", both: "project" };
 const packageIdentity = process.env.PI_FFF_PACKAGE ?? "pi-fff";
 const scoped = packageIdentity === "@ff-labs/pi-fff";
+const currentScoped = scoped && semver.gte(process.env.PI_FFF_VERSION ?? "0.0.0", "0.9.5");
 
 function assertOrderedIncludes(actual: readonly string[], required: readonly string[], label: string) {
 	let cursor = 0;
@@ -79,17 +81,29 @@ async function run(scope: Scope) {
 	assertOrderedIncludes(recordedCommands, scoped ? ["fff-mode", "fff-health", "fff-rescan"] : ["fff-features", "reindex-fff", "fff-status"], "commands");
 	assertOrderedIncludes(recordedEvents, ["session_start", "session_shutdown"], "lifecycle");
 
-	const composites = scoped ? undefined : createPiFffComposites(built.plan, { mode: "default", reasoningGuideline: "State the goal." });
-	if (composites) assert.equal((composites.read.parameters as any).required.includes("reasoning"), true);
+	const composites = createPiFffComposites(built.plan, { mode: "default", reasoningGuideline: "State the goal." }) as any;
+	const resultComposites = createPiFffComposites(built.plan, { mode: "result", reasoningGuideline: "State the goal." }) as any;
+	assert.equal((composites.grep.parameters as any).required.includes("reasoning"), true);
 	assert.equal(replayPiFffRegistrationPlan(built.plan, api, composites).ok, true);
+	if (scoped) api.registerTool({ name: "read", label: "read", description: "native tidy read fixture", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] }, execute() { throw new Error("native read fixture is not executed"); } });
 	const tools = calls.filter((call) => call.method === "registerTool").map((call) => call.args[0]);
-	assert.equal(tools.filter((tool) => tool.name === "read").length, scoped ? 0 : 1);
-	assert.equal(tools.filter((tool) => tool.name === "grep").length, scoped ? 0 : 1);
-	assert.equal(tools.some((tool) => tool.name === (scoped ? "fffind" : "find_files")), true);
-	assert.equal(tools.some((tool) => tool.name === (scoped ? "ffgrep" : "fff_multi_grep")), true);
-	if (scoped) for (const [index, tool] of tools.entries()) { assert.equal(tool, recordedToolDefinitions[index]); assert.equal(typeof tool.renderCall, "function"); assert.equal(typeof tool.renderResult, "function"); }
+	for (const name of ["read", "grep"]) assert.equal(tools.filter((tool) => tool.name === name).length, 1);
+	assert.equal(tools.filter((tool) => tool.name === "find").length, scoped ? 1 : 0);
+	assert.equal(tools.some((tool) => tool.name === (scoped ? "find" : "find_files")), true);
+	assert.equal(tools.some((tool) => tool.name === (scoped ? "grep" : "fff_multi_grep")), true);
+	assert.equal(tools.some((tool) => tool.name === "ffgrep" || tool.name === "fffind"), false);
+	if (scoped) {
+		assert.equal(built.plan.captureMode, "scoped-pair");
+		assert.equal(resultComposites.grep.parameters, built.plan.captures.grep.parameters);
+		assert.equal(resultComposites.find.parameters, built.plan.captures.find.parameters);
+		assert.equal(composites.grep.label, built.plan.captures.grep.label);
+		assert.equal(composites.find.label, built.plan.captures.find.label);
+		assert.equal(composites.grep.promptSnippet, built.plan.captures.grep.promptSnippet);
+		assert.deepEqual(composites.find.promptGuidelines.slice(0, -1), built.plan.captures.find.promptGuidelines);
+	}
 
 	let editorFactory: unknown;
+	let autocompleteFactory: any;
 	let autocompleteInstalled = false;
 	const notifications: string[] = [];
 	const context: any = {
@@ -98,7 +112,7 @@ async function run(scope: Scope) {
 		ui: {
 			setEditorComponent(value: unknown) { editorFactory = value; },
 			getEditorComponent() { return undefined; },
-			addAutocompleteProvider(factory: any) { autocompleteInstalled = typeof factory === "function"; },
+			addAutocompleteProvider(factory: any) { autocompleteFactory = factory; autocompleteInstalled = typeof factory === "function"; },
 			notify(message: string) { notifications.push(message); },
 			custom: async () => undefined,
 		},
@@ -107,7 +121,20 @@ async function run(scope: Scope) {
 	const shutdowns = calls.filter((call) => call.method === "on" && call.args[0] === "session_shutdown");
 	assert.equal(starts.length, 1); assert.equal(shutdowns.length, 1);
 	await starts[0]!.args[1]({ reason: "startup" }, context);
-	assert.equal(scoped ? autocompleteInstalled : typeof editorFactory === "function", true);
+	assert.equal(scoped ? (autocompleteInstalled || typeof editorFactory === "function") : typeof editorFactory === "function", true);
+	if (scoped) {
+		const flags = calls.filter((call) => call.method === "registerFlag").map((call) => call.args[0]);
+		assert.deepEqual(flags, currentScoped ? ["fff-mode", "fff-frecency-db", "fff-history-db", "fff-enable-root-scan"] : ["fff-mode", "fff-frecency-db", "fff-history-db"]);
+		if (autocompleteFactory) {
+			const fallback = { async getSuggestions() { return null; }, applyCompletion(lines: string[], cursorLine: number, cursorCol: number, item: any, prefix: string) { return { lines: [lines[0]!.slice(0, cursorCol - prefix.length) + item.value + lines[0]!.slice(cursorCol)], cursorLine, cursorCol: cursorCol - prefix.length + item.value.length }; } };
+			const provider = autocompleteFactory(fallback);
+			const suggestions = await provider.getSuggestions(["@space"], 0, 6, { signal: new AbortController().signal });
+			assert.ok(suggestions?.items.some((item: any) => item.value.includes("space marker.txt")));
+			const selected = suggestions.items.find((item: any) => item.value.includes("space marker.txt"));
+			const applied = provider.applyCompletion(["@space"], 0, 6, selected, suggestions.prefix);
+			assert.match(applied.lines[0], /space marker\.txt/);
+		}
+	}
 	if (!scoped) assert.equal(active.has("find_files"), true);
 	const commandCalls = calls.filter((call) => call.method === "registerCommand");
 	const executedCommands = scoped ? ["fff-mode", "fff-health", "fff-rescan"] : ["fff-status", "reindex-fff", "fff-features"];
@@ -117,8 +144,8 @@ async function run(scope: Scope) {
 		await command.args[1].handler("", context);
 	}
 
-	const grep = tools.find((tool) => tool.name === (scoped ? "ffgrep" : "grep"))!;
-	const find = tools.find((tool) => tool.name === (scoped ? "fffind" : "find_files"))!;
+	const grep = tools.find((tool) => tool.name === "grep")!;
+	const find = tools.find((tool) => tool.name === (scoped ? "find" : "find_files"))!;
 	const signal = new AbortController().signal;
 	let fuzzyRead = false;
 	if (!scoped) {
@@ -126,10 +153,10 @@ async function run(scope: Scope) {
 		const fuzzy = await read.execute("fuzzy-read", { path: "space marker", reasoning: "resolve approximate path" }, signal, undefined, context);
 		assert.match(fuzzy.content[0].text, /PI_FFF_INSTALLED_MARKER/); fuzzyRead = true;
 	}
-	const indexed = await grep.execute("indexed-grep", scoped ? { pattern: "PI_FFF_INSTALLED_MARKER" } : { pattern: "PI_FFF_INSTALLED_MARKER", mode: "plain", reasoning: "search the index" }, signal, undefined, context);
+	const indexed = await grep.execute("indexed-grep", scoped ? { pattern: "PI_FFF_INSTALLED_MARKER", reasoning: "search the index" } : { pattern: "PI_FFF_INSTALLED_MARKER", mode: "plain", reasoning: "search the index" }, signal, undefined, context);
 	assert.match(indexed.content[0].text, /space marker\.txt/);
 	assert.ok(indexed.details && typeof indexed.details === "object");
-	const custom = await find.execute("find-files", scoped ? { pattern: "space marker" } : { query: "space marker" }, signal, undefined, context);
+	const custom = await find.execute("find-files", scoped ? { pattern: "space marker", reasoning: "find marker file" } : { query: "space marker" }, signal, undefined, context);
 	assert.match(custom.content[0].text, /space marker\.txt/);
 
 	await shutdowns[0]!.args[1]({ reason: "quit" }, context);

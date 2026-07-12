@@ -21,9 +21,9 @@ pi-tidy-tools:
 
 By default, execution delegates to pi's built-in tools unchanged. When the
 optional pi-fff integration below is explicitly set up, legacy `pi-fff` owns
-`read`/`grep` execution while tidy owns their schema/rendering; scoped
-`@ff-labs/pi-fff` instead adds its own FFF tools while tidy keeps native
-`read`/`grep` ownership.
+`read`/`grep` execution while tidy owns their schema/rendering. For scoped
+`@ff-labs/pi-fff`, native tidy `read` remains unchanged while FFF executes the
+public tidy-presented `grep` and `find`; raw `ffgrep`/`fffind` are hidden.
 
 ## In action
 
@@ -100,10 +100,13 @@ supported, both on Pi **0.80.6+** and with no upper version bound:
 - **Legacy:** [`pi-fff`](https://www.npmjs.com/package/pi-fff) **0.1.12+**;
   captures its enhanced `read`/`grep` and composes tidy presentation.
 - **Scoped:** [`@ff-labs/pi-fff`](https://www.npmjs.com/package/@ff-labs/pi-fff)
-  **0.6.0+**; replays `ffgrep`, `fffind`, optional `fff-multi-grep`, flags,
-  commands, lifecycle, autocomplete, and embedded tool renderers unchanged.
-  Tidy continues to own native `read` and `grep`; override mode is rejected
-  because its `grep`/`find` names conflict with tidy's owned surface.
+  **0.6.0+**; captures exactly `ffgrep` and `fffind`, exposes them only as
+  tidy-presented `grep` and `find`, and preserves their FFF execution, schemas,
+  metadata, and prompt guidance. Native tidy `read` remains unchanged. Optional
+  `fff-multi-grep`, the three floor flags (plus current 0.9.5+ root-scan flag),
+  three commands, lifecycle, autocomplete, and compatible additions replay once
+  in source order. Scoped override mode is
+  rejected because its raw `grep`/`find` surface conflicts with this contract.
 
 ```bash
 pi install npm:@ff-labs/pi-fff@0.9.6       # user scope
@@ -111,7 +114,7 @@ pi install npm:@ff-labs/pi-fff@0.9.6       # user scope
 # Legacy remains supported: pi install npm:pi-fff@0.1.12
 ```
 
-Restart Pi, then explicitly let tidy manage pi-fff registration. Legacy setup transfers `read`/`grep` presentation ownership; scoped setup keeps tidy/native `read`/`grep` and replays the separate FFF tools:
+Restart Pi, then explicitly let tidy manage pi-fff registration. Legacy setup transfers `read`/`grep` presentation ownership; scoped setup keeps native tidy `read` and substitutes FFF execution into tidy-presented `grep`/`find` without exposing the raw names:
 
 ```text
 /tidy pi-fff setup
@@ -137,13 +140,18 @@ and only the next actual startup finalizes it at that same safe boundary.
 `/tidy pi-fff status` reports one of these truthful states:
 
 - `absent` — tidy presents native Pi `read`/`grep`.
-- `standalone` — legacy pi-fff owns `read`/`grep`; scoped pi-fff leaves them with tidy/native while loading its own tools. Run setup to remove duplicate-extension risk and establish managed routing.
+- `standalone` — legacy pi-fff owns `read`/`grep`; standalone scoped pi-fff loads its own raw tools outside tidy's ownership. Run setup to hide those raw names and establish managed routing.
 - `filtered-unmanaged` — neither extension claims them until explicit setup.
 - `managed-compatible` — for legacy, pi-fff executes `read`/`grep` and tidy
-  owns their schema/rendering; for scoped, status reports
-  `tidy/native + pi-fff tools` and tidy owns native `read`/`grep`.
-- `managed-invalid` or `recovery-pending` — native Pi owns them; the adapter
-  fails closed instead of silently falling back or partly registering.
+  owns their schema/rendering; for scoped, status reports `tidy/native read +
+  FFF-executed tidy grep/find`: native tidy owns `read`, FFF owns `grep`/`find`
+  execution, tidy owns their public names/schema/rendering, and raw names are hidden.
+- `managed-invalid` — validation failures before commit leave native Pi/tidy
+  ownership intact. A fatal `PIFFF_FORWARD_PARTIAL` instead reports
+  `unsafe partial registration; reload required`: ownership is unknown after a
+  replay failure, later registrations stop, and no native/tidy/FFF claim is safe
+  until `/reload`.
+- `recovery-pending` — native Pi owns them while journal recovery awaits reload.
 - `disabled` — native Pi owns them. Turning tidy off never edits Pi package
   settings; the committed sidecars remain available for later teardown.
 

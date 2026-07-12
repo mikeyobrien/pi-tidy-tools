@@ -38,7 +38,7 @@ test("controller classifies absent, standalone, and filtered unmanaged without l
 
 test("scoped unmanaged ownership distinguishes loaded and filtered tools", async () => {
 	for (const [entry, owner] of [
-		["npm:@ff-labs/pi-fff@0.9.6", "tidy/native + pi-fff tools"],
+		["npm:@ff-labs/pi-fff@0.9.6", "native Pi + pi-fff tools"],
 		[{ source: "npm:@ff-labs/pi-fff@0.9.6", extensions: [] }, "tidy/native"],
 	] as const) {
 		const scoped = participant(entry, "scoped");
@@ -49,23 +49,35 @@ test("scoped unmanaged ownership distinguishes loaded and filtered tools", async
 	}
 });
 
-test("scoped controller keeps tidy native read and grep while routing pi-fff tools", async () => {
+test("scoped controller keeps native read and routes captured FFF through tidy grep/find", async () => {
 	const managed = participant({ source: "npm:@ff-labs/pi-fff@0.9.6", extensions: [] }, "scoped");
 	const controller = createPiFffIntegrationController({
 		pi: api, cwd: "/fixture", agentDir: "/agent", lifecycle: lifecycle(ready([managed])),
 		buildPlan: async () => ({ ok: true, plan: {
-			scope: "project", packageIdentity: "@ff-labs/pi-fff", profile: "scoped", captureMode: "replay-only", packageRoot: managed.packageRoot,
+			scope: "project", packageIdentity: "@ff-labs/pi-fff", profile: "scoped", captureMode: "scoped-pair", packageRoot: managed.packageRoot,
 			entryPath: `${managed.packageRoot}/src/index.ts`, piVersion: "0.80.6", piFffVersion: "0.9.6", status: "verified", integrity: "missing", diagnostics: [], trace: [],
+			captures: { grep: { name: "ffgrep" }, find: { name: "fffind" } },
 		} as any }),
 	});
 	const startup = await controller.initialize(true);
-	assert.equal(startup.status.owner, "tidy/native + pi-fff tools");
+	assert.equal(startup.status.owner, "tidy/native read + FFF-executed tidy grep/find");
 	assert.equal(startup.status.packageIdentity, "@ff-labs/pi-fff");
 	assert.equal(startup.status.profile, "scoped");
-	assert.deepEqual([...startup.skipTidyTools], []);
-	assert.match(startup.status.action, /native read\/grep/);
-	assert.throws(() => startup.commit(() => assert.fail("scoped replay must not compose native tools")), /replay failed/);
+	assert.deepEqual([...startup.skipTidyTools], ["grep", "find"]);
+	assert.match(startup.status.action, /Native tidy read/);
+	assert.match(startup.status.action, /raw ffgrep\/fffind names are hidden/);
+	const decorated: string[] = [];
+	assert.throws(() => startup.commit((source) => { decorated.push(source.name); return { ...source, renderShell: "self" }; }), /replay failed/);
+	assert.deepEqual(decorated, ["grep", "find"]);
 	startup.commit(() => assert.fail("commit must remain idempotent after failure"));
+	const failed = await controller.run("status", { enabled: true });
+	assert.equal(failed.status.state, "managed-invalid");
+	assert.equal(failed.status.owner, "unsafe partial registration; reload required");
+	assert.equal(failed.status.tuple, "unavailable");
+	assert.equal(failed.status.journal, "unsafe partial registration; reload required");
+	assert.equal(failed.status.diagnostic?.code, "PIFFF_FORWARD_PARTIAL");
+	assert.equal(failed.status.diagnostic?.severity, "fatal");
+	assert.match(failed.status.action, /Stop using tools and \/reload/);
 });
 
 test("controller suppresses informational compatibility notices and closes adapter failures", async () => {
@@ -127,8 +139,7 @@ test("repeated status uses initialized routing without re-evaluating the factory
 		pi: api, cwd: "/fixture", agentDir: "/agent", lifecycle: lifecycle(ready([managed])),
 		buildPlan: async (options) => {
 			builds++;
-			assert.deepEqual([...(options.conflicts?.commands ?? [])], ["tidy", "diff"]);
-			assert.deepEqual([...(options.conflicts?.tools ?? [])], ["write", "edit", "bash", "find", "ls"]);
+			assert.equal(options.conflicts, undefined);
 			return { ok: true, plan: {
 				scope: "project", packageRoot: managed.packageRoot, entryPath: `${managed.packageRoot}/index.ts`, piVersion: "0.80.6", piFffVersion: "0.1.12",
 				status: "verified", integrity: "missing", diagnostics: [], trace: [], captures: { read: {} as any, grep: {} as any },

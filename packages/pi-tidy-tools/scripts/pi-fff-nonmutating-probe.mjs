@@ -168,11 +168,24 @@ console.log(
       version: built.plan.piFffVersion,
       status: built.plan.status,
       captureMode: built.plan.captureMode,
-      registrations: built.plan.trace.map((call) =>
+      captures:
+        built.plan.profile === "scoped"
+          ? { ffgrep: built.plan.captures.grep.name, fffind: built.plan.captures.find.name }
+          : { read: built.plan.captures.read.name, grep: built.plan.captures.grep.name },
+      capturedTrace: built.plan.trace.map((call) =>
         call.method === "registerTool"
           ? `${call.method}:${call.args[0]?.name}`
           : `${call.method}:${String(call.args[0])}`
       ),
+      intendedExposedToolNames: built.plan.trace
+        .filter((call) => call.method === "registerTool")
+        .map((call) => {
+          const name = call.args[0]?.name;
+          if (built.plan.profile === "scoped" && name === "ffgrep") return "grep";
+          if (built.plan.profile === "scoped" && name === "fffind") return "find";
+          return name;
+        }),
+      rawNamesForwarded: false,
       settingsUnchanged: true,
     },
     null,

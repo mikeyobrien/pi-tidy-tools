@@ -68,7 +68,11 @@ interface PiFffPlanBase {
 
 export type PiFffRegistrationPlan =
 	| (PiFffPlanBase & { readonly profile: "legacy"; readonly captureMode: "legacy-pair"; readonly captures: { readonly read: SourceToolDefinition; readonly grep: SourceToolDefinition } })
-	| (PiFffPlanBase & { readonly profile: "scoped"; readonly captureMode: "replay-only"; readonly captures?: never });
+	| (PiFffPlanBase & { readonly profile: "scoped"; readonly captureMode: "scoped-pair"; readonly captures: { readonly grep: SourceToolDefinition; readonly find: SourceToolDefinition } });
+
+export type PiFffComposites =
+	| { readonly read: SourceToolDefinition; readonly grep: SourceToolDefinition }
+	| { readonly grep: SourceToolDefinition; readonly find: SourceToolDefinition };
 
 export type PiFffResult<T> = { ok: true; plan: T } | { ok: false; diagnostic: PiFffDiagnostic };
 export type ReplayResult = { ok: true } | { ok: false; diagnostic: PiFffDiagnostic };
@@ -104,7 +108,9 @@ const REGISTRATION_METHODS: readonly RegistrationMethod[] = [
 	"registerMessageRenderer", "registerEntryRenderer", "registerProvider", "unregisterProvider", "on",
 ];
 export const TIDY_PI_FFF_CONFLICTS: Readonly<PiFffConflictSet> = Object.freeze({
-	tools: Object.freeze(["write", "edit", "bash", "find", "ls"]),
+	// grep/find are intentional scoped substitution targets, so callers report
+	// only external target conflicts through BuildPiFffPlanOptions.conflicts.
+	tools: Object.freeze(["write", "edit", "bash", "ls"]),
 	commands: Object.freeze(["tidy", "diff"]),
 	shortcuts: Object.freeze(["ctrl+shift+o"]),
 	messageRenderers: Object.freeze(["minimal-turn-diff"]),
@@ -125,6 +131,16 @@ const BASELINE: Record<"read" | "grep", Record<string, { type: string; required:
 		outputMode: { type: "string", required: false }, ignoreCase: { type: "boolean", required: false }, literal: { type: "boolean", required: false },
 		context: { type: "number", required: false }, limit: { type: "number", required: false },
 	},
+};
+// Stable anchors shared by the scoped 0.6.0 floor and verified 0.9.6.
+// Version-specific optional fields (literal vs caseSensitive/exclude, find cursor)
+// remain compatible additions and are preserved without freezing one release.
+const SCOPED_BASELINE: Record<"grep" | "find", Record<string, { type: "string" | "number"; required: boolean }>> = {
+	grep: {
+		pattern: { type: "string", required: true }, path: { type: "string", required: false }, context: { type: "number", required: false },
+		limit: { type: "number", required: false }, cursor: { type: "string", required: false },
+	},
+	find: { pattern: { type: "string", required: true }, path: { type: "string", required: false }, limit: { type: "number", required: false } },
 };
 
 interface Gate { phase: "recording" | "planned" | "committing" | "active" | "failed" }
@@ -362,6 +378,30 @@ function objectParameterSchemaFailure(schema: unknown): string | undefined {
 	return undefined;
 }
 
+const SCHEMA_ANNOTATIONS = new Set(["description", "title", "$id", "$comment", "default", "examples", "deprecated", "readOnly", "writeOnly"]);
+function plainPrimitiveSchema(schema: unknown, expected: "string" | "number"): boolean {
+	return !!schema && typeof schema === "object" && !Array.isArray(schema)
+		&& (schema as any).type === expected
+		&& Object.keys(schema as Record<string, unknown>).every((key) => key === "type" || SCHEMA_ANNOTATIONS.has(key));
+}
+
+function scopedSchemaFailure(tool: any, name: "grep" | "find"): string | undefined {
+	const schema = tool.parameters;
+	const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+	for (const [field, anchor] of Object.entries(SCOPED_BASELINE[name])) {
+		const property = schema.properties[field];
+		const compatible = plainPrimitiveSchema(property, anchor.type);
+		if (!compatible) return `${tool.name}.${field} must remain ${anchor.type}`;
+		if (required.has(field) !== anchor.required) return `${tool.name}.${field} requiredness changed`;
+	}
+	for (const field of required) if (!Object.hasOwn(SCOPED_BASELINE[name], String(field))) return `${tool.name} added required field ${String(field)}`;
+	if (tool.promptSnippet !== undefined && typeof tool.promptSnippet !== "string") return `${tool.name}.promptSnippet is malformed`;
+	if (tool.promptGuidelines !== undefined && (!Array.isArray(tool.promptGuidelines) || tool.promptGuidelines.some((item: unknown) => typeof item !== "string"))) return `${tool.name}.promptGuidelines is malformed`;
+	if (tool.renderCall !== undefined && typeof tool.renderCall !== "function") return `${tool.name}.renderCall is malformed`;
+	if (tool.renderResult !== undefined && typeof tool.renderResult !== "function") return `${tool.name}.renderResult is malformed`;
+	return undefined;
+}
+
 function schemaFailure(tool: any, name: "read" | "grep"): string | undefined {
 	if (!tool || typeof tool !== "object" || tool.name !== name) return `${name} definition is malformed`;
 	if (typeof tool.execute !== "function") return `${name}.execute is not callable`;
@@ -383,14 +423,15 @@ function stringArg(call: RecordedRegistration, index: number): string | undefine
 	return typeof call.args[index] === "string" ? call.args[index] as string : undefined;
 }
 
-function validateTrace(trace: readonly RecordedRegistration[], profile: PiFffPackageProfile, conflicts: PiFffConflictSet | undefined): { read: SourceToolDefinition; grep: SourceToolDefinition } | undefined {
-	const captures: Partial<Record<"read" | "grep", SourceToolDefinition>> = {};
+function validateTrace(trace: readonly RecordedRegistration[], profile: PiFffPackageProfile, piFffVersion: string, conflicts: PiFffConflictSet | undefined): { read: SourceToolDefinition; grep: SourceToolDefinition } | { grep: SourceToolDefinition; find: SourceToolDefinition } {
+	const legacyCaptures: Partial<Record<"read" | "grep", SourceToolDefinition>> = {};
+	const scopedCaptures: Partial<Record<"grep" | "find", SourceToolDefinition>> = {};
 	const conflictNames = (key: keyof PiFffConflictSet): string[] => [
 		...(TIDY_PI_FFF_CONFLICTS[key] ?? []),
 		...(conflicts?.[key] ?? []),
 	];
 	const seen = {
-		tools: new Set(conflictNames("tools")), commands: new Set(conflictNames("commands")), shortcuts: new Set(conflictNames("shortcuts")),
+		tools: new Set([...conflictNames("tools"), ...(profile.profile === "legacy" ? ["find"] : [])]), commands: new Set(conflictNames("commands")), shortcuts: new Set(conflictNames("shortcuts")),
 		flags: new Set(conflictNames("flags")), messageRenderers: new Set(conflictNames("messageRenderers")),
 		entryRenderers: new Set(conflictNames("entryRenderers")), providers: new Set(conflictNames("providers")),
 	};
@@ -409,9 +450,19 @@ function validateTrace(trace: readonly RecordedRegistration[], profile: PiFffPac
 			if (tool.name === "read" || tool.name === "grep") {
 				if (profile.profile === "scoped") throw new SurfaceFailure(`scoped ${tool.name} override uses an unsupported capture surface`);
 				const toolName = tool.name as "read" | "grep";
-				if (captures[toolName]) throw new SurfaceFailure(`duplicate ${toolName} capture`);
+				if (legacyCaptures[toolName]) throw new SurfaceFailure(`duplicate ${toolName} capture`);
 				const failure = schemaFailure(tool, toolName); if (failure) throw new SurfaceFailure(failure);
-				captures[toolName] = tool;
+				legacyCaptures[toolName] = tool;
+				continue;
+			}
+			if (profile.profile === "scoped" && (tool.name === "ffgrep" || tool.name === "fffind")) {
+				const publicName = tool.name === "ffgrep" ? "grep" : "find";
+				if (scopedCaptures[publicName]) throw new SurfaceFailure(`duplicate ${tool.name} capture`);
+				if (Object.hasOwn(tool.parameters.properties, "reasoning")) throw new SurfaceFailure(`${tool.name}.reasoning conflicts with tidy-owned reasoning`);
+				const failure = scopedSchemaFailure(tool, publicName); if (failure) throw new SurfaceFailure(failure);
+				if (conflictNames("tools").includes(publicName)) throw new SurfaceFailure(`tool conflict ${publicName}`);
+				scopedCaptures[publicName] = tool;
+				scopedTools.add(tool.name);
 				continue;
 			}
 			if (profile.profile === "scoped" && ["grep", "find", "multi_grep"].includes(tool.name)) throw new SurfaceFailure(`scoped override tool ${tool.name} conflicts with tidy ownership`);
@@ -444,15 +495,18 @@ function validateTrace(trace: readonly RecordedRegistration[], profile: PiFffPac
 		if ((call.method === "registerMessageRenderer" || call.method === "registerEntryRenderer") && (call.args.length !== 2 || typeof value !== "function")) throw new SurfaceFailure("renderer definition is malformed");
 		if (call.method === "registerProvider" && (call.args.length !== 2 || !value || typeof value !== "object")) throw new SurfaceFailure("provider definition is malformed");
 	}
-	if (profile.profile === "legacy" && (!captures.read || !captures.grep)) throw new SurfaceFailure("exactly one enabled read and grep capture is required");
+	if (profile.profile === "legacy" && (!legacyCaptures.read || !legacyCaptures.grep)) throw new SurfaceFailure("exactly one enabled read and grep capture is required");
 	if (profile.profile === "scoped") {
-		if (captures.read || captures.grep) throw new SurfaceFailure("scoped profile cannot capture native tools");
-		for (const name of ["ffgrep", "fffind"]) if (!scopedTools.has(name)) throw new SurfaceFailure(`scoped tool ${name} is required`);
+		for (const name of ["ffgrep", "fffind"]) if (!scopedTools.has(name)) throw new SurfaceFailure(`exactly one scoped tool ${name} capture is required`);
 		for (const name of ["fff-mode", "fff-health", "fff-rescan"]) if (!scopedCommands.has(name)) throw new SurfaceFailure(`scoped command ${name} is required`);
-		for (const name of ["fff-mode", "fff-frecency-db", "fff-history-db", "fff-enable-root-scan"]) if (!scopedFlags.has(name)) throw new SurfaceFailure(`scoped flag ${name} is required`);
+		const requiredFlags = ["fff-mode", "fff-frecency-db", "fff-history-db"];
+		if (semver.gte(piFffVersion, "0.9.5")) requiredFlags.push("fff-enable-root-scan");
+		for (const name of requiredFlags) if (!scopedFlags.has(name)) throw new SurfaceFailure(`scoped flag ${name} is required`);
 	}
 	if (!lifecycle.has("session_start") || !lifecycle.has("session_shutdown")) throw new SurfaceFailure("session_start and session_shutdown lifecycle anchors are required");
-	return profile.profile === "legacy" ? captures as { read: SourceToolDefinition; grep: SourceToolDefinition } : undefined;
+	return profile.profile === "legacy"
+		? legacyCaptures as { read: SourceToolDefinition; grep: SourceToolDefinition }
+		: scopedCaptures as { grep: SourceToolDefinition; find: SourceToolDefinition };
 }
 
 export async function buildPiFffRegistrationPlan(options: BuildPiFffPlanOptions): Promise<PiFffResult<PiFffRegistrationPlan>> {
@@ -538,8 +592,8 @@ export async function buildPiFffRegistrationPlan(options: BuildPiFffPlanOptions)
 		const code = error instanceof SurfaceFailure ? "PIFFF_SURFACE_BREAKING" : "PIFFF_FACTORY_FAILED";
 		return { ok: false, diagnostic: diagnostic(code, piVersion, piFffVersion, oneLine(error), "error", profile) };
 	}
-	let captures: { read: SourceToolDefinition; grep: SourceToolDefinition } | undefined;
-	try { captures = validateTrace(trace, profile, options.conflicts); }
+	let captures: { read: SourceToolDefinition; grep: SourceToolDefinition } | { grep: SourceToolDefinition; find: SourceToolDefinition };
+	try { captures = validateTrace(trace, profile, piFffVersion, options.conflicts); }
 	catch (error) { return { ok: false, diagnostic: diagnostic("PIFFF_SURFACE_BREAKING", piVersion, piFffVersion, oneLine(error), "error", profile) }; }
 	gate.phase = "planned";
 	const status: PiFffRegistrationPlan["status"] = compareVersions(piVersion, MIN_PI) === 0 && compareVersions(piFffVersion, profile.verified) === 0 ? "verified" : "forward-compatible/unverified";
@@ -551,8 +605,8 @@ export async function buildPiFffRegistrationPlan(options: BuildPiFffPlanOptions)
 		integrity: integrity.status, diagnostics: Object.freeze(infos), trace: Object.freeze(trace.slice()),
 	};
 	const plan: PiFffRegistrationPlan = profile.profile === "legacy"
-		? Object.freeze({ ...common, profile: "legacy" as const, captureMode: "legacy-pair" as const, captures: Object.freeze(captures!) })
-		: Object.freeze({ ...common, profile: "scoped" as const, captureMode: "replay-only" as const });
+		? Object.freeze({ ...common, profile: "legacy" as const, captureMode: "legacy-pair" as const, captures: Object.freeze(captures as { read: SourceToolDefinition; grep: SourceToolDefinition }) })
+		: Object.freeze({ ...common, profile: "scoped" as const, captureMode: "scoped-pair" as const, captures: Object.freeze(captures as { grep: SourceToolDefinition; find: SourceToolDefinition }) });
 	gates.set(plan, gate);
 	return { ok: true, plan };
 }
@@ -574,51 +628,60 @@ function validateResult(value: any, plan: PiFffRegistrationPlan, tool: string): 
 	return value;
 }
 
-function guardedSource(plan: Extract<PiFffRegistrationPlan, { profile: "legacy" }>, name: "read" | "grep"): SourceToolDefinition {
-	const source = plan.captures[name];
+function guardedSource(plan: PiFffRegistrationPlan, source: SourceToolDefinition, publicName: string): SourceToolDefinition {
 	return {
 		...source,
+		name: publicName,
 		execute(_id: string, params: any, signal: any, onUpdate: any, context: any) {
 			const returned = source.execute.call(source, _id, params, signal, onUpdate, context);
 			return returned && typeof returned.then === "function"
-				? returned.then((value: any) => validateResult(value, plan, name))
-				: validateResult(returned, plan, name);
+				? returned.then((value: any) => validateResult(value, plan, publicName))
+				: validateResult(returned, plan, publicName);
 		},
 	};
 }
 
+/** Return guarded, publicly named sources for the host's tidy decorator. */
+export function createPiFffCompositeSources(plan: PiFffRegistrationPlan): PiFffComposites {
+	return plan.profile === "legacy"
+		? { read: guardedSource(plan, plan.captures.read, "read"), grep: guardedSource(plan, plan.captures.grep, "grep") }
+		: { grep: guardedSource(plan, plan.captures.grep, "grep"), find: guardedSource(plan, plan.captures.find, "find") };
+}
+
 /** Apply tidy's schema seam around captured execution without registering it. */
-export function createPiFffComposites(plan: PiFffRegistrationPlan, options: SourceToolCompositionOptions): { read: SourceToolDefinition; grep: SourceToolDefinition } {
-	if (plan.profile !== "legacy") throw new SurfaceFailure("scoped replay-only plans do not expose read/grep captures");
-	return {
-		read: composeSourceTool(guardedSource(plan, "read"), options) as SourceToolDefinition,
-		grep: composeSourceTool(guardedSource(plan, "grep"), options) as SourceToolDefinition,
-	};
+export function createPiFffComposites(plan: Extract<PiFffRegistrationPlan, { profile: "legacy" }>, options: SourceToolCompositionOptions): { read: SourceToolDefinition; grep: SourceToolDefinition };
+export function createPiFffComposites(plan: Extract<PiFffRegistrationPlan, { profile: "scoped" }>, options: SourceToolCompositionOptions): { grep: SourceToolDefinition; find: SourceToolDefinition };
+export function createPiFffComposites(plan: PiFffRegistrationPlan, options: SourceToolCompositionOptions): PiFffComposites;
+export function createPiFffComposites(plan: PiFffRegistrationPlan, options: SourceToolCompositionOptions): PiFffComposites {
+	const sources = createPiFffCompositeSources(plan);
+	return Object.fromEntries(Object.entries(sources).map(([name, source]) => [name, composeSourceTool(source, options)])) as PiFffComposites;
 }
 
 /** Commit a previously validated plan once, preserving trace order and identities. */
 export function replayPiFffRegistrationPlan(
 	plan: PiFffRegistrationPlan,
 	api: Record<string, any>,
-	composites?: { read: SourceToolDefinition; grep: SourceToolDefinition },
+	composites?: PiFffComposites,
 ): ReplayResult {
 	const gate = gates.get(plan);
 	if (!gate || gate.phase !== "planned") return { ok: false, diagnostic: diagnostic("PIFFF_FORWARD_PARTIAL", plan.piVersion, plan.piFffVersion, "plan is stale or already replayed", "fatal") };
 	const capability = validateApi(api);
 	if (capability) return { ok: false, diagnostic: diagnostic("PIFFF_CAPABILITY_MISSING", plan.piVersion, plan.piFffVersion, `ExtensionAPI.${capability}`) };
-	const invalidComposite = plan.profile === "legacy" ? (["read", "grep"] as const).find((name) => {
-		const tool = composites?.[name];
+	const publicNames = plan.profile === "legacy" ? (["read", "grep"] as const) : (["grep", "find"] as const);
+	const invalidComposite = publicNames.find((name) => {
+		const tool = (composites as Record<string, SourceToolDefinition> | undefined)?.[name];
 		return !tool || tool.name !== name || typeof tool.execute !== "function" || !tool.parameters || typeof tool.parameters !== "object";
-	}) : undefined;
+	});
 	if (invalidComposite) return { ok: false, diagnostic: diagnostic("PIFFF_SURFACE_BREAKING", plan.piVersion, plan.piFffVersion, `${invalidComposite} composite is malformed`) };
 	gate.phase = "committing";
 	let committed = 0;
 	try {
 		for (const call of plan.trace) {
-			const args = plan.profile === "legacy" && call.method === "registerTool" && (call.args[0] as any)?.name === "read"
-				? [composites!.read]
-				: plan.profile === "legacy" && call.method === "registerTool" && (call.args[0] as any)?.name === "grep"
-					? [composites!.grep] : call.args;
+			const sourceName = call.method === "registerTool" ? (call.args[0] as any)?.name : undefined;
+			const substitute = plan.profile === "legacy"
+				? sourceName === "read" ? "read" : sourceName === "grep" ? "grep" : undefined
+				: sourceName === "ffgrep" ? "grep" : sourceName === "fffind" ? "find" : undefined;
+			const args = substitute ? [(composites as Record<string, SourceToolDefinition>)[substitute]] : call.args;
 			api[call.method].apply(api, args);
 			committed++;
 		}

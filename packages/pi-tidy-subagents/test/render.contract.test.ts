@@ -108,7 +108,7 @@ test("wide and narrow layouts combine or split exact header and statistics lines
     startedAt: 1_000,
     endedAt: 63_000,
   });
-  const identity = `${GUTTER} ${GREEN}✓${RESET} ${MAGENTA}🤖${RESET} ${BOLD}worker[model|high]${RESET} do work`;
+  const identity = `${GUTTER} ${GREEN}✓${RESET} ${MAGENTA}🤖${RESET} ${BOLD}worker[model|high]${RESET} do work ${DIM}(<1m ago)${RESET}`;
   const statistics = `${DIM}→ 2 tools · ↑12 ↓3 · 1m 02s${RESET}`;
   assert.deepEqual(renderLines(details([state]), false, 99_000, 200), [
     `${identity} ${statistics}`,
@@ -189,7 +189,10 @@ test("collapsed activities select text, complete tool blocks, and one active too
       false,
       0
     ).slice(2),
-    [`${GUTTER}   ${first}`, `${GUTTER}   ${second}`]
+    [
+      `${GUTTER}   ${RED}✗${RESET} ${CYAN}📖 ${BOLD}read${RESET} inspect file`,
+      `${GUTTER}     ${DIM}/tmp/a.ts${RESET} ${DIM}→${RESET} ${RED}interrupted${RESET}`,
+    ]
   );
   assert.deepEqual(
     renderLines(
@@ -202,7 +205,7 @@ test("collapsed activities select text, complete tool blocks, and one active too
       false,
       0
     ).slice(2),
-    [`${GUTTER}   ${first}`, `${GUTTER}   ${second}`]
+    [`${GUTTER}     new prose`, `${GUTTER}     latest prose`]
   );
   assert.deepEqual(
     renderLines(details([child({ activities: [first] })]), false, 0).slice(2),

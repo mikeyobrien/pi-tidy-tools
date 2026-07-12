@@ -439,14 +439,14 @@ test("activity retention rebases active tools and appends unmatched tool endings
     );
     assert.equal(result.status, "completed");
     assert.equal(result.activities.length, 15);
-    assert.deepEqual(result.activeTools, [
-      { id: "active", name: "read", activityIndex: -10 },
-    ]);
+    assert.deepEqual(result.activeTools, []);
     assert.deepEqual(plain(result.activities), [
-      ...Array.from({ length: 12 }, (_, index) => `line ${index + 8}`),
+      ...Array.from({ length: 10 }, (_, index) => `line ${index + 10}`),
       "✗ 📖 read read",
       "  read → error",
       "branches complete",
+      "✗ 📖 read active.ts",
+      "  active.ts → Interrupted when child process exited",
     ]);
     assert.equal(result.toolCount, 1);
     assert.equal(result.eventCount, 8);

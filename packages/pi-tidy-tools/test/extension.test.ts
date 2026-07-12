@@ -289,7 +289,10 @@ test("tool blocks support default reasoning and result layouts with durable ages
   assert.match(defaultBlock[1], /index\.ts → \+1\/-1$/);
   const reasoningBlock = plain("reasoning");
   assert.equal(reasoningBlock.length, 1);
-  assert.match(reasoningBlock[0], /update the renderer \(1h3m ago\) → \+1\/-1$/);
+  assert.match(
+    reasoningBlock[0],
+    /update the renderer \(1h3m ago\) → \+1\/-1$/
+  );
   const resultBlock = plain("result");
   assert.equal(resultBlock.length, 1);
   assert.match(resultBlock[0], /index\.ts \(1h3m ago\) → \+1\/-1$/);
@@ -718,6 +721,25 @@ test("registered renderers summarize native result shapes for every owned tool",
     new Set(backgrounds),
     new Set(["toolSuccessBg", "toolErrorBg"])
   );
+});
+
+test("registered result renderers tolerate absent optional inputs", () => {
+  const { tools } = registerEnabledExtension();
+  const backgrounds: string[] = [];
+  const theme = {
+    bg: (name: string, text: string) => {
+      backgrounds.push(name);
+      return text;
+    },
+  };
+  const component = tools
+    .get("read")
+    .renderResult(undefined, undefined, theme, undefined);
+  assert.deepEqual(renderedLines(component), [
+    "  ┊ ✓ 📖 read",
+    "  ┊   → 1 lines",
+  ]);
+  assert.ok(backgrounds.every((name) => name === "toolSuccessBg"));
 });
 
 test("registered renderers expose expanded native details and empty partial slots", () => {

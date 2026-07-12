@@ -50,7 +50,9 @@
     "check": "node ../../scripts/bundle-core.mjs . && tsc --noEmit",
     "prepack": "node ../../scripts/bundle-core.mjs .",
     "smoke": "PI_TIDY_REAL_SMOKE=1 node --import tsx --test test/smoke.test.ts",
-    "routing-eval": "PI_TIDY_ROUTING_EVAL=1 node --import tsx --test test/routing-eval.test.ts"
+    "routing-eval": "PI_TIDY_ROUTING_EVAL=1 node --import tsx --test test/routing-eval.test.ts",
+    "test:coverage": "node ../../scripts/bundle-core.mjs . && c8 node --import tsx --test test/*.test.ts",
+    "test:mutation": "stryker run"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "0.80.6",

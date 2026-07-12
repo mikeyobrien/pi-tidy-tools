@@ -4,8 +4,21 @@
   "private": true,
   "type": "module",
   "main": "index.ts",
-  "files": ["index.ts"],
-  "scripts": { "test": "node --import tsx --test test/*.test.ts", "check": "tsc --noEmit" },
-  "dependencies": { "@earendil-works/pi-tui": "0.80.6" },
-  "devDependencies": { "@types/node": "22.10.2", "tsx": "^4.20.0", "typescript": "5.6.3" }
+  "files": [
+    "index.ts"
+  ],
+  "scripts": {
+    "test": "node --import tsx --test test/*.test.ts",
+    "check": "tsc --noEmit",
+    "test:coverage": "c8 node --import tsx --test test/*.test.ts",
+    "test:mutation": "stryker run"
+  },
+  "dependencies": {
+    "@earendil-works/pi-tui": "0.80.6"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "tsx": "^4.20.0",
+    "typescript": "5.6.3"
+  }
 }

@@ -39,7 +39,9 @@
     "pretest": "node ../../scripts/bundle-core.mjs .",
     "test": "node scripts/test.mjs",
     "check": "node ../../scripts/bundle-core.mjs . && tsc --noEmit",
-    "prepack": "node ../../scripts/bundle-core.mjs ."
+    "prepack": "node ../../scripts/bundle-core.mjs .",
+    "test:coverage": "c8 npm test",
+    "test:mutation": "stryker run"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.80.6 <0.81.0",

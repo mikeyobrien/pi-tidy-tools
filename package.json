@@ -21,6 +21,18 @@
   "scripts": {
     "test": "npm test --workspaces --if-present && node scripts/test-pack.mjs",
     "check": "npm run check --workspaces --if-present",
-    "test:pack": "node scripts/test-pack.mjs"
+    "test:pack": "node scripts/test-pack.mjs",
+    "prepare": "husky",
+    "test:coverage": "npm run test:coverage --workspaces --if-present",
+    "test:mutation": "npm run test:mutation --workspaces --if-present"
+  },
+  "devDependencies": {
+    "@stryker-mutator/core": "^9.6.1",
+    "@stryker-mutator/tap-runner": "^9.6.1",
+    "@stryker-mutator/typescript-checker": "^9.6.1",
+    "c8": "^11.0.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.0.8",
+    "prettier": "^3.9.5"
   }
 }

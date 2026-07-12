@@ -75,14 +75,15 @@ ordinary feature or fix change. A temporary exception must be named,
 time-limited, scoped to one package, and require both no regression and full
 coverage of changed behavior.
 
-At policy adoption, known debt included:
+The first accepted ratchet baseline after adopting this policy is:
 
-- `pi-tidy-core`: 78.68% statements/lines, 62.50% branches, 78.57% functions,
-  and a 38.52% mutation score;
-- `pi-tidy-tools`: `index.ts` had 60.86% branch coverage; and
-- `pi-tidy-subagents`: `runner.ts` had 72.63% branch coverage.
+| Package             | Statements | Branches | Functions |  Lines | Mutation |
+| ------------------- | ---------: | -------: | --------: | -----: | -------: |
+| `pi-tidy-core`      |       100% |     100% |      100% |   100% |   97.17% |
+| `pi-tidy-subagents` |       100% |   95.65% |      100% |   100% |   81.22% |
+| `pi-tidy-tools`     |     98.92% |   94.72% |    97.22% | 98.92% |   80.86% |
 
-Those values explain failures; they are not accepted baselines.
+Future changes must meet both the fixed floors and this no-regression baseline.
 
 ## Cadence
 

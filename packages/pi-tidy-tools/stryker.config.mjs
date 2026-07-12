@@ -3,24 +3,16 @@ export default {
   packageManager: "npm",
   testRunner: "command",
   commandRunner: {
-    command: "npm test",
+    // The tracked vendor snapshot already exists; bypass npm's monorepo pretest
+    // so isolated Stryker sandboxes never reach outside the package directory.
+    command: "node scripts/test.mjs",
   },
-  // Monorepo pretest reaches ../../scripts; mutate in place so that path resolves.
-  inPlace: true,
   coverageAnalysis: "off",
   incremental: false,
   checkers: ["typescript"],
   tsconfigFile: "tsconfig.json",
   mutate: ["index.ts", "config.ts", "render.ts"],
-  ignorePatterns: [
-    "coverage",
-    "reports",
-    ".stryker-tmp",
-    ".test-dist",
-    "vendor",
-    "docs",
-    "scripts",
-  ],
+  ignorePatterns: ["coverage", "reports", ".stryker-tmp", "docs"],
   reporters: ["clear-text", "progress", "html"],
   htmlReporter: {
     fileName: "reports/mutation/mutation.html",
@@ -31,5 +23,5 @@ export default {
     break: 80,
   },
   timeoutMS: 120_000,
-  concurrency: 2,
+  concurrency: 8,
 };

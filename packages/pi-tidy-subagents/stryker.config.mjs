@@ -1,13 +1,23 @@
 /** @type {import('@stryker-mutator/api/core').PartialStrykerOptions} */
 export default {
   packageManager: "npm",
-  testRunner: "command",
-  commandRunner: {
-    command: "npm test",
+  testRunner: "tap",
+  plugins: [
+    "@stryker-mutator/tap-runner",
+    "@stryker-mutator/typescript-checker",
+  ],
+  tap: {
+    testFiles: ["test/*.test.ts"],
+    nodeArgs: [
+      "--import",
+      "tsx",
+      "--test-reporter=tap",
+      "-r",
+      "{{hookFile}}",
+      "{{testFile}}",
+    ],
   },
-  // Monorepo pretest reaches ../../scripts; mutate in place so that path resolves.
-  inPlace: true,
-  coverageAnalysis: "off",
+  coverageAnalysis: "perTest",
   incremental: false,
   checkers: ["typescript"],
   tsconfigFile: "tsconfig.json",
@@ -19,7 +29,7 @@ export default {
     "scheduler.ts",
     "store.ts",
   ],
-  ignorePatterns: ["coverage", "reports", ".stryker-tmp", "vendor", "docs"],
+  ignorePatterns: ["coverage", "reports", ".stryker-tmp", "docs"],
   reporters: ["clear-text", "progress", "html"],
   htmlReporter: {
     fileName: "reports/mutation/mutation.html",
@@ -29,6 +39,6 @@ export default {
     low: 80,
     break: 80,
   },
-  timeoutMS: 120_000,
-  concurrency: 2,
+  timeoutMS: 15_000,
+  concurrency: 8,
 };

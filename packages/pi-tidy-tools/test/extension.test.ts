@@ -8,6 +8,7 @@ import test from "node:test";
 import extension, {
   buildToolBlock,
   buildTurnDiffBlock,
+  createTidyExtension,
   fitToolLine,
   formatElapsed,
   withReasoning,
@@ -23,7 +24,42 @@ interface Registrations {
   tools: string[];
 }
 
-function loadWith(value: string): Registrations {
+const absentIntegration = () => ({
+  async initialize() {
+    return {
+      status: {
+        state: "absent" as const,
+        owner: "tidy/native" as const,
+        scopes: [],
+        tuple: "unavailable" as const,
+        journal: "none",
+        action: "Install pi-fff before setup.",
+      },
+      skipTidyTools: new Set<"read" | "grep">(),
+      commit() {},
+    };
+  },
+  async run() {
+    return {
+      message: "pi-fff is not installed.",
+      level: "info" as const,
+      reload: "none" as const,
+      status: {
+        state: "absent" as const,
+        owner: "tidy/native" as const,
+        scopes: [],
+        tuple: "unavailable" as const,
+        journal: "none",
+        action: "Install pi-fff before setup.",
+      },
+    };
+  },
+});
+const hermeticExtension = createTidyExtension({
+  createIntegration: absentIntegration,
+});
+
+async function loadWith(value: string): Promise<Registrations> {
   const registrations: Registrations = {
     events: [],
     commands: new Map(),
@@ -43,7 +79,7 @@ function loadWith(value: string): Registrations {
   const previous = process.env.PI_TIDY_TOOLS;
   process.env.PI_TIDY_TOOLS = value;
   try {
-    extension(pi as any);
+    await hermeticExtension(pi as any);
   } finally {
     if (previous === undefined) delete process.env.PI_TIDY_TOOLS;
     else process.env.PI_TIDY_TOOLS = previous;
@@ -60,7 +96,7 @@ interface ExtensionHarness {
   messages: any[];
 }
 
-function registerEnabledExtension(): ExtensionHarness {
+async function registerEnabledExtension(): Promise<ExtensionHarness> {
   const harness: ExtensionHarness = {
     events: new Map(),
     commands: new Map(),
@@ -72,7 +108,7 @@ function registerEnabledExtension(): ExtensionHarness {
   const previous = process.env.PI_TIDY_TOOLS;
   process.env.PI_TIDY_TOOLS = "on";
   try {
-    extension({
+    await hermeticExtension({
       on: (name: string, handler: any) => harness.events.set(name, handler),
       registerCommand: (name: string, options: any) =>
         harness.commands.set(name, options),
@@ -95,12 +131,12 @@ const withoutAnsi = (text: string): string =>
 const renderedLines = (component: any, width = 200): string[] =>
   component.render(width).map((line: string) => withoutAnsi(line).trimEnd());
 
-test("restored settled tools clear timers started during call hydration", () => {
+test("restored settled tools clear timers started during call hydration", async () => {
   const tools = new Map<string, any>();
   const previous = process.env.PI_TIDY_TOOLS;
   process.env.PI_TIDY_TOOLS = "on";
   try {
-    extension({
+    await hermeticExtension({
       on() {},
       registerCommand() {},
       registerShortcut() {},
@@ -358,7 +394,7 @@ test("tool results persist elapsed duration for reload", async () => {
   const previous = process.env.PI_TIDY_TOOLS;
   process.env.PI_TIDY_TOOLS = "on";
   try {
-    extension({
+    await hermeticExtension({
       on: (name: string, handler: any) => handlers.set(name, handler),
       registerCommand() {},
       registerShortcut() {},
@@ -606,7 +642,7 @@ test("write execution returns diffs for new files and overwrites", async () => {
   const previous = process.env.PI_TIDY_TOOLS;
   process.env.PI_TIDY_TOOLS = "on";
   try {
-    extension({
+    await hermeticExtension({
       on() {},
       registerCommand() {},
       registerShortcut() {},
@@ -641,7 +677,7 @@ test("diff is cleared after a turn without file changes", async () => {
   const previous = process.env.PI_TIDY_TOOLS;
   process.env.PI_TIDY_TOOLS = "on";
   try {
-    extension({
+    await hermeticExtension({
       on: (name: string, handler: any) => events.set(name, handler),
       registerCommand: (name: string, options: any) =>
         commands.set(name, options),
@@ -717,8 +753,8 @@ test("narrow grep lines always preserve the match and file summary", () => {
   assert.match(fitted, /3 matches in 2 files$/);
 });
 
-test("disabled startup keeps only the tidy management command", () => {
-  const registrations = loadWith("off");
+test("disabled startup keeps only the tidy management command", async () => {
+  const registrations = await loadWith("off");
   assert.deepEqual([...registrations.commands.keys()], ["tidy"]);
   assert.deepEqual(registrations.events, []);
   assert.deepEqual(registrations.shortcuts, []);
@@ -726,8 +762,8 @@ test("disabled startup keeps only the tidy management command", () => {
   assert.deepEqual(registrations.tools, []);
 });
 
-test("enabled startup preserves every optional registration", () => {
-  const registrations = loadWith("on");
+test("enabled startup preserves every optional registration", async () => {
+  const registrations = await loadWith("on");
   assert.deepEqual([...registrations.commands.keys()], ["tidy", "diff"]);
   assert.deepEqual(registrations.events, [
     "tool_execution_start",
@@ -750,7 +786,7 @@ test("enabled startup preserves every optional registration", () => {
 });
 
 test("status reports an active environment override without reloading", async () => {
-  const registrations = loadWith("off");
+  const registrations = await loadWith("off");
   const notices: string[] = [];
   let reloads = 0;
   await registrations.commands.get("tidy").handler("status", {
@@ -763,6 +799,82 @@ test("status reports an active environment override without reloading", async ()
   assert.equal(reloads, 0);
 });
 
+test("pi-fff setup previews exact changes and awaits one reload", async () => {
+  const setup = createTidyExtension({
+    loadState: () => ({ enabled: true, source: "default" }),
+    loadMode: () => "default",
+    createIntegration: () =>
+      ({
+        async initialize() {
+          return {
+            status: {
+              state: "absent",
+              owner: "tidy/native",
+              scopes: [],
+              journal: "none",
+              action: "Install pi-fff before setup.",
+            },
+            skipTidyTools: new Set(),
+            commit() {},
+          };
+        },
+        async run(action: string, options: any) {
+          assert.equal(action, "setup");
+          assert.equal(
+            await options.confirm({
+              action: "setup",
+              changes: [
+                {
+                  scope: "user",
+                  settingsPath: "/agent/settings.json",
+                  before: "npm:pi-fff@0.1.12",
+                  after: {
+                    source: "npm:pi-fff@0.1.12",
+                    extensions: [],
+                  },
+                },
+              ],
+            }),
+            true
+          );
+          await options.reload();
+          return { reload: "requested" };
+        },
+      }) as any,
+  });
+  const commands = new Map<string, any>();
+  await setup({
+    on() {},
+    registerCommand: (name: string, options: any) =>
+      commands.set(name, options),
+    registerShortcut() {},
+    registerMessageRenderer() {},
+    registerTool() {},
+  } as any);
+  const notices: Array<[string, string]> = [];
+  let reloads = 0;
+  await commands.get("tidy").handler("pi-fff setup", {
+    hasUI: true,
+    ui: {
+      confirm: async (title: string, body: string) => {
+        assert.equal(title, "pi-fff setup");
+        assert.equal(
+          body,
+          'user: /agent/settings.json\n"npm:pi-fff@0.1.12" → {"source":"npm:pi-fff@0.1.12","extensions":[]}'
+        );
+        return true;
+      },
+      notify: (message: string, level: string) =>
+        notices.push([message, level]),
+    },
+    reload: async () => {
+      reloads++;
+    },
+  });
+  assert.deepEqual(notices, [["pi-fff setup committed; reloading.", "info"]]);
+  assert.equal(reloads, 1);
+});
+
 test("a successful state change persists and reloads exactly once", async () => {
   const home = await mkdtemp(join(tmpdir(), "pi-tidy-home-"));
   const script = `
@@ -772,7 +884,7 @@ test("a successful state change persists and reloads exactly once", async () => 
 			on() {}, registerShortcut() {}, registerMessageRenderer() {}, registerTool() {},
 			registerCommand(name, options) { commands.set(name, options); }
 		};
-		extension(pi);
+		await extension(pi);
 		let reloads = 0;
 		await commands.get("tidy").handler("off", {
 			ui: { notify() {} },
@@ -798,8 +910,8 @@ test("a successful state change persists and reloads exactly once", async () => 
   }
 });
 
-test("registered renderers summarize native result shapes for every owned tool", () => {
-  const { tools } = registerEnabledExtension();
+test("registered renderers summarize native result shapes for every owned tool", async () => {
+  const { tools } = await registerEnabledExtension();
   const backgrounds: string[] = [];
   const theme = {
     bg: (name: string, text: string) => {
@@ -904,8 +1016,8 @@ test("registered renderers summarize native result shapes for every owned tool",
   );
 });
 
-test("registered result renderers tolerate absent optional inputs", () => {
-  const { tools } = registerEnabledExtension();
+test("registered result renderers tolerate absent optional inputs", async () => {
+  const { tools } = await registerEnabledExtension();
   const backgrounds: string[] = [];
   const theme = {
     bg: (name: string, text: string) => {
@@ -923,8 +1035,8 @@ test("registered result renderers tolerate absent optional inputs", () => {
   assert.ok(backgrounds.every((name) => name === "toolSuccessBg"));
 });
 
-test("registered renderers expose expanded native details and empty partial slots", () => {
-  const { tools } = registerEnabledExtension();
+test("registered renderers expose expanded native details and empty partial slots", async () => {
+  const { tools } = await registerEnabledExtension();
   const theme = { bg: (_name: string, text: string) => text };
   const bash = tools.get("bash");
   const partial = bash.renderResult({}, { isPartial: true }, theme, {});
@@ -978,7 +1090,7 @@ test("registered renderers expose expanded native details and empty partial slot
 });
 
 test("registered call and event lifecycle owns timers and turn-local diffs", async () => {
-  const harness = registerEnabledExtension();
+  const harness = await registerEnabledExtension();
   const originalSetInterval = globalThis.setInterval;
   const originalClearInterval = globalThis.clearInterval;
   const timers: object[] = [];
@@ -1110,14 +1222,16 @@ test("registered call and event lifecycle owns timers and turn-local diffs", asy
   }
 });
 
-test("registered message renderer fits stored and restored recap rows", () => {
-  const renderer =
-    registerEnabledExtension().renderers.get("minimal-turn-diff")!;
+test("registered message renderer fits stored and restored recap rows", async () => {
+  const renderer = (await registerEnabledExtension()).renderers.get(
+    "minimal-turn-diff"
+  )!;
   const stored = renderer({
     details: {
       rows: ["a very long line without a summary", "long target → result"],
     },
   });
+  stored.invalidate();
   const storedLines = renderedLines(stored, 12);
   assert.deepEqual(storedLines, ["a very long…", "lo… → result"]);
   const tiny = renderedLines(stored, 3);
@@ -1132,7 +1246,7 @@ test("registered non-write execution strips reasoning before native delegation",
   const target = join(root, "fixture.txt");
   try {
     await writeFile(target, "alpha\nbeta\n", "utf8");
-    const read = registerEnabledExtension().tools.get("read");
+    const read = (await registerEnabledExtension()).tools.get("read");
     const result = await read.execute("read", {
       path: target,
       reasoning: "inspect fixture",
@@ -1156,7 +1270,7 @@ test("result mode keeps native schemas and management commands preserve state", 
   const script = `
 		const { default: extension } = await import(${JSON.stringify(new URL("../index.js", import.meta.url).href)});
 		const commands = new Map(), tools = new Map(), notices = [];
-		extension({
+		await extension({
 			on() {}, registerShortcut() {}, registerMessageRenderer() {}, sendMessage() {},
 			registerCommand(name, options) { commands.set(name, options); },
 			registerTool(tool) { tools.set(tool.name, tool); }
@@ -1172,6 +1286,7 @@ test("result mode keeps native schemas and management commands preserve state", 
 		const read = tools.get("read");
 		console.log(JSON.stringify({
 			hasReasoning: Object.hasOwn(read.parameters.properties, "reasoning"),
+			hasPromptGuidelines: Object.hasOwn(read, "promptGuidelines"),
 			guidelines: read.promptGuidelines,
 			notices,
 			reloads
@@ -1187,7 +1302,8 @@ test("result mode keeps native schemas and management commands preserve state", 
     );
     const observed = JSON.parse(stdout.trim());
     assert.equal(observed.hasReasoning, false);
-    assert.deepEqual(observed.guidelines, []);
+    assert.equal(observed.hasPromptGuidelines, false);
+    assert.equal(observed.guidelines, undefined);
     assert.equal(observed.reloads, 2);
     assert.ok(
       observed.notices.some((notice: string) => /mode result/.test(notice))
@@ -1208,7 +1324,7 @@ test("result mode keeps native schemas and management commands preserve state", 
 });
 
 test("environment overrides reject persistent state changes", async () => {
-  const registrations = loadWith("off");
+  const registrations = await loadWith("off");
   const notices: string[] = [];
   const context = {
     ui: { notify: (message: string) => notices.push(message) },
@@ -1453,13 +1569,29 @@ test("buildTurnDiffBlock renders exact singular, separators, and diff semantics"
   );
 });
 
-test("registered APIs expose exact completions and reason-first tool metadata", () => {
-  const harness = registerEnabledExtension();
+test("registered APIs expose exact completions and reason-first tool metadata", async () => {
+  const harness = await registerEnabledExtension();
   const tidy = harness.commands.get("tidy");
-  assert.equal(tidy.description, "Manage pi-tidy-tools state and layout mode");
-  assert.deepEqual(tidy.getArgumentCompletions(" MODE R"), [
+  assert.equal(
+    tidy.description,
+    "Manage pi-tidy-tools state, layout, and pi-fff integration"
+  );
+  assert.deepEqual(tidy.getArgumentCompletions(""), [
+    { value: "on", label: "on" },
+    { value: "off", label: "off" },
+    { value: "toggle", label: "toggle" },
+    { value: "status", label: "status" },
+    { value: "mode default", label: "mode default" },
     { value: "mode reasoning", label: "mode reasoning" },
     { value: "mode result", label: "mode result" },
+    { value: "mode status", label: "mode status" },
+    { value: "pi-fff setup", label: "pi-fff setup" },
+    { value: "pi-fff status", label: "pi-fff status" },
+    { value: "pi-fff teardown", label: "pi-fff teardown" },
+  ]);
+  assert.deepEqual(tidy.getArgumentCompletions(" PI-FFF S"), [
+    { value: "pi-fff setup", label: "pi-fff setup" },
+    { value: "pi-fff status", label: "pi-fff status" },
   ]);
   assert.deepEqual(tidy.getArgumentCompletions("missing"), []);
   assert.equal(

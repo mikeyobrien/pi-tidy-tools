@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
 	buildPiFffRegistrationPlan,
@@ -10,7 +11,7 @@ import {
 	type PiFffDiagnostic,
 	type PiFffModuleLoader,
 } from "../pi-fff/adapter.js";
-import { createRunningPiFffLoader } from "../pi-fff/loader.js";
+import { createRunningPiFffLoader, readPackageVersionForEntry, resolveRunningPiAliases } from "../pi-fff/loader.js";
 
 const textResult = (text = "ok", details: unknown = { source: "fff" }) => ({
 	content: [{ type: "text", text }], details, terminate: true,
@@ -359,7 +360,10 @@ test("SemVer rejects malformed cores and honors prerelease precedence", async ()
 test("running Pi Jiti aliases legacy peers and shared TypeBox to one identity", async () => {
 	const root = await mkdtemp(join(tmpdir(), "tidy-pi-fff-loader-"));
 	const entry = join(root, "entry.ts");
+	const codingEntry = fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"));
+	const previousArgv = process.argv[1];
 	try {
+		process.argv[1] = codingEntry;
 		await writeFile(entry, `
 			import { VERSION } from "@mariozechner/pi-coding-agent";
 			import { Text } from "@mariozechner/pi-tui";
@@ -377,7 +381,54 @@ test("running Pi Jiti aliases legacy peers and shared TypeBox to one identity", 
 		assert.equal(evidence.VERSION, "0.80.6");
 		assert.equal(typeof evidence.Text, "function");
 		assert.equal(evidence.sameType, true);
-	} finally { await rm(root, { recursive: true, force: true }); }
+		assert.equal(readPackageVersionForEntry(codingEntry), "0.80.6");
+		assert.throws(() => readPackageVersionForEntry(join(root, "missing", "entry.js")), /running Pi package root is unavailable/);
+	} finally {
+		process.argv[1] = previousArgv;
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("running Pi resolution handles host manifests and rejects missing Jiti capability", async () => {
+	const root = await mkdtemp(join(process.cwd(), ".loader-host-"));
+	const cli = join(root, "dist", "cli.js");
+	const jitiRoot = join(root, "node_modules", "jiti");
+	const previousArgv = process.argv[1];
+	try {
+		await mkdir(join(root, "dist"), { recursive: true });
+		await mkdir(jitiRoot, { recursive: true });
+		await writeFile(cli, "// fixture CLI\n");
+		await writeFile(join(root, "index.js"), "export {};\n");
+		await writeFile(join(root, "package.json"), JSON.stringify({
+			name: "@earendil-works/pi-coding-agent", exports: { ".": { import: "./index.js" } },
+		}));
+		await writeFile(join(jitiRoot, "package.json"), JSON.stringify({
+			name: "jiti", exports: { "./package.json": "./package.json", "./static": { import: "./static.mjs" } },
+		}));
+		await writeFile(join(jitiRoot, "static.mjs"), "export const unavailable = true;\n");
+		process.argv[1] = cli;
+		const resolved = resolveRunningPiAliases();
+		assert.equal(resolved.aliases.codingAgent, join(root, "index.js"));
+		assert.equal(resolved.jitiEntry, join(jitiRoot, "static.mjs"));
+		const missingFactory = createRunningPiFffLoader();
+		await assert.rejects(missingFactory.loader.load(join(root, "entry.ts"), missingFactory.aliases), /running Pi Jiti factory is unavailable/);
+
+		await writeFile(join(jitiRoot, "package.json"), JSON.stringify({
+			name: "jiti", exports: { "./package.json": "./package.json", "./static": { import: {} } },
+		}));
+		assert.throws(resolveRunningPiAliases, /running Pi Jiti static export is unavailable/);
+		await writeFile(join(root, "package.json"), JSON.stringify({ name: "not-pi" }));
+		resolveRunningPiAliases();
+		await writeFile(join(root, "package.json"), "{");
+		resolveRunningPiAliases();
+		delete process.argv[1];
+		resolveRunningPiAliases();
+		await writeFile(join(root, "package.json"), JSON.stringify({ name: "not-pi" }));
+		assert.throws(() => readPackageVersionForEntry(join(root, "index.js")), /package version is unavailable/);
+	} finally {
+		process.argv[1] = previousArgv;
+		await rm(root, { recursive: true, force: true });
+	}
 });
 
 test("factory is loaded and invoked once while real registrations remain zero", async () => {

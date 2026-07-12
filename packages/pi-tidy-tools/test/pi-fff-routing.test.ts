@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createPiFffIntegrationController } from "../pi-fff/controller.js";
+import { createPiFffIntegrationController, formatPiFffStatus } from "../pi-fff/controller.js";
 import type { PiFffLifecycle, PiFffLifecycleParticipant, PiFffLifecycleResult } from "../pi-fff/integration.js";
 
 const participant = (entry: unknown, profile: "legacy" | "scoped" = "legacy"): PiFffLifecycleParticipant => ({
@@ -32,6 +32,7 @@ test("controller classifies absent, standalone, and filtered unmanaged without l
 		assert.equal(builds, 0);
 		assert.equal(plan.skipTidyTools.has("read"), state !== "absent");
 		assert.equal(plan.notice !== undefined, state !== "absent");
+		plan.commit(() => assert.fail("unmanaged startup must not compose tools"));
 	});
 });
 
@@ -63,6 +64,8 @@ test("scoped controller keeps tidy native read and grep while routing pi-fff too
 	assert.equal(startup.status.profile, "scoped");
 	assert.deepEqual([...startup.skipTidyTools], []);
 	assert.match(startup.status.action, /native read\/grep/);
+	assert.throws(() => startup.commit(() => assert.fail("scoped replay must not compose native tools")), /replay failed/);
+	startup.commit(() => assert.fail("commit must remain idempotent after failure"));
 });
 
 test("controller suppresses informational compatibility notices and closes adapter failures", async () => {
@@ -91,6 +94,8 @@ test("controller suppresses informational compatibility notices and closes adapt
 	assert.equal(closed.status.owner, "native Pi");
 	assert.equal(closed.notice?.level, "error");
 	assert.equal(closed.skipTidyTools.has("read"), true);
+	closed.commit(() => assert.fail("invalid startup must not compose tools"));
+	assert.match(formatPiFffStatus(closed.status), /pi-fff: managed-invalid[\s\S]*diagnostic: PIFFF_PACKAGE_MISSING/);
 });
 
 test("controller returns actionable ambiguity for status and setup instead of throwing", async () => {
@@ -148,6 +153,7 @@ test("disabled ownership distinguishes standalone, filtered, and managed states"
 		assert.equal(plan.status.owner, owner);
 		assert.equal(plan.status.journal, journal);
 		assert.deepEqual([...plan.skipTidyTools], ["read", "grep"]);
+		plan.commit(() => assert.fail("disabled startup must not compose tools"));
 	});
 });
 
@@ -184,6 +190,7 @@ test("scoped recovery keeps tidy native tools registered", async () => {
 	assert.deepEqual([...startup.skipTidyTools], []);
 	assert.equal(startup.status.owner, "tidy/native");
 	assert.equal(startup.status.profile, "scoped");
+	startup.commit(() => assert.fail("recovery startup must not compose tools"));
 });
 
 test("disabled initialization still performs safety recovery but claims no ordinary tools", async () => {

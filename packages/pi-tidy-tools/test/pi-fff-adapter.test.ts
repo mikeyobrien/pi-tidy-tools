@@ -115,6 +115,7 @@ function expectCode(result: Awaited<ReturnType<typeof buildPiFffRegistrationPlan
 }
 
 const filtered = (version = "0.1.12") => ({ source: `npm:pi-fff@${version}`, extensions: [] });
+const entryForPreflight = filtered;
 const INTEGRITY = "sha512-YWJjZA==";
 const lockFor = (version = "0.1.12", overrides: Record<string, unknown> = {}) => ({
 	name: "managed-pi-packages", lockfileVersion: 3,
@@ -129,6 +130,19 @@ test("managed discovery selects canonical project root and never falls back", as
 		expectCode(result, "PIFFF_SCOPE_SHADOWED_INVALID");
 		assert.equal(f.imports.length, 0);
 		assert.equal(invalidProject.calls(), 0);
+	} finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("lifecycle preflight can fully validate selected and shadowed participants independently", async () => {
+	const project = baselineFactory();
+	const user = baselineFactory();
+	const f = await fixture({ projectEntry: entryForPreflight(), userEntry: entryForPreflight(), projectFactory: project, userFactory: user });
+	try {
+		const projectResult = await buildPiFffRegistrationPlan({ cwd: f.cwd, agentDir: f.agentDir, piVersion: "0.80.6", api: apiRecorder().api, loader: f.loader, selection: { scope: "project", entry: entryForPreflight() } });
+		const userResult = await buildPiFffRegistrationPlan({ cwd: f.cwd, agentDir: f.agentDir, piVersion: "0.80.6", api: apiRecorder().api, loader: f.loader, selection: { scope: "user", entry: entryForPreflight() } });
+		assert.equal(projectResult.ok && projectResult.plan.scope, "project");
+		assert.equal(userResult.ok && userResult.plan.scope, "user");
+		assert.equal(project.calls(), 1); assert.equal(user.calls(), 1);
 	} finally { await rm(f.root, { recursive: true, force: true }); }
 });
 

@@ -78,6 +78,8 @@ export interface BuildPiFffPlanOptions {
 	cwd: string;
 	api: Record<string, any>;
 	agentDir?: string;
+	/** Explicit prospective participant used by lifecycle preflight, including shadowed scope. */
+	selection?: { scope: "project" | "user"; entry: unknown };
 	piVersion?: string;
 	loader?: PiFffModuleLoader;
 	aliases?: PiFffLoaderAliases;
@@ -112,6 +114,12 @@ const BASELINE: Record<"read" | "grep", Record<string, { type: string; required:
 
 interface Gate { phase: "recording" | "planned" | "committing" | "active" | "failed" }
 const gates = new WeakMap<PiFffRegistrationPlan, Gate>();
+
+/** Proves a lifecycle preflight result was produced by this adapter and remains uncommitted. */
+export function isPlannedPiFffRegistrationPlan(value: unknown): value is PiFffRegistrationPlan {
+	if (!value || typeof value !== "object") return false;
+	return gates.get(value as PiFffRegistrationPlan)?.phase === "planned";
+}
 
 class SurfaceFailure extends Error {}
 
@@ -407,10 +415,10 @@ export async function buildPiFffRegistrationPlan(options: BuildPiFffPlanOptions)
 
 	const cwd = resolve(options.cwd);
 	const agentDir = resolve(options.agentDir ?? getAgentDir());
-	const projectEntry = npmPiFffEntry(await readSettings(join(cwd, ".pi", "settings.json")));
-	const userEntry = npmPiFffEntry(await readSettings(join(agentDir, "settings.json")));
-	const scope = projectEntry !== undefined ? "project" : userEntry !== undefined ? "user" : undefined;
-	const entry = projectEntry ?? userEntry;
+	const projectEntry = options.selection ? undefined : npmPiFffEntry(await readSettings(join(cwd, ".pi", "settings.json")));
+	const userEntry = options.selection ? undefined : npmPiFffEntry(await readSettings(join(agentDir, "settings.json")));
+	const scope = options.selection?.scope ?? (projectEntry !== undefined ? "project" : userEntry !== undefined ? "user" : undefined);
+	const entry = options.selection?.entry ?? projectEntry ?? userEntry;
 	if (!scope) return { ok: false, diagnostic: diagnostic("PIFFF_CONFIG_MISSING", piVersion, piFffVersion, "no managed npm entry") };
 	const entryFailure = validateSelectedEntry(entry);
 	if (entryFailure) {

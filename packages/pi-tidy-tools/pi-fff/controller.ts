@@ -98,7 +98,9 @@ function statusFromLifecycle(value: PiFffLifecycleResult, enabled: boolean): PiF
 		tuple: "unavailable",
 		journal: recovery ? "reload pending" : value.code ? "unsafe/incomplete" : "none",
 		diagnostic: lifecycleDiagnostic(value),
-		action: recovery ? "Run /reload once." : "Use /tidy pi-fff status for safe recovery paths.",
+		action: recovery ? "Run /reload once."
+			: value.code === "PIFFF_CONFIG_AMBIGUOUS" ? "Keep one pi-fff package identity across project and user settings, then run /tidy pi-fff status or setup again."
+				: "Use /tidy pi-fff status for safe recovery paths.",
 	};
 }
 
@@ -150,9 +152,10 @@ export function createPiFffIntegrationController(options: CreatePiFffControllerO
 		async initialize(enabled) {
 			const { startup, discovered } = await inspect(enabled);
 			initialized = true;
-			if (startup.outcome !== "ready") {
-				current = statusFromLifecycle(startup, enabled);
-				return { status: current, skipTidyTools: skipFor(selected(startup.participants ?? [])), notice: { message: `${startup.message}${startup.reload === "required" ? " Run /reload once." : ""}`, level: startup.outcome === "error" ? "error" : "warning" }, commit() {} };
+			const lifecycleFailure = startup.outcome !== "ready" ? startup : discovered?.outcome !== "status" ? discovered : undefined;
+			if (lifecycleFailure) {
+				current = statusFromLifecycle(lifecycleFailure, enabled);
+				return { status: current, skipTidyTools: skipFor(selected(lifecycleFailure.participants ?? [])), notice: { message: `${lifecycleFailure.message}${lifecycleFailure.reload === "required" ? " Run /reload once." : ""}`, level: lifecycleFailure.outcome === "error" ? "error" : "warning" }, commit() {} };
 			}
 			const participants = startup.participants ?? discovered?.participants ?? [];
 			if (!enabled) {
@@ -210,7 +213,8 @@ export function createPiFffIntegrationController(options: CreatePiFffControllerO
 		async run(action, command) {
 			if (action === "status") {
 				if (!initialized) await this.initialize(command.enabled);
-				return { message: detailed(current), level: "info", reload: "none", status: current };
+				const level = current.diagnostic?.severity === "error" || current.diagnostic?.severity === "fatal" ? "error" : "info";
+				return { message: detailed(current), level, reload: "none", status: current };
 			}
 			const value = await lifecycle.run(action, command);
 			const level = value.outcome === "error" ? "error" : value.outcome === "cancelled" ? "info" : "info";

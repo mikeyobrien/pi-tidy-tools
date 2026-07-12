@@ -85,6 +85,136 @@ test("setup preflights every participant before confirmation or writes and prese
 	} finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
+test("setup and teardown persist every reload-pending journal before reload and finalize only after success", async () => {
+	const f = await fixture({ project: entry("project"), user: entry("user") });
+	try {
+		const setupResult = await f.lifecycle().run("setup", {
+			enabled: true, confirm: async () => true,
+			reload: async () => {
+				for (const scope of ["project", "user"] as const) assert.equal((await json(sidecar(f.paths[scope]))).phase, "reload-pending");
+			},
+		});
+		assert.equal(setupResult.outcome, "setup-committed");
+		for (const scope of ["project", "user"] as const) assert.equal((await json(sidecar(f.paths[scope]))).phase, "committed");
+
+		const teardownResult = await f.lifecycle().run("teardown", {
+			enabled: true, confirm: async () => true,
+			reload: async () => {
+				for (const scope of ["project", "user"] as const) {
+					assert.equal((await json(sidecar(f.paths[scope]))).phase, "reload-pending");
+					assert.deepEqual((await json(f.paths[scope])).packages[0], entry(scope));
+				}
+			},
+		});
+		assert.equal(teardownResult.outcome, "teardown-committed");
+		for (const scope of ["project", "user"] as const) await assert.rejects(readFile(sidecar(f.paths[scope])), /ENOENT/);
+	} finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("replacement startup inside reload finalizes setup and teardown before the old command resumes", async (t) => {
+	await t.test("dual-scope setup", async () => {
+		const f = await fixture({ project: entry("project"), user: entry("user") });
+		try {
+			let replacement: Awaited<ReturnType<ReturnType<typeof f.lifecycle>["initialize"]>> | undefined;
+			const command = await f.lifecycle().run("setup", {
+				enabled: true, confirm: async () => true,
+				reload: async () => {
+					replacement = await f.lifecycle().initialize(true);
+					assert.equal(replacement.outcome, "ready");
+					assert.deepEqual(replacement.participants?.map((participant) => participant.scope), ["project", "user"]);
+					for (const scope of ["project", "user"] as const) {
+						assert.deepEqual((await json(f.paths[scope])).packages[0], { ...entry(scope), extensions: [] });
+						assert.equal((await json(sidecar(f.paths[scope]))).phase, "committed");
+					}
+				},
+			});
+			assert.equal(command.outcome, "setup-committed");
+			assert.equal(command.reload, "requested");
+		} finally { await rm(f.root, { recursive: true, force: true }); }
+	});
+
+	await t.test("dual-scope teardown", async () => {
+		const f = await fixture({ project: entry("project"), user: entry("user") });
+		try {
+			await setup(f);
+			const command = await f.lifecycle().run("teardown", {
+				enabled: false, confirm: async () => true,
+				reload: async () => {
+					const replacement = await f.lifecycle().initialize(false);
+					assert.equal(replacement.outcome, "ready");
+					assert.equal(replacement.participants, undefined);
+					for (const scope of ["project", "user"] as const) {
+						assert.deepEqual((await json(f.paths[scope])).packages[0], entry(scope));
+						await assert.rejects(readFile(sidecar(f.paths[scope])), /ENOENT/);
+					}
+				},
+			});
+			assert.equal(command.outcome, "teardown-committed");
+			assert.equal(command.reload, "requested");
+		} finally { await rm(f.root, { recursive: true, force: true }); }
+	});
+});
+
+test("failed setup and teardown reloads remain pending until fresh startup converges ready", async (t) => {
+	await t.test("setup", async () => {
+		const f = await fixture({ project: entry("project"), user: entry("user") });
+		try {
+			const failed = await f.lifecycle().run("setup", { enabled: true, confirm: async () => true, reload: async () => { throw new DOMException("aborted", "AbortError"); } });
+			assert.equal(failed.code, "PIFFF_RECOVERY_RELOAD_REQUIRED");
+			for (const scope of ["project", "user"] as const) assert.equal((await json(sidecar(f.paths[scope]))).phase, "reload-pending");
+			const recovered = await f.lifecycle().initialize(true);
+			assert.equal(recovered.outcome, "ready");
+			assert.deepEqual(recovered.participants?.map((participant) => participant.scope), ["project", "user"]);
+			for (const scope of ["project", "user"] as const) assert.equal((await json(sidecar(f.paths[scope]))).phase, "committed");
+		} finally { await rm(f.root, { recursive: true, force: true }); }
+	});
+	await t.test("teardown", async () => {
+		const f = await fixture({ project: entry("project"), user: entry("user") });
+		try {
+			await setup(f);
+			const failed = await f.lifecycle().run("teardown", { enabled: false, confirm: async () => true, reload: async () => { throw new Error("reload failed"); } });
+			assert.equal(failed.code, "PIFFF_RECOVERY_RELOAD_REQUIRED");
+			for (const scope of ["project", "user"] as const) assert.equal((await json(sidecar(f.paths[scope]))).phase, "reload-pending");
+			const recovered = await f.lifecycle().initialize(false);
+			assert.equal(recovered.outcome, "ready");
+			assert.equal(recovered.participants, undefined);
+			for (const scope of ["project", "user"] as const) await assert.rejects(readFile(sidecar(f.paths[scope])), /ENOENT/);
+		} finally { await rm(f.root, { recursive: true, force: true }); }
+	});
+});
+
+test("startup finalization checkpoint failures resume idempotently", async (t) => {
+	await t.test("setup commit", async () => {
+		const f = await fixture({ project: entry("project"), user: entry("user") });
+		try {
+			await f.lifecycle().run("setup", { enabled: true, confirm: async () => true, reload: async () => { throw new Error("reload failed"); } });
+			const interrupted = await f.lifecycle({ checkpoint: (name: string) => { if (name === "recovery:setup:journal:project:committed") throw new Error("checkpoint"); } }).initialize(true);
+			assert.equal(interrupted.outcome, "error");
+			assert.equal((await json(sidecar(f.paths.project))).phase, "committed");
+			assert.equal((await json(sidecar(f.paths.user))).phase, "reload-pending");
+			const recovered = await f.lifecycle().initialize(true);
+			assert.equal(recovered.outcome, "ready");
+			assert.deepEqual(recovered.participants?.map((participant) => participant.scope), ["project", "user"]);
+		} finally { await rm(f.root, { recursive: true, force: true }); }
+	});
+
+	await t.test("teardown removal", async () => {
+		const f = await fixture({ project: entry("project"), user: entry("user") });
+		try {
+			await setup(f);
+			await f.lifecycle().run("teardown", { enabled: false, confirm: async () => true, reload: async () => { throw new Error("reload failed"); } });
+			const interrupted = await f.lifecycle({ checkpoint: (name: string) => { if (name === "recovery:teardown:journal:project:removed") throw new Error("checkpoint"); } }).initialize(false);
+			assert.equal(interrupted.outcome, "error");
+			await assert.rejects(readFile(sidecar(f.paths.project)), /ENOENT/);
+			assert.equal((await json(sidecar(f.paths.user))).phase, "reload-pending");
+			const recovered = await f.lifecycle().initialize(false);
+			assert.equal(recovered.outcome, "ready");
+			assert.equal(recovered.participants, undefined);
+			await assert.rejects(readFile(sidecar(f.paths.user)), /ENOENT/);
+		} finally { await rm(f.root, { recursive: true, force: true }); }
+	});
+});
+
 test("preflight failure, duplicate ambiguity, and cancellation change no bytes", async (t) => {
 	await t.test("shadowed preflight failure", async () => {
 		const f = await fixture({ project: entry("project"), user: entry("user") });
@@ -205,7 +335,7 @@ test("interrupted teardown rolls back managed state; fully restored teardown onl
 			await setup(f); let fired = false;
 			await f.lifecycle({ checkpoint: (name: string) => { if (!fired && name === point) { fired = true; throw new Error("crash"); } } }).run("teardown", { enabled: true, confirm: async () => true, reload: async () => {} });
 			const recovered = await f.lifecycle().initialize(true);
-			assert.equal(recovered.outcome, "recovery-reload-required");
+			assert.equal(recovered.outcome, point.includes("settings") ? "recovery-reload-required" : "ready");
 			if (point.includes("settings")) {
 				assert.deepEqual((await json(f.paths.project)).packages[0].extensions, []);
 				assert.deepEqual((await json(f.paths.user)).packages[0].extensions, []);
@@ -227,7 +357,7 @@ test("reload capability is required before mutation and committed setup survives
 		await assert.rejects(readFile(sidecar(f.paths.user)), /ENOENT/);
 		let reloads = 0;
 		await f.lifecycle({ checkpoint: (name: string) => { if (name === "setup:journal:user:committed") throw new Error("crash"); } }).run("setup", { enabled: true, confirm: async () => true, reload: async () => { reloads++; } });
-		assert.equal(reloads, 0);
+		assert.equal(reloads, 1);
 		const recovered = await f.lifecycle().initialize(false);
 		assert.equal(recovered.outcome, "ready");
 		assert.equal(recovered.reload, "none");
@@ -279,6 +409,7 @@ test("failure injection at every journal/write/phase boundary remains recoverabl
 		"setup:journal:project:prepared", "setup:journal:user:prepared",
 		"setup:settings:project:written", "setup:journal:project:settings-written",
 		"setup:settings:user:written", "setup:journal:user:settings-written",
+		"setup:journal:project:reload-pending", "setup:journal:user:reload-pending",
 		"setup:journal:project:committed", "setup:journal:user:committed",
 	];
 	for (const point of points) {
@@ -289,7 +420,7 @@ test("failure injection at every journal/write/phase boundary remains recoverabl
 			assert.equal(result.outcome, "error", point);
 			const recovery = await f.lifecycle().initialize(true);
 			assert.ok(["recovery-reload-required", "ready"].includes(recovery.outcome), point);
-			const committed = points.indexOf(point) >= points.indexOf("setup:journal:user:committed");
+			const committed = points.indexOf(point) >= points.indexOf("setup:settings:user:written");
 			assert.deepEqual((await json(f.paths.project)).packages[0], committed ? { ...entry("project"), extensions: [] } : entry("project"), point);
 			assert.deepEqual((await json(f.paths.user)).packages[0], committed ? { ...entry("user"), extensions: [] } : entry("user"), point);
 			for (const dir of [dirname(f.paths.project), dirname(f.paths.user)]) assert.equal((await readdir(dir)).some((name) => name.includes(".tmp-")), false, point);
@@ -302,6 +433,7 @@ test("teardown failure injection rolls partial restoration back and retires comp
 		"teardown:journal:project:prepared", "teardown:journal:user:prepared",
 		"teardown:settings:project:written", "teardown:journal:project:restored",
 		"teardown:settings:user:written", "teardown:journal:user:restored",
+		"teardown:journal:project:reload-pending", "teardown:journal:user:reload-pending",
 		"teardown:journal:project:removed", "teardown:journal:user:removed",
 	];
 	for (const point of points) {

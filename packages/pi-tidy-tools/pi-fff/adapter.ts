@@ -95,7 +95,12 @@ const REGISTRATION_METHODS: readonly RegistrationMethod[] = [
 	"registerTool", "registerCommand", "registerShortcut", "registerFlag",
 	"registerMessageRenderer", "registerEntryRenderer", "registerProvider", "unregisterProvider", "on",
 ];
-const TIDY_NON_COMPOSABLE_TOOLS = new Set(["write", "edit", "bash", "find", "ls"]);
+export const TIDY_PI_FFF_CONFLICTS: Readonly<PiFffConflictSet> = Object.freeze({
+	tools: Object.freeze(["write", "edit", "bash", "find", "ls"]),
+	commands: Object.freeze(["tidy", "diff"]),
+	shortcuts: Object.freeze(["ctrl+shift+o"]),
+	messageRenderers: Object.freeze(["minimal-turn-diff"]),
+});
 const MUTATING_METHODS = new Set([
 	"sendMessage", "sendUserMessage", "appendEntry", "setSessionName", "setLabel", "exec",
 	"setActiveTools", "setModel", "setThinkingLevel", "shutdown", "abort", "compact",
@@ -307,15 +312,28 @@ function makeRecorder(api: Record<string, any>, trace: RecordedRegistration[], g
 	});
 }
 
+function equivalentPrimitive(schema: unknown, expected: string): boolean {
+	if (!schema || typeof schema !== "object" || Array.isArray(schema)) return false;
+	const value = schema as Record<string, unknown>;
+	if (value.type !== undefined) return value.type === expected
+		|| (Array.isArray(value.type) && value.type.length === 1 && value.type[0] === expected);
+	for (const keyword of ["anyOf", "oneOf", "allOf"] as const) {
+		const alternatives = value[keyword];
+		if (alternatives !== undefined) return Array.isArray(alternatives) && alternatives.length === 1
+			&& equivalentPrimitive(alternatives[0], expected);
+	}
+	return false;
+}
+
 function schemaFailure(tool: any, name: "read" | "grep"): string | undefined {
 	if (!tool || typeof tool !== "object" || tool.name !== name) return `${name} definition is malformed`;
 	if (typeof tool.execute !== "function") return `${name}.execute is not callable`;
 	const schema = tool.parameters;
-	if (!schema || schema.type !== "object" || !schema.properties || typeof schema.properties !== "object") return `${name}.parameters is not an object schema`;
+	if (!schema || !equivalentPrimitive({ type: schema.type }, "object") || !schema.properties || typeof schema.properties !== "object") return `${name}.parameters is not an object schema`;
 	const required = new Set(Array.isArray(schema.required) ? schema.required : []);
 	for (const [field, anchor] of Object.entries(BASELINE[name])) {
 		const property = schema.properties[field];
-		if (!property || property.type !== anchor.type) return `${name}.${field} must remain ${anchor.type}`;
+		if (!equivalentPrimitive(property, anchor.type)) return `${name}.${field} must remain ${anchor.type}`;
 		if (required.has(field) !== anchor.required) return `${name}.${field} requiredness changed`;
 	}
 	for (const field of required) if (!Object.hasOwn(BASELINE[name], String(field))) return `${name} added required field ${String(field)}`;
@@ -328,10 +346,14 @@ function stringArg(call: RecordedRegistration, index: number): string | undefine
 
 function validateTrace(trace: readonly RecordedRegistration[], conflicts: PiFffConflictSet | undefined): { read: SourceToolDefinition; grep: SourceToolDefinition } {
 	const captures: Partial<Record<"read" | "grep", SourceToolDefinition>> = {};
+	const conflictNames = (key: keyof PiFffConflictSet): string[] => [
+		...(TIDY_PI_FFF_CONFLICTS[key] ?? []),
+		...(conflicts?.[key] ?? []),
+	];
 	const seen = {
-		tools: new Set(conflicts?.tools ?? []), commands: new Set(conflicts?.commands ?? []), shortcuts: new Set(conflicts?.shortcuts ?? []),
-		flags: new Set(conflicts?.flags ?? []), messageRenderers: new Set(conflicts?.messageRenderers ?? []),
-		entryRenderers: new Set(conflicts?.entryRenderers ?? []), providers: new Set(conflicts?.providers ?? []),
+		tools: new Set(conflictNames("tools")), commands: new Set(conflictNames("commands")), shortcuts: new Set(conflictNames("shortcuts")),
+		flags: new Set(conflictNames("flags")), messageRenderers: new Set(conflictNames("messageRenderers")),
+		entryRenderers: new Set(conflictNames("entryRenderers")), providers: new Set(conflictNames("providers")),
 	};
 	const lifecycle = new Set<string>();
 	for (const call of trace) {
@@ -347,7 +369,7 @@ function validateTrace(trace: readonly RecordedRegistration[], conflicts: PiFffC
 				captures[toolName] = tool;
 				continue;
 			}
-			if (TIDY_NON_COMPOSABLE_TOOLS.has(tool.name) || seen.tools.has(tool.name)) throw new SurfaceFailure(`tool conflict ${tool.name}`);
+			if (seen.tools.has(tool.name)) throw new SurfaceFailure(`tool conflict ${tool.name}`);
 			seen.tools.add(tool.name);
 			continue;
 		}
@@ -497,10 +519,7 @@ function guardedSource(plan: PiFffRegistrationPlan, name: "read" | "grep"): Sour
 	return {
 		...source,
 		execute(_id: string, params: any, signal: any, onUpdate: any, context: any) {
-			const guardedUpdate = typeof onUpdate === "function"
-				? function (this: unknown, value: any) { return onUpdate.call(this, validateResult(value, plan, name)); }
-				: onUpdate;
-			const returned = source.execute.call(source, _id, params, signal, guardedUpdate, context);
+			const returned = source.execute.call(source, _id, params, signal, onUpdate, context);
 			return returned && typeof returned.then === "function"
 				? returned.then((value: any) => validateResult(value, plan, name))
 				: validateResult(returned, plan, name);

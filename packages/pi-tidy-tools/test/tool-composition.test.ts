@@ -15,8 +15,18 @@ test("native source composition preserves metadata and result-mode schema identi
 	assert.equal(composed.description, source.description);
 	assert.equal(composed.executionMode, source.executionMode);
 	assert.equal(composed.prepareArguments, source.prepareArguments);
-	assert.deepEqual(composed.promptGuidelines, []);
+	assert.equal(Object.hasOwn(composed, "promptGuidelines"), false);
 	assert.equal((source as any).promptGuidelines, undefined);
+});
+
+test("result mode preserves explicit undefined prompt metadata presence", () => {
+	const source = {
+		name: "read", parameters: { type: "object", properties: {} }, promptGuidelines: undefined,
+		execute() {},
+	};
+	const composed = composeSourceTool(source, { mode: "result", reasoningGuideline: guideline });
+	assert.equal(Object.hasOwn(composed, "promptGuidelines"), true);
+	assert.equal(composed.promptGuidelines, undefined);
 });
 
 test("reasoning composition retains alternate metadata and prompt guidance", () => {
@@ -74,9 +84,9 @@ test("composed execution preserves receiver and argument identities", async () =
 	assert.equal(observed[5], context);
 });
 
-test("result-mode execution passes the original parameter object", () => {
+test("result-mode execution preserves original parameters and prompt metadata identities", () => {
 	const promptGuidelines = ["Preserve source guidance."];
-	const params = { path: "alternate.ts" };
+	const params = { path: "alternate.ts", reasoning: "legitimate source reasoning" };
 	let observedParams: unknown;
 	const source = {
 		name: "read",
@@ -90,6 +100,22 @@ test("result-mode execution passes the original parameter object", () => {
 
 	assert.equal(observedParams, params);
 	assert.equal(composed.promptGuidelines, promptGuidelines);
+	assert.equal(composed.parameters, source.parameters);
+});
+
+test("tidy mode does not strip or replace a source-owned reasoning field", () => {
+	const reasoningSchema = { type: "string", description: "Source semantics" };
+	const parameters = { type: "object", properties: { path: { type: "string" }, reasoning: reasoningSchema }, required: ["path"] };
+	const params = { path: "x", reasoning: "source value" };
+	let observed: unknown;
+	const source = { name: "read", parameters, execute(_id: string, value: unknown) { observed = value; } };
+	const composed = composeSourceTool(source, { mode: "default", reasoningGuideline: guideline });
+
+	composed.execute("id", params, undefined, undefined, undefined);
+
+	assert.equal(composed.parameters, parameters);
+	assert.equal(composed.parameters.properties.reasoning, reasoningSchema);
+	assert.equal(observed, params);
 });
 
 test("composed execution propagates source errors unchanged", () => {

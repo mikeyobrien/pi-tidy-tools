@@ -351,19 +351,49 @@ async function recover(fs: PiFffLifecycleFs, cwd: string, agentDir: string, chec
 	if (states.includes("drift")) return result("error", "Recovery is unsafe because a managed entry drifted; restore it manually from the linked sidecars.", { code: "PIFFF_RECOVERY_UNSAFE", manualPaths: paths });
 	const fullyCommittedSetup = operation === "setup" && journals.length === participants.length && journals.every((journal) => journal.phase === "committed") && states.every((state) => state === "managed");
 	if (fullyCommittedSetup) return result("ready", "Managed pi-fff transaction is committed.", { participants });
-	const reloadPending = journals.some((journal) => journal.phase === "reload-pending");
-	if (reloadPending && ((operation === "setup" && states.every((state) => state === "managed")) || (operation === "teardown" && states.every((state) => state === "prior")))) {
+	// Pi starts the replacement extension inside the awaited reload call. Reaching
+	// initialize with every target setting and every linked journal reload-pending
+	// is therefore the durable proof that the reload boundary was crossed. Mixed
+	// pending/committed journals are the equivalent checkpoint-recovery edge.
+	const setupReloadSucceeded = operation === "setup" && states.every((state) => state === "managed")
+		&& journals.length === participants.length
+		&& journals.every((journal) => journal.phase === "reload-pending" || journal.phase === "committed");
+	if (setupReloadSucceeded) {
 		try {
-			if (operation === "setup") for (const participant of participants) {
+			for (const participant of participants) {
 				await updateJournal(fs, participant.journalPath, (journal) => { journal.phase = "committed"; });
-				await checkpoint(`recovery:setup:journal:${participant.scope}:reload-required`);
-			} else for (const participant of participants) {
-				await removeJournal(fs, participant.journalPath);
-				await checkpoint(`recovery:teardown:journal:${participant.scope}:reload-required`);
+				await checkpoint(`recovery:setup:journal:${participant.scope}:committed`);
 			}
-			return result("recovery-reload-required", "A committed pi-fff transition was not reloaded. Run /reload once before using the integration.", { code: "PIFFF_RECOVERY_RELOAD_REQUIRED", reload: "required", manualPaths: paths });
+			return result("ready", "Managed pi-fff transaction completed after successful reload.", { participants });
 		} catch (error) {
-			return result("error", `Recovery could not persist reload state: ${error instanceof Error ? error.message : String(error)}`, { code: "PIFFF_RECOVERY_UNSAFE", manualPaths: paths });
+			return result("error", `Recovery could not finalize setup: ${error instanceof Error ? error.message : String(error)}`, { code: "PIFFF_RECOVERY_UNSAFE", manualPaths: paths });
+		}
+	}
+	const teardownReloadSucceeded = operation === "teardown" && states.every((state) => state === "prior")
+		&& journals.length <= participants.length && journals.every((journal) => journal.phase === "reload-pending");
+	if (teardownReloadSucceeded) {
+		try {
+			for (const participant of participants) {
+				await removeJournal(fs, participant.journalPath);
+				await checkpoint(`recovery:teardown:journal:${participant.scope}:removed`);
+			}
+			return result("ready", "pi-fff teardown completed after successful reload.");
+		} catch (error) {
+			return result("error", `Recovery could not finalize teardown: ${error instanceof Error ? error.message : String(error)}`, { code: "PIFFF_RECOVERY_UNSAFE", manualPaths: paths });
+		}
+	}
+	const targetReached = journals.length === participants.length
+		&& ((operation === "setup" && states.every((state) => state === "managed"))
+			|| (operation === "teardown" && states.every((state) => state === "prior")));
+	if (targetReached) {
+		try {
+			for (const participant of participants) {
+				await updateJournal(fs, participant.journalPath, (journal) => { journal.phase = "reload-pending"; });
+				await checkpoint(`recovery:${operation}:journal:${participant.scope}:reload-pending`);
+			}
+			return result("recovery-reload-required", "A pi-fff transition reached its target but reload did not complete. Run /reload once before using the integration.", { code: "PIFFF_RECOVERY_RELOAD_REQUIRED", reload: "required", manualPaths: paths, participants });
+		} catch (error) {
+			return result("error", `Recovery could not persist reload-pending state: ${error instanceof Error ? error.message : String(error)}`, { code: "PIFFF_RECOVERY_UNSAFE", manualPaths: paths });
 		}
 	}
 	try {
@@ -437,10 +467,15 @@ export function createPiFffLifecycle(options: CreatePiFffLifecycleOptions): PiFf
 						await checkpoint(`setup:journal:${participant.scope}:settings-written`);
 					}
 					for (const participant of participants) {
+						await updateJournal(fs, participant.journalPath, (journal) => { journal.phase = "reload-pending"; });
+						await checkpoint(`setup:journal:${participant.scope}:reload-pending`);
+					}
+					try { await command.reload(); }
+					catch (error) { throw new LifecycleFailure("PIFFF_RECOVERY_RELOAD_REQUIRED", `Reload did not complete: ${error instanceof Error ? error.message : String(error)}`, participants.map((item) => item.settingsPath)); }
+					for (const participant of participants) {
 						await updateJournal(fs, participant.journalPath, (journal) => { journal.phase = "committed"; });
 						await checkpoint(`setup:journal:${participant.scope}:committed`);
 					}
-					await command.reload();
 					return result("setup-committed", "Every pi-fff participant is filtered and journaled.", { reload: "requested", participants });
 				} catch (error) {
 					const failure = error instanceof LifecycleFailure ? error : new LifecycleFailure("PIFFF_PREFLIGHT_FAILED", error instanceof Error ? error.message : String(error));
@@ -469,8 +504,13 @@ export function createPiFffLifecycle(options: CreatePiFffLifecycleOptions): PiFf
 					await updateJournal(fs, participant.journalPath, (journal) => { journal.phase = "restored"; });
 					await checkpoint(`teardown:journal:${participant.scope}:restored`);
 				}
+				for (const participant of participants) {
+					await updateJournal(fs, participant.journalPath, (journal) => { journal.phase = "reload-pending"; });
+					await checkpoint(`teardown:journal:${participant.scope}:reload-pending`);
+				}
+				try { await command.reload(); }
+				catch (error) { throw new LifecycleFailure("PIFFF_RECOVERY_RELOAD_REQUIRED", `Reload did not complete: ${error instanceof Error ? error.message : String(error)}`, participants.map((item) => item.settingsPath)); }
 				for (const participant of participants) { await removeJournal(fs, participant.journalPath); await checkpoint(`teardown:journal:${participant.scope}:removed`); }
-				await command.reload();
 				return result("teardown-committed", "Exact prior pi-fff entries were restored and journals retired.", { reload: "requested", participants });
 			} catch (error) {
 				const failure = error instanceof LifecycleFailure ? error : new LifecycleFailure("PIFFF_TRANSACTION_INCOMPLETE", error instanceof Error ? error.message : String(error));

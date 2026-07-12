@@ -115,7 +115,12 @@ confirmation. It first validates every installed participant, then atomically
 changes each pi-fff package entry to object form with `extensions: []`. This
 prevents standalone pi-fff and tidy's adapter from registering the same tools.
 Linked `pi-tidy-tools.pi-fff.json` sidecars preserve each exact prior entry.
-Setup and teardown reload Pi after commit.
+After every settings file reaches its target, setup and teardown durably mark all
+linked sidecars `reload-pending`, then await Pi's reload. Replacement startup at
+the target atomically commits setup sidecars or retires teardown sidecars before
+routing tools; the old command frame's post-reload finalization is idempotent. A
+failed or aborted reload leaves the linked pending state intact, and the next
+startup finalizes it at that same safe boundary.
 
 ### Ownership and scope
 
@@ -155,10 +160,11 @@ selection and runs the pinned baseline.
 ### Drift, recovery, and removal
 
 Interrupted setup/teardown is recovered at startup before ordinary ownership is
-claimed. A safe recovery asks for one `/reload`; drift or malformed/missing
-linked state fails closed and `/tidy pi-fff status` reports the concrete settings
-paths requiring manual attention. Do not edit managed package entries or
-sidecars independently.
+claimed. A complete linked `reload-pending` transition already at its target is
+finalized immediately; an earlier interruption may ask for one `/reload`. Drift
+or malformed/missing linked state fails closed and `/tidy pi-fff status` reports
+the concrete settings paths requiring manual attention. Do not edit managed
+package entries or sidecars independently.
 
 Always run `/tidy pi-fff teardown` **before** removing pi-tidy-tools or pi-fff.
 Teardown restores the exact prior package entries, including sibling fields and

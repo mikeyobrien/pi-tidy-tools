@@ -16,9 +16,9 @@ export interface SourceToolCompositionOptions {
 	reasoningGuideline: string;
 }
 
-export type ComposedSourceTool<T extends SourceToolDefinition> = Omit<T, "execute" | "parameters" | "promptGuidelines"> & {
+export type ComposedSourceTool<T extends SourceToolDefinition> = Omit<T, "execute" | "parameters"> & {
 	parameters: any;
-	promptGuidelines: string[];
+	promptGuidelines?: string[];
 	execute: (id: string, params: any, signal: any, onUpdate: any, context: any) => any;
 };
 
@@ -50,17 +50,19 @@ export function composeSourceTool<T extends SourceToolDefinition>(
 	options: SourceToolCompositionOptions,
 ): ComposedSourceTool<T> {
 	const resultMode = options.mode === "result";
-	return {
+	const sourceHasReasoning = !!source.parameters?.properties
+		&& Object.hasOwn(source.parameters.properties, "reasoning");
+	const injectReasoning = !resultMode && !sourceHasReasoning;
+	const composed = {
 		...source,
-		parameters: resultMode ? source.parameters : withReasoning(source.parameters),
-		promptGuidelines: resultMode
-			? source.promptGuidelines ?? []
-			: [...(source.promptGuidelines ?? []), options.reasoningGuideline],
+		parameters: injectReasoning ? withReasoning(source.parameters) : source.parameters,
 		execute(this: SourceToolDefinition, id: string, params: any, signal: any, onUpdate: any, context: any) {
-			const { rest } = stripReasoning(params);
-			return source.execute.call(source, id, rest, signal, onUpdate, context);
+			const delegatedParams = injectReasoning ? stripReasoning(params).rest : params;
+			return source.execute.call(source, id, delegatedParams, signal, onUpdate, context);
 		},
 	} as ComposedSourceTool<T>;
+	if (!resultMode) composed.promptGuidelines = [...(source.promptGuidelines ?? []), options.reasoningGuideline];
+	return composed;
 }
 
 /** Native write source with tidy's behavior-compatible per-call diff capture. */

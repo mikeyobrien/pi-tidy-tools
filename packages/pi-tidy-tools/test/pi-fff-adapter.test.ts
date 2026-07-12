@@ -384,6 +384,28 @@ test("breaking surface matrix fails closed with stable diagnostics", async (t) =
 	});
 });
 
+test("semantic singleton primitive schema forms pass without accepting broadened unions", async () => {
+	const equivalent = baselineFactory();
+	equivalent.factory = (pi: any) => {
+		pi.registerTool(readTool({ parameters: { type: "object", properties: { path: { anyOf: [{ type: "string" }] }, offset: { type: ["number"] }, limit: { oneOf: [{ type: "number" }] } }, required: ["path"] } }));
+		pi.registerTool(grepTool()); pi.on("session_start", () => {}); pi.on("session_shutdown", () => {});
+	};
+	const broadened = baselineFactory();
+	broadened.factory = (pi: any) => {
+		pi.registerTool(readTool({ parameters: { type: "object", properties: { path: { anyOf: [{ type: "string" }, { type: "number" }] }, offset: { type: "number" }, limit: { type: "number" } }, required: ["path"] } }));
+		pi.registerTool(grepTool()); pi.on("session_start", () => {}); pi.on("session_shutdown", () => {});
+	};
+	const accepted = await fixture({ userEntry: filtered(), userFactory: equivalent });
+	const rejected = await fixture({ userEntry: filtered(), userFactory: broadened });
+	try {
+		assert.equal((await buildFrom(accepted)).ok, true);
+		expectCode(await buildFrom(rejected), "PIFFF_SURFACE_BREAKING");
+	} finally {
+		await rm(accepted.root, { recursive: true, force: true });
+		await rm(rejected.root, { recursive: true, force: true });
+	}
+});
+
 test("known registration methods validate and preserve nonconflicting additions", async () => {
 	const fn = () => {};
 	const source = baselineFactory((pi) => {
@@ -401,15 +423,20 @@ test("known registration methods validate and preserve nonconflicting additions"
 	} finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
-test("known registration conflicts fail before replay", async () => {
-	const source = baselineFactory((pi) => pi.registerCommand("taken", { handler() {} }));
-	const f = await fixture({ userEntry: filtered(), userFactory: source });
-	const real = apiRecorder();
-	try {
-		const result = await buildPiFffRegistrationPlan({ cwd: f.cwd, agentDir: f.agentDir, piVersion: "0.80.6", api: real.api, loader: f.loader, conflicts: { commands: ["taken"] } });
-		expectCode(result, "PIFFF_SURFACE_BREAKING");
-		assert.equal(real.calls.length, 0);
-	} finally { await rm(f.root, { recursive: true, force: true }); }
+test("known registration conflicts fail before replay", async (t) => {
+	for (const [name, command, conflicts] of [
+		["caller conflict", "taken", { commands: ["taken"] }],
+		["built-in tidy conflict", "tidy", undefined],
+	] as const) await t.test(name, async () => {
+		const source = baselineFactory((pi) => pi.registerCommand(command, { handler() {} }));
+		const f = await fixture({ userEntry: filtered(), userFactory: source });
+		const real = apiRecorder();
+		try {
+			const result = await buildPiFffRegistrationPlan({ cwd: f.cwd, agentDir: f.agentDir, piVersion: "0.80.6", api: real.api, loader: f.loader, conflicts });
+			expectCode(result, "PIFFF_SURFACE_BREAKING");
+			assert.equal(real.calls.length, 0);
+		} finally { await rm(f.root, { recursive: true, force: true }); }
+	});
 });
 
 test("load, factory, and capability failures are sanitized and side-effect free", async () => {
@@ -492,7 +519,7 @@ test("composite delegation preserves receiver, five arguments, updates, results,
 		assert.equal(observed[1], "id");
 		assert.deepEqual(observed[2], { path: "x", extra: params.extra });
 		assert.equal((observed[2] as any).extra, params.extra);
-		assert.equal(observed[3], signal); assert.notEqual(observed[4], update); assert.equal(typeof observed[4], "function"); assert.equal(observed[5], context);
+		assert.equal(observed[3], signal); assert.equal(observed[4], update); assert.equal(observed[5], context);
 		const aborted = new DOMException("aborted", "AbortError");
 		result.plan.captures.grep.execute = () => { throw aborted; };
 		assert.throws(() => composites.grep.execute("id", {}, signal, update, context), (error) => error === aborted);
@@ -515,7 +542,7 @@ test("malformed settled results fail closed without native retry", async () => {
 	} finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
-test("partial updates are guarded and valid objects retain identity and fields", async () => {
+test("partial updates preserve callback, object identity, and source behavior naturally", async () => {
 	const validPartial = { ...textResult("partial", { truncation: { truncated: false } }), custom: Symbol("kept") };
 	const settled = { ...textResult("settled"), custom: "field" };
 	const observed: unknown[] = [];
@@ -537,7 +564,9 @@ test("partial updates are guarded and valid objects retain identity and fields",
 		assert.equal(actual, settled);
 		assert.equal(observed[0], validPartial);
 		malformed = true;
-		assert.throws(() => tools.read.execute("id", { path: "x" }, undefined, () => {}, {}), (error: any) => error?.code === "PIFFF_EXEC_RESULT_INVALID");
+		const malformedUpdates: unknown[] = [];
+		assert.equal(await tools.read.execute("id", { path: "x" }, undefined, (value: unknown) => malformedUpdates.push(value), {}), settled);
+		assert.deepEqual(malformedUpdates[1], { content: "bad" });
 	} finally { await rm(f.root, { recursive: true, force: true }); }
 });
 

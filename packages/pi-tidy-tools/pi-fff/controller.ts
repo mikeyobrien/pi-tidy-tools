@@ -2,6 +2,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import {
 	buildPiFffRegistrationPlan,
 	replayPiFffRegistrationPlan,
+	TIDY_PI_FFF_CONFLICTS,
 	type PiFffDiagnostic,
 } from "./adapter.js";
 import type { SourceToolDefinition } from "../tool-composition.js";
@@ -123,12 +124,13 @@ export function createPiFffIntegrationController(options: CreatePiFffControllerO
 		cwd: options.cwd,
 		agentDir,
 		preflight: async (participant) => {
-			const built = await buildPlan({ cwd: options.cwd, agentDir, api: options.pi, selection: { scope: participant.scope, entry: participant.managedEntry } });
+			const built = await buildPlan({ cwd: options.cwd, agentDir, api: options.pi, selection: { scope: participant.scope, entry: participant.managedEntry }, conflicts: TIDY_PI_FFF_CONFLICTS });
 			if (!built.ok) throw Object.assign(new Error(built.diagnostic.summary), { diagnostic: built.diagnostic });
 			return built.plan;
 		},
 	});
 	let current: PiFffRoutingStatus = { state: "absent", owner: "tidy/native", scopes: [], tuple: "unavailable", journal: "none", action: "Install pi-fff before setup." };
+	let initialized = false;
 
 	const inspect = async (enabled: boolean): Promise<{ startup: PiFffLifecycleResult; discovered?: PiFffLifecycleResult }> => {
 		const startup = await lifecycle.initialize(enabled);
@@ -139,6 +141,7 @@ export function createPiFffIntegrationController(options: CreatePiFffControllerO
 	return {
 		async initialize(enabled) {
 			const { startup, discovered } = await inspect(enabled);
+			initialized = true;
 			if (startup.outcome !== "ready") {
 				current = statusFromLifecycle(startup, enabled);
 				return { status: current, skipTidyTools: SKIP, notice: { message: `${startup.message}${startup.reload === "required" ? " Run /reload once." : ""}`, level: startup.outcome === "error" ? "error" : "warning" }, commit() {} };
@@ -146,7 +149,15 @@ export function createPiFffIntegrationController(options: CreatePiFffControllerO
 			const participants = startup.participants ?? discovered?.participants ?? [];
 			if (!enabled) {
 				const managed = (startup.participants?.length ?? 0) > 0;
-				current = { state: "disabled", owner: "native Pi", scopes: participants.map((item) => item.scope), tuple: "unavailable", journal: managed ? "committed (inactive)" : "none", action: managed ? "Enable tidy, or run /tidy pi-fff teardown to restore standalone loading." : "Run /tidy on to enable tidy." };
+				const active = selected(participants);
+				const standalone = !managed && active !== undefined && !isFiltered(active.priorEntry);
+				current = {
+					state: "disabled", owner: standalone ? "standalone pi-fff" : "native Pi",
+					scopes: participants.map((item) => item.scope), tuple: "unavailable",
+					journal: managed ? "committed (inactive)" : "none",
+					action: managed ? "Enable tidy, or run /tidy pi-fff teardown to restore standalone loading."
+						: standalone ? "Run /tidy on, then /tidy pi-fff setup for tidy presentation." : "Run /tidy on to enable tidy.",
+				};
 				return { status: current, skipTidyTools: SKIP, commit() {} };
 			}
 			if (!participants.length) {
@@ -160,7 +171,7 @@ export function createPiFffIntegrationController(options: CreatePiFffControllerO
 				current = { state: filtered ? "filtered-unmanaged" : "standalone", owner: filtered ? "native Pi" : "standalone pi-fff", scopes: participants.map((item) => item.scope), tuple: "unavailable", journal: "none", diagnostic: { code: "PIFFF_SETUP_REQUIRED", severity: "warning", detail: "Explicit setup is required before tidy can own presentation." }, action: "Run /tidy pi-fff setup." };
 				return { status: current, skipTidyTools: SKIP, notice: { message: "pi-fff is not managed by tidy; run /tidy pi-fff setup.", level: "warning" }, commit() {} };
 			}
-			const built = await buildPlan({ cwd: options.cwd, agentDir, api: options.pi });
+			const built = await buildPlan({ cwd: options.cwd, agentDir, api: options.pi, conflicts: TIDY_PI_FFF_CONFLICTS });
 			if (!built.ok) {
 				current = { state: "managed-invalid", owner: "native Pi", scopes: participants.map((item) => item.scope), piVersion: built.diagnostic.piVersion, piFffVersion: built.diagnostic.piFffVersion, tuple: "unavailable", journal: "committed", diagnostic: adapterDiagnostic(built.diagnostic), action: `${built.diagnostic.action} Or run /tidy pi-fff teardown.` };
 				return { status: current, skipTidyTools: SKIP, notice: built.diagnostic.severity === "info" ? undefined : { message: `${built.diagnostic.summary} ${current.action}`, level: "error" }, commit() {} };
@@ -187,7 +198,7 @@ export function createPiFffIntegrationController(options: CreatePiFffControllerO
 		},
 		async run(action, command) {
 			if (action === "status") {
-				await this.initialize(command.enabled);
+				if (!initialized) await this.initialize(command.enabled);
 				return { message: detailed(current), level: "info", reload: "none", status: current };
 			}
 			const value = await lifecycle.run(action, command);

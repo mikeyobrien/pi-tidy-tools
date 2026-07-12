@@ -63,6 +63,42 @@ test("controller suppresses informational compatibility notices and closes adapt
 	assert.equal(closed.skipTidyTools.has("read"), true);
 });
 
+test("repeated status uses initialized routing without re-evaluating the factory", async () => {
+	const managed = participant({ source: "npm:pi-fff@0.1.12", extensions: [] });
+	let builds = 0;
+	const controller = createPiFffIntegrationController({
+		pi: api, cwd: "/fixture", agentDir: "/agent", lifecycle: lifecycle(ready([managed])),
+		buildPlan: async (options) => {
+			builds++;
+			assert.deepEqual([...(options.conflicts?.commands ?? [])], ["tidy", "diff"]);
+			assert.deepEqual([...(options.conflicts?.tools ?? [])], ["write", "edit", "bash", "find", "ls"]);
+			return { ok: true, plan: {
+				scope: "project", packageRoot: managed.packageRoot, entryPath: `${managed.packageRoot}/index.ts`, piVersion: "0.80.6", piFffVersion: "0.1.12",
+				status: "verified", integrity: "missing", diagnostics: [], trace: [], captures: { read: {} as any, grep: {} as any },
+			} as any };
+		},
+	});
+	await controller.initialize(true);
+	await controller.run("status", { enabled: true });
+	await controller.run("status", { enabled: true });
+	assert.equal(builds, 1);
+});
+
+test("disabled ownership distinguishes standalone, filtered, and managed states", async (t) => {
+	for (const [name, startup, discovered, owner, journal] of [
+		["standalone", ready(), [participant("npm:pi-fff@0.1.12")], "standalone pi-fff", "none"],
+		["filtered", ready(), [participant({ source: "npm:pi-fff@0.1.12", extensions: [] })], "native Pi", "none"],
+		["managed", ready([participant({ source: "npm:pi-fff@0.1.12", extensions: [] })]), [], "native Pi", "committed (inactive)"],
+	] as const) await t.test(name, async () => {
+		const controller = createPiFffIntegrationController({ pi: api, cwd: "/fixture", agentDir: "/agent", lifecycle: lifecycle(startup, discovered) });
+		const plan = await controller.initialize(false);
+		assert.equal(plan.status.state, "disabled");
+		assert.equal(plan.status.owner, owner);
+		assert.equal(plan.status.journal, journal);
+		assert.deepEqual([...plan.skipTidyTools], ["read", "grep"]);
+	});
+});
+
 test("disabled initialization still performs safety recovery but claims no ordinary tools", async () => {
 	let initialized = 0;
 	const recovering: PiFffLifecycle = {

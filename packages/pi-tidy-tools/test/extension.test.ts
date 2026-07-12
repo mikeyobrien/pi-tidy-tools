@@ -173,6 +173,126 @@ test("restored settled tools clear timers started during call hydration", () => 
   }
 });
 
+test("settled tool completion ages advance while the turn remains active", async () => {
+  const harness = await registerEnabledExtension();
+  const originalNow = Date.now;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  let now = 1_000;
+  let invalidations = 0;
+  const timers: Array<{ callback: () => void; delay: number; unref(): void }> =
+    [];
+  const cleared: unknown[] = [];
+  Date.now = () => now;
+  globalThis.setTimeout = ((callback: () => void, delay: number) => {
+    const timer = { callback, delay, unref() {} };
+    timers.push(timer);
+    return timer;
+  }) as any;
+  globalThis.clearTimeout = ((timer: unknown) => cleared.push(timer)) as any;
+  try {
+    const bash = harness.tools.get("bash");
+    const context = {
+      isPartial: true,
+      toolCallId: "advancing-age",
+      args: { command: "true", reasoning: "finish quickly" },
+      invalidate() {
+        invalidations += 1;
+      },
+    };
+    const theme = { bg: (_name: string, text: string) => text };
+    await harness.events.get("tool_execution_start")!({
+      toolName: "bash",
+      toolCallId: context.toolCallId,
+      args: context.args,
+    });
+    await harness.events.get("tool_execution_end")!({
+      toolName: "bash",
+      toolCallId: context.toolCallId,
+    });
+    const augmented = await harness.events.get("tool_result")!({
+      toolName: "bash",
+      toolCallId: context.toolCallId,
+      details: {},
+    });
+    const settled = bash.renderResult(
+      { content: [{ type: "text", text: "done" }], details: augmented.details },
+      { isPartial: false, expanded: false },
+      theme,
+      { ...context, isPartial: false, isError: false }
+    );
+    assert.match(renderedLines(settled).join("\n"), /\(<1m ago\)/);
+    assert.equal(timers[0]!.delay, 60_000);
+
+    now += 60_000;
+    timers[0]!.callback();
+    assert.equal(invalidations, 1);
+    assert.match(renderedLines(settled).join("\n"), /\(1m ago\)/);
+
+    await harness.events.get("turn_end")!();
+    assert.equal(cleared.includes(timers.at(-1)), false);
+    await harness.events.get("session_shutdown")!();
+    assert.ok(cleared.includes(timers.at(-1)));
+  } finally {
+    Date.now = originalNow;
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+  }
+});
+
+test("restored settled completion ages continue advancing after reload", async () => {
+  const harness = await registerEnabledExtension();
+  const originalNow = Date.now;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  let now = 100_000;
+  let invalidations = 0;
+  const timers: Array<{ callback: () => void; delay: number; unref(): void }> =
+    [];
+  const cleared: unknown[] = [];
+  Date.now = () => now;
+  globalThis.setTimeout = ((callback: () => void, delay: number) => {
+    const timer = { callback, delay, unref() {} };
+    timers.push(timer);
+    return timer;
+  }) as any;
+  globalThis.clearTimeout = ((timer: unknown) => cleared.push(timer)) as any;
+  try {
+    const bash = harness.tools.get("bash");
+    const restored = bash.renderResult(
+      {
+        content: [{ type: "text", text: "done" }],
+        details: { piTidyElapsedMs: 1_000, piTidyCompletedAt: now },
+      },
+      { isPartial: false, expanded: false },
+      { bg: (_name: string, text: string) => text },
+      {
+        isPartial: false,
+        isError: false,
+        toolCallId: "restored-age",
+        args: { command: "true", reasoning: "restore prior output" },
+        invalidate() {
+          invalidations += 1;
+        },
+      }
+    );
+    assert.match(renderedLines(restored).join("\n"), /\(<1m ago\)/);
+    assert.equal(timers[0]!.delay, 60_000);
+
+    now += 60_000;
+    timers[0]!.callback();
+    assert.equal(invalidations, 1);
+    assert.match(renderedLines(restored).join("\n"), /\(1m ago\)/);
+
+    await harness.events.get("session_shutdown")!();
+    assert.ok(cleared.includes(timers.at(-1)));
+  } finally {
+    Date.now = originalNow;
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+  }
+});
+
 test("tool results persist elapsed duration for reload", async () => {
   const handlers = new Map<string, (event: any) => Promise<any>>();
   const previous = process.env.PI_TIDY_TOOLS;
@@ -554,6 +674,7 @@ test("enabled startup preserves every optional registration", () => {
     "tool_execution_end",
     "tool_result",
     "turn_end",
+    "session_shutdown",
   ]);
   assert.deepEqual(registrations.shortcuts, ["ctrl+shift+o"]);
   assert.deepEqual(registrations.renderers, ["minimal-turn-diff"]);

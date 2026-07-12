@@ -486,6 +486,43 @@ export default function (pi: ExtensionAPI) {
 	const pathByCallId = new Map<string, string>();
 	const startedAtByCallId = new Map<string, number>();
 	const elapsedTimerByCallId = new Map<string, ReturnType<typeof setInterval>>();
+	const ageRefreshByCallId = new Map<string, { completedAt: number; invalidate: () => void; nextAt: number }>();
+	let ageRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+
+	const nextAgeRefreshAt = (completedAt: number, now: number): number => {
+		const age = Math.max(0, now - completedAt);
+		if (age < 24 * 60 * 60_000) return completedAt + (Math.floor(age / 60_000) + 1) * 60_000;
+		if (age < 30 * 24 * 60 * 60_000) return completedAt + (Math.floor(age / 3_600_000) + 1) * 3_600_000;
+		return completedAt + (Math.floor(age / 86_400_000) + 1) * 86_400_000;
+	};
+	const scheduleAgeRefresh = (): void => {
+		if (ageRefreshTimer) clearTimeout(ageRefreshTimer);
+		if (ageRefreshByCallId.size === 0) { ageRefreshTimer = undefined; return; }
+		const now = Date.now();
+		const next = Math.min(...[...ageRefreshByCallId.values()].map(({ nextAt }) => nextAt));
+		ageRefreshTimer = setTimeout(() => {
+			ageRefreshTimer = undefined;
+			const refreshNow = Date.now();
+			for (const entry of ageRefreshByCallId.values()) {
+				if (entry.nextAt > refreshNow) continue;
+				entry.nextAt = nextAgeRefreshAt(entry.completedAt, refreshNow);
+				entry.invalidate();
+			}
+			scheduleAgeRefresh();
+		}, Math.max(1, next - now));
+		ageRefreshTimer.unref?.();
+	};
+	const registerAgeRefresh = (id: string, completedAt: number, invalidate: () => void): void => {
+		const previous = ageRefreshByCallId.get(id);
+		const unchanged = previous?.completedAt === completedAt;
+		ageRefreshByCallId.set(id, { completedAt, invalidate, nextAt: unchanged ? previous.nextAt : nextAgeRefreshAt(completedAt, Date.now()) });
+		if (!unchanged || !ageRefreshTimer) scheduleAgeRefresh();
+	};
+	const clearAgeRefresh = (): void => {
+		if (ageRefreshTimer) clearTimeout(ageRefreshTimer);
+		ageRefreshTimer = undefined;
+		ageRefreshByCallId.clear();
+	};
 
 	pi.on("tool_execution_start", async (e: any) => {
 		if (!startedAtByCallId.has(e.toolCallId)) startedAtByCallId.set(e.toolCallId, Date.now());
@@ -527,6 +564,12 @@ export default function (pi: ExtensionAPI) {
 		startedAtByCallId.clear();
 		for (const timer of elapsedTimerByCallId.values()) clearInterval(timer);
 		elapsedTimerByCallId.clear();
+	});
+
+	pi.on("session_shutdown", async () => {
+		for (const timer of elapsedTimerByCallId.values()) clearInterval(timer);
+		elapsedTimerByCallId.clear();
+		clearAgeRefresh();
 	});
 
 	// Render the recap message as width-aware colored lines.
@@ -651,6 +694,9 @@ export default function (pi: ExtensionAPI) {
 					: startedAt === undefined ? 0 : Date.now() - startedAt;
 				const persistedCompletedAt = Number(result?.details?.piTidyCompletedAt);
 				const completedAt = Number.isFinite(persistedCompletedAt) ? persistedCompletedAt : undefined;
+				if (toolCallId && completedAt !== undefined && typeof context?.invalidate === "function") {
+					registerAgeRefresh(toolCallId, completedAt, () => context.invalidate());
+				}
 				const lines = () => buildToolBlock(name, context?.args ?? {}, result, {
 					isError,
 					expanded: options?.expanded ?? false,

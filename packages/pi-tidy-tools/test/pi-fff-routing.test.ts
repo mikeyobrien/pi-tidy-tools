@@ -80,6 +80,28 @@ test("scoped controller keeps native read and routes captured FFF through tidy g
 	assert.match(failed.status.action, /Stop using tools and \/reload/);
 });
 
+test("composition failure before replay keeps truthful safe ownership", async () => {
+	const managed = participant({ source: "npm:@ff-labs/pi-fff@0.9.6", extensions: [] }, "scoped");
+	const controller = createPiFffIntegrationController({
+		pi: api, cwd: "/fixture", agentDir: "/agent", lifecycle: lifecycle(ready([managed])),
+		buildPlan: async () => ({ ok: true, plan: {
+			scope: "project", packageIdentity: "@ff-labs/pi-fff", profile: "scoped", captureMode: "scoped-pair", packageRoot: managed.packageRoot,
+			entryPath: `${managed.packageRoot}/src/index.ts`, piVersion: "0.80.6", piFffVersion: "0.9.6", status: "verified", integrity: "missing", diagnostics: [], trace: [],
+			captures: { grep: { name: "ffgrep" }, find: { name: "fffind" } },
+		} as any }),
+	});
+	const startup = await controller.initialize(true);
+	assert.throws(() => startup.commit(() => { throw new Error("decorator rejected source"); }), /composition failed before registration/);
+	const failed = await controller.run("status", { enabled: true });
+	assert.equal(failed.status.state, "managed-invalid");
+	assert.equal(failed.status.owner, "tidy/native read; grep/find unavailable");
+	assert.equal(failed.status.journal, "committed");
+	assert.equal(failed.status.diagnostic?.code, "PIFFF_SURFACE_BREAKING");
+	assert.equal(failed.status.diagnostic?.severity, "error");
+	assert.match(failed.status.action, /Unaffected tools remain safe/);
+	assert.doesNotMatch(failed.status.action, /Stop using tools/);
+});
+
 test("controller suppresses informational compatibility notices and closes adapter failures", async () => {
 	const managed = participant({ source: "npm:pi-fff@0.1.12", extensions: [] });
 	const compatible = createPiFffIntegrationController({

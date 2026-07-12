@@ -24,7 +24,7 @@ export type PiFffRoutingState =
 
 export interface PiFffRoutingStatus {
 	readonly state: PiFffRoutingState;
-	readonly owner: "tidy/native" | "standalone pi-fff" | "tidy/pi-fff" | "native Pi" | "tidy/native read + FFF-executed tidy grep/find" | "native Pi + pi-fff tools" | "unsafe partial registration; reload required";
+	readonly owner: "tidy/native" | "standalone pi-fff" | "tidy/pi-fff" | "native Pi" | "tidy/native read + FFF-executed tidy grep/find" | "native Pi + pi-fff tools" | "tidy/native read; grep/find unavailable" | "tidy native tools; read/grep unavailable" | "unsafe partial registration; reload required";
 	readonly scopes: readonly ("project" | "user")[];
 	readonly packageIdentity?: PiFffPackageIdentity;
 	readonly profile?: PiFffCapabilityProfile;
@@ -90,8 +90,24 @@ function adapterDiagnostic(value: PiFffDiagnostic): PiFffRoutingStatus["diagnost
 	return { code: value.code, severity: value.severity, detail: value.detail };
 }
 
+function forwardedDiagnostic(error: unknown): PiFffDiagnostic | undefined {
+	return error && typeof error === "object" ? (error as { diagnostic?: PiFffDiagnostic }).diagnostic : undefined;
+}
+
+function safeCompositionDiagnostic(plan: PiFffRegistrationPlan, error: unknown): PiFffDiagnostic {
+	const forwarded = forwardedDiagnostic(error);
+	if (forwarded && forwarded.code !== "PIFFF_FORWARD_PARTIAL") return forwarded;
+	return {
+		code: "PIFFF_SURFACE_BREAKING", severity: "error",
+		summary: "pi-fff tool composition failed before registration.",
+		detail: error instanceof Error ? error.message : String(error),
+		action: "Repair the incompatible composition and /reload; unaffected tools remain safe.",
+		piVersion: plan.piVersion, piFffVersion: plan.piFffVersion,
+	};
+}
+
 function partialReplayDiagnostic(plan: PiFffRegistrationPlan, error: unknown): PiFffDiagnostic {
-	const forwarded = error && typeof error === "object" ? (error as { diagnostic?: PiFffDiagnostic }).diagnostic : undefined;
+	const forwarded = forwardedDiagnostic(error);
 	if (forwarded?.code === "PIFFF_FORWARD_PARTIAL") return { ...forwarded, severity: "fatal" };
 	const detail = forwarded ? `${forwarded.code}: ${forwarded.detail}` : error instanceof Error ? error.message : String(error);
 	return {
@@ -211,20 +227,25 @@ export function createPiFffIntegrationController(options: CreatePiFffControllerO
 				commit(createComposite) {
 					if (committed) return;
 					committed = true;
-					try {
-						if (plan.profile === "legacy") {
-							// Legacy pi-fff is last-writer-wins: it replaces, rather than wraps,
-							// an editor already installed by another extension.
-							options.pi.on("session_start", (_event: unknown, ctx: any) => {
-								if (typeof ctx?.ui?.getEditorComponent?.() !== "function" || !ctx.ui.getEditorComponent()) return;
-								ctx.ui.notify("pi-fff will replace an existing custom editor. Disable one editor feature and /reload; editor composition is not supported by this tuple.", "warning");
-							});
-						}
-						const sources = createPiFffCompositeSources(plan);
-						const composites = Object.fromEntries(Object.entries(sources).map(([name, source]) => [name, createComposite(source)])) as any;
-						const replay = replayPiFffRegistrationPlan(plan, options.pi, composites);
-						if (!replay.ok) throw Object.assign(new Error(replay.diagnostic.summary), { diagnostic: replay.diagnostic });
-					} catch (error) {
+					if (plan.profile === "legacy") {
+						// Legacy pi-fff is last-writer-wins: it replaces, rather than wraps,
+						// an editor already installed by another extension.
+						options.pi.on("session_start", (_event: unknown, ctx: any) => {
+							if (typeof ctx?.ui?.getEditorComponent?.() !== "function" || !ctx.ui.getEditorComponent()) return;
+							ctx.ui.notify("pi-fff will replace an existing custom editor. Disable one editor feature and /reload; editor composition is not supported by this tuple.", "warning");
+						});
+					}
+					const failSafe = (error: unknown): never => {
+						const diagnostic = safeCompositionDiagnostic(plan, error);
+						current = {
+							...current, state: "managed-invalid",
+							owner: plan.profile === "scoped" ? "tidy/native read; grep/find unavailable" : "tidy native tools; read/grep unavailable",
+							tuple: "unavailable", journal: "committed", diagnostic: adapterDiagnostic(diagnostic),
+							action: "FFF-backed tools were not registered; fix the diagnostic and /reload. Unaffected tools remain safe.",
+						};
+						throw Object.assign(new Error(diagnostic.summary, { cause: error }), { diagnostic });
+					};
+					const failPartial = (error: unknown): never => {
 						const fatal = partialReplayDiagnostic(plan, error);
 						current = {
 							...current, state: "managed-invalid", owner: "unsafe partial registration; reload required",
@@ -232,6 +253,18 @@ export function createPiFffIntegrationController(options: CreatePiFffControllerO
 							diagnostic: adapterDiagnostic(fatal), action: "Stop using tools and /reload; registration ownership is unsafe until Pi restarts.",
 						};
 						throw Object.assign(new Error(fatal.summary, { cause: error }), { diagnostic: fatal });
+					};
+					let composites: any;
+					try {
+						const sources = createPiFffCompositeSources(plan);
+						composites = Object.fromEntries(Object.entries(sources).map(([name, source]) => [name, createComposite(source)]));
+					} catch (error) { return failSafe(error); }
+					let replay;
+					try { replay = replayPiFffRegistrationPlan(plan, options.pi, composites); }
+					catch (error) { return failPartial(error); }
+					if (!replay.ok) {
+						const error = Object.assign(new Error(replay.diagnostic.summary), { diagnostic: replay.diagnostic });
+						return replay.diagnostic.code === "PIFFF_FORWARD_PARTIAL" ? failPartial(error) : failSafe(error);
 					}
 				},
 			};

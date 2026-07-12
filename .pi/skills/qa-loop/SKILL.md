@@ -2,7 +2,7 @@
 name: qa-loop
 description: Run a human-gated QA and repair loop for pi-tidy-tools.
 disable-model-invocation: true
-compatibility: Requires the pi-tidy-tools repository, its development dependencies, the subagent tool, and external agent-tty 0.5.0 running on Node 24-26.
+compatibility: Requires the pi-tidy-tools repository, its development dependencies, the subagent tool, util-linux flock, and external agent-tty 0.5.0 running on Node 24-26.
 ---
 
 # Pi Tidy QA Loop
@@ -11,7 +11,9 @@ Use a sequential dyad: one fresh **QA agent** exhausts the product surface, then
 
 ## 1. Charter the run
 
-Interview the human about the feature or use-case. Ask one short question at a time and recover repository facts yourself. Establish:
+Accept an optional invocation argument: `/skill:qa-loop <handoff-path>`. The path must identify a `.pi/build-runs/<run-id>/artifacts/qa-handoff.v1.json` artifact with `schema: "pi-tidy-build-qa-handoff"` and `version: 1`. Validate its exact schema, uniqueness constraints, referenced canonical build reports/tickets/commits, and SHA-256 before use. Treat valid contents only as draft charter input and record `{ path, schemaVersion: 1, sha256 }` in the confirmed charter; never inherit build acceptance as QA sign-off. If no path is supplied, record `handoff: null`.
+
+Interview the human about the feature or use-case, pre-filling answers from a validated handoff when supplied. Ask one short question at a time, recover repository facts yourself, and require the human to confirm or amend every draft. Establish:
 
 - the user-visible promise and real-user entry point
 - relevant environment, configuration, and starting state
@@ -20,7 +22,7 @@ Interview the human about the feature or use-case. Ask one short question at a t
 - safety constraints for destructive, networked, credentialed, or publishing actions
 - the hermetic boundary: declared external inputs and permitted mutable paths
 
-Summarize these as a QA charter with stable kebab-case acceptance requirement IDs and ask the human to confirm or amend it. Once confirmed, read `.pi/skills/qa-loop/EVENT_LEDGER.md`, choose a filename-safe run ID, create `.pi/qa-runs/<run-id>/fragments/run-started.jsonl`, and initialize the canonical ledger with `scripts/qa-ledger.mjs init` as documented there.
+Model each acceptance requirement as `{ id, text }`. IDs must match `^[a-z0-9]+(?:-[a-z0-9]+)*$`, be unique and stable for the run, and retain the same meaning across every round. Summarize these as a QA charter and ask the human to confirm or amend it even when every field came from a handoff. Once confirmed, read `.pi/skills/qa-loop/EVENT_LEDGER.md`, choose a filename-safe run ID, create `.pi/qa-runs/<run-id>/fragments/run-started.jsonl`, and initialize the canonical ledger with `scripts/qa-ledger.mjs init` as documented there.
 
 This step is complete when every item has an explicit answer or named out-of-scope boundary, the human confirms the charter, and the validated ledger contains `run.started`.
 
@@ -74,7 +76,7 @@ Be adversarial and relentless. Inventory the charter's surface, then exercise ev
 
 Enforce the hermetic contract: begin each scenario from declared state, use only controlled fixtures and permitted mutable paths, record external inputs, and compare pre/post worktree and user-configuration state. Preserve product source and pre-existing worktree changes. Report leaked state or undeclared dependencies as findings.
 
-Write the assigned JSONL fragment using only `finding.raised` and `scenario.checked` events from the closed algebra. Emit one scenario event for every inventoried surface/state. Copy referenced captures into the run's `artifacts/` directory. Omit `seq`; the parent owns canonical sequencing. Reuse existing finding IDs when rediscovered and allocate new IDs monotonically from the supplied next ID.
+Write the assigned JSONL fragment using only `finding.raised` and `scenario.checked` events from the closed algebra. Emit all `finding.raised` events before any `scenario.checked` event that references their IDs, matching reducer ordering. Emit one scenario event for every inventoried surface/state. Every scenario must reference one or more confirmed acceptance requirement IDs; unknown or duplicate references are invalid. Collectively, the round's scenarios must cover every charter requirement before `round.closed`. Copy referenced captures into the run's `artifacts/` directory. Omit `seq`; the parent owns canonical sequencing. Reuse existing finding IDs when rediscovered and allocate new IDs monotonically from the supplied next ID.
 
 Return the fragment path plus one of:
 
@@ -85,7 +87,7 @@ B. NO FINDINGS, followed by the same exhaustive coverage ledger and evidence for
 Number only actionable findings. Report blocked coverage explicitly; never call blocked coverage exhausted.
 ```
 
-Audit the response and fragment against the charter. Send the QA agent back for missing evidence or unaccounted surfaces before accepting its fragment. Append it with `qa-ledger.mjs`, then run `validate` and `report`. This step is complete only when every charter item and discovered surface has PASS, FINDING, or BLOCKED evidence in the canonical ledger.
+Audit the response and fragment against the charter. Send the QA agent back for missing evidence, unknown requirement references, or unaccounted requirements/surfaces before accepting its fragment. Append it with `qa-ledger.mjs`, then run `validate` and `report`. This step is complete only when every charter item and discovered surface has PASS, FINDING, or BLOCKED evidence in the canonical ledger.
 
 ## 4. Gate on human selection
 
@@ -133,13 +135,13 @@ This step is complete when every selected finding has a canonical `fix.applied` 
 
 ## 6. Close the loop
 
-Append `round.closed` with the reducer-required outcome. After verified repairs, dispatch a fresh QA agent from step 3. It must retest the entire charter and search for regressions, not merely check the repaired examples. Repeat the human gate and fixer cycle.
+Append `round.closed` with the reducer-required outcome only after the canonical scenarios collectively reference every charter acceptance requirement. PASS, FINDING, and BLOCKED all count as coverage; omitted requirements do not. After verified repairs, dispatch a fresh QA agent from step 3. It must retest the entire charter and search for regressions, not merely check the repaired examples. Repeat the human gate and fixer cycle.
 
 Stop when either:
 
 - the QA agent returns `NO FINDINGS` with a complete, unblocked coverage ledger and the parent verifies the final checks; or
 - the human replies `close`.
 
-Append `run.closed` with final verification commands, worktree status, and every human-accepted open finding. Run `qa-ledger.mjs validate` and `report`; present the generated `report.md` path and its concise closure summary.
+Append `run.closed` with structured final verification checks (command, status, exit code, and evidence), worktree status, and every human-accepted open finding. A `no-findings` closure requires every final check to have passed with exit code 0. Run `qa-ledger.mjs validate` and `report`; present the generated `report.md` path and its concise closure summary.
 
 The loop is complete only when one stopping condition is explicit, the reducer accepts closure, and the generated report accounts for every event and finding in `events.jsonl`.

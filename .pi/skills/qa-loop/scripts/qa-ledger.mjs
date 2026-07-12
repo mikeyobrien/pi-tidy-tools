@@ -1,6 +1,10 @@
 #!/usr/bin/env node
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { dirname, join, posix, resolve } from "node:path";
+import { reduce as reduceBuildLedger, renderReport as renderBuildReport } from "../../build-loop/scripts/build-ledger.mjs";
+import { createLedgerCli, executeLedgerCli, parseJsonl } from "../../shared/run-ledger.mjs";
 
 const EVENT_TYPES = new Set([
   "run.started", "round.started", "finding.raised", "scenario.checked",
@@ -11,6 +15,7 @@ const assert = (condition, message) => { if (!condition) throw new Error(message
 const object = (value, field) => { assert(value && typeof value === "object" && !Array.isArray(value), `${field} must be an object`); return value; };
 const string = (value, field) => { assert(typeof value === "string" && value.trim().length > 0, `${field} must be a non-empty string`); };
 const number = (value, field) => { assert(Number.isInteger(value) && value > 0, `${field} must be a positive integer`); };
+const requirementId = (value, field) => { string(value, field); assert(/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value), `${field} must be stable kebab-case`); };
 const strings = (value, field, nonempty = false) => {
   assert(Array.isArray(value) && (!nonempty || value.length > 0), `${field} must be ${nonempty ? "a non-empty" : "an"} array`);
   value.forEach((item, index) => string(item, `${field}[${index}]`));
@@ -28,8 +33,38 @@ function evidence(value, field) {
     exactKeys(item, allowed, `${field}[${index}]`);
     enumValues(item.kind, ["capture", "command", "file", "note"], `${field}[${index}].kind`);
     string(item.ref, `${field}[${index}].ref`);
+    if (["capture", "file"].includes(item.kind)) { const normalized = posix.normalize(item.ref); assert(!item.ref.startsWith("/") && !item.ref.includes("\\") && normalized === item.ref && normalized !== "." && normalized !== ".." && !normalized.startsWith("../"), `${field}[${index}].ref must be a normalized run-relative path`); }
     if (item.sha256 !== undefined) assert(/^[a-f0-9]{64}$/.test(item.sha256), `${field}[${index}].sha256 must be lowercase SHA-256`);
   });
+}
+
+async function validateHandoffArtifact(value) {
+  object(value, "handoff artifact"); exactKeys(value, ["schema", "version", "parent", "acceptedTickets", "entryPoints", "environment", "residualRisks", "deferredWork", "suggestedAcceptanceBoundaries"], "handoff artifact");
+  assert(value.schema === "pi-tidy-build-qa-handoff" && value.version === 1, "handoff artifact schema/version is unsupported");
+  const parent = object(value.parent, "handoff artifact.parent"); exactKeys(parent, ["id", "url", "title", "promise"], "handoff artifact.parent"); for (const key of ["id", "url", "title", "promise"]) string(parent[key], `handoff artifact.parent.${key}`);
+  assert(Array.isArray(value.acceptedTickets) && value.acceptedTickets.length > 0, "handoff artifact.acceptedTickets must be non-empty");
+  const ids = new Set(), commits = new Set(), reports = new Set();
+  value.acceptedTickets.forEach((item, index) => { object(item, `handoff artifact.acceptedTickets[${index}]`); exactKeys(item, ["id", "url", "commitSha", "reportPath"], `handoff artifact.acceptedTickets[${index}]`); for (const key of ["id", "url", "reportPath"]) string(item[key], `handoff artifact.acceptedTickets[${index}].${key}`); assert(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(item.commitSha), `handoff artifact.acceptedTickets[${index}].commitSha must be a full hexadecimal commit ID`); assert(/^\.pi\/build-runs\/[A-Za-z0-9._-]+\/report\.md$/.test(item.reportPath), `handoff artifact.acceptedTickets[${index}].reportPath must be canonical`); assert(!ids.has(item.id) && !commits.has(item.commitSha) && !reports.has(item.reportPath), "handoff artifact ticket IDs, commits, and reports must be unique"); ids.add(item.id); commits.add(item.commitSha); reports.add(item.reportPath); });
+  for (const [key, nonempty] of [["entryPoints", true], ["environment", true], ["residualRisks", false], ["deferredWork", false], ["suggestedAcceptanceBoundaries", true]]) strings(value[key], `handoff artifact.${key}`, nonempty);
+  const trackerId = (tracker) => `${tracker.provider}:${tracker.repository}#${tracker.number}`;
+  for (const ticket of value.acceptedTickets) {
+    const report = resolve(ticket.reportPath), runDir = dirname(report), ledger = join(runDir, "events.jsonl"), events = parseJsonl(await readFile(ledger, "utf8"), ledger), state = reduceBuildLedger(events), charter = state.run.charter;
+    assert(trackerId(charter.ticket) === ticket.id && charter.ticket.url === ticket.url, `handoff ticket ${ticket.id} does not match its build charter`);
+    assert(trackerId(charter.parent) === value.parent.id && charter.parent.url === value.parent.url && charter.parent.title === value.parent.title && charter.parentBody === value.parent.promise, `handoff parent does not match build charter for ${ticket.id}`);
+    assert(state.commit?.status === "succeeded" && state.commit.sha.startsWith(ticket.commitSha) && state.ticketClosed?.commitSha === state.commit.sha && state.closed?.reason === "ticket-closed", `handoff ticket ${ticket.id} lacks canonical closed build evidence`);
+    const resolvedCommit = spawnSync("git", ["rev-parse", "--verify", `${ticket.commitSha}^{commit}`], { encoding: "utf8" }); assert(resolvedCommit.status === 0 && resolvedCommit.stdout.trim() === state.commit.sha, `handoff ticket ${ticket.id} commit is missing or mismatched`);
+    assert(await readFile(report, "utf8") === renderBuildReport(events), `handoff ticket ${ticket.id} report is missing or stale`);
+  }
+}
+
+async function validateInitHandoff(events) {
+  const reference = events[0]?.charter?.handoff;
+  if (!reference) return;
+  assert(/^\.pi\/build-runs\/[A-Za-z0-9._-]+\/artifacts\/qa-handoff\.v1\.json$/.test(reference.path), "run.started.charter.handoff.path must be canonical");
+  const bytes = await readFile(resolve(reference.path)), actual = createHash("sha256").update(bytes).digest("hex");
+  assert(actual === reference.sha256, "run.started.charter.handoff.sha256 does not match artifact bytes");
+  let artifact; try { artifact = JSON.parse(bytes.toString("utf8")); } catch (error) { throw new Error(`handoff artifact is not valid JSON: ${error.message}`); }
+  await validateHandoffArtifact(artifact);
 }
 
 function validateEvent(event, { fragment = false } = {}) {
@@ -42,15 +77,19 @@ function validateEvent(event, { fragment = false } = {}) {
   const base = ["v", "seq", "type"].filter((key) => key !== "seq" || !fragment);
   const keys = (...specific) => exactKeys(event, [...base, ...specific], event.type);
   const round = () => number(event.round, `${event.type}.round`);
-  const findingId = () => assert(/^F\d{3,}$/.test(event.findingId), `${event.type}.findingId must match F001`);
+  const findingId = () => assert(/^F\d{3,4}$/.test(event.findingId), `${event.type}.findingId must match F001`);
 
   switch (event.type) {
     case "run.started": {
       keys("runId", "charter", "tooling"); string(event.runId, "run.started.runId");
       const charter = object(event.charter, "run.started.charter");
-      exactKeys(charter, ["feature", "promise", "entryPoint", "environment", "acceptance", "safety", "outOfScope"], "run.started.charter");
+      exactKeys(charter, ["feature", "promise", "entryPoint", "environment", "acceptance", "safety", "outOfScope", "handoff"], "run.started.charter");
       for (const key of ["feature", "promise", "entryPoint", "environment"]) string(charter[key], `run.started.charter.${key}`);
-      strings(charter.acceptance, "run.started.charter.acceptance", true); strings(charter.safety, "run.started.charter.safety", true); strings(charter.outOfScope, "run.started.charter.outOfScope");
+      assert(Array.isArray(charter.acceptance) && charter.acceptance.length > 0, "run.started.charter.acceptance must be a non-empty array");
+      const requirementIds = new Set();
+      charter.acceptance.forEach((item, index) => { object(item, `run.started.charter.acceptance[${index}]`); exactKeys(item, ["id", "text"], `run.started.charter.acceptance[${index}]`); requirementId(item.id, `run.started.charter.acceptance[${index}].id`); string(item.text, `run.started.charter.acceptance[${index}].text`); assert(!requirementIds.has(item.id), `duplicate acceptance requirement ID: ${item.id}`); requirementIds.add(item.id); });
+      strings(charter.safety, "run.started.charter.safety", true); strings(charter.outOfScope, "run.started.charter.outOfScope");
+      if (charter.handoff !== null) { const handoff = object(charter.handoff, "run.started.charter.handoff"); exactKeys(handoff, ["path", "schemaVersion", "sha256"], "run.started.charter.handoff"); string(handoff.path, "run.started.charter.handoff.path"); assert(handoff.schemaVersion === 1, "run.started.charter.handoff.schemaVersion must be 1"); assert(/^[a-f0-9]{64}$/.test(handoff.sha256), "run.started.charter.handoff.sha256 must be lowercase SHA-256"); }
       const tooling = object(event.tooling, "run.started.tooling");
       if (tooling.driver === "agent-tty") {
         exactKeys(tooling, ["driver", "harness", "viewports", "sessionDir", "agentTtyHome", "piVersion", "agentTtyVersion", "nodeVersion"], "run.started.tooling");
@@ -77,14 +116,14 @@ function validateEvent(event, { fragment = false } = {}) {
       for (const key of ["summary", "actual", "expected", "recommendation", "acceptance"]) string(event[key], `finding.raised.${key}`);
       strings(event.reproduction, "finding.raised.reproduction", true); evidence(event.evidence, "finding.raised.evidence"); break;
     case "scenario.checked":
-      keys("round", "scenarioId", "requirementIds", "status", "findingIds", "evidence", "notes"); round(); string(event.scenarioId, "scenario.checked.scenarioId"); strings(event.requirementIds, "scenario.checked.requirementIds", true); enumValues(event.status, ["pass", "finding", "blocked"], "scenario.checked.status"); strings(event.findingIds, "scenario.checked.findingIds"); evidence(event.evidence, "scenario.checked.evidence"); string(event.notes, "scenario.checked.notes");
+      keys("round", "scenarioId", "requirementIds", "status", "findingIds", "evidence", "notes"); round(); string(event.scenarioId, "scenario.checked.scenarioId"); strings(event.requirementIds, "scenario.checked.requirementIds", true); event.requirementIds.forEach((id, index) => requirementId(id, `scenario.checked.requirementIds[${index}]`)); assert(new Set(event.requirementIds).size === event.requirementIds.length, "scenario requirementIds must be unique"); enumValues(event.status, ["pass", "finding", "blocked"], "scenario.checked.status"); strings(event.findingIds, "scenario.checked.findingIds"); evidence(event.evidence, "scenario.checked.evidence"); string(event.notes, "scenario.checked.notes");
       assert(event.status === "finding" ? event.findingIds.length > 0 : event.findingIds.length === 0, "scenario findingIds must be populated only for finding status");
-      event.findingIds.forEach((id) => assert(/^F\d{3,}$/.test(id), `invalid scenario finding ID: ${id}`)); break;
+      event.findingIds.forEach((id) => assert(/^F\d{3,4}$/.test(id), `invalid scenario finding ID: ${id}`)); break;
     case "human.selected": keys("round", "action", "findingIds"); round(); enumValues(event.action, ["fix", "retest", "close"], "human.selected.action"); strings(event.findingIds, "human.selected.findingIds"); assert(event.action === "fix" ? event.findingIds.length > 0 : event.findingIds.length === 0, "only fix selections contain findingIds"); break;
     case "fix.applied": keys("round", "findingId", "files", "tests", "summary", "residualRisk"); round(); findingId(); strings(event.files, "fix.applied.files", true); strings(event.tests, "fix.applied.tests", true); string(event.summary, "fix.applied.summary"); string(event.residualRisk, "fix.applied.residualRisk"); break;
     case "verification.recorded": keys("round", "findingId", "status", "evidence", "notes"); round(); findingId(); enumValues(event.status, ["passed", "failed", "blocked"], "verification.recorded.status"); evidence(event.evidence, "verification.recorded.evidence"); string(event.notes, "verification.recorded.notes"); break;
     case "round.closed": keys("round", "outcome"); round(); enumValues(event.outcome, ["findings", "no-findings", "blocked"], "round.closed.outcome"); break;
-    case "run.closed": keys("reason", "acceptedOpenFindingIds", "verificationCommands", "worktreeStatus"); enumValues(event.reason, ["no-findings", "human-signoff"], "run.closed.reason"); strings(event.acceptedOpenFindingIds, "run.closed.acceptedOpenFindingIds"); strings(event.verificationCommands, "run.closed.verificationCommands", true); assert(Array.isArray(event.worktreeStatus), "run.closed.worktreeStatus must be an array"); event.worktreeStatus.forEach((line) => assert(typeof line === "string", "worktree status lines must be strings")); break;
+    case "run.closed": keys("reason", "acceptedOpenFindingIds", "verificationChecks", "worktreeStatus"); enumValues(event.reason, ["no-findings", "human-signoff"], "run.closed.reason"); strings(event.acceptedOpenFindingIds, "run.closed.acceptedOpenFindingIds"); assert(Array.isArray(event.verificationChecks) && event.verificationChecks.length > 0, "run.closed.verificationChecks must be non-empty"); event.verificationChecks.forEach((check, index) => { object(check, `run.closed.verificationChecks[${index}]`); exactKeys(check, ["command", "status", "exitCode", "evidence"], `run.closed.verificationChecks[${index}]`); string(check.command, `run.closed.verificationChecks[${index}].command`); enumValues(check.status, ["passed", "failed", "blocked"], `run.closed.verificationChecks[${index}].status`); assert(check.status === "blocked" ? check.exitCode === null : Number.isInteger(check.exitCode), `run.closed.verificationChecks[${index}].exitCode must match status`); assert(check.status !== "passed" || check.exitCode === 0, `run.closed.verificationChecks[${index}] passed status requires exit code 0`); evidence(check.evidence, `run.closed.verificationChecks[${index}].evidence`); }); assert(Array.isArray(event.worktreeStatus), "run.closed.worktreeStatus must be an array"); event.worktreeStatus.forEach((line) => assert(typeof line === "string", "worktree status lines must be strings")); break;
   }
 }
 
@@ -101,41 +140,48 @@ function reduce(events) {
       case "round.started": {
         assert(state.run, "run must start before rounds"); assert(activeRound === null, "previous round must close before another starts");
         assert(event.round === state.rounds.size + 1, "round numbers must be contiguous");
-        const record = { event, scenarios: new Map(), outcome: null }; state.rounds.set(event.round, record); activeRound = record; break;
+        const record = { event, scenarios: new Map(), decision: null, fixes: new Map(), verifications: new Map(), outcome: null }; state.rounds.set(event.round, record); activeRound = record; break;
       }
       case "finding.raised":
-        assert(activeRound?.event.round === event.round, "finding must belong to active round"); assert(!state.findings.has(event.findingId), `duplicate finding: ${event.findingId}`);
+        assert(activeRound?.event.round === event.round, "finding must belong to active round"); assert(activeRound.scenarios.size === 0, "findings must precede every scenario in a round"); assert(!state.findings.has(event.findingId), `duplicate finding: ${event.findingId}`);
         assert(event.findingId === `F${String(state.findings.size + 1).padStart(3, "0")}`, `next finding ID must be F${String(state.findings.size + 1).padStart(3, "0")}`);
         state.findings.set(event.findingId, { event, status: "open" }); break;
       case "scenario.checked": {
         assert(activeRound?.event.round === event.round, "scenario must belong to active round"); assert(!activeRound.scenarios.has(event.scenarioId), `duplicate scenario in round: ${event.scenarioId}`);
+        const charterRequirementIds = new Set(state.run.charter.acceptance.map((requirement) => requirement.id));
+        for (const id of event.requirementIds) assert(charterRequirementIds.has(id), `unknown scenario requirement: ${id}`);
         for (const id of event.findingIds) { const finding = state.findings.get(id); assert(finding, `unknown scenario finding: ${id}`); finding.status = "open"; }
         activeRound.scenarios.set(event.scenarioId, event); break;
       }
       case "human.selected":
-        assert(activeRound?.event.round === event.round, "selection must belong to active round");
-        for (const id of event.findingIds) { assert(state.findings.has(id), `unknown selected finding: ${id}`); state.authorized.add(id); }
-        state.decisions.push(event); break;
+        assert(activeRound?.event.round === event.round, "selection must belong to active round"); assert(activeRound.scenarios.size > 0, "selection must follow scenario accounting"); assert(!activeRound.decision, "round may contain only one human selection");
+        assert(new Set(event.findingIds).size === event.findingIds.length, "selected finding IDs must be unique"); const currentlyObserved = new Set([...activeRound.scenarios.values()].filter((scenario) => scenario.status === "finding").flatMap((scenario) => scenario.findingIds));
+        for (const id of event.findingIds) { const finding = state.findings.get(id); assert(finding, `unknown selected finding: ${id}`); assert(finding.status !== "fixed" && currentlyObserved.has(id), `selected finding is not open and observed in this round: ${id}`); state.authorized.add(id); }
+        activeRound.decision = event; state.decisions.push(event); break;
       case "fix.applied": {
-        assert(activeRound?.event.round === event.round, "fix must belong to active round"); const finding = state.findings.get(event.findingId); assert(finding, `unknown fixed finding: ${event.findingId}`); assert(state.authorized.has(event.findingId), `finding was not authorized: ${event.findingId}`);
-        finding.status = "repairing"; state.fixes.push(event); break;
+        assert(activeRound?.event.round === event.round, "fix must belong to active round"); const finding = state.findings.get(event.findingId); assert(finding, `unknown fixed finding: ${event.findingId}`); assert(activeRound.decision?.action === "fix" && activeRound.decision.findingIds.includes(event.findingId), `finding was not selected for repair in this round: ${event.findingId}`); assert(!activeRound.fixes.has(event.findingId), `duplicate fix in round: ${event.findingId}`);
+        finding.status = "repairing"; activeRound.fixes.set(event.findingId, event); state.fixes.push(event); break;
       }
       case "verification.recorded": {
-        assert(activeRound?.event.round === event.round, "verification must belong to active round"); const finding = state.findings.get(event.findingId); assert(finding, `unknown verified finding: ${event.findingId}`); assert(state.fixes.some((fix) => fix.findingId === event.findingId), `finding has no applied fix: ${event.findingId}`);
-        finding.status = event.status === "passed" ? "fixed" : event.status === "blocked" ? "blocked" : "open"; state.verifications.push(event); break;
+        assert(activeRound?.event.round === event.round, "verification must belong to active round"); const finding = state.findings.get(event.findingId); assert(finding, `unknown verified finding: ${event.findingId}`); assert(activeRound.fixes.has(event.findingId), `finding has no fix in this round: ${event.findingId}`); assert(!activeRound.verifications.has(event.findingId), `duplicate verification in round: ${event.findingId}`);
+        finding.status = event.status === "passed" ? "fixed" : event.status === "blocked" ? "blocked" : "open"; activeRound.verifications.set(event.findingId, event); state.verifications.push(event); break;
       }
       case "round.closed": {
         assert(activeRound?.event.round === event.round, "closed round must be active"); assert(activeRound.scenarios.size > 0, "round cannot close without scenarios");
+        const coveredRequirements = new Set([...activeRound.scenarios.values()].flatMap((scenario) => scenario.requirementIds));
+        const missingRequirements = state.run.charter.acceptance.map((requirement) => requirement.id).filter((id) => !coveredRequirements.has(id));
+        assert(missingRequirements.length === 0, `round cannot close without requirement coverage: ${missingRequirements.join(", ")}`);
         const statuses = [...activeRound.scenarios.values()].map((scenario) => scenario.status);
         const expected = statuses.includes("blocked") ? "blocked" : statuses.includes("finding") ? "findings" : "no-findings";
-        assert(event.outcome === expected, `round outcome must be ${expected}`);
+        assert(event.outcome === expected, `round outcome must be ${expected}`); assert(expected !== "findings" || activeRound.decision, "findings round requires a human selection before closure");
+        if (activeRound.decision?.action === "fix") for (const id of activeRound.decision.findingIds) { assert(activeRound.fixes.has(id), `selected finding requires one fix before round closure: ${id}`); assert(activeRound.verifications.has(id), `selected finding requires terminal verification before round closure: ${id}`); }
         if (event.outcome === "no-findings") assert([...state.findings.values()].every((finding) => finding.status === "fixed"), "no-findings requires every historical finding fixed");
         activeRound.outcome = event; activeRound = null; break;
       }
       case "run.closed": {
         assert(activeRound === null, "active round must close before run"); const latest = [...state.rounds.values()].at(-1); assert(latest?.outcome, "run requires a closed round");
         const open = [...state.findings].filter(([, finding]) => finding.status !== "fixed").map(([id]) => id).sort();
-        if (event.reason === "no-findings") { assert(latest.outcome.outcome === "no-findings" && open.length === 0, "no-findings closure requires an exhausted final round"); assert(event.acceptedOpenFindingIds.length === 0, "no-findings cannot accept open findings"); }
+        if (event.reason === "no-findings") { assert(latest.outcome.outcome === "no-findings" && open.length === 0, "no-findings closure requires an exhausted final round"); assert(event.acceptedOpenFindingIds.length === 0, "no-findings cannot accept open findings"); assert(event.verificationChecks.every((check) => check.status === "passed" && check.exitCode === 0), "no-findings closure requires every final verification check to pass"); }
         else { assert(state.decisions.at(-1)?.action === "close", "human-signoff requires a close decision"); assert(JSON.stringify([...event.acceptedOpenFindingIds].sort()) === JSON.stringify(open), "human-signoff must account for every open finding"); }
         state.closed = event; break;
       }
@@ -145,32 +191,12 @@ function reduce(events) {
   return state;
 }
 
-const stable = (value) => JSON.stringify(sortValue(value));
-function sortValue(value) {
-  if (Array.isArray(value)) return value.map(sortValue);
-  if (value && typeof value === "object") return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortValue(value[key])]));
-  return value;
-}
-function parseJsonl(text, source) {
-  return text.split(/\r?\n/).flatMap((line, index) => {
-    if (!line.trim()) return [];
-    try { return [JSON.parse(line)]; } catch (error) { throw new Error(`${source}:${index + 1}: ${error.message}`); }
-  });
-}
-async function loadLedger(runDir) {
-  const path = join(runDir, "events.jsonl");
-  const events = parseJsonl(await readFile(path, "utf8"), path); reduce(events); return events;
-}
-async function atomicLedgerWrite(runDir, events) {
-  const path = join(runDir, "events.jsonl"), temp = `${path}.tmp`;
-  await writeFile(temp, `${events.map(stable).join("\n")}\n`); await rename(temp, path);
-}
 const cell = (value) => String(value).replaceAll("|", "\\|").replaceAll("\n", " ");
 const evidenceText = (items) => items.map((item) => `${item.kind}:${item.ref}${item.sha256 ? `#${item.sha256.slice(0, 12)}` : ""}`).join(", ");
 function renderReport(events) {
   const state = reduce(events), lines = [];
   lines.push(`# QA Loop Report — ${state.run.runId}`, "", `**Feature:** ${state.run.charter.feature}  `, `**Promise:** ${state.run.charter.promise}  `, `**Entry point:** ${state.run.charter.entryPoint}  `, `**Environment:** ${state.run.charter.environment}`, "");
-  lines.push("## Charter", "", "### Acceptance", ...state.run.charter.acceptance.map((item) => `- ${item}`), "", "### Safety", ...state.run.charter.safety.map((item) => `- ${item}`), "", "### Out of scope", ...(state.run.charter.outOfScope.length ? state.run.charter.outOfScope.map((item) => `- ${item}`) : ["- None"]), "");
+  lines.push("## Charter", "", "### Acceptance", ...state.run.charter.acceptance.map((item) => `- **${item.id}:** ${item.text}`), ...(state.run.charter.handoff ? ["", `Build handoff: \`${state.run.charter.handoff.path}\` (schema v${state.run.charter.handoff.schemaVersion}, SHA-256 ${state.run.charter.handoff.sha256})`] : []), "", "### Safety", ...state.run.charter.safety.map((item) => `- ${item}`), "", "### Out of scope", ...(state.run.charter.outOfScope.length ? state.run.charter.outOfScope.map((item) => `- ${item}`) : ["- None"]), "");
   const toolingVersion = state.run.tooling.driver === "agent-tty" ? `${state.run.tooling.agentTtyVersion}; ${state.run.tooling.nodeVersion}` : state.run.tooling.tmuxVersion;
   lines.push("## Tooling", "", `- Driver: ${state.run.tooling.driver} (${toolingVersion})`, `- Pi: ${state.run.tooling.piVersion}`, `- Harness: \`${state.run.tooling.harness}\``, `- Viewports: ${state.run.tooling.viewports.join(", ")}`, `- Session directory: \`${state.run.tooling.sessionDir}\``, ...(state.run.tooling.driver === "agent-tty" ? [`- agent-tty home: \`${state.run.tooling.agentTtyHome}\``] : []), "");
   lines.push("## Findings", "", "| ID | Severity | Confidence | Status | Summary |", "|---|---|---|---|---|");
@@ -189,27 +215,9 @@ function renderReport(events) {
   if (!state.decisions.length && !state.fixes.length && !state.verifications.length) lines.push("- None.");
   lines.push("", "## Closure", "");
   if (!state.closed) lines.push("Run remains open.");
-  else { lines.push(`Closed by **${state.closed.reason}**.`); if (state.closed.acceptedOpenFindingIds.length) lines.push(`Accepted open findings: ${state.closed.acceptedOpenFindingIds.join(", ")}.`); lines.push("", "Verification commands:", ...state.closed.verificationCommands.map((command) => `- \`${command}\``), "", "Final worktree status:", "```text", ...state.closed.worktreeStatus, "```"); }
+  else { lines.push(`Closed by **${state.closed.reason}**.`); if (state.closed.acceptedOpenFindingIds.length) lines.push(`Accepted open findings: ${state.closed.acceptedOpenFindingIds.join(", ")}.`); lines.push("", "Verification checks:", ...state.closed.verificationChecks.map((check) => `- **${check.status}** \`${check.command}\` (exit ${check.exitCode ?? "blocked"}; ${evidenceText(check.evidence)})`), "", "Final worktree status:", "```text", ...state.closed.worktreeStatus, "```"); }
   return `${lines.join("\n")}\n`;
 }
 
-function usage() {
-  console.error("Usage:\n  qa-ledger.mjs init <run-dir> <run-started.jsonl>\n  qa-ledger.mjs append <run-dir> <fragment.jsonl>\n  qa-ledger.mjs validate <run-dir>\n  qa-ledger.mjs report <run-dir> [output.md]"); process.exit(2);
-}
-const [command, runDirArg, inputArg] = process.argv.slice(2); if (!command || !runDirArg) usage();
-const runDir = resolve(runDirArg);
-try {
-  if (command === "init") {
-    if (!inputArg) usage(); await mkdir(join(runDir, "fragments"), { recursive: true }); await mkdir(join(runDir, "artifacts"), { recursive: true });
-    const fragment = parseJsonl(await readFile(resolve(inputArg), "utf8"), inputArg); assert(fragment.length === 1 && fragment[0].type === "run.started", "init requires exactly one run.started event"); validateEvent(fragment[0], { fragment: true });
-    const events = [{ ...fragment[0], seq: 1 }]; reduce(events); await atomicLedgerWrite(runDir, events); console.log(join(runDir, "events.jsonl"));
-  } else if (command === "append") {
-    if (!inputArg) usage(); const events = await loadLedger(runDir); const fragment = parseJsonl(await readFile(resolve(inputArg), "utf8"), inputArg); assert(fragment.length > 0, "fragment is empty");
-    fragment.forEach((event) => { validateEvent(event, { fragment: true }); assert(event.type !== "run.started", "cannot append another run.started"); });
-    const combined = [...events, ...fragment.map((event, index) => ({ ...event, seq: events.length + index + 1 }))]; reduce(combined); await atomicLedgerWrite(runDir, combined); console.log(`${fragment.length} event(s) appended`);
-  } else if (command === "validate") {
-    const events = await loadLedger(runDir); console.log(`${events.length} event(s) valid`);
-  } else if (command === "report") {
-    const events = await loadLedger(runDir); const output = inputArg ? resolve(inputArg) : join(runDir, "report.md"); await mkdir(dirname(output), { recursive: true }); await writeFile(output, renderReport(events)); console.log(output);
-  } else usage();
-} catch (error) { console.error(`qa-ledger: ${error.message}`); process.exit(1); }
+const cli = createLedgerCli({ name: "qa-ledger", validateEvent, reduce, renderReport, validateInitFragment: validateInitHandoff, refuseExisting: true });
+await executeLedgerCli(cli, process.argv.slice(2), "qa-ledger");

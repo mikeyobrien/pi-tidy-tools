@@ -12,9 +12,35 @@ export async function appendEvent(runDir: string, childId: string, event: Normal
 }
 export async function saveRun(details: RunDetails, completed = true): Promise<void> {
  const manifest = {
-  schemaVersion: 1, runId: details.runId, cwd: details.cwd, createdAt: details.createdAt,
-  ...(completed ? { completedAt: new Date().toISOString() } : {}), concurrencyCap: details.cap, runtime: details.runtime,
-  children: details.children.map(({ prompt, response: _response, streamingLine: _streamingLine, activeTools: _activeTools, ...child }) => ({ ...child, prompt, eventPath: `${child.id}.jsonl` })),
+  schemaVersion: details.schemaVersion ?? 2,
+  runId: details.runId,
+  cwd: details.cwd,
+  createdAt: details.createdAt,
+  ...(completed ? { completedAt: new Date().toISOString() } : {}),
+  concurrencyCap: details.cap,
+  // Parent runtime snapshot retained at run level.
+  runtime: details.runtime,
+  children: details.children.map(({ prompt, response: _response, streamingLine: _streamingLine, activeTools: _activeTools, runtimePlan, ...child }) => ({
+   ...child,
+   prompt,
+   eventPath: `${child.id}.jsonl`,
+   // Schema v2: per-child requested / resolved / observed model and thinking provenance.
+   ...(runtimePlan ? {
+    runtimePlan: {
+     provider: runtimePlan.provider,
+     modelId: runtimePlan.modelId,
+     model: runtimePlan.model,
+     thinking: runtimePlan.thinking,
+     provenance: runtimePlan.provenance,
+     thinkingProvenance: runtimePlan.thinkingProvenance,
+     resolvedThinking: runtimePlan.resolvedThinking,
+     ...(runtimePlan.requestedModel !== undefined ? { requestedModel: runtimePlan.requestedModel } : {}),
+     ...(runtimePlan.requestedThinking !== undefined ? { requestedThinking: runtimePlan.requestedThinking } : {}),
+     ...(runtimePlan.thinkingAdjustment ? { thinkingAdjustment: { ...runtimePlan.thinkingAdjustment } } : {}),
+     ...(runtimePlan.observed ? { observed: { ...runtimePlan.observed } } : {}),
+    },
+   } : {}),
+  })),
  };
  await writeFile(join(details.runDir, "run.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
  await Promise.all(details.children.flatMap((child) => [

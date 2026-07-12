@@ -1,10 +1,17 @@
 import { spawn } from "node:child_process";
 import { buildToolActivityBlock } from "./vendor/pi-tidy-core/index.js";
 import { appendEvent } from "./store.js";
-import type { ChildState, NormalizedEvent } from "./types.js";
+import type { ChildRuntimePlan, ChildState, NormalizedEvent } from "./types.js";
 
-export interface Runtime { cwd: string; model: string; thinking: string; tools: string[]; runDir: string; approved: boolean }
+/** Shared launch context that remains identical across siblings. */
+export interface SharedLaunchContext { cwd: string; tools: string[]; runDir: string; approved: boolean }
+/** Per-child launch runtime: model/thinking come from the child-owned plan. */
+export interface Runtime extends SharedLaunchContext { model: string; thinking: string }
 type Changed = (immediate?: boolean) => void;
+/** Derive spawn runtime from a child-owned plan plus shared working context. */
+export function launchRuntime(plan: Pick<ChildRuntimePlan, "model" | "thinking">, shared: SharedLaunchContext): Runtime {
+ return { ...shared, model: plan.model, thinking: plan.thinking };
+}
 export function buildChildArgs(runtime: Pick<Runtime, "model" | "thinking" | "tools"> & { approved?: boolean }): string[] {
  const toolArgs = runtime.tools.length > 0 ? ["--tools", runtime.tools.join(",")] : ["--no-tools"];
  return ["--mode", "rpc", "--no-session", ...(runtime.approved ? ["--approve"] : []), "--model", runtime.model, "--thinking", runtime.thinking, ...toolArgs];
@@ -18,15 +25,54 @@ const usageComponents = (usage: any) => ({
  cacheWrite: Number(usage?.cacheWrite ?? usage?.cache_write) || 0,
 });
 
+function applyObservedRuntime(child: ChildState, provider: string, modelId: string, thinkingLevel: string | undefined): void {
+ const observed = {
+  provider,
+  modelId,
+  model: `${provider}/${modelId}`,
+  ...(thinkingLevel !== undefined ? { thinking: thinkingLevel } : {}),
+ };
+ if (child.runtimePlan) {
+  let thinkingAdjustment = child.runtimePlan.thinkingAdjustment;
+  let effectiveThinking = child.runtimePlan.thinking;
+  if (thinkingLevel !== undefined) {
+   const resolved = child.runtimePlan.resolvedThinking ?? child.runtimePlan.thinking;
+   // Observed thinking becomes effective truth even when it differs from preflight resolution.
+   if (thinkingLevel !== resolved) {
+    thinkingAdjustment = { from: resolved, to: thinkingLevel, reason: "observed" };
+   }
+   effectiveThinking = thinkingLevel;
+   child.thinking = thinkingLevel;
+  }
+  child.runtimePlan = {
+   ...child.runtimePlan,
+   thinking: effectiveThinking,
+   ...(thinkingAdjustment ? { thinkingAdjustment } : {}),
+   observed,
+  };
+ } else if (thinkingLevel !== undefined) {
+  child.thinking = thinkingLevel;
+ }
+ // Compact display uses observed model identity once known.
+ child.model = modelId;
+}
+
 export async function runChild(child: ChildState, runtime: Runtime, signal: AbortSignal | undefined, changed: Changed): Promise<ChildState> {
  child.status = "starting"; child.startedAt = Date.now(); changed(true);
  const executable = process.env.PI_TIDY_SUBAGENT_EXECUTABLE || (process.argv[1] ? process.execPath : "pi");
- const args = process.env.PI_TIDY_SUBAGENT_ARGS
+ // Base prefix is either the test fake-rpc path or the parent entry script; always append resolved launch args.
+ const prefix = process.env.PI_TIDY_SUBAGENT_ARGS
   ? JSON.parse(process.env.PI_TIDY_SUBAGENT_ARGS) as string[]
-  : [...(process.argv[1] && !process.env.PI_TIDY_SUBAGENT_EXECUTABLE ? [process.argv[1]] : []), ...buildChildArgs(runtime)];
+  : [...(process.argv[1] && !process.env.PI_TIDY_SUBAGENT_EXECUTABLE ? [process.argv[1]] : [])];
+ const args = [...prefix, ...buildChildArgs(runtime)];
  const proc = spawn(executable, args, { cwd: runtime.cwd, env: { ...process.env, PI_TIDY_SUBAGENT_CHILD: "1" }, stdio: ["pipe", "pipe", "pipe"] });
  let stderr = "", buffer = "", settled = false, cancelled = false, promptFailure = "", sawTextDelta = false, parseFailure: unknown;
  let writes = Promise.resolve();
+ let promptSent = false;
+ const expectedProvider = child.runtimePlan?.provider ?? runtime.model.split("/")[0] ?? "";
+ const expectedModelId = child.runtimePlan?.modelId ?? runtime.model.slice(runtime.model.indexOf("/") + 1);
+ type PendingResponse = { resolve: (data: unknown) => void; reject: (error: Error) => void };
+ const pendingResponses = new Map<string, PendingResponse>();
  const toolArgs = new Map<string, Record<string, unknown>>();
  const toolStartedAt = new Map<string, number>();
  const appendActivities = (...lines: string[]) => {
@@ -68,6 +114,13 @@ export async function runChild(child: ChildState, runtime: Runtime, signal: Abor
  const processEvent = async (raw: any): Promise<void> => {
   const event: NormalizedEvent = { schemaVersion: 1, sequence: ++child.eventCount, timestamp: new Date().toISOString(), type: String(raw.type ?? "unknown"), payload: raw };
   await appendEvent(runtime.runDir, child.id, event);
+  if (raw.type === "response" && raw.id != null && pendingResponses.has(String(raw.id))) {
+   const pending = pendingResponses.get(String(raw.id))!;
+   pendingResponses.delete(String(raw.id));
+   if (raw.success === false) pending.reject(new Error(String(raw.error ?? `RPC ${raw.command ?? "command"} failed`)));
+   else pending.resolve(raw.data);
+   return;
+  }
   if (raw.type === "response" && raw.command === "prompt" && raw.success === false) {
    promptFailure = String(raw.error ?? "Pi RPC rejected the prompt");
    proc.stdin.end(); proc.kill("SIGTERM");
@@ -118,16 +171,83 @@ export async function runChild(child: ChildState, runtime: Runtime, signal: Abor
   }
  });
  proc.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
- proc.stdin.write(`${JSON.stringify({ id: child.id, type: "prompt", message: child.prompt })}\n`);
- const code = await new Promise<number | null>((resolve) => proc.once("close", resolve));
+
+ const closePromise = new Promise<number | null>((resolve) => proc.once("close", resolve));
+
+ // Observe child RPC state before sending the prompt (AC-009 / AC-010).
+ if (!cancelled && !signal?.aborted) {
+  const stateId = `${child.id}:get_state`;
+  try {
+   const stateData = await new Promise<any>((resolve, reject) => {
+    const timer = setTimeout(() => {
+     pendingResponses.delete(stateId);
+     reject(new Error("Timed out waiting for child RPC get_state"));
+    }, 15_000);
+    timer.unref?.();
+    pendingResponses.set(stateId, {
+     resolve: (data) => { clearTimeout(timer); resolve(data); },
+     reject: (error) => { clearTimeout(timer); reject(error); },
+    });
+    closePromise.then((code) => {
+     if (pendingResponses.has(stateId)) {
+      pendingResponses.delete(stateId);
+      clearTimeout(timer);
+      reject(new Error(stderr.trim() || `Pi RPC exited ${code ?? "by signal"} before reporting state`));
+     }
+    });
+    if (!proc.stdin.writable) {
+     pendingResponses.delete(stateId);
+     clearTimeout(timer);
+     reject(new Error("Pi RPC stdin closed before get_state"));
+     return;
+    }
+    proc.stdin.write(`${JSON.stringify({ id: stateId, type: "get_state" })}\n`);
+   });
+   await writes;
+   const model = stateData?.model;
+   const provider = model?.provider;
+   const modelId = model?.id;
+   if (typeof provider !== "string" || !provider || typeof modelId !== "string" || !modelId) {
+    throw new Error("Child RPC state missing model provider/id");
+   }
+   if (provider !== expectedProvider || modelId !== expectedModelId) {
+    throw new Error(`Child startup model mismatch: observed ${provider}/${modelId}, expected ${expectedProvider}/${expectedModelId}`);
+   }
+   const thinkingLevel = typeof stateData?.thinkingLevel === "string" ? stateData.thinkingLevel : undefined;
+   applyObservedRuntime(child, provider, modelId, thinkingLevel);
+   changed(true);
+  } catch (error) {
+   if (!cancelled) {
+    child.status = "failed";
+    child.error = error instanceof Error ? error.message : String(error);
+    child.endedAt = Date.now();
+    if (proc.stdin.writable) proc.stdin.end();
+    proc.kill("SIGTERM");
+    setTimeout(() => proc.kill("SIGKILL"), 750).unref();
+    await closePromise; await writes;
+    signal?.removeEventListener("abort", abort);
+    changed(true);
+    return child;
+   }
+  }
+ }
+
+ if (!cancelled && !signal?.aborted && child.status === "running") {
+  promptSent = true;
+  proc.stdin.write(`${JSON.stringify({ id: child.id, type: "prompt", message: child.prompt })}\n`);
+ }
+
+ const code = await closePromise;
  await writes; signal?.removeEventListener("abort", abort);
  child.endedAt = Date.now();
  if (parseFailure) {
   terminalizeActiveTools();
   throw new Error(`Could not maintain durable child event stream: ${parseFailure instanceof Error ? parseFailure.message : String(parseFailure)}`);
  }
+ // Startup observation failures return early after setting status/error.
  if (cancelled) child.error = "Cancelled";
  else if (promptFailure) { child.status = "failed"; child.error = promptFailure; }
+ else if (!promptSent) { child.status = "failed"; child.error = child.error || "Child failed before prompt"; }
  else if (!settled) { child.status = "failed"; child.error = stderr.trim() || `Pi RPC exited ${code ?? "by signal"} before settling`; }
  else if (!child.response.trim()) { child.status = "warning"; child.error = "Child completed without assistant output"; }
  else child.status = "completed";

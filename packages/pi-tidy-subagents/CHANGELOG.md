@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Session-scoped background execution with mixed foreground/background fan-out, one-way foreground handoff, shared scheduling, and ordered durable acknowledgements.
+- A `subagent_control` tool for canonical or unambiguous-label status, inspection, native Pi RPC steering, child-scoped cancellation, delivery changes, and bounded repeatable collection.
+- Active-only TUI widget, durable handoff/terminal transcript stamps, `/subagents` management overlay, and `ctrl+shift+b` shortcut.
+- Automatic Pi follow-up completion delivery, manual completion inboxes, shutdown cancellation, and headless RPC/JSON lifecycle support.
+- Schema version 3 ownership, delivery, collection, follow-up, and control-history artifact metadata with legacy terminal collection.
 - Settled child headers now show a compact completion age that remains accurate after session reloads.
 
 ## [0.2.0] - 2026-07-12

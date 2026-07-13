@@ -99,7 +99,10 @@ export function renderLines(details: RunDetails | undefined, expanded = false, n
    ? ` ${DIM}(${formatAge(now - child.endedAt!)} ago)${RESET}`
    : "";
   const identity = `${GUTTER} ${statusGlyph(child.status)} ${MAGENTA}🤖${RESET} ${BOLD}${child.label}[${child.model}|${child.thinking}]${RESET} ${child.reason}${age}`;
-  const statistics = `${DIM}→ ${child.toolCount ?? 0} tools · ${usageSummary(child)} · ${formatElapsed(elapsed)}${RESET}`;
+  const backgroundMeta = child.ownership === "background"
+   ? ` · ${child.deliveryPolicy ?? "auto"}${(child.pendingSteering ?? 0) > 0 ? ` · ↪${child.pendingSteering} steer` : ""}`
+   : "";
+  const statistics = `${DIM}→ ${child.toolCount ?? 0} tools · ${usageSummary(child)} · ${formatElapsed(elapsed)}${backgroundMeta}${RESET}`;
   const combined = `${identity} ${statistics}`;
   if (width !== undefined && visibleWidth(combined) <= width) lines.push(combined);
   else lines.push(identity, `${GUTTER}   ${statistics}`);
@@ -126,17 +129,43 @@ function fitDisplayLine(line: string, width: number): string {
  const head = line.slice(0, tailIndex).trimEnd();
  return `${truncateToWidth(head, width - tailWidth - 1, "…")} ${tail}`;
 }
+function paintLines(lines: string[], width: number, background?: (text: string) => string): string[] {
+ const max = Math.max(1, width);
+ return lines.map((line) => {
+  // Sibling separators stay unpainted so they read as real gaps between parallel tool cards.
+  if (line.length === 0) return "";
+  const fitted = fitDisplayLine(line, max); const padded = fitted + " ".repeat(Math.max(0, max - visibleWidth(fitted)));
+  if (!background) return fitted;
+  return padded.split(RESET).map((segment) => background(`${segment}${RESET}`)).join("");
+ });
+}
+
+export function renderBackgroundAcknowledgementLines(child: ChildState): string[] {
+ const identity = `${GUTTER} ${statusGlyph(child.status)} ${MAGENTA}🤖${RESET} ${BOLD}${child.label}[${child.model}|${child.thinking}]${RESET} ${child.reason}`;
+ const delivery = child.deliveryPolicy ?? "auto";
+ return [identity, `${GUTTER}   ${DIM}→ background · ${child.status} · delivery=${delivery} · ${child.target ?? child.id}${RESET}`, `${GUTTER}     ${DIM}artifact ${child.artifactPath}${RESET}`];
+}
+
 export class SnapshotComponent {
  constructor(private details: RunDetails | undefined, private expanded: boolean, private background?: (text: string) => string) {}
  invalidate(): void {}
  render(width: number): string[] {
-  const max = Math.max(1, width);
-  return renderLines(this.details, this.expanded, Date.now(), max).map((line) => {
-   // Sibling separators stay unpainted so they read as real gaps between parallel tool cards.
-   if (line.length === 0) return "";
-   const fitted = fitDisplayLine(line, max); const padded = fitted + " ".repeat(Math.max(0, max - visibleWidth(fitted)));
-   if (!this.background) return fitted;
-   return padded.split(RESET).map((segment) => this.background!(`${segment}${RESET}`)).join("");
-  });
+  return paintLines(renderLines(this.details, this.expanded, Date.now(), Math.max(1, width)), width, this.background);
+ }
+}
+
+/** Synchronous card renderer: detached children become settled acknowledgements and never retain live activity ownership. */
+export class ToolSnapshotComponent {
+ constructor(private details: RunDetails | undefined, private expanded: boolean, private background?: (text: string) => string) {}
+ invalidate(): void {}
+ render(width: number): string[] {
+  if (!this.details) return [];
+  const lines: string[] = [];
+  for (const [index, child] of this.details.children.entries()) {
+   if (index > 0) lines.push("");
+   if (child.ownership === "background") lines.push(...renderBackgroundAcknowledgementLines(child));
+   else lines.push(...renderLines({ ...this.details, children: [child] }, this.expanded, Date.now(), Math.max(1, width)));
+  }
+  return paintLines(lines, width, this.background);
  }
 }

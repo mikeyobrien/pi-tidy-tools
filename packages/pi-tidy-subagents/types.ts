@@ -1,4 +1,7 @@
 export type ChildStatus = "queued" | "starting" | "running" | "completed" | "warning" | "failed" | "cancelled" | "not-started";
+export type ExecutionMode = "foreground" | "background";
+export type DeliveryPolicy = "auto" | "manual";
+export type DeliveryState = "none" | "pending" | "manual" | "accepted" | "collected";
 export type RuntimeProvenance = "parent" | "request";
 
 /** Pi's native thinking-level vocabulary. */
@@ -16,6 +19,8 @@ export interface AgentRequest {
  model?: string;
  /** Optional closed thinking level; omission inherits the parent. */
  thinking?: ThinkingLevel;
+ /** Omission preserves the historical synchronous foreground contract. */
+ execution?: ExecutionMode;
 }
 
 export interface NormalizedEvent {
@@ -88,6 +93,23 @@ export function inheritRuntimePlan(parent: { provider: string; modelId: string; 
 
 export interface ChildState {
  index: number; id: string; label: string; reason: string; prompt: string; status: ChildStatus;
+ /** Globally unique session control identity: <run-id>:<child-id>. Optional only on legacy details. */
+ target?: string;
+ /** Requested mode and current visual/wait ownership. Missing ownership means legacy foreground. */
+ requestedExecution?: ExecutionMode;
+ ownership?: ExecutionMode;
+ ownershipChangedAt?: number;
+ ownershipReason?: "direct-launch" | "agent-control" | "user-control";
+ terminalOwnership?: ExecutionMode;
+ deliveryPolicy?: DeliveryPolicy;
+ deliveryState?: DeliveryState;
+ followUpAcceptedAt?: number;
+ deliveryError?: string;
+ collectionCount?: number;
+ firstCollectedAt?: number;
+ lastCollectedAt?: number;
+ pendingSteering?: number;
+ controlHistory?: Array<{ action: "background" | "steer" | "cancel" | "set_delivery" | "collect" | "shutdown"; outcome: "accepted" | "repeated"; timestamp: number }>;
  /** Compact display model id — observed when available, otherwise resolved. */
  model: string;
  /** Compact display thinking — observed when available, otherwise resolved. */
@@ -96,7 +118,7 @@ export interface ChildState {
  input: number; output: number; cacheRead: number; cacheWrite: number; providerTraffic: number; tokens: number;
  activities: string[]; streamingLine?: string; activeTools: ActiveTool[]; eventCount: number;
  response: string; error?: string; artifactPath: string;
- /** Child-owned resolved runtime with model/thinking provenance (schema v2). */
+ /** Child-owned resolved runtime with model/thinking provenance (schema v2+). */
  runtimePlan?: ChildRuntimePlan;
 }
 
@@ -105,6 +127,6 @@ export interface ResolvedRuntime {
 }
 
 export interface RunDetails {
- schemaVersion: 1 | 2;
+ schemaVersion: 1 | 2 | 3;
  runId: string; runDir: string; cwd: string; createdAt: string; cap: number; runtime: ResolvedRuntime; children: ChildState[];
 }

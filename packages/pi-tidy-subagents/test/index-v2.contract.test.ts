@@ -46,7 +46,7 @@ function register(
     extension({
       registerTool(value: any) {
         registrations++;
-        tool = value;
+        if (value.name === "subagent") tool = value;
       },
       registerCommand(name: string, command: any) {
         commands.set(name, command);
@@ -136,12 +136,12 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
 
 test("registers the exact extension, lifecycle, command, and tool contracts", () => {
   const registered = register();
-  assert.equal(registered.registrations, 1);
+  assert.equal(registered.registrations, 2);
   assert.deepEqual(
     registered.events.map((event) => event.name),
-    ["session_shutdown"]
+    ["session_start", "session_shutdown"]
   );
-  assert.deepEqual([...registered.commands.keys()], ["tidy-subagents-routing"]);
+  assert.deepEqual([...registered.commands.keys()], ["tidy-subagents-routing", "subagents"]);
   const command = registered.commands.get("tidy-subagents-routing");
   assert.equal(
     command.description,
@@ -176,13 +176,15 @@ test("registers the exact extension, lifecycle, command, and tool contracts", ()
       renderShell: "self",
       executionMode: "parallel",
       description:
-        "Run an ordered synchronous fan-out of isolated child Pi agents. Every agent needs a short reason and verbatim prompt. Children share the working tree; assign non-overlapping writes. Optional per-child model selects an exact registered provider/model-id; optional thinking selects a Pi level (primary control). Omission inherits the parent runtime. Use /tidy-subagents-routing for a user task map.",
+        "Launch ordered foreground and background child Pi agents. Omitted execution remains synchronous foreground. Background children are session-scoped, share the same scheduler and working tree, and return durable acknowledgements rather than partial output.",
       promptGuidelines: [
         "Use subagent only for independent work. Concurrent children share the working tree; assign non-overlapping mutation scopes or read-only objectives.",
         "Thinking is the primary per-child control. Prefer omit thinking to inherit parent; otherwise pick a closed Pi level for the task shape.",
         "Prefer omit model (inherit parent). Pass an exact registered provider/model-id only when capability or cost warrants. No aliases, profiles, or fuzzy patterns.",
         "Optional model/thinking precedence (most specific wins): (1) explicit per-child model/thinking request fields on the tool call; (2) user turn instructions; (3) AGENTS.md / project agent instructions; (4) optional structured agent-dir routing map from /tidy-subagents-routing; (5) extension short schema defaults / promptGuidelines; (6) parent inheritance when fields remain omitted. Extension does not parse AGENTS.md or auto-inject routing.",
         "No agent-dir routing map yet. Run /tidy-subagents-routing to build a task→{thinking,model?} map from authenticated models (thinking-primary; model omit=inherit).",
+        "Use subagent execution=background only when the parent can proceed without the result; omission stays foreground and synchronous.",
+        "Use subagent_control to inspect, background, steer, cancel, change delivery, or collect one session child by canonical target or unambiguous label.",
       ],
     }
   );
@@ -227,6 +229,10 @@ test("publishes the exact schema and validation boundary", () => {
                 "max",
               ].map((value) => ({ type: "string", const: value })),
               description: THINKING_FIELD_DESCRIPTION,
+            },
+            execution: {
+              anyOf: ["foreground", "background"].map((value) => ({ type: "string", const: value })),
+              description: "Ownership mode. Omit for synchronous foreground execution; background returns after durable registration.",
             },
           },
         },
@@ -282,8 +288,8 @@ test("true child RPC skips every registration, warns exactly, and clears its mar
     childEnv: "1",
     argv: ["node", "pi", "--mode", "json"],
   });
-  assert.equal(parent.registrations, 1);
-  assert.equal(parent.commands.size, 1);
+  assert.equal(parent.registrations, 2);
+  assert.equal(parent.commands.size, 2);
 });
 
 test("routing command covers status, defaults, clear, usage, and unavailable models", async () =>
@@ -535,7 +541,7 @@ test("execution emits exact queued and settled public snapshots and persisted tr
       activeTools: ["read", "grep"],
       projectTrusted: false,
     });
-    assert.equal(result.details.schemaVersion, 2);
+    assert.equal(result.details.schemaVersion, 3);
     assert.equal(result.details.cwd, root);
     assert.equal(result.details.cap > 0, true);
     assert.match(
@@ -661,7 +667,7 @@ test("session shutdown cancels active work, clears ownership, and rejects later 
       context(root)
     );
     await waitUntil(() => latest?.children[0].status === "running");
-    registered.events[0]!.handler();
+    registered.events.find((event) => event.name === "session_shutdown")!.handler();
     const stopped = await pending;
     assert.deepEqual(
       {

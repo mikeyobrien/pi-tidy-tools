@@ -1,7 +1,7 @@
 {
   "name": "@mobrienv/pi-tidy-subagents",
   "version": "0.2.0",
-  "description": "Compact synchronous RPC subagent fan-out for Pi.",
+  "description": "Compact foreground and session-scoped background RPC subagents for Pi.",
   "license": "MIT",
   "author": "Mikey O'Brien <m@mobrienv.dev>",
   "repository": {
@@ -25,6 +25,7 @@
   "files": [
     "index.ts",
     "config.ts",
+    "coordinator.ts",
     "envelope.ts",
     "render.ts",
     "runner.ts",
@@ -32,6 +33,7 @@
     "scheduler.ts",
     "store.ts",
     "types.ts",
+    "ui.ts",
     "vendor/**/*.ts",
     "README.md",
     "CHANGELOG.md",

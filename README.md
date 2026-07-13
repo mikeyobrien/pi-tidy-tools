@@ -55,14 +55,15 @@ pi install npm:@mobrienv/pi-tidy-tools
 
 [![npm version](https://img.shields.io/npm/v/%40mobrienv%2Fpi-tidy-subagents)](https://www.npmjs.com/package/@mobrienv/pi-tidy-subagents)
 
-**Fan work out to child Pi agents without losing the thread.** Adds synchronous, resource-aware subagent delegation with compact live state and ordered results.
+**Fan work out to child Pi agents without losing the thread.** Adds resource-aware subagent delegation — foreground or background — with compact live state and ordered results.
 
 <a href="packages/pi-tidy-subagents">
-  <img src="packages/pi-tidy-subagents/docs/visual.png" width="720" alt="Queued, running, successful, warning, failed, cancelled, parallel-tool, and expanded pi-tidy-subagents states">
+  <img src="packages/pi-tidy-subagents/docs/visual.png" width="720" alt="Mixed foreground and background pi-tidy-subagents cards, active widget, durable stamps, management overlay, expanded detail, and narrow viewport">
 </a>
 
 - Runs independent child prompts concurrently through a session-wide queue
 - Shows one scan-friendly activity per child, with full recent detail on expansion
+- Backgrounds long-running children and delivers their results when the parent is idle
 - Preserves healthy sibling results when an individual child fails
 - Records complete responses, usage, and normalized events in versioned run artifacts
 

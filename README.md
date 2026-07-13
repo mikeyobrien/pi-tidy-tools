@@ -2,7 +2,14 @@
 
 Focused, independently installable packages that make [Pi](https://github.com/earendil-works/pi-mono) easier to follow.
 
-Each package solves one transcript or workflow problem. Install only the ones you want—there is no umbrella runtime package.
+Long agent turns are hard to read in Pi's native transcript: every tool call renders as a boxed card, the model's goal behind each call is invisible, and delegated work has no compact live view. pi-tidy replaces that with dense, reason-first output while preserving native execution behavior.
+
+Each package solves one transcript or workflow problem. Install only the ones you want — there is no umbrella runtime package:
+
+```bash
+pi install npm:@mobrienv/pi-tidy-tools      # compact, reason-first tool cards
+pi install npm:@mobrienv/pi-tidy-subagents  # synchronous subagent fan-out
+```
 
 ## Packages
 

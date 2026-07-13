@@ -1,12 +1,53 @@
 # pi-tidy-subagents
 
-Compact foreground and session-scoped background RPC subagents for [Pi](https://github.com/earendil-works/pi-mono). It registers an ordered `subagent` launcher plus a `subagent_control` lifecycle tool. Each child receives an optional label, short transcript reason, verbatim prompt, and optional execution ownership.
+[![npm version](https://img.shields.io/npm/v/%40mobrienv%2Fpi-tidy-subagents)](https://www.npmjs.com/package/@mobrienv/pi-tidy-subagents)
+
+**Fan work out to child Pi agents without losing the thread.** Registers an
+ordered `subagent` launcher plus a `subagent_control` lifecycle tool for
+[Pi](https://github.com/earendil-works/pi-mono): children run in the foreground
+or as session-scoped background workers, each rendered as one compact,
+scannable line.
 
 ```bash
 pi install npm:@mobrienv/pi-tidy-subagents
 ```
 
 ![Mixed foreground and background cards, active widget, durable stamps, management overlay, expanded detail, and narrow viewport](docs/visual.png)
+
+## Quick example
+
+Each entry in the ordered `agents` batch carries a short transcript `reason`, a
+verbatim child `prompt`, and an optional `label`, `model`, `thinking`, and
+`execution` ownership:
+
+```jsonc
+{
+  "agents": [
+    {
+      "label": "tests",
+      "reason": "run the unit suite",
+      "prompt": "Run npm test and summarize any failures.",
+    },
+    {
+      "label": "review",
+      "reason": "audit the diff",
+      "prompt": "Review the working-tree diff for correctness bugs.",
+      "thinking": "high",
+    },
+  ],
+}
+```
+
+While children run, the transcript shows one current activity per child. The
+robot glyph identifies each row as delegated work, so headers omit a redundant
+`subagent` noun and read, once settled:
+
+```text
+<agentName>[<model>|<thinking>] <reason> (<age> ago) → <metrics>
+```
+
+Metrics report tool calls, directional provider usage (`↑` input and `↓`
+output), and elapsed duration.
 
 ## Runtime selection
 
@@ -101,11 +142,51 @@ When present, the map is summarized in tool `promptGuidelines` as one layer of t
 
 ## Execution contract
 
-A session-wide FIFO queue admits the smaller of half available CPU parallelism and one child per 2 GiB available memory (via `process.availableMemory()`; override the per-child bytes with `PI_TIDY_SUBAGENT_BYTES_PER_CHILD`). Foreground and background children share this cap and launch order. Foreground ownership remains the default: calls with no `execution` field wait synchronously and preserve healthy sibling results after individual failures. A background child is durably registered and acknowledged immediately, then continues under the session coordinator while the parent proceeds.
+### Scheduling
 
-Collapsed output shows one current activity per child; `ctrl+o` shows the latest fifteen. Multi-child fan-out inserts one unpainted blank line between siblings so parallel agents scan like parallel tool cards (real gap through the shared pending/success background); a single child stays tight. Running children use a stable status dot, and live output redraws only when child state or activity changes. The robot glyph identifies the row as delegated work, so headers omit a redundant `subagent` noun and read `<agentName>[<model>|<thinking>] <reason> (<age> ago) → <metrics>` once settled. Child completion timestamps persist in result details and run manifests, so ages remain accurate after session restarts; active children omit the age. Compact headers show the **effective/observed** thinking level without routine adjustment noise. When the header fits, it stays on one scan-friendly row; narrow viewports move only the metrics to a second row. Metrics report tool calls, directional provider usage (`↑` input and `↓` output), and elapsed duration. Cache traffic is intentionally omitted from the compact header.
+A session-wide FIFO queue admits the smaller of half available CPU parallelism
+and one child per 2 GiB free memory. Foreground and background children share
+this cap and launch order. Foreground ownership remains the default: calls with
+no `execution` field wait synchronously and preserve healthy sibling results
+after individual failures. A background child is durably registered and
+acknowledged immediately, then continues under the session coordinator while
+the parent proceeds.
 
-Complete versioned `run.json` manifests (schema version 3) persist the parent runtime snapshot; per-child requested/resolved/observed model and thinking provenance; requested execution, current and terminal ownership, ownership timestamps/reason, completion-delivery state, follow-up acceptance, collection metadata, control history; and exact cumulative `input`, `output`, `cacheRead`, `cacheWrite`, and total `providerTraffic`. Full prompts, responses, and normalized child JSONL events remain beneath Pi's configured agent directory at `pi-tidy-subagents/runs/<run-id>/`. Public tool details redact prompts and responses. The legacy `tokens` total remains in manifests, schema-v1/v2 details remain renderable, and terminal legacy artifacts can be collected by canonical target when available. Historical manifests never reconstruct active workers. Parent results are ordered XML with CDATA-protected Markdown and bounded to 16 KiB per child / 50 KiB total; artifact attributes point to complete responses.
+### Live rendering
+
+Collapsed output shows one current activity per child; `ctrl+o` shows the
+latest fifteen.
+
+- Multi-child fan-out inserts one unpainted blank line between siblings so
+  parallel agents scan like parallel tool cards (a real gap through the shared
+  pending/success background); a single child stays tight.
+- Running children use a stable status dot, and live output redraws only when
+  child state or activity changes.
+- Child completion timestamps persist in result details and run manifests, so
+  ages remain accurate after session restarts; active children omit the age.
+- Compact headers show the **effective/observed** thinking level without
+  routine adjustment noise. Cache traffic is intentionally omitted from the
+  compact header.
+- When the header fits, it stays on one scan-friendly row; narrow viewports
+  move only the metrics to a second row.
+
+### Run artifacts
+
+Complete versioned `run.json` manifests (schema version 3) persist the parent
+runtime snapshot; per-child requested/resolved/observed model and thinking
+provenance; requested execution, current and terminal ownership, ownership
+timestamps/reason, completion-delivery state, follow-up acceptance, collection
+metadata, control history; and exact cumulative `input`, `output`, `cacheRead`,
+`cacheWrite`, and total `providerTraffic`. Full prompts, responses, and
+normalized child JSONL events remain beneath Pi's configured agent directory at
+`pi-tidy-subagents/runs/<run-id>/`. Public tool details redact prompts and
+responses. The legacy `tokens` total remains in manifests, schema-v1/v2 details
+remain renderable, and terminal legacy artifacts can be collected by canonical
+target when available. Historical manifests never reconstruct active workers.
+
+Parent results are ordered XML with CDATA-protected Markdown and bounded to
+16 KiB per child / 50 KiB total; artifact attributes point to complete
+responses.
 
 ## Background execution and control
 
@@ -165,9 +246,16 @@ Workers survive parent turns, not extension reload, session replacement, fork/cl
 | RPC / JSON  | Launch/control, artifacts, and completion messages; no terminal component factories     |
 | Print       | Background launch and handoff rejected; ordinary foreground execution remains supported |
 
-> **Filesystem safety:** children share the same working tree. This package does not lock files, create worktrees, or coordinate writes. Allocate non-overlapping mutation scopes or use read-only fan-out.
+> **Filesystem safety:** children share the same working tree. This package
+> does not lock files, create worktrees, or coordinate writes. Allocate
+> non-overlapping mutation scopes or use read-only fan-out.
 
-Installing this beside another extension that owns the `subagent` tool name is unsupported. Cross-session/crash recovery, background-to-foreground handoff, personas, automatic model selection, fuzzy matching, and project-level routing rules are intentionally outside this package.
+## Out of scope
+
+Installing this beside another extension that owns the `subagent` tool name is
+unsupported. Cross-session/crash recovery, background-to-foreground handoff,
+personas, automatic model selection, fuzzy matching, and project-level routing
+rules are intentionally outside this package.
 
 ## Development
 

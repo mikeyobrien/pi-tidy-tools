@@ -162,23 +162,24 @@ function pathWithin(root: string, target: string): boolean {
 	return child === "" || (!child.startsWith("..") && !isAbsolute(child));
 }
 
-async function canonicalSettings(fs: PiFffLifecycleFs, candidate: string, managedRoot = dirname(candidate)): Promise<{ path: string; bytes: Buffer; mode: number } | undefined> {
+async function canonicalSettings(fs: PiFffLifecycleFs, candidate: string, managedRoot = dirname(candidate), allowOutsideManagedRoot = false): Promise<{ path: string; bytes: Buffer; mode: number; withinManagedRoot: boolean } | undefined> {
 	let link;
 	try { link = await fs.lstat(candidate); }
 	catch (error: any) { if (error?.code === "ENOENT") return undefined; throw error; }
 	if (!link.isFile() && !link.isSymbolicLink()) throw new LifecycleFailure("PIFFF_SETTINGS_DRIFT", `${candidate} is not a file`, [candidate]);
 	const [path, root] = await Promise.all([fs.realpath(candidate), fs.realpath(managedRoot)]);
-	if (!pathWithin(root, path)) throw new LifecycleFailure("PIFFF_RECOVERY_UNSAFE", `${candidate} resolves outside its managed settings scope: ${path}`, [candidate, path]);
+	const withinManagedRoot = pathWithin(root, path);
+	if (!withinManagedRoot && !allowOutsideManagedRoot) throw new LifecycleFailure("PIFFF_RECOVERY_UNSAFE", `${candidate} resolves outside its managed settings scope: ${path}`, [candidate, path]);
 	const target = await fs.stat(path);
 	if (!target.isFile()) throw new LifecycleFailure("PIFFF_SETTINGS_DRIFT", `${candidate} does not resolve to a regular file`, [candidate, path]);
-	return { path, bytes: await fs.readFile(path), mode: target.mode & 0o777 };
+	return { path, bytes: await fs.readFile(path), mode: target.mode & 0o777, withinManagedRoot };
 }
 
 async function discover(fs: PiFffLifecycleFs, cwd: string, agentDir: string): Promise<LocatedParticipant[]> {
 	const found: LocatedParticipant[] = [];
 	for (const scope of scopes) {
 		const candidate = settingsCandidate(cwd, agentDir, scope);
-		const canonical = await canonicalSettings(fs, candidate, dirname(candidate));
+		const canonical = await canonicalSettings(fs, candidate, dirname(candidate), true);
 		if (!canonical) continue;
 		const settings = parseObject(canonical.bytes, `${scope} settings`);
 		const packages = settings.packages;
@@ -188,8 +189,9 @@ async function discover(fs: PiFffLifecycleFs, cwd: string, agentDir: string): Pr
 			const matched = matchPiFffSource(sourceOf(entry));
 			return matched ? [{ index, packageSource: matched.packageProfile }] : [];
 		});
-		if (matches.length > 1) throw new LifecycleFailure("PIFFF_CONFIG_AMBIGUOUS", `${scope} settings contains both or duplicate pi-fff package identities`);
 		if (!matches.length) continue;
+		if (!canonical.withinManagedRoot) throw new LifecycleFailure("PIFFF_RECOVERY_UNSAFE", `${candidate} resolves outside its managed settings scope: ${canonical.path}`, [candidate, canonical.path]);
+		if (matches.length > 1) throw new LifecycleFailure("PIFFF_CONFIG_AMBIGUOUS", `${scope} settings contains both or duplicate pi-fff package identities`);
 		if (found.some((participant) => participant.settingsPath === canonical.path)) {
 			throw new LifecycleFailure("PIFFF_CONFIG_AMBIGUOUS", `project and user settings resolve to the same canonical file: ${canonical.path}`);
 		}

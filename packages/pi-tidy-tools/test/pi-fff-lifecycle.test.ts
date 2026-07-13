@@ -476,13 +476,17 @@ test("settings symlinks preserve links, canonical targets, modes, and temp clean
 	} finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
-test("settings symlink escapes are rejected without changing the outside target", async () => {
+test("external settings symlinks are ignored without pi-fff and rejected with it", async () => {
 	const f = await fixture();
 	try {
 		const outside = join(f.root, "outside-settings.json");
+		await writeFile(outside, JSON.stringify({ packages: ["npm:not-fff@1.0.0"] }) + "\n");
+		await symlink(outside, f.paths.project);
+		const status = await f.lifecycle().run("status", { enabled: true });
+		assert.equal(status.outcome, "status");
+		assert.deepEqual(status.participants, []);
 		const bytes = JSON.stringify({ packages: [entry("project")], sibling: true }) + "\n";
 		await writeFile(outside, bytes);
-		await symlink(outside, f.paths.project);
 		const result = await f.lifecycle().run("setup", { enabled: true, confirm: async () => true, reload: async () => {} });
 		assert.equal(result.code, "PIFFF_RECOVERY_UNSAFE");
 		assert.equal(await readFile(outside, "utf8"), bytes);

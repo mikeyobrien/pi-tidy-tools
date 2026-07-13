@@ -30,7 +30,8 @@
     "vendor/**/*.ts",
     "README.md",
     "LICENSE",
-    "docs/*.png"
+    "docs/*.png",
+    "docs/pi-fff.md"
   ],
   "pi": {
     "extensions": [

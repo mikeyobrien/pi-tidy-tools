@@ -8,7 +8,7 @@ Each package solves one transcript or workflow problem. Install only the ones yo
 
 ```bash
 pi install npm:@mobrienv/pi-tidy-tools      # compact, reason-first tool cards
-pi install npm:@mobrienv/pi-tidy-subagents  # synchronous subagent fan-out
+pi install npm:@mobrienv/pi-tidy-subagents  # foreground and background subagent fan-out
 ```
 
 ## Packages

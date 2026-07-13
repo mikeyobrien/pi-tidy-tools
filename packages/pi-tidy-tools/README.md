@@ -138,11 +138,9 @@ Setup previews every discovered user/project settings change and requires
 confirmation; teardown restores the exact prior entries. `/tidy pi-fff status`
 always reports a truthful ownership state.
 
-The exact Pi `0.80.6` × `pi-fff@0.1.12` and Pi `0.80.6` ×
-`@ff-labs/pi-fff@0.9.6` tuples are `verified`. Newer tuples at or above their
-profile floors are shown as `forward-compatible/unverified` until that exact
-tuple passes the release smoke matrix — this status is not a claim that a newer
-release is broken.
+Verified version tuples — and how newer releases are promoted from
+`forward-compatible/unverified` — are tracked in the
+[verification policy](docs/pi-fff.md#verification-policy).
 
 Always run `/tidy pi-fff teardown` **before** removing pi-tidy-tools or pi-fff.
 

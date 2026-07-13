@@ -25,21 +25,22 @@ function truncateCdata(value: string, maxBytes: number): string {
  return output;
 }
 
-export function buildEnvelope(children: ChildState[]): string {
+export function buildEnvelope(children: ChildState[], totalLimit = TOTAL_LIMIT): string {
  const wrappers = children.map((child) => ({
   open: `<subagent_result index="${child.index}" label="${attr(child.label)}" status="${child.status}" artifact="${attr(child.artifactPath)}"><content format="markdown"><![CDATA[`,
   close: "]]></content></subagent_result>",
  }));
  const baseBytes = Math.max(0, children.length - 1) + wrappers.reduce((sum, wrapper) => sum + bytes(wrapper.open) + bytes(wrapper.close), 0);
- if (baseBytes > TOTAL_LIMIT) {
+ if (baseBytes > totalLimit) {
   const runDir = children[0]?.artifactPath ? dirname(children[0].artifactPath) : "";
   const marker = `<subagent_results_truncated total="${children.length}" artifacts="${attr(runDir)}"/>`;
+  if (bytes(marker) > totalLimit) return "";
   const output: string[] = [];
   let used = bytes(marker) + (children.length > 0 ? 1 : 0);
   for (let index = 0; index < children.length; index++) {
    const empty = `${wrappers[index]!.open}${wrappers[index]!.close}`;
    const added = bytes(empty) + (output.length > 0 ? 1 : 0);
-   if (used + added > TOTAL_LIMIT) break;
+   if (used + added > totalLimit) break;
    output.push(empty);
    used += added;
   }
@@ -47,7 +48,7 @@ export function buildEnvelope(children: ChildState[]): string {
   return output.join("\n");
  }
 
- let remaining = TOTAL_LIMIT - baseBytes;
+ let remaining = totalLimit - baseBytes;
  return children.map((child, index) => {
   const original = child.response || child.error || "";
   const allowed = Math.max(0, Math.min(CHILD_LIMIT, remaining));

@@ -792,14 +792,14 @@ test("cancellation is terminal, sends abort, and never sends the prompt", async 
         response: result.response,
         events: result.eventCount,
       },
-      { status: "cancelled", error: "Cancelled", response: "", events: 1 }
+      { status: "cancelled", error: "Cancelled", response: "", events: 2 }
     );
     assert.deepEqual(callbacks, [
       [true, "starting", 0],
       [true, "running", 0],
       [true, "running", 1],
       [true, "cancelled", 1],
-      [true, "cancelled", 1],
+      [true, "cancelled", 2],
     ]);
   }));
 
@@ -842,4 +842,46 @@ test("invalid stdout rejects when the durable event stream cannot be maintained"
     assert.equal(child.status, "running");
     assert.equal(child.eventCount, 1);
     assert.ok(child.endedAt);
+  }));
+
+test("live control handle sends native steer and abort commands with correlated acknowledgements", async () =>
+  fixture(async (root, runtime) => {
+    const child = makeChild(root, "hang", plan());
+    let expose!: (handle: import("../runner.js").ChildControlHandle) => void;
+    const ready = new Promise<import("../runner.js").ChildControlHandle>((resolve) => { expose = resolve; });
+    const pending = runChild(child, runtime, undefined, () => {}, expose);
+    const handle = await ready;
+    const steered = await handle.steer("focus on native queue ordering");
+    assert.equal(steered.accepted, true);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(child.pendingSteering, 1);
+    assert.deepEqual(await handle.abort(), { accepted: true });
+    const result = await pending;
+    assert.equal(result.status, "cancelled");
+    const recorded = await events(runtime);
+    const commands = recorded.filter((event) => event.type === "response").map((event) => event.payload.command);
+    assert.deepEqual(commands, ["get_state", "prompt", "steer", "abort"]);
+    assert.ok(recorded.some((event) => event.type === "queue_update" && event.payload.steering?.[0] === "focus on native queue ordering"));
+  }));
+
+test("native steering reports settlement races instead of claiming acceptance", async () =>
+  fixture(async (root, runtime) => {
+    await useInlineRpc(root, `${stateResponse}
+ if (command.type === "prompt") {
+  send({ type: "response", id: command.id, command: "prompt", success: true });
+  send({ type: "agent_start" });
+  continue;
+ }
+ if (command.type === "steer") {
+  send({ type: "agent_settled" });
+ }
+ `);
+    const child = makeChild(root, "race", plan());
+    let expose!: (handle: import("../runner.js").ChildControlHandle) => void;
+    const ready = new Promise<import("../runner.js").ChildControlHandle>((resolve) => { expose = resolve; });
+    const pending = runChild(child, runtime, undefined, () => {}, expose);
+    const handle = await ready;
+    await assert.rejects(() => handle.steer("too late"), /before acknowledging control|settled before RPC steer/);
+    const result = await pending;
+    assert.equal(result.status, "warning");
   }));

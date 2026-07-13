@@ -8,6 +8,10 @@ export interface SharedLaunchContext { cwd: string; tools: string[]; runDir: str
 /** Per-child launch runtime: model/thinking come from the child-owned plan. */
 export interface Runtime extends SharedLaunchContext { model: string; thinking: string }
 type Changed = (immediate?: boolean) => void;
+export interface ChildControlHandle {
+ steer(message: string): Promise<{ accepted: true; pendingSteering?: number }>;
+ abort(): Promise<{ accepted: true }>;
+}
 /** Derive spawn runtime from a child-owned plan plus shared working context. */
 export function launchRuntime(plan: Pick<ChildRuntimePlan, "model" | "thinking">, shared: SharedLaunchContext): Runtime {
  return { ...shared, model: plan.model, thinking: plan.thinking };
@@ -57,7 +61,13 @@ function applyObservedRuntime(child: ChildState, provider: string, modelId: stri
  child.model = modelId;
 }
 
-export async function runChild(child: ChildState, runtime: Runtime, signal: AbortSignal | undefined, changed: Changed): Promise<ChildState> {
+export async function runChild(
+ child: ChildState,
+ runtime: Runtime,
+ signal: AbortSignal | undefined,
+ changed: Changed,
+ onControl?: (handle: ChildControlHandle) => void,
+): Promise<ChildState> {
  child.status = "starting"; child.startedAt = Date.now(); changed(true);
  const executable = process.env.PI_TIDY_SUBAGENT_EXECUTABLE || (process.argv[1] ? process.execPath : "pi");
  // Base prefix is either the test fake-rpc path or the parent entry script; always append resolved launch args.
@@ -69,6 +79,8 @@ export async function runChild(child: ChildState, runtime: Runtime, signal: Abor
  let stderr = "", buffer = "", settled = false, cancelled = false, promptFailure = "", sawTextDelta = false, parseFailure: unknown;
  let writes = Promise.resolve();
  let promptSent = false;
+ let commandSequence = 0;
+ let abortPromise: Promise<{ accepted: true }> | undefined;
  const expectedProvider = child.runtimePlan?.provider ?? runtime.model.split("/")[0] ?? "";
  const expectedModelId = child.runtimePlan?.modelId ?? runtime.model.slice(runtime.model.indexOf("/") + 1);
  type PendingResponse = { resolve: (data: unknown) => void; reject: (error: Error) => void };
@@ -92,24 +104,15 @@ export async function runChild(child: ChildState, runtime: Runtime, signal: Abor
   }
   child.activeTools = []; toolArgs.clear(); toolStartedAt.clear();
  };
- const abort = () => {
-  cancelled = true; child.status = "cancelled"; changed(true);
-  if (proc.stdin.writable) proc.stdin.write(`${JSON.stringify({ type: "abort" })}\n`);
-  setTimeout(() => proc.kill("SIGTERM"), 500).unref();
-  setTimeout(() => proc.kill("SIGKILL"), 1250).unref();
- };
- signal?.addEventListener("abort", abort, { once: true });
  const started = new Promise<void>((resolve, reject) => {
   proc.once("spawn", resolve);
   proc.once("error", reject);
  });
  try { await started; } catch (error) {
-  signal?.removeEventListener("abort", abort);
   child.status = "failed"; child.endedAt = Date.now(); child.error = `Could not start Pi RPC: ${error instanceof Error ? error.message : String(error)}`; changed(true);
   throw new Error(child.error);
  }
- if (signal?.aborted) abort();
- else { child.status = "running"; changed(true); }
+ if (!signal?.aborted) { child.status = "running"; changed(true); }
 
  const processEvent = async (raw: any): Promise<void> => {
   const event: NormalizedEvent = { schemaVersion: 1, sequence: ++child.eventCount, timestamp: new Date().toISOString(), type: String(raw.type ?? "unknown"), payload: raw };
@@ -137,6 +140,9 @@ export async function runChild(child: ChildState, runtime: Runtime, signal: Abor
    else appendActivities(...block);
    child.activeTools = child.activeTools.filter((tool) => tool.id !== id);
    toolArgs.delete(id); toolStartedAt.delete(id); changed(true);
+  } else if (raw.type === "queue_update") {
+   child.pendingSteering = Array.isArray(raw.steering) ? raw.steering.length : child.pendingSteering;
+   changed(true);
   } else if (raw.type === "message_update" && raw.assistantMessageEvent?.type === "text_delta") {
    sawTextDelta = true;
    const combined = `${child.streamingLine ?? ""}${String(raw.assistantMessageEvent.delta ?? "")}`;
@@ -173,6 +179,43 @@ export async function runChild(child: ChildState, runtime: Runtime, signal: Abor
  proc.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
 
  const closePromise = new Promise<number | null>((resolve) => proc.once("close", resolve));
+ const rpcCommand = <T = unknown>(type: string, fields: Record<string, unknown> = {}, timeoutMs = 5_000): Promise<T> => {
+  if (!proc.stdin.writable || settled) return Promise.reject(new Error(`Child settled before RPC ${type} was accepted`));
+  const id = `${child.id}:${type}:${++commandSequence}`;
+  return new Promise<T>((resolve, reject) => {
+   const timer = setTimeout(() => {
+    pendingResponses.delete(id);
+    reject(new Error(`Timed out waiting for child RPC ${type} acknowledgement`));
+   }, timeoutMs);
+   timer.unref?.();
+   pendingResponses.set(id, {
+    resolve: (data) => { clearTimeout(timer); resolve(data as T); },
+    reject: (error) => { clearTimeout(timer); reject(error); },
+   });
+   proc.stdin.write(`${JSON.stringify({ id, type, ...fields })}\n`);
+  });
+ };
+ closePromise.then(async (code) => {
+  await writes;
+  for (const [id, pending] of pendingResponses) {
+   pendingResponses.delete(id);
+   pending.reject(new Error(stderr.trim() || `Pi RPC exited ${code ?? "by signal"} before acknowledging control`));
+  }
+ });
+ const requestAbort = (): Promise<{ accepted: true }> => {
+  if (abortPromise) return abortPromise;
+  if (settled || ["completed", "warning", "failed", "not-started"].includes(child.status)) {
+   return Promise.reject(new Error(`Child is already terminal (${child.status})`));
+  }
+  cancelled = true; child.status = "cancelled"; changed(true);
+  abortPromise = rpcCommand("abort").then(() => ({ accepted: true as const }));
+  setTimeout(() => proc.kill("SIGTERM"), 500).unref();
+  setTimeout(() => proc.kill("SIGKILL"), 1250).unref();
+  return abortPromise;
+ };
+ const abort = () => { void requestAbort().catch(() => undefined); };
+ signal?.addEventListener("abort", abort, { once: true });
+ if (signal?.aborted) abort();
 
  // Observe child RPC state before sending the prompt (AC-009 / AC-010).
  if (!cancelled && !signal?.aborted) {
@@ -215,6 +258,14 @@ export async function runChild(child: ChildState, runtime: Runtime, signal: Abor
    }
    const thinkingLevel = typeof stateData?.thinkingLevel === "string" ? stateData.thinkingLevel : undefined;
    applyObservedRuntime(child, provider, modelId, thinkingLevel);
+   onControl?.({
+    async steer(message) {
+     if (!message.trim()) throw new Error("Steering message must not be empty");
+     await rpcCommand("steer", { message });
+     return { accepted: true, ...(child.pendingSteering !== undefined ? { pendingSteering: child.pendingSteering } : {}) };
+    },
+    abort: requestAbort,
+   });
    changed(true);
   } catch (error) {
    if (!cancelled) {

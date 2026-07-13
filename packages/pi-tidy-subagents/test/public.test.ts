@@ -60,7 +60,7 @@ function makeRegistry(entries: RegistryEntry[] = [
 function register(registry = makeRegistry()) {
  let tool: any; const shutdown: any[] = []; const commands = new Map<string, any>();
  const pi = {
-  registerTool(value: any) { tool = value; },
+  registerTool(value: any) { if (value.name === "subagent") tool = value; },
   registerCommand(name: string, options: any) { commands.set(name, options); },
   on(name: string, handler: any) { if (name === "session_shutdown") shutdown.push(handler); },
   getThinkingLevel: () => "medium",
@@ -133,7 +133,7 @@ test("ambient PI_TIDY_SUBAGENT_CHILD alone still registers parent tool and routi
  console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(" ")); };
  try {
   extension({
-   registerTool(value: any) { tool = value; },
+   registerTool(value: any) { if (value.name === "subagent") tool = value; },
    registerCommand(name: string, options: any) { commands.set(name, options); },
    on() {},
    getThinkingLevel: () => "medium",
@@ -204,7 +204,7 @@ test("two inherited children independently own equivalent runtime plans and laun
  let setThinkingCalls = 0;
  let tool: any;
  const pi = {
-  registerTool(value: any) { tool = value; },
+  registerTool(value: any) { if (value.name === "subagent") tool = value; },
   registerCommand() {},
   on() {},
   getThinkingLevel: () => { thinkingReads++; return "medium"; },
@@ -245,7 +245,7 @@ test("two inherited children independently own equivalent runtime plans and laun
  });
  // Schema v2 manifests retain parent runtime + per-child model provenance.
  const run = JSON.parse(await readFile(join(result.details.runDir, "run.json"), "utf8"));
- assert.equal(run.schemaVersion, 2);
+ assert.equal(run.schemaVersion, 3);
  assert.deepEqual(run.runtime, result.details.runtime);
  for (const child of run.children) {
   assert.ok(child.runtimePlan);
@@ -279,7 +279,7 @@ test("optional exact model selection, heterogeneous siblings, and schema v2 prov
   { label: "nested", reason: "model id with slash", prompt: "first", model: "fake/deep/reasoner" },
   { label: "other", reason: "cross provider", prompt: "first", model: "other/strong" },
  ] }, undefined, undefined, context(root));
- assert.equal(result.details.schemaVersion, 2);
+ assert.equal(result.details.schemaVersion, 3);
  const [inherit, fast, nested, other] = result.details.children;
  assert.deepEqual([inherit.status, fast.status, nested.status, other.status], ["completed", "completed", "completed", "completed"]);
  assert.equal(inherit.runtimePlan.provenance, "parent");
@@ -310,7 +310,7 @@ test("optional exact model selection, heterogeneous siblings, and schema v2 prov
  assert.match(rendered.find((l: string) => l.includes("nested")) ?? "", /🤖 nested\[deep\/reasoner\|medium\]/);
  assert.match(rendered.find((l: string) => l.includes("other")) ?? "", /🤖 other\[strong\|medium\]/);
  const run = JSON.parse(await readFile(join(result.details.runDir, "run.json"), "utf8"));
- assert.equal(run.schemaVersion, 2);
+ assert.equal(run.schemaVersion, 3);
  assert.deepEqual(run.runtime, result.details.runtime);
  assert.equal(run.children[1].runtimePlan.requestedModel, "fake/fast");
  assert.deepEqual(run.children[1].runtimePlan.observed, { provider: "fake", modelId: "fast", model: "fake/fast", thinking: "medium" });
@@ -524,7 +524,7 @@ test("inherited clamp when parent level is unsupported by sparse or always-think
  // Parent thinking "off": sparse and always-think both null-map off → clamp upward.
  let tool: any;
  const pi = {
-  registerTool(value: any) { tool = value; },
+  registerTool(value: any) { if (value.name === "subagent") tool = value; },
   registerCommand() {},
   on() {},
   getThinkingLevel: () => "off",
@@ -653,7 +653,7 @@ test("public tool runs ordered all-settled fanout and persists full truth", asyn
  const { tool } = register(); const snapshots: any[] = [];
  assert.ok(tool.parameters.properties.agents);
  const agentProps = tool.parameters.properties.agents.items.properties;
- assert.deepEqual(Object.keys(agentProps).sort(), ["label", "model", "prompt", "reason", "thinking"]);
+ assert.deepEqual(Object.keys(agentProps).sort(), ["execution", "label", "model", "prompt", "reason", "thinking"]);
  const result = await tool.execute("call-1", { agents: [
   { label: "alpha", reason: "inspect alpha", prompt: "first" },
   { reason: "inspect empty", prompt: "empty" },
@@ -674,7 +674,7 @@ test("public tool runs ordered all-settled fanout and persists full truth", asyn
  assert.match(rendered[1], /┊   → 2 tools · ↑2 ↓3/);
  assert.deepEqual(rendered.slice(2, 4).map((line) => line.replace(/^\s*┊\s+/, "")), ["# Result", "first ]]> kept"]);
  const run = JSON.parse(await readFile(join(result.details.runDir, "run.json"), "utf8"));
- assert.equal(run.schemaVersion, 2); assert.equal(run.cwd, root); assert.equal(run.children.length, 3);
+ assert.equal(run.schemaVersion, 3); assert.equal(run.cwd, root); assert.equal(run.children.length, 3);
  assert.deepEqual(run.runtime, { provider: "fake", modelId: "model-x", model: "fake/model-x", thinking: "medium", activeTools: ["read", "mystery"], projectTrusted: true });
  assert.deepEqual(result.details.runtime, run.runtime);
  const events = (await readFile(join(result.details.runDir, "child-001.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));

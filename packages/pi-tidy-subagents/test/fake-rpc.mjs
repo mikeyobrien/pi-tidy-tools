@@ -32,8 +32,19 @@ process.stdin.on("data", (chunk) => {
     const send = (event) => process.stdout.write(`${JSON.stringify(event)}\n`);
 
     if (command.type === "abort") {
+      send({ type: "response", id: command.id, command: "abort", success: true });
       process.exitCode = 0;
       setTimeout(() => process.exit(), 5);
+      continue;
+    }
+
+    if (command.type === "steer") {
+      if (!String(command.message ?? "").trim()) {
+        send({ type: "response", id: command.id, command: "steer", success: false, error: "steering message is empty" });
+      } else {
+        send({ type: "response", id: command.id, command: "steer", success: true });
+        send({ type: "queue_update", steering: [command.message], followUp: [] });
+      }
       continue;
     }
 
@@ -212,6 +223,20 @@ process.stdin.on("data", (chunk) => {
         },
       });
       send({ type: "agent_settled" });
+      continue;
+    }
+    if (prompt === "delayed") {
+      setTimeout(() => {
+        send({
+          type: "message_end",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "delayed background result" }],
+            usage: { input: 4, output: 5, cacheRead: 0, cacheWrite: 0 },
+          },
+        });
+        send({ type: "agent_settled" });
+      }, 120);
       continue;
     }
     if (prompt === "runner-branches") {

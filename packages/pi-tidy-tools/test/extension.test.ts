@@ -371,6 +371,36 @@ test("tool blocks support default reasoning and result layouts without completio
   assert.doesNotMatch(resultBlock[0], /\bago\b|update the renderer/);
 });
 
+test("icons-off blocks omit only decorative category icons in every layout and state", () => {
+  const result = {
+    content: [{ type: "text", text: "done" }],
+    details: { diff: "+new\n-old" },
+  };
+  for (const [name, args] of [
+    ["read", { path: "a.ts", reasoning: "inspect source" }],
+    ["edit", { path: "a.ts", reasoning: "apply change" }],
+    ["bash", { command: "npm test", reasoning: "run checks" }],
+  ] as const) {
+    for (const mode of ["default", "reasoning", "result"] as const) {
+      for (const state of [{}, { isPartial: true }, { isError: true }]) {
+        const lines = buildToolBlock(name, args, result, { ...state, mode, icons: false }).map(withoutAnsi);
+        assert.doesNotMatch(lines.join("\n"), /[📖✏️⚡]/);
+        assert.match(lines[0], /┊ [·✓✗] (read|edit|bash)/);
+        assert.doesNotMatch(lines[0], / {2,}(read|edit|bash)/);
+        for (const line of lines) assert.ok(fitToolLine(line, 28).length > 0);
+      }
+    }
+  }
+  assert.deepEqual(
+    buildToolBlock("edit", { path: "a.ts", reasoning: "apply change" }, result, { icons: false }).map(withoutAnsi),
+    ["  ┊ ✓ edit apply change", "  ┊   a.ts → +1/-1"]
+  );
+  assert.deepEqual(
+    buildTurnDiffBlock([{ tool: "edit", path: "a.ts", diff: "+new" }], { icons: false }).map(withoutAnsi),
+    ["last turn diff (1 file)", "a.ts", "+new"]
+  );
+});
+
 test("expanded writes show numbered content instead of the generic success message", () => {
   const block = buildToolBlock(
     "write",
@@ -670,8 +700,45 @@ test("status reports an active environment override without reloading", async ()
       reloads++;
     },
   });
-  assert.match(notices[0], /off, mode default \(PI_TIDY_TOOLS override\)/);
+  assert.match(notices[0], /off, mode default, icons on \(PI_TIDY_TOOLS override\)/);
   assert.equal(reloads, 0);
+});
+
+test("icons commands persist independently from the enablement environment override", async () => {
+  const saved: boolean[] = [];
+  const commands = new Map<string, any>();
+  const iconless = createTidyExtension({
+    loadState: () => ({ enabled: false, source: "environment" }),
+    loadMode: () => "result",
+    loadIcons: () => false,
+    saveIcons: async (icons) => { saved.push(icons); },
+    createIntegration: absentIntegration,
+  });
+  await iconless({
+    on() {}, registerShortcut() {}, registerMessageRenderer() {}, registerTool() {},
+    registerCommand(name: string, options: any) { commands.set(name, options); },
+  } as any);
+  const notices: string[] = [];
+  let reloads = 0;
+  const context = {
+    ui: { notify: (message: string) => notices.push(message) },
+    reload: async () => { reloads++; },
+  };
+  const tidy = commands.get("tidy");
+  await tidy.handler("icons status", context);
+  await tidy.handler("icons off", context);
+  await tidy.handler("icons on", context);
+  await tidy.handler("status", context);
+  await tidy.handler("mode status", context);
+  await tidy.handler("wat", context);
+  assert.deepEqual(saved, [true]);
+  assert.equal(reloads, 1);
+  assert.match(notices[0], /icons are off/);
+  assert.match(notices[1], /already off/);
+  assert.match(notices[2], /icons set to on; reloading/);
+  assert.match(notices[3], /off, mode result, icons off \(PI_TIDY_TOOLS override\)/);
+  assert.match(notices[4], /off, mode result, icons off \(PI_TIDY_TOOLS override\)/);
+  assert.match(notices[5], /icons on\|off\|status/);
 });
 
 test("pi-fff setup previews exact changes and awaits one reload", async () => {
@@ -889,6 +956,53 @@ test("registered renderers summarize native result shapes for every owned tool",
     new Set(backgrounds),
     new Set(["toolSuccessBg", "toolErrorBg"])
   );
+});
+
+test("iconless registered renderers retain state, colors, backgrounds, and compact widths", async () => {
+  const tools = new Map<string, any>();
+  const events = new Map<string, (event?: any) => Promise<any>>();
+  const commands = new Map<string, any>();
+  const messages: any[] = [];
+  const iconless = createTidyExtension({
+    loadState: () => ({ enabled: true, source: "default" }),
+    loadMode: () => "default",
+    loadIcons: () => false,
+    createIntegration: absentIntegration,
+  });
+  await iconless({
+    on: (name: string, handler: any) => events.set(name, handler),
+    registerCommand: (name: string, options: any) => commands.set(name, options),
+    registerShortcut() {}, registerMessageRenderer() {},
+    registerTool: (tool: any) => tools.set(tool.name, tool),
+    sendMessage: (message: any) => messages.push(message),
+  } as any);
+  const backgrounds: string[] = [];
+  const theme = { bg: (name: string, text: string) => { backgrounds.push(name); return text; } };
+  for (const [name, tool] of tools) {
+    const args = name === "bash" ? { command: "npm test", reasoning: "run checks" }
+      : name === "grep" || name === "find" ? { pattern: "needle", reasoning: "find matches" }
+      : { path: "a.ts", reasoning: "inspect source" };
+    for (const context of [{ isError: false }, { isError: true }]) {
+      const lines = renderedLines(tool.renderResult({ output: "one\ntwo" }, {}, theme, { args, ...context }), 28);
+      assert.doesNotMatch(lines.join("\n"), /[📖✏️⚡]/);
+      assert.match(lines[0], new RegExp(`┊ ${context.isError ? "✗" : "✓"} ${name}`));
+      assert.ok(lines.every((line) => line.length <= 28));
+    }
+  }
+  const live = tools.get("bash").renderCall(
+    { command: "sleep 1", reasoning: "wait briefly" }, theme,
+    { isPartial: true, toolCallId: "live", invalidate() {} },
+  );
+  assert.match(renderedLines(live, 28)[0], /┊ · bash/);
+  assert.doesNotMatch(renderedLines(live, 28).join("\n"), /[📖✏️⚡]/);
+  await events.get("tool_execution_start")!({ toolName: "edit", toolCallId: "diff", args: { path: "a.ts" } });
+  await events.get("tool_execution_end")!({ toolName: "edit", toolCallId: "diff", isError: false, result: { details: { diff: "+new" } } });
+  await events.get("turn_end")!();
+  await commands.get("diff").handler("", { ui: { notify() {} } });
+  assert.deepEqual(messages[0].details.rows.map(withoutAnsi), ["last turn diff (1 file)", "a.ts", "+new"]);
+  assert.ok(backgrounds.includes("toolPendingBg"));
+  assert.ok(backgrounds.includes("toolSuccessBg"));
+  assert.ok(backgrounds.includes("toolErrorBg"));
 });
 
 test("registered result renderers tolerate absent optional inputs", async () => {
@@ -1460,6 +1574,9 @@ test("registered APIs expose exact completions and reason-first tool metadata", 
     { value: "mode reasoning", label: "mode reasoning" },
     { value: "mode result", label: "mode result" },
     { value: "mode status", label: "mode status" },
+    { value: "icons on", label: "icons on" },
+    { value: "icons off", label: "icons off" },
+    { value: "icons status", label: "icons status" },
     { value: "pi-fff setup", label: "pi-fff setup" },
     { value: "pi-fff status", label: "pi-fff status" },
     { value: "pi-fff teardown", label: "pi-fff teardown" },

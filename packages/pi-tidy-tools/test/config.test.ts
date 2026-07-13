@@ -11,10 +11,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  loadTidyIcons,
   loadTidyMode,
   loadTidyState,
   parseEnabled,
   saveTidyEnabled,
+  saveTidyIcons,
   saveTidyMode,
 } from "../config.js";
 
@@ -133,6 +135,28 @@ test("an invalid environment setting falls through to file then default", async 
   });
 });
 
+test("loadTidyIcons returns false only for an explicit false object property", async () => {
+  await withTempConfig(async (configPath) => {
+    assert.equal(loadTidyIcons(configPath), true);
+    for (const contents of [
+      "not json",
+      JSON.stringify(null),
+      JSON.stringify([]),
+      JSON.stringify(false),
+      JSON.stringify({}),
+      JSON.stringify({ icons: true }),
+      JSON.stringify({ icons: "false" }),
+      JSON.stringify({ icons: 0 }),
+      JSON.stringify({ icons: null }),
+    ]) {
+      await writeFile(configPath, contents);
+      assert.equal(loadTidyIcons(configPath), true, contents);
+    }
+    await writeFile(configPath, JSON.stringify({ icons: false }));
+    assert.equal(loadTidyIcons(configPath), false);
+  });
+});
+
 test("loadTidyMode accepts only the two non-default persisted modes", async () => {
   await withTempConfig(async (configPath) => {
     for (const mode of ["reasoning", "result"] as const) {
@@ -190,10 +214,12 @@ test("saves preserve sibling settings while replacing owned values exactly", asy
     );
     await saveTidyEnabled(false, configPath);
     await saveTidyMode("result", configPath);
+    await saveTidyIcons(false, configPath);
     assert.equal(loadTidyMode(configPath), "result");
+    assert.equal(loadTidyIcons(configPath), false);
     assert.equal(
       await readFile(configPath, "utf8"),
-      '{\n  "sibling": {\n    "nested": [\n      1,\n      "two"\n    ]\n  },\n  "enabled": false,\n  "mode": "result"\n}\n'
+      '{\n  "sibling": {\n    "nested": [\n      1,\n      "two"\n    ]\n  },\n  "enabled": false,\n  "mode": "result",\n  "icons": false\n}\n'
     );
   });
 });

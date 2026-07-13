@@ -49,6 +49,17 @@ export function loadTidyState(options: { envValue?: string; configPath?: string 
 	return { enabled: true, source: "default" };
 }
 
+/** Resolve decorative icon visibility; only an explicit false disables them. */
+export function loadTidyIcons(configPath = CONFIG_PATH): boolean {
+	try {
+		const parsed = JSON.parse(readFileSync(configPath, "utf8"));
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && parsed.icons === false) return false;
+	} catch {
+		// Missing, unreadable, and malformed config all preserve visible icons.
+	}
+	return true;
+}
+
 export function loadTidyMode(configPath = CONFIG_PATH): TidyMode {
 	try {
 		const mode = JSON.parse(readFileSync(configPath, "utf8"))?.mode;
@@ -86,4 +97,8 @@ export async function saveTidyEnabled(enabled: boolean, configPath = CONFIG_PATH
 
 export async function saveTidyMode(mode: TidyMode, configPath = CONFIG_PATH): Promise<void> {
 	await updateConfig({ mode }, configPath);
+}
+
+export async function saveTidyIcons(icons: boolean, configPath = CONFIG_PATH): Promise<void> {
+	await updateConfig({ icons }, configPath);
 }

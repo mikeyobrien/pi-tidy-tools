@@ -87,6 +87,9 @@ inspect its startup state:
 /tidy mode reasoning
 /tidy mode result
 /tidy mode status
+/tidy icons on
+/tidy icons off
+/tidy icons status
 ```
 
 Layout modes:
@@ -97,15 +100,35 @@ Layout modes:
 
 ![Tidy Tools layout modes](docs/modes.png)
 
-A successful change is saved to `~/.pi/agent/pi-tidy-tools.json` and reloads Pi's
-extensions immediately. While disabled, `/tidy` remains available, but all seven
-tool overrides, reasoning prompts, diff hooks, `/diff`, its shortcut, and custom
-rendering are absent.
+A successful state, layout, or icon change is saved to
+`~/.pi/agent/pi-tidy-tools.json` and reloads Pi's extensions immediately. While
+disabled, `/tidy` remains available, but all seven tool overrides, reasoning
+prompts, diff hooks, `/diff`, its shortcut, and custom rendering are absent.
 
-For temporary or managed environments, `PI_TIDY_TOOLS` overrides the file. It
-accepts `on`/`off`, `true`/`false`, `yes`/`no`, or `1`/`0`. Unset the variable
-before using `/tidy on|off|toggle`; `/tidy status` reports when the override is
-active. A missing, unreadable, or malformed config defaults to enabled.
+Icon visibility is a top-level JSON boolean and defaults to `true` when missing,
+malformed, unreadable, or not a boolean:
+
+```json
+{
+  "icons": false
+}
+```
+
+`/tidy icons off` persistently removes only the decorative category icons `📖`,
+`✏️`, and `⚡` from tidy tool blocks, plus the decorative `◆` heading and file
+category icons from `/diff`. It does not reserve an empty icon column. The
+semantic running dot, success check, error cross, gutter, and result arrow stay
+visible, as do colors, names, summaries, expansion, and compact layouts.
+`/tidy icons on|off` reloads after a change; `status` is read-only and repeated
+values do not write or reload.
+
+For temporary or managed environments, `PI_TIDY_TOOLS` overrides only whole
+extension enablement. It accepts `on`/`off`, `true`/`false`, `yes`/`no`, or
+`1`/`0`. Unset the variable before using `/tidy on|off|toggle`; `/tidy status`
+reports when the override is active. There is no environment override for icon
+visibility, so `/tidy icons on|off` remains available while `PI_TIDY_TOOLS`
+controls enablement. A missing, unreadable, or malformed enablement config
+defaults to enabled.
 
 ## Optional pi-fff execution
 
@@ -214,7 +237,8 @@ Or target this package with `--workspace @mobrienv/pi-tidy-tools`.
 ## Regenerating screenshots
 
 `docs/comparison.png`, `docs/demo.png`, `docs/diff.png`, and `docs/modes.png` are
-generated from **real** renderer output (no hand-typed ANSI): the scripts run the
+generated from **real** renderer output (no hand-typed ANSI). `docs/demo.png`
+shows icons-off output at normal and narrow widths: the scripts run the
 built-in tools, render them through the actual extension (or native Pi cards for
 the comparison), and screenshot the result via headless Chrome.
 

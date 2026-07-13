@@ -30,7 +30,7 @@ echo "→ screenshotting via headless Chrome (transparent backdrop)"
 # a generous window guarantees the whole card fits, then we trim the transparent
 # margin away — leaving exactly the card + its gradient border.
 "$CHROME" --headless --disable-gpu --hide-scrollbars \
-  --force-device-scale-factor=2 --window-size=1400,1200 \
+  --force-device-scale-factor=2 --window-size=1400,1800 \
   --default-background-color=00000000 \
   --screenshot="$TMP_PNG" \
   "file://$PWD/$OUT_HTML" >/dev/null 2>&1

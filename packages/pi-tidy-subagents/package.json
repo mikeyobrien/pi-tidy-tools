@@ -1,6 +1,6 @@
 {
   "name": "@mobrienv/pi-tidy-subagents",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Compact foreground and session-scoped background RPC subagents for Pi.",
   "license": "MIT",
   "author": "Mikey O'Brien <m@mobrienv.dev>",

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-15
+
 ### Added
 
 - Session-scoped background execution with mixed foreground/background fan-out, one-way foreground handoff, shared scheduling, and ordered durable acknowledgements.
@@ -57,6 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Compact adaptive rendering with live child activity, progressive disclosure, directional provider usage, and elapsed duration.
 - Bounded ordered parent results plus persistent versioned manifests, responses, normalized events, and exact provider usage for every child.
 
-[Unreleased]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-subagents-v0.2.0...HEAD
+[Unreleased]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-subagents-v0.3.0...HEAD
+[0.3.0]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-subagents-v0.2.0...pi-tidy-subagents-v0.3.0
 [0.2.0]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-subagents-v0.1.0...pi-tidy-subagents-v0.2.0
 [0.1.0]: https://github.com/mikeyobrien/pi-tidy-tools/tree/pi-tidy-subagents-v0.1.0/packages/pi-tidy-subagents

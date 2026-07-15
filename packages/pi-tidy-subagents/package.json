@@ -39,7 +39,8 @@
     "CHANGELOG.md",
     "LICENSE",
     "docs/*.png",
-    "docs/routing-eval.md"
+    "docs/routing-eval.md",
+    "docs/reference.md"
   ],
   "pi": {
     "extensions": [

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-15
+
+### Fixed
+
+- Settings discovery now ignores external settings symlinks that do not configure pi-fff, while still rejecting (without modifying) external symlinks that do contain a pi-fff package.
+
 ## [0.3.0] - 2026-07-12
 
 ### Added
@@ -46,7 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Elapsed time now advances while large tool arguments are still streaming.
 - Reasoning headlines now appear before large paths, commands, or file contents finish streaming.
 
-[Unreleased]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.3.0...HEAD
+[Unreleased]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.3.1...HEAD
+[0.3.1]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.3.0...pi-tidy-tools-v0.3.1
 [0.3.0]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.2.0...pi-tidy-tools-v0.3.0
 [0.2.0]: https://github.com/mikeyobrien/pi-tidy-tools/compare/v0.1.2...pi-tidy-tools-v0.2.0
+[0.1.2]: https://github.com/mikeyobrien/pi-tidy-tools/compare/v0.1.1...v0.1.2
 [0.1.2]: https://github.com/mikeyobrien/pi-tidy-tools/compare/v0.1.1...v0.1.2

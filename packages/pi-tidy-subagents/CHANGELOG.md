@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Automatic Pi follow-up completion delivery, manual completion inboxes, shutdown cancellation, and headless RPC/JSON lifecycle support.
 - Schema version 3 ownership, delivery, collection, follow-up, and control-history artifact metadata with legacy terminal collection.
 - Settled child headers now show a compact completion age that remains accurate after session reloads.
+- Optional `PI_TIDY_SUBAGENT_BYTES_PER_CHILD` env var to override the default 2 GiB per concurrent child used by the concurrency heuristic.
+
+### Changed
+
+- Subagent concurrency memory cap now uses `process.availableMemory()` instead of `os.freemem()` (better on macOS where free pages exclude reclaimable inactive/purgeable memory).
 
 ## [0.2.0] - 2026-07-12
 

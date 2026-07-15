@@ -12,25 +12,25 @@ pi install npm:@mobrienv/pi-tidy-subagents
 
 Children inherit the parent's model, thinking level, working directory, project resources, extensions, skills, and active tools by default. Each child may optionally select:
 
-| Field | Values | Default |
-| --- | --- | --- |
-| `model` | Exact registered `provider/model-id` (split at the first `/`) | inherit parent |
-| `thinking` | Closed Pi set: `off\|minimal\|low\|medium\|high\|xhigh\|max` | inherit parent |
+| Field      | Values                                                        | Default        |
+| ---------- | ------------------------------------------------------------- | -------------- |
+| `model`    | Exact registered `provider/model-id` (split at the first `/`) | inherit parent |
+| `thinking` | Closed Pi set: `off\|minimal\|low\|medium\|high\|xhigh\|max`  | inherit parent |
 
 **Thinking is the primary per-child control.** Prefer omit model (inherit parent) unless capability or cost warrants an exact override. Fuzzy patterns, aliases, and profiles are rejected.
 
 ### Inheritance and overrides
 
-| Pattern | Behavior |
-| --- | --- |
-| Unchanged inheritance | Both fields omitted → parent model + thinking |
-| Model-only override | Exact `provider/model-id`; thinking inherits (clamped if unsupported) |
-| Thinking-only override | Closed Pi level on the parent model; fails preflight if unsupported |
-| Heterogeneous fan-out | Siblings may mix inherit / model-only / thinking-only / both in input order |
-| Explicit unsupported thinking | Whole batch fails preflight with supported alternatives; no partial artifacts |
-| Inherited adjustment | Unsupported inherited levels clamp via `@earendil-works/pi-ai` (non-reasoning → `off`); adjustment retained in artifacts |
-| Startup observation | After spawn, each child answers RPC `get_state` before its prompt |
-| Runtime provenance | Manifests record parent vs request for model and thinking |
+| Pattern                       | Behavior                                                                                                                 |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Unchanged inheritance         | Both fields omitted → parent model + thinking                                                                            |
+| Model-only override           | Exact `provider/model-id`; thinking inherits (clamped if unsupported)                                                    |
+| Thinking-only override        | Closed Pi level on the parent model; fails preflight if unsupported                                                      |
+| Heterogeneous fan-out         | Siblings may mix inherit / model-only / thinking-only / both in input order                                              |
+| Explicit unsupported thinking | Whole batch fails preflight with supported alternatives; no partial artifacts                                            |
+| Inherited adjustment          | Unsupported inherited levels clamp via `@earendil-works/pi-ai` (non-reasoning → `off`); adjustment retained in artifacts |
+| Startup observation           | After spawn, each child answers RPC `get_state` before its prompt                                                        |
+| Runtime provenance            | Manifests record parent vs request for model and thinking                                                                |
 
 Runtime selection never mutates the parent session model or thinking.
 
@@ -38,11 +38,11 @@ Runtime selection never mutates the parent session model or thinking.
 
 These are distinct truths:
 
-| Stage | Meaning |
-| --- | --- |
-| **Requested** | Caller intent on the tool call (`model` / `thinking` fields) |
-| **Resolved** | Parent-side validation, inheritance, and canonical thinking clamp before launch |
-| **Observed** | What the child Pi process reports via `get_state` before prompt |
+| Stage         | Meaning                                                                         |
+| ------------- | ------------------------------------------------------------------------------- |
+| **Requested** | Caller intent on the tool call (`model` / `thinking` fields)                    |
+| **Resolved**  | Parent-side validation, inheritance, and canonical thinking clamp before launch |
+| **Observed**  | What the child Pi process reports via `get_state` before prompt                 |
 
 They may differ (for example inherited clamp, or provider-side thinking adjustment). **Compact rendering shows effective/observed model id and thinking level.** Requested values, resolved values, and clamp reasons remain in expanded diagnostics and schema v2 run artifacts.
 
@@ -101,7 +101,7 @@ When present, the map is summarized in tool `promptGuidelines` as one layer of t
 
 ## Execution contract
 
-A session-wide FIFO queue admits the smaller of half available CPU parallelism and one child per 2 GiB free memory. Foreground and background children share this cap and launch order. Foreground ownership remains the default: calls with no `execution` field wait synchronously and preserve healthy sibling results after individual failures. A background child is durably registered and acknowledged immediately, then continues under the session coordinator while the parent proceeds.
+A session-wide FIFO queue admits the smaller of half available CPU parallelism and one child per 2 GiB available memory (via `process.availableMemory()`; override the per-child bytes with `PI_TIDY_SUBAGENT_BYTES_PER_CHILD`). Foreground and background children share this cap and launch order. Foreground ownership remains the default: calls with no `execution` field wait synchronously and preserve healthy sibling results after individual failures. A background child is durably registered and acknowledged immediately, then continues under the session coordinator while the parent proceeds.
 
 Collapsed output shows one current activity per child; `ctrl+o` shows the latest fifteen. Multi-child fan-out inserts one unpainted blank line between siblings so parallel agents scan like parallel tool cards (real gap through the shared pending/success background); a single child stays tight. Running children use a stable status dot, and live output redraws only when child state or activity changes. The robot glyph identifies the row as delegated work, so headers omit a redundant `subagent` noun and read `<agentName>[<model>|<thinking>] <reason> (<age> ago) → <metrics>` once settled. Child completion timestamps persist in result details and run manifests, so ages remain accurate after session restarts; active children omit the age. Compact headers show the **effective/observed** thinking level without routine adjustment noise. When the header fits, it stays on one scan-friendly row; narrow viewports move only the metrics to a second row. Metrics report tool calls, directional provider usage (`↑` input and `↓` output), and elapsed duration. Cache traffic is intentionally omitted from the compact header.
 
@@ -114,8 +114,17 @@ Each agent request accepts `execution: "foreground" | "background"`; omission me
 ```json
 {
   "agents": [
-    { "label": "needed", "reason": "return required analysis", "prompt": "..." },
-    { "label": "watcher", "reason": "continue long investigation", "prompt": "...", "execution": "background" }
+    {
+      "label": "needed",
+      "reason": "return required analysis",
+      "prompt": "..."
+    },
+    {
+      "label": "watcher",
+      "reason": "continue long investigation",
+      "prompt": "...",
+      "execution": "background"
+    }
   ]
 }
 ```
@@ -124,15 +133,15 @@ Foreground children retain their ordered bounded result envelopes. Background ch
 
 `subagent_control` uses parallel tool execution and supports:
 
-| Action | Required fields | Behavior |
-| --- | --- | --- |
-| `background` | `target` | One-way handoff of queued/starting/running foreground work |
-| `steer` | `target`, non-empty `message` | Sends Pi RPC's native FIFO `steer`; queued/not-ready children return a retryable error |
-| `cancel` | `target` | Cancels only that queued or running child; terminal retries are idempotent |
-| `inspect` | `target` | Returns target, process/ownership state, activity, delivery, and artifact metadata |
-| `status` | none | Lists active foreground, active background, and terminal uncollected results |
-| `set_delivery` | `target`, `delivery: "auto" \| "manual"` | Changes completion policy before Pi accepts an automatic follow-up |
-| `collect` | `target` | Returns the same bounded CDATA envelope repeatedly without deleting artifacts |
+| Action         | Required fields                          | Behavior                                                                               |
+| -------------- | ---------------------------------------- | -------------------------------------------------------------------------------------- |
+| `background`   | `target`                                 | One-way handoff of queued/starting/running foreground work                             |
+| `steer`        | `target`, non-empty `message`            | Sends Pi RPC's native FIFO `steer`; queued/not-ready children return a retryable error |
+| `cancel`       | `target`                                 | Cancels only that queued or running child; terminal retries are idempotent             |
+| `inspect`      | `target`                                 | Returns target, process/ownership state, activity, delivery, and artifact metadata     |
+| `status`       | none                                     | Lists active foreground, active background, and terminal uncollected results           |
+| `set_delivery` | `target`, `delivery: "auto" \| "manual"` | Changes completion policy before Pi accepts an automatic follow-up                     |
+| `collect`      | `target`                                 | Returns the same bounded CDATA envelope repeatedly without deleting artifacts          |
 
 A same-turn sibling control call may rendezvous with a label declared by a parallel `subagent` call; failed lookup expires and cannot affect a later turn. Operations for one child serialize through the coordinator, while different targets remain independently parallelizable.
 
@@ -150,11 +159,11 @@ Background delivery defaults to `auto`. After terminal state and the terminal st
 
 Workers survive parent turns, not extension reload, session replacement, fork/clone replacement, Pi exit, or crashes. Every normal session shutdown cancels queued/running children, persists terminal truth, appends terminal stamps while the old TUI is valid, clears the widget, and suppresses new parent completions.
 
-| Parent mode | Background contract |
-| --- | --- |
-| TUI | Launch/control, widget, overlay, shortcut, stamps, follow-ups |
-| RPC / JSON | Launch/control, artifacts, and completion messages; no terminal component factories |
-| Print | Background launch and handoff rejected; ordinary foreground execution remains supported |
+| Parent mode | Background contract                                                                     |
+| ----------- | --------------------------------------------------------------------------------------- |
+| TUI         | Launch/control, widget, overlay, shortcut, stamps, follow-ups                           |
+| RPC / JSON  | Launch/control, artifacts, and completion messages; no terminal component factories     |
+| Print       | Background launch and handoff rejected; ordinary foreground execution remains supported |
 
 > **Filesystem safety:** children share the same working tree. This package does not lock files, create worktrees, or coordinate writes. Allocate non-overlapping mutation scopes or use read-only fan-out.
 
@@ -168,11 +177,11 @@ npm run check --workspace @mobrienv/pi-tidy-subagents
 npm pack --workspace @mobrienv/pi-tidy-subagents --dry-run
 ```
 
-| Script | Role |
-| --- | --- |
-| `npm test` | Release-blocking hermetic suite (fake RPC; no network) |
-| `npm run smoke` | Opt-in real-provider smoke (`PI_TIDY_REAL_SMOKE=1`); hetero children when ≥2 auth'd models; skips with diagnostics otherwise |
-| `npm run routing-eval` | Opt-in observational routing probes (`PI_TIDY_ROUTING_EVAL=1`); offline structural fixtures already run under `npm test` |
+| Script                 | Role                                                                                                                         |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `npm test`             | Release-blocking hermetic suite (fake RPC; no network)                                                                       |
+| `npm run smoke`        | Opt-in real-provider smoke (`PI_TIDY_REAL_SMOKE=1`); hetero children when ≥2 auth'd models; skips with diagnostics otherwise |
+| `npm run routing-eval` | Opt-in observational routing probes (`PI_TIDY_ROUTING_EVAL=1`); offline structural fixtures already run under `npm test`     |
 
 Routing evaluations cover the task shapes above, record inherit vs select for model and thinking, and whether the choice matches guidance. They are observational and never gate releases. See [docs/routing-eval.md](docs/routing-eval.md).
 

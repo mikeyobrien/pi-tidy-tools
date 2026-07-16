@@ -16,7 +16,7 @@ import {
 	createGrepTool,
 	createBashTool,
 } from "@earendil-works/pi-coding-agent";
-import { buildToolBlock } from "../index.js";
+import { buildToolBlock, fitToolLine } from "../index.js";
 
 // --- minimal ANSI SGR → HTML converter ---
 const COLORS: Record<string, string> = {
@@ -99,11 +99,11 @@ async function main() {
 	}
 
 	const blocks: string[][] = [
-		buildToolBlock("read", { path: rel, reasoning: "check current verifyToken flow" }, rRead),
-		buildToolBlock("grep", { pattern: "verifyToken", path: "src", reasoning: "find every call site" }, rGrep),
-		buildToolBlock("edit", { path: rel, reasoning: "tighten the token type check" }, rEdit),
-		buildToolBlock("bash", { command: "npm test", reasoning: "run the suite to confirm green" }, rBashOk),
-		buildToolBlock("bash", { command: "npm run lint", reasoning: "lint the changed files" }, rBashFail, { isError: true }),
+		buildToolBlock("read", { path: rel, reasoning: "check current verifyToken flow" }, rRead, { icons: false }),
+		buildToolBlock("grep", { pattern: "verifyToken", path: "src", reasoning: "find every call site" }, rGrep, { icons: false }),
+		buildToolBlock("edit", { path: rel, reasoning: "tighten the token type check" }, rEdit, { icons: false }),
+		buildToolBlock("bash", { command: "npm test", reasoning: "run the suite to confirm green" }, rBashOk, { icons: false }),
+		buildToolBlock("bash", { command: "npm run lint", reasoning: "lint the changed files" }, rBashFail, { isError: true, icons: false }),
 	];
 
 	rmSync(dir, { recursive: true, force: true });
@@ -115,11 +115,12 @@ async function main() {
 	const BORDERc = "#2b2d3a";
 	const prompt = `<span style="color:${DIMc}">❯</span> refactor the auth middleware and run the tests`;
 	const spinner = `<span style="color:${CYANc}">⠋</span> <span style="color:${DIMc}">Working…</span>`;
-	const blockHtml = blocks.map((block, index) => {
-		const state = index === blocks.length - 1 ? "error" : "success";
+	const blockHtml = (rows: string[][]) => rows.map((block, index) => {
+		const state = index === rows.length - 1 ? "error" : "success";
 		return `<span class="tool ${state}">${ansiToHtml(block.join("\n"))}</span>`;
 	}).join("\n\n");
-	const body = `${prompt}\n\n${blockHtml}\n\n${spinner}`;
+	const narrowBlocks = blocks.map((block) => block.map((line) => fitToolLine(line, 46)));
+	const body = `${prompt}\n\n${blockHtml(blocks)}\n\n${spinner}\n\n<span class="viewport">narrow viewport (46 columns)</span>\n<div class="narrow">${blockHtml(narrowBlocks)}</div>`;
 
 	// pi's real editor chrome: a full-width rule, a blank input line, and a
 	// closing rule.
@@ -160,6 +161,9 @@ async function main() {
   .tool{display:block; margin:0 -40px; padding:0 40px}
   .tool.success{background:#1f2d29}
   .tool.error{background:#33242b}
+  .viewport{color:#565a6e}
+  .narrow{display:block; width:46ch; margin:10px 0 0}
+  .narrow .tool{box-sizing:border-box; width:calc(100% + 80px)}
 </style></head>
 <body><div class="bg"><div class="win">
   <div class="bar">

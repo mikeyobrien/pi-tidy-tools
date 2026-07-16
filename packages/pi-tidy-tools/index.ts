@@ -48,7 +48,16 @@ import {
 	createReadTool,
 } from "@earendil-works/pi-coding-agent";
 import { Container, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { CONFIG_PATH, loadTidyMode, loadTidyState, saveTidyEnabled, saveTidyMode, type TidyMode } from "./config.js";
+import {
+	CONFIG_PATH,
+	loadTidyIcons,
+	loadTidyMode,
+	loadTidyState,
+	saveTidyEnabled,
+	saveTidyIcons,
+	saveTidyMode,
+	type TidyMode,
+} from "./config.js";
 import {
 	BOLD,
 	CYAN,
@@ -261,12 +270,12 @@ export interface TurnDiff {
 }
 
 /** Render a set of turn diffs as colored lines with per-file headers. */
-function renderTurnDiffs(diffs: TurnDiff[]): string[] {
+function renderTurnDiffs(diffs: TurnDiff[], icons = true): string[] {
 	const lines: string[] = [];
 	diffs.forEach((d, i) => {
 		if (i > 0) lines.push("");
 		const { icon, color } = style(d.tool);
-		lines.push(`${color}${icon} ${BOLD}${shortPath(d.path)}${RESET}`);
+		lines.push(`${color}${icons ? `${icon} ` : ""}${BOLD}${shortPath(d.path)}${RESET}`);
 		if (d.diff.trim()) lines.push(...colorizeDiff(d.diff.replace(/\s+$/, "")));
 		else lines.push(`${DIM}(new file / full overwrite — no line diff)${RESET}`);
 	});
@@ -274,10 +283,11 @@ function renderTurnDiffs(diffs: TurnDiff[]): string[] {
 }
 
 /** Full `/diff` recap block — same lines the command posts into the transcript. */
-export function buildTurnDiffBlock(diffs: TurnDiff[]): string[] {
+export function buildTurnDiffBlock(diffs: TurnDiff[], opts: { icons?: boolean } = {}): string[] {
+	const { icons = true } = opts;
 	const n = diffs.length;
-	const header = `${MAGENTA}◆ ${BOLD}last turn diff${RESET} ${DIM}(${n} file${n === 1 ? "" : "s"})${RESET}`;
-	return [header, ...renderTurnDiffs(diffs)];
+	const header = `${MAGENTA}${icons ? "◆ " : ""}${BOLD}last turn diff${RESET} ${DIM}(${n} file${n === 1 ? "" : "s"})${RESET}`;
+	return [header, ...renderTurnDiffs(diffs, icons)];
 }
 
 /**
@@ -337,9 +347,9 @@ export function buildToolBlock(
 	name: string,
 	args: Record<string, unknown>,
 	result: any,
-	opts: { isError?: boolean; isPartial?: boolean; expanded?: boolean; elapsedMs?: number; mode?: TidyMode } = {},
+	opts: { isError?: boolean; isPartial?: boolean; expanded?: boolean; elapsedMs?: number; mode?: TidyMode; icons?: boolean } = {},
 ): string[] {
-	const { isError = false, isPartial = false, expanded = false, elapsedMs = 0, mode = "default" } = opts;
+	const { isError = false, isPartial = false, expanded = false, elapsedMs = 0, mode = "default", icons = true } = opts;
 	const { reasoning, rest } = stripReasoning(args ?? {});
 
 	const mark = isPartial
@@ -352,6 +362,7 @@ export function buildToolBlock(
 		: summarize(name, result, isError, rest, elapsedMs);
 
 	const { icon, color } = style(name);
+	const toolLabel = `${color}${icons ? `${icon} ` : ""}${BOLD}${name}${RESET}`;
 	const headline = oneLine(reasoning || argDetail(name, rest));
 	const detail = argDetail(name, rest);
 	// Keep the target on failures too; width fitting preserves the useful error
@@ -361,13 +372,13 @@ export function buildToolBlock(
 		: `${INDENT}${DIM}${detail}${RESET} ${DIM}→${RESET} ${summary}`;
 	let lines: string[];
 	if (mode === "reasoning") {
-		lines = [`${GUTTER} ${mark} ${color}${icon} ${BOLD}${name}${RESET} ${headline} ${DIM}→${RESET} ${summary}`];
+		lines = [`${GUTTER} ${mark} ${toolLabel} ${headline} ${DIM}→${RESET} ${summary}`];
 	} else if (mode === "result") {
 		const resultDetail = !detail ? "" : ` ${DIM}${detail}${RESET}`;
-		lines = [`${GUTTER} ${mark} ${color}${icon} ${BOLD}${name}${RESET}${resultDetail} ${DIM}→${RESET} ${summary}`];
+		lines = [`${GUTTER} ${mark} ${toolLabel}${resultDetail} ${DIM}→${RESET} ${summary}`];
 	} else {
 		lines = [
-			`${GUTTER} ${mark} ${color}${icon} ${BOLD}${name}${RESET} ${headline}`,
+			`${GUTTER} ${mark} ${toolLabel} ${headline}`,
 			line2,
 		];
 	}
@@ -378,6 +389,7 @@ export function buildToolBlock(
 const DIFF_MSG_TYPE = "minimal-turn-diff";
 const TIDY_COMPLETIONS = [
 	"on", "off", "toggle", "status", "mode default", "mode reasoning", "mode result", "mode status",
+	"icons on", "icons off", "icons status",
 	"pi-fff setup", "pi-fff status", "pi-fff teardown",
 ];
 
@@ -385,6 +397,8 @@ export interface TidyExtensionDependencies {
 	cwd?: string;
 	loadState?: typeof loadTidyState;
 	loadMode?: typeof loadTidyMode;
+	loadIcons?: typeof loadTidyIcons;
+	saveIcons?: typeof saveTidyIcons;
 	createIntegration?: (pi: ExtensionAPI, cwd: string) => PiFffIntegrationController;
 }
 
@@ -397,6 +411,8 @@ export function createTidyExtension(dependencies: TidyExtensionDependencies = {}
 		const cwd = dependencies.cwd ?? process.cwd();
 		const tidyState = (dependencies.loadState ?? loadTidyState)();
 		const tidyMode = (dependencies.loadMode ?? loadTidyMode)();
+		const tidyIcons = (dependencies.loadIcons ?? loadTidyIcons)();
+		const persistIcons = dependencies.saveIcons ?? saveTidyIcons;
 		const integration = dependencies.createIntegration?.(pi, cwd)
 			?? createPiFffIntegrationController({ pi: pi as any, cwd });
 		let startupPlan: Awaited<ReturnType<PiFffIntegrationController["initialize"]>> | undefined;
@@ -428,8 +444,21 @@ export function createTidyExtension(dependencies: TidyExtensionDependencies = {}
 					const detail = tidyState.source === "environment" ? "PI_TIDY_TOOLS override"
 						: tidyState.source === "file" ? CONFIG_PATH : "default; no config file";
 					const status = (await integration.run("status", { enabled: tidyState.enabled })).status;
-					ctx.ui.notify(`pi-tidy-tools is ${tidyState.enabled ? "on" : "off"}, mode ${tidyMode} (${detail}).\n${concisePiFffStatus(status)}.`, "info");
+					ctx.ui.notify(`pi-tidy-tools is ${tidyState.enabled ? "on" : "off"}, mode ${tidyMode}, icons ${tidyIcons ? "on" : "off"} (${detail}).\n${concisePiFffStatus(status)}.`, "info");
 					return;
+				}
+				if (action === "icons status") {
+					ctx.ui.notify(`pi-tidy-tools icons are ${tidyIcons ? "on" : "off"}.`, "info");
+					return;
+				}
+				const iconsMatch = action.match(/^icons (on|off)$/);
+				if (iconsMatch) {
+					const icons = iconsMatch[1] === "on";
+					if (icons === tidyIcons) { ctx.ui.notify(`pi-tidy-tools icons are already ${icons ? "on" : "off"}.`, "info"); return; }
+					try { await persistIcons(icons); }
+					catch (error) { ctx.ui.notify(`Could not save ${CONFIG_PATH}: ${error instanceof Error ? error.message : String(error)}`, "error"); return; }
+					ctx.ui.notify(`pi-tidy-tools icons set to ${icons ? "on" : "off"}; reloading.`, "info");
+					await ctx.reload(); return;
 				}
 				const modeMatch = action.match(/^mode (default|reasoning|result)$/);
 				if (modeMatch) {
@@ -441,7 +470,7 @@ export function createTidyExtension(dependencies: TidyExtensionDependencies = {}
 					await ctx.reload(); return;
 				}
 				if (action !== "on" && action !== "off" && action !== "toggle") {
-					ctx.ui.notify("Usage: /tidy on|off|toggle|status|mode default|reasoning|result|status|pi-fff setup|status|teardown", "warning"); return;
+					ctx.ui.notify("Usage: /tidy on|off|toggle|status|mode default|reasoning|result|status|icons on|off|status|pi-fff setup|status|teardown", "warning"); return;
 				}
 				if (tidyState.source === "environment") { ctx.ui.notify("PI_TIDY_TOOLS overrides persistent settings; change or unset it first.", "warning"); return; }
 				const enabled = action === "toggle" ? !tidyState.enabled : action === "on";
@@ -477,7 +506,7 @@ export function createTidyExtension(dependencies: TidyExtensionDependencies = {}
 					const id = context.toolCallId as string;
 					if (!elapsedTimerByCallId.has(id)) { const timer = setInterval(() => context.invalidate(), 1000); timer.unref?.(); elapsedTimerByCallId.set(id, timer); }
 					let started = startedAtByCallId.get(id); if (started === undefined) { started = Date.now(); startedAtByCallId.set(id, started); }
-					return new WidthAwareLines(() => buildToolBlock(name, args ?? {}, {}, { isPartial: true, elapsedMs: Date.now() - started!, mode: tidyMode }), (text) => theme.bg("toolPendingBg", text));
+					return new WidthAwareLines(() => buildToolBlock(name, args ?? {}, {}, { isPartial: true, elapsedMs: Date.now() - started!, mode: tidyMode, icons: tidyIcons }), (text) => theme.bg("toolPendingBg", text));
 				},
 				renderResult: (result: any, options: any, theme: any, context: any) => {
 					if (options?.isPartial) return new Container();
@@ -487,7 +516,7 @@ export function createTidyExtension(dependencies: TidyExtensionDependencies = {}
 					if (timer) clearInterval(timer); elapsedTimerByCallId.delete(id ?? ""); startedAtByCallId.delete(id ?? "");
 					const persisted = Number(result?.details?.piTidyElapsedMs);
 					const elapsedMs = Number.isFinite(persisted) ? persisted : started === undefined ? 0 : Date.now() - started;
-					const lines = buildToolBlock(name, context?.args ?? {}, result, { isError, expanded: options?.expanded ?? false, elapsedMs, mode: tidyMode });
+					const lines = buildToolBlock(name, context?.args ?? {}, result, { isError, expanded: options?.expanded ?? false, elapsedMs, mode: tidyMode, icons: tidyIcons });
 					return new WidthAwareLines(lines, (text) => theme.bg(isError ? "toolErrorBg" : "toolSuccessBg", text));
 				},
 			} as SourceToolDefinition;
@@ -522,7 +551,7 @@ export function createTidyExtension(dependencies: TidyExtensionDependencies = {}
 		pi.registerMessageRenderer(DIFF_MSG_TYPE, (message: any) => new WidthAwareLines(message.details?.rows ?? String(message.content ?? "").split("\n")));
 		const showLastTurnDiff = (ctx: any) => {
 			if (!lastTurn.length) { ctx.ui.notify("No file changes recorded in the last turn.", "info"); return; }
-			const rows = buildTurnDiffBlock(lastTurn); pi.sendMessage({ customType: DIFF_MSG_TYPE, content: rows.join("\n"), display: true, details: { rows } });
+			const rows = buildTurnDiffBlock(lastTurn, { icons: tidyIcons }); pi.sendMessage({ customType: DIFF_MSG_TYPE, content: rows.join("\n"), display: true, details: { rows } });
 		};
 		pi.registerCommand("diff", { description: "Show file changes (edit/write diffs) from the last turn", handler: async (_args, ctx) => showLastTurnDiff(ctx) });
 		pi.registerShortcut("ctrl+shift+o", { description: "Show file changes from the last turn", handler: async (ctx) => showLastTurnDiff(ctx) });

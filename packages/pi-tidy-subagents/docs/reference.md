@@ -110,8 +110,9 @@ the parent proceeds.
 
 ### Live rendering
 
-Collapsed output shows one current activity per child; `ctrl+o` shows the
-latest fifteen.
+Collapsed output shows current activity only while a child is active. After
+settlement, response prose moves behind `ctrl+o` (up to the latest fifteen
+activity lines); interrupted tool blocks remain collapsed as terminal truth.
 
 - Multi-child fan-out inserts one unpainted blank line between siblings so
   parallel agents scan like parallel tool cards (a real gap through the shared
@@ -168,7 +169,10 @@ Each agent request accepts `execution: "foreground" | "background"`; omission me
 
 Foreground children retain their ordered bounded result envelopes. Background children return an ordered `<background_ack>` containing canonical target, label, process state, ownership, delivery policy, and artifact path—never partial assistant output. A canonical target is `<run-id>:<child-id>`; an active label is accepted only when it resolves unambiguously. Ambiguous labels fail with every matching canonical target and state.
 
-`subagent_control` uses parallel tool execution and supports:
+`subagent_control` uses parallel tool execution. In the TUI, pending and settled
+calls use the same gutter, state backgrounds, and width bounds as child cards.
+The collapsed row names the action and reports its decision-useful outcome;
+`ctrl+o` reveals up to fifteen raw response lines. It supports:
 
 | Action         | Required fields                          | Behavior                                                                               |
 | -------------- | ---------------------------------------- | -------------------------------------------------------------------------------------- |

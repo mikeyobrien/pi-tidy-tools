@@ -2,6 +2,18 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { BOLD, CYAN, DIM, GREEN, MAGENTA, RED, RESET, YELLOW, fitLine, formatAge, formatCount, formatElapsed, style } from "./vendor/pi-tidy-core/index.js";
 import type { ChildState, RunDetails } from "./types.js";
 
+export interface ControlRenderArgs {
+ action?: string;
+ target?: string;
+ message?: string;
+ delivery?: string;
+}
+
+export interface ControlRenderResult {
+ content?: Array<{ type: string; text?: string }>;
+ details?: Record<string, unknown>;
+}
+
 const GUTTER = `${DIM}  ┊${RESET}`;
 const ansiPattern = /\x1b\[[0-9;]*m/g;
 const RUNNING_GLYPH = "●";
@@ -106,9 +118,16 @@ export function renderLines(details: RunDetails | undefined, expanded = false, n
   const combined = `${identity} ${statistics}`;
   if (width !== undefined && visibleWidth(combined) <= width) lines.push(combined);
   else lines.push(identity, `${GUTTER}   ${statistics}`);
+  // Settled prose is result detail, not card chrome. Keep live activity visible while
+  // work is active, and retain interrupted tool truth after settlement; other terminal
+  // detail requires expansion.
   const displayChild = terminalView(child);
   const activity = tail(displayChild);
-  const entries = expanded && activity.length > 0 ? expandedActivity(displayChild) : collapsedActivity(displayChild);
+  const entries = expanded
+   ? activity.length > 0 ? expandedActivity(displayChild) : collapsedActivity(displayChild)
+   : !settled
+    ? collapsedActivity(displayChild)
+    : collapsedActivity(displayChild).filter(isToolActivity);
   for (const entry of entries) lines.push(`${GUTTER}${isToolActivity(entry) ? "   " : "     "}${entry}`);
  }
  return lines;
@@ -144,6 +163,87 @@ export function renderBackgroundAcknowledgementLines(child: ChildState): string[
  const identity = `${GUTTER} ${statusGlyph(child.status)} ${MAGENTA}🤖${RESET} ${BOLD}${child.label}[${child.model}|${child.thinking}]${RESET} ${child.reason}`;
  const delivery = child.deliveryPolicy ?? "auto";
  return [identity, `${GUTTER}   ${DIM}→ background · ${child.status} · delivery=${delivery} · ${child.target ?? child.id}${RESET}`, `${GUTTER}     ${DIM}artifact ${child.artifactPath}${RESET}`];
+}
+
+function controlText(result: ControlRenderResult | undefined): string {
+ return result?.content?.find((item) => item.type === "text")?.text ?? "";
+}
+
+function controlChild(result: ControlRenderResult | undefined): ChildState | undefined {
+ const child = result?.details?.child;
+ return child && typeof child === "object" ? child as ChildState : undefined;
+}
+
+function controlCounts(result: ControlRenderResult | undefined): string {
+ const details = result?.details;
+ const count = (key: string): number => Array.isArray(details?.[key]) ? details[key].length : 0;
+ return `${count("activeForeground")} foreground · ${count("activeBackground")} background · ${count("terminalUncollected")} uncollected`;
+}
+
+function controlSummary(args: ControlRenderArgs, result: ControlRenderResult | undefined, isPartial: boolean, isError: boolean): string {
+ if (isPartial) return "running";
+ const text = controlText(result).split("\n")[0]?.trim() || "done";
+ if (isError) return text;
+ const child = controlChild(result);
+ const status = child?.status ?? "accepted";
+ const ownership = child?.ownership ?? "foreground";
+ const delivery = child?.deliveryPolicy ?? "none";
+ switch (args.action) {
+  case "status": return controlCounts(result);
+  case "inspect": return `${status}/${ownership} · delivery ${delivery}`;
+  case "background": return `${status}/background · delivery ${delivery}`;
+  case "steer": return "steering accepted";
+  case "cancel": return result?.details?.repeated ? `${status} · already terminal` : status;
+  case "set_delivery": return `delivery ${delivery} · ${status}`;
+  case "collect": {
+   const collectionCount = Number(result?.details?.collectionCount);
+   return `${status}${Number.isFinite(collectionCount) ? ` · collection ${collectionCount}` : ""}`;
+  }
+  default: return text;
+ }
+}
+
+function controlDetailLines(result: ControlRenderResult | undefined): string[] {
+ const lines = controlText(result).split("\n");
+ if (lines.length === 1 && lines[0] === "") return [];
+ const kept = lines.slice(0, 15);
+ if (lines.length > kept.length) kept.push(`${DIM}… ${lines.length - kept.length} more lines${RESET}`);
+ return kept;
+}
+
+export function renderControlLines(
+ args: ControlRenderArgs = {},
+ result?: ControlRenderResult,
+ expanded = false,
+ isPartial = false,
+ isError = false,
+): string[] {
+ const child = controlChild(result);
+ const target = child?.label || args.target?.trim();
+ const action = args.action?.trim() || "control";
+ const glyph = isPartial ? `${CYAN}${RUNNING_GLYPH}${RESET}` : isError ? `${RED}✗${RESET}` : `${GREEN}✓${RESET}`;
+ const identity = `${GUTTER} ${glyph} ${MAGENTA}🤖${RESET} ${BOLD}control ${action}${RESET}${target ? ` ${target}` : ""}`;
+ const summary = `${DIM}→ ${controlSummary(args, result, isPartial, isError)}${RESET}`;
+ const lines = [`${identity} ${summary}`];
+ if (expanded && !isPartial) {
+  for (const line of controlDetailLines(result)) lines.push(`${GUTTER}     ${line}`);
+ }
+ return lines;
+}
+
+export class ControlSnapshotComponent {
+ constructor(
+  private args: ControlRenderArgs,
+  private result: ControlRenderResult | undefined,
+  private expanded: boolean,
+  private isPartial: boolean,
+  private isError: boolean,
+  private background?: (text: string) => string,
+ ) {}
+ invalidate(): void {}
+ render(width: number): string[] {
+  return paintLines(renderControlLines(this.args, this.result, this.expanded, this.isPartial, this.isError), width, this.background);
+ }
 }
 
 export class SnapshotComponent {

@@ -47,8 +47,10 @@ child fails. Settled children read:
 <agentName>[<model>|<thinking>] <reason> (<age> ago) → <metrics>
 ```
 
-Expand any child with `ctrl+o` for its recent activity; metrics show tool
-calls, token traffic (`↑` input, `↓` output), and elapsed time.
+Active children keep their latest activity visible. Once settled, response prose
+moves behind `ctrl+o`, leaving the child summary compact; interrupted tool state
+remains visible because it is terminal truth. Metrics show tool calls, token
+traffic (`↑` input, `↓` output), and elapsed time.
 
 ## Background children
 
@@ -60,7 +62,8 @@ with an acknowledgement while the child keeps working:
   resume.
 - Manage children with the `/subagents` overlay (`ctrl+shift+b`) or the
   `subagent_control` tool: `background`, `steer`, `cancel`, `inspect`,
-  `status`, `set_delivery`, `collect`.
+  `status`, `set_delivery`, `collect`. Control calls render as one compact,
+  action-specific status line; `ctrl+o` reveals their bounded raw response.
 - Finished results arrive automatically as a follow-up turn when the parent is
   idle, or on demand via `collect`.
 - Workers live for the session: reload, exit, or session replacement cancels

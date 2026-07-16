@@ -16,7 +16,7 @@ import {
 } from "./config.js";
 import { buildEnvelope } from "./envelope.js";
 import { buildMixedEnvelope, publicChild, SessionCoordinator } from "./coordinator.js";
-import { ToolSnapshotComponent } from "./render.js";
+import { ControlSnapshotComponent, ToolSnapshotComponent } from "./render.js";
 import { resolveBatchRuntime, wrapPiRegistry, type ModelAuthRegistry } from "./runtime.js";
 import { concurrencyCap, Scheduler } from "./scheduler.js";
 import { createRunStore } from "./store.js";
@@ -26,7 +26,7 @@ import { THINKING_LEVELS } from "./types.js";
 
 export { buildEnvelope } from "./envelope.js";
 export { concurrencyCap, Scheduler } from "./scheduler.js";
-export { renderLines, renderBackgroundAcknowledgementLines, ToolSnapshotComponent } from "./render.js";
+export { ControlSnapshotComponent, renderControlLines, renderLines, renderBackgroundAcknowledgementLines, ToolSnapshotComponent } from "./render.js";
 export { BackgroundStampComponent, BackgroundWidgetComponent, ManagementOverlay, managementActions, managementItems, renderBackgroundWidgetLines, renderManagementLines } from "./ui.js";
 export { SessionCoordinator, backgroundAcknowledgement, buildMixedEnvelope } from "./coordinator.js";
 export { buildChildArgs, launchRuntime } from "./runner.js";
@@ -388,7 +388,7 @@ export default function extension(pi: ExtensionAPI): void {
  });
 
  pi.registerTool({
-  name: "subagent_control", label: "subagent control", executionMode: "parallel",
+  name: "subagent_control", label: "subagent control", renderShell: "self", executionMode: "parallel",
   description: "Control one session-scoped child: background, steer through Pi's native queue, cancel, inspect, list status, set automatic/manual delivery, or collect a bounded terminal result.",
   promptGuidelines: ["Use subagent_control canonical targets when labels may be ambiguous. Background ownership is one-way and print mode cannot own background work."],
   parameters: ControlParameters,
@@ -396,6 +396,21 @@ export default function extension(pi: ExtensionAPI): void {
    coordinator.attachContext(ctx as any);
    validateControlInput(params);
    return coordinator.control(params.action, params.target, params.message, params.delivery, "agent", parentBatchKey(ctx));
+  },
+  renderCall: (args, theme, context) => context?.isPartial
+   ? new ControlSnapshotComponent(args, undefined, false, true, false, (text) => theme.bg("toolPendingBg", text))
+   : new Container(),
+  renderResult: (result, options, theme, context) => {
+   if (options.isPartial) return new Container();
+   const isError = context?.isError ?? (result as any)?.isError ?? false;
+   return new ControlSnapshotComponent(
+    context?.args ?? {},
+    result as any,
+    options.expanded,
+    false,
+    isError,
+    (text) => theme.bg(isError ? "toolErrorBg" : "toolSuccessBg", text),
+   );
   },
  });
 }

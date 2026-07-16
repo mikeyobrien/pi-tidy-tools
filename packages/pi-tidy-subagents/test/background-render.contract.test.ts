@@ -76,7 +76,9 @@ test("synchronous tool card gives a detached child one acknowledgement without l
  assert.match(lines.join("\n"), /artifact \/tmp\/run\/child-001\.md/);
  assert.doesNotMatch(lines.join("\n"), /secret live output/);
  assert.equal(lines.filter((line) => line.includes("🤖 worker")).length, 1);
- assert.match(lines.join("\n"), /foreground result/);
+ assert.doesNotMatch(lines.join("\n"), /foreground result/);
+ const expanded = new ToolSnapshotComponent(details([detached, foreground]), true).render(100).map(strip);
+ assert.match(expanded.join("\n"), /foreground result/);
 });
 
 test("durable handoff and terminal stamps use collapsed and expanded real rendering", () => {

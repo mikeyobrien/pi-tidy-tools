@@ -1,4 +1,4 @@
-import { ToolSnapshotComponent } from "../render.js";
+import { ControlSnapshotComponent, ToolSnapshotComponent } from "../render.js";
 import { BackgroundStampComponent, BackgroundWidgetComponent, ManagementOverlay, managementItems } from "../ui.js";
 import { buildToolActivityBlock } from "../vendor/pi-tidy-core/index.js";
 import type { ChildState, RunDetails } from "../types.js";
@@ -71,11 +71,19 @@ const overlayForeground = child(9, "running", "foreground", "await synchronous r
 const overlay = new ManagementOverlay(managementItems({ activeForeground: [overlayForeground], activeBackground: widgetChildren, terminalUncollected: [failure, cancelled] }), theme, () => {}).render(78);
 const narrow = new BackgroundWidgetComponent(() => [runningAuto], theme).render(48);
 const toolCard = new ToolSnapshotComponent(cardDetails, false).render(112);
+const controlCard = new ControlSnapshotComponent(
+ { action: "inspect", target: success.target },
+ { content: [{ type: "text", text: `success (${success.target}) is completed/background; activity: complete; delivery auto; artifact ${success.artifactPath}` }], details: { child: success, controlReady: false } },
+ false,
+ false,
+ false,
+).render(112);
 
 const html = `<!doctype html><meta charset="utf-8"><style>
 html,body{margin:0;background:transparent}body{display:inline-block}.frame{margin:30px;padding:35px;background:linear-gradient(135deg,#6157da,#cf6cae);border-radius:18px}.win{background:#1a1b26;color:#c0caf5;border-radius:12px;overflow:hidden;box-shadow:0 20px 60px #0008}.bar{padding:14px 20px;background:#15161e;color:#777;font:14px monospace}.grid{display:grid;grid-template-columns:auto auto;gap:18px;padding:22px}.term{padding:18px 22px;font:16px/1.5 "JetBrains Mono",monospace;background:#1a1b26}.row{white-space:pre}.gap{height:1.5em}.label{color:#7a8194;margin-bottom:8px}.wide{grid-column:1 / -1}.narrow{width:48ch}.overlay{align-self:start}
 </style><div class="frame"><div class="win"><div class="bar">● ● ●　pi — session background subagents</div><div class="grid">
-<div class="term wide"><div class="label">mixed foreground result + foreground handoff acknowledgement</div>${paint(toolCard,"#242738")}</div>
+<div class="term wide"><div class="label">compact settled foreground summary + foreground handoff acknowledgement</div>${paint(toolCard,"#242738")}</div>
+<div class="term wide"><div class="label">compact subagent control result · raw response hidden until expansion</div>${paint(controlCard,"#242738")}</div>
 <div class="term wide"><div class="label">active widget · direct launch · queued/running · auto/manual · pending steering</div>${paint(widget,"#252331")}</div>
 <div class="term"><div class="label">durable direct-launch and foreground-handoff stamps</div>${paint([...directStamp,"",...handoffStamp],"#202d29")}</div>
 <div class="term"><div class="label">terminal success · failure · cancellation stamps</div>${paint(terminalStamps,"#202d29")}</div>

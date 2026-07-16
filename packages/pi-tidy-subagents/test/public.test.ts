@@ -1462,8 +1462,13 @@ test("public tool runs ordered all-settled fanout and persists full truth", asyn
     );
     assert.match(rendered[0], /┊ ✓ 🤖 alpha\[model-x\|medium\] inspect alpha/);
     assert.match(rendered[1], /┊   → 2 tools · ↑2 ↓3/);
+    assert.doesNotMatch(rendered.join("\n"), /# Result|first \]\]> kept/);
+    const expanded = renderLines(
+      { ...result.details, children: [result.details.children[0]] },
+      true
+    ).map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
     assert.deepEqual(
-      rendered.slice(2, 4).map((line) => line.replace(/^\s*┊\s+/, "")),
+      expanded.slice(-2).map((line) => line.replace(/^\s*┊\s+/, "")),
       ["# Result", "first ]]> kept"]
     );
     const run = JSON.parse(
@@ -2066,11 +2071,13 @@ test("wide view combines child identity reason age and metrics on one line", () 
   const rendered = new SnapshotComponent({ children: [child] } as any, false)
     .render(180)
     .map((line) => line.replace(/\x1b\[[0-9;]*m/g, "").trimEnd());
-  assert.equal(
-    rendered[0],
-    "  ┊ ✓ 🤖 fixer-recovery[gpt-5.6-sol|high] recover missing repair ledger after interrupted fixer (1h3m ago) → 31 tools · ↑99k ↓3.7k · 2m 19s"
-  );
-  assert.equal(rendered[1], "  ┊     - `git diff --check`: passed");
+  assert.deepEqual(rendered, [
+    "  ┊ ✓ 🤖 fixer-recovery[gpt-5.6-sol|high] recover missing repair ledger after interrupted fixer (1h3m ago) → 31 tools · ↑99k ↓3.7k · 2m 19s",
+  ]);
+  const expanded = new SnapshotComponent({ children: [child] } as any, true)
+    .render(180)
+    .map((line) => line.replace(/\x1b\[[0-9;]*m/g, "").trimEnd());
+  assert.equal(expanded[1], "  ┊     - `git diff --check`: passed");
 });
 
 test("multi-child output inserts one blank between siblings and stays tight for one child", () => {

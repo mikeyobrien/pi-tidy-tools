@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { renderLines, SnapshotComponent } from "../render.js";
+import { ControlSnapshotComponent, renderControlLines, renderLines, SnapshotComponent } from "../render.js";
 import type { ChildState, ChildStatus, RunDetails } from "../types.js";
 
 const BOLD = "\x1b[1m";
@@ -85,16 +85,17 @@ test("renderLines returns no lines when public details are missing", () => {
   assert.deepEqual(renderLines(undefined), []);
 });
 
-test("every child status has an exact ANSI header and collapsed fallback", () => {
+test("every child status has an exact ANSI header while only active fallbacks stay collapsed", () => {
   for (const status of Object.keys(glyphs) as ChildStatus[]) {
     const state = child({
       status,
       error: status === "failed" ? "boom" : undefined,
     });
-    assert.deepEqual(renderLines(details([state]), false, 500, 200), [
+    const expected = [
       `${GUTTER} ${glyphs[status]} ${MAGENTA}🤖${RESET} ${BOLD}agent[m|off]${RESET} inspect state ${DIM}→ 0 tools · ↑12 ↓3 · <1s${RESET}`,
-      `${GUTTER}     ${fallbacks[status]}`,
-    ]);
+    ];
+    if (["queued", "starting", "running"].includes(status)) expected.push(`${GUTTER}     ${fallbacks[status]}`);
+    assert.deepEqual(renderLines(details([state]), false, 500, 200), expected);
   }
 });
 
@@ -112,17 +113,14 @@ test("wide and narrow layouts combine or split exact header and statistics lines
   const statistics = `${DIM}→ 2 tools · ↑12 ↓3 · 1m 02s${RESET}`;
   assert.deepEqual(renderLines(details([state]), false, 99_000, 200), [
     `${identity} ${statistics}`,
-    `${GUTTER}     completed`,
   ]);
   assert.deepEqual(renderLines(details([state]), false, 99_000, 40), [
     identity,
     `${GUTTER}   ${statistics}`,
-    `${GUTTER}     completed`,
   ]);
   assert.deepEqual(renderLines(details([state]), false, 99_000), [
     identity,
     `${GUTTER}   ${statistics}`,
-    `${GUTTER}     completed`,
   ]);
 });
 
@@ -170,7 +168,6 @@ test("usage is directional, formats all scales, and omits provider and cache tot
     [
       "  ┊ ✓ 🤖 agent[m|off] inspect state",
       "  ┊   → 0 tools · 0 tok · <1s",
-      "  ┊     completed",
     ]
   );
 });
@@ -180,7 +177,7 @@ test("collapsed activities select text, complete tool blocks, and one active too
   const second = `  ${DIM}/tmp/a.ts${RESET} ${DIM}→${RESET} ${DIM}running${RESET}`;
   const activity = ["old prose", first, second, "new prose", "latest prose"];
   assert.deepEqual(
-    renderLines(details([child({ activities: activity })]), false, 0).slice(2),
+    renderLines(details([child({ status: "running", activities: activity })]), false, 0).slice(2),
     [`${GUTTER}     new prose`, `${GUTTER}     latest prose`]
   );
   assert.deepEqual(
@@ -198,6 +195,7 @@ test("collapsed activities select text, complete tool blocks, and one active too
     renderLines(
       details([
         child({
+          status: "running",
           activities: activity,
           activeTools: [{ id: "one", name: "read", activityIndex: 1 }],
         }),
@@ -205,7 +203,7 @@ test("collapsed activities select text, complete tool blocks, and one active too
       false,
       0
     ).slice(2),
-    [`${GUTTER}     new prose`, `${GUTTER}     latest prose`]
+    [`${GUTTER}   ${first}`, `${GUTTER}   ${second}`]
   );
   assert.deepEqual(
     renderLines(details([child({ activities: [first] })]), false, 0).slice(2),
@@ -320,10 +318,8 @@ test("multiple children preserve exact header-child line ordering", () => {
   ).map(strip);
   assert.deepEqual(rendered, [
     "  ┊ ✓ 🤖 alpha[m|off] first → 0 tools · ↑12 ↓3 · <1s",
-    "  ┊     alpha child",
     "",
     "  ┊ ✗ 🤖 beta[m|off] second → 0 tools · ↑12 ↓3 · <1s",
-    "  ┊     beta child",
   ]);
 });
 
@@ -344,21 +340,18 @@ test("SnapshotComponent fits ANSI lines, preserves metric tails, and does not pa
   assert.deepEqual(rendered.map(strip), [
     "  ┊ ✓ 🤖 long-agent-name[m|off] a d…",
     "  ┊   → 31 tools · ↑99k ↓3.7k · <1s",
-    "  ┊     completed",
   ]);
   assert.ok(rendered.every((line) => visibleWidth(line) <= 36));
   assert.ok(rendered.every((line) => !line.endsWith(" ")));
   assert.deepEqual(component.render(32).map(strip), [
     "  ┊ ✓ 🤖 long-agent-name[m|off]…",
     " … → 31 tools · ↑99k ↓3.7k · <1s",
-    "  ┊     completed",
   ]);
   assert.deepEqual(component.render(20).map(strip), [
     "  ┊ ✓ 🤖 long-agent…",
     "→ 31 tools · ↑99k ↓…",
-    "  ┊     completed",
   ]);
-  assert.deepEqual(component.render(0).map(strip), ["…", "…", "…"]);
+  assert.deepEqual(component.render(0).map(strip), ["…", "…"]);
   assert.deepEqual(new SnapshotComponent(undefined, false).render(0), []);
 });
 
@@ -394,6 +387,70 @@ test("SnapshotComponent pads and reapplies exact backgrounds across resets", () 
     actual.split("\x1b[48;5;24m").length - 1,
     source.split(RESET).length
   );
+});
+
+test("control cards summarize every action without exposing raw prose", () => {
+  const controlled = child({
+    label: "tui-regression-builder",
+    status: "completed",
+    ownership: "foreground",
+    deliveryPolicy: undefined,
+  });
+  const base = { content: [{ type: "text", text: "unsafe diagnostic prose that must stay collapsed" }], details: { child: controlled } };
+  const cases = [
+    [{ action: "inspect", target: "run:child-001" }, base, "completed/foreground · delivery none"],
+    [{ action: "background", target: "run:child-001" }, { ...base, details: { child: { ...controlled, status: "running", ownership: "background", deliveryPolicy: "auto" } } }, "running/background · delivery auto"],
+    [{ action: "steer", target: "run:child-001" }, base, "steering accepted"],
+    [{ action: "cancel", target: "run:child-001" }, { ...base, details: { child: { ...controlled, status: "cancelled" } } }, "cancelled"],
+    [{ action: "set_delivery", target: "run:child-001" }, { ...base, details: { child: { ...controlled, deliveryPolicy: "manual" } } }, "delivery manual · completed"],
+    [{ action: "collect", target: "run:child-001" }, { ...base, details: { child: controlled, collectionCount: 2 } }, "completed · collection 2"],
+    [{ action: "status" }, { content: [{ type: "text", text: "verbose status" }], details: { activeForeground: [{}], activeBackground: [{}, {}], terminalUncollected: [{}, {}, {}] } }, "1 foreground · 2 background · 3 uncollected"],
+  ] as const;
+  for (const [args, result, summary] of cases) {
+    const lines = renderControlLines(args, result as any).map(strip);
+    assert.equal(lines.length, 1);
+    assert.match(lines[0]!, /┊ ✓ 🤖 control/);
+    assert.match(lines[0]!, new RegExp(summary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.doesNotMatch(lines[0]!, /unsafe diagnostic prose|verbose status/);
+  }
+});
+
+test("control cards disclose bounded raw detail, errors, pending state, and fit narrow widths", () => {
+  const detail = Array.from({ length: 20 }, (_, index) => `detail ${index}`).join("\n");
+  const result = { content: [{ type: "text", text: detail }], details: { child: child({ label: "worker", status: "completed", ownership: "foreground" }) } };
+  const component = new ControlSnapshotComponent({ action: "inspect", target: "run:child" }, result as any, true, false, false);
+  const expanded = component.render(80).map(strip);
+  assert.match(expanded[0]!, /control inspect worker/);
+  assert.match(expanded.join("\n"), /detail 0/);
+  assert.match(expanded.at(-1)!, /… 5 more lines/);
+  assert.ok(component.render(42).every((line) => visibleWidth(line) <= 42));
+
+  const pending = renderControlLines({ action: "cancel", target: "worker" }, undefined, false, true).map(strip);
+  assert.deepEqual(pending, ["  ┊ ● 🤖 control cancel worker → running"]);
+  const failed = renderControlLines(
+    { action: "inspect", target: "worker" },
+    { content: [{ type: "text", text: "No eligible subagent found" }] },
+    false,
+    false,
+    true,
+  ).map(strip);
+  assert.deepEqual(failed, ["  ┊ ✗ 🤖 control inspect worker → No eligible subagent found"]);
+});
+
+test("ControlSnapshotComponent reapplies settled backgrounds and invalidates inertly", () => {
+  const background = (text: string): string => `\x1b[48;5;24m${text}`;
+  const component = new ControlSnapshotComponent(
+    { action: "status" },
+    { content: [{ type: "text", text: "status" }], details: { activeForeground: [], activeBackground: [], terminalUncollected: [] } },
+    false,
+    false,
+    false,
+    background,
+  );
+  const rendered = component.render(60);
+  assert.equal(visibleWidth(rendered[0]!), 60);
+  assert.match(rendered[0]!, /\x1b\[48;5;24m/);
+  assert.equal(component.invalidate(), undefined);
 });
 
 test("SnapshotComponent invalidate is intentionally inert", () => {

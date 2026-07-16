@@ -202,6 +202,9 @@ test("registers background launch, control, management, stamp, and shortcut cont
   assert.deepEqual([...host.tools.keys()], ["subagent", "subagent_control"]);
   assert.equal(host.tools.get("subagent").executionMode, "parallel");
   assert.equal(host.tools.get("subagent_control").executionMode, "parallel");
+  assert.equal(host.tools.get("subagent_control").renderShell, "self");
+  assert.equal(typeof host.tools.get("subagent_control").renderCall, "function");
+  assert.equal(typeof host.tools.get("subagent_control").renderResult, "function");
   assert.deepEqual(
     [...host.commands.keys()],
     ["tidy-subagents-routing", "subagents"]
@@ -238,6 +241,110 @@ test("registers background launch, control, management, stamp, and shortcut cont
       "collect",
     ]
   );
+});
+
+test("control tool renders pending, settled, expanded, and error states without native prose", () => {
+  const host = register();
+  const tool = host.tools.get("subagent_control");
+  const backgrounds: string[] = [];
+  const theme = {
+    bg(name: string, text: string) {
+      backgrounds.push(name);
+      return `[${name}]${text}`;
+    },
+  };
+  const args = { action: "inspect", target: "run:child-001" };
+  const pending = tool
+    .renderCall(args, theme, { isPartial: true })
+    .render(100)
+    .map((line: string) =>
+      line.replace(/\x1b\[[0-9;]*m/g, "").replace(/\[toolPendingBg\]/g, "")
+    );
+  assert.deepEqual(pending, [
+    "  ┊ ● 🤖 control inspect run:child-001 → running".padEnd(100),
+  ]);
+  assert.deepEqual([...new Set(backgrounds)], ["toolPendingBg"]);
+  assert.deepEqual(tool.renderCall(args, theme, { isPartial: false }).render(100), []);
+
+  backgrounds.length = 0;
+  const state: any = {
+    index: 0,
+    id: "child-001",
+    target: "run:child-001",
+    label: "worker",
+    reason: "inspect state",
+    prompt: "",
+    status: "completed",
+    ownership: "foreground",
+    model: "m",
+    thinking: "high",
+    toolCount: 1,
+    input: 1,
+    output: 1,
+    cacheRead: 0,
+    cacheWrite: 0,
+    providerTraffic: 2,
+    tokens: 2,
+    activities: [],
+    activeTools: [],
+    eventCount: 0,
+    response: "",
+    artifactPath: "/tmp/child.md",
+  };
+  const result = {
+    content: [{ type: "text", text: "worker raw inspection prose" }],
+    details: { child: state },
+  };
+  const settled = tool
+    .renderResult(result, { expanded: false, isPartial: false }, theme, {
+      args,
+      isError: false,
+    })
+    .render(100)
+    .map((line: string) =>
+      line
+        .replace(/\x1b\[[0-9;]*m/g, "")
+        .replace(/\[toolSuccessBg\]/g, "")
+        .trimEnd()
+    );
+  assert.deepEqual(settled, [
+    "  ┊ ✓ 🤖 control inspect worker → completed/foreground · delivery none",
+  ]);
+  assert.doesNotMatch(settled.join("\n"), /raw inspection prose/);
+  assert.deepEqual([...new Set(backgrounds)], ["toolSuccessBg"]);
+  const expanded = tool
+    .renderResult(result, { expanded: true, isPartial: false }, theme, {
+      args,
+      isError: false,
+    })
+    .render(100)
+    .map((line: string) =>
+      line
+        .replace(/\x1b\[[0-9;]*m/g, "")
+        .replace(/\[toolSuccessBg\]/g, "")
+        .trimEnd()
+    );
+  assert.match(expanded.join("\n"), /worker raw inspection prose/);
+
+  backgrounds.length = 0;
+  const failed = tool
+    .renderResult(
+      { content: [{ type: "text", text: "No eligible subagent found" }] },
+      { expanded: false, isPartial: false },
+      theme,
+      { args, isError: true }
+    )
+    .render(100)
+    .map((line: string) =>
+      line
+        .replace(/\x1b\[[0-9;]*m/g, "")
+        .replace(/\[toolErrorBg\]/g, "")
+        .trimEnd()
+    );
+  assert.deepEqual(failed, [
+    "  ┊ ✗ 🤖 control inspect run:child-001 → No eligible subagent found",
+  ]);
+  assert.deepEqual([...new Set(backgrounds)], ["toolErrorBg"]);
 });
 
 test("control validation rejects missing and action-irrelevant fields", async () =>

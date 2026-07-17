@@ -29,6 +29,6 @@ test("managed scoped FFF grep counts distinct grouped files", () => {
 	const expanded = buildToolBlock("grep", { pattern: "pi-tidy", path: "package.json" }, groupedFffResult, { expanded: true });
 	const expandedText = stripAnsi(expanded.join("\n"));
 	for (const path of ["package.json", "packages/pi-tidy-core/package.json", "packages/pi-tidy-subagents/package.json"]) {
-		assert.match(expandedText, new RegExp(`^.*┊\\s+${path.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}$`, "m"));
+		assert.match(expandedText, new RegExp(`^  ${path.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}$`, "m"));
 	}
 });

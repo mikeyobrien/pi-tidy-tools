@@ -7,13 +7,13 @@
  * turn-end stamping — pi already renders tool components inline; we just make
  * them tight.
  *
- *     ┊ ✓ ✏️ edit put reasoning on line 1, detail on line 2
- *     ┊   index.ts → +28/-14
- *     ┊ ✓ ⚡ bash run the typecheck
- *     ┊   npx tsc --noEmit → done (1 lines)
+ *     ✏️ edit put reasoning on line 1, detail on line 2
+ *       index.ts → +28/-14
+ *     ⚡ bash run the typecheck
+ *       npx tsc --noEmit → done (1 lines)
  *
- * Line 1: {gutter} {mark} {icon} {name} {reasoning headline}
- * Line 2: {gutter}   {dim arg/command detail} → {colored summary}
+ * Line 1: {running mark?} {icon} {name} {reasoning headline}
+ * Line 2:   {dim arg/command detail} → {colored summary}
  *
  * Why this beats the spacer floor: pi bakes a Spacer(1) inside every tool's
  * ToolExecutionComponent, so N default cards = N blank lines. BUT in
@@ -87,12 +87,8 @@ import type { PiFffLifecyclePreview } from "./pi-fff/integration.js";
 
 export { withReasoning } from "./tool-composition.js";
 
-// A leading indent offsets each tool block from surrounding prose, making tool
-// calls visually distinct from the assistant's text.
-const LEAD = "  ";
-const GUTTER = `${LEAD}${DIM}${String.fromCharCode(0x250a)}${RESET}`;
-/** Gutter + hanging indent for line 2 and expanded continuation lines. */
-const INDENT = `${GUTTER}   `;
+/** Hanging indent for detail and expanded continuation lines. */
+const INDENT = "  ";
 
 /** Collapse whitespace/newlines to one line (width-based truncation happens at render). */
 function oneLine(s: string): string {
@@ -115,7 +111,7 @@ export function fitToolLine(line: string, width: number): string {
 
 /**
  * A width-aware component: truncates each pre-composed (ANSI-colored) line to the
- * live viewport width so nothing soft-wraps past the gutter. Re-flows on resize
+ * live viewport width so nothing soft-wraps. Re-flows on resize
  * because render(width) is re-invoked by the TUI.
  */
 class WidthAwareLines {
@@ -352,11 +348,9 @@ export function buildToolBlock(
 	const { isError = false, isPartial = false, expanded = false, elapsedMs = 0, mode = "default", icons = true } = opts;
 	const { reasoning, rest } = stripReasoning(args ?? {});
 
-	const mark = isPartial
-		? `${DIM}·${RESET}`
-		: isError
-			? `${RED}✗${RESET}`
-			: `${GREEN}✓${RESET}`;
+	// Settled success/error is already encoded by Pi's native row background.
+	// Only running calls need an inline state mark.
+	const runningPrefix = isPartial ? `${DIM}·${RESET} ` : "";
 	const summary = isPartial
 		? `${DIM}${formatElapsed(elapsedMs)}${RESET}`
 		: summarize(name, result, isError, rest, elapsedMs);
@@ -372,13 +366,13 @@ export function buildToolBlock(
 		: `${INDENT}${DIM}${detail}${RESET} ${DIM}→${RESET} ${summary}`;
 	let lines: string[];
 	if (mode === "reasoning") {
-		lines = [`${GUTTER} ${mark} ${toolLabel} ${headline} ${DIM}→${RESET} ${summary}`];
+		lines = [`${runningPrefix}${toolLabel} ${headline} ${DIM}→${RESET} ${summary}`];
 	} else if (mode === "result") {
 		const resultDetail = !detail ? "" : ` ${DIM}${detail}${RESET}`;
-		lines = [`${GUTTER} ${mark} ${toolLabel}${resultDetail} ${DIM}→${RESET} ${summary}`];
+		lines = [`${runningPrefix}${toolLabel}${resultDetail} ${DIM}→${RESET} ${summary}`];
 	} else {
 		lines = [
-			`${GUTTER} ${mark} ${toolLabel} ${headline}`,
+			`${runningPrefix}${toolLabel} ${headline}`,
 			line2,
 		];
 	}

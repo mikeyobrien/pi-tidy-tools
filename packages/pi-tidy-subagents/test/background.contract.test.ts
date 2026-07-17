@@ -261,7 +261,7 @@ test("control tool renders pending, settled, expanded, and error states without 
       line.replace(/\x1b\[[0-9;]*m/g, "").replace(/\[toolPendingBg\]/g, "")
     );
   assert.deepEqual(pending, [
-    "  ┊ ● 🤖 control inspect run:child-001 → running".padEnd(100),
+    "● 🤖 control inspect run:child-001 → running".padEnd(100),
   ]);
   assert.deepEqual([...new Set(backgrounds)], ["toolPendingBg"]);
   assert.deepEqual(tool.renderCall(args, theme, { isPartial: false }).render(100), []);
@@ -308,7 +308,7 @@ test("control tool renders pending, settled, expanded, and error states without 
         .trimEnd()
     );
   assert.deepEqual(settled, [
-    "  ┊ ✓ 🤖 control inspect worker → completed/foreground · delivery none",
+    "🤖 control inspect worker → completed/foreground · delivery none",
   ]);
   assert.doesNotMatch(settled.join("\n"), /raw inspection prose/);
   assert.deepEqual([...new Set(backgrounds)], ["toolSuccessBg"]);
@@ -342,7 +342,7 @@ test("control tool renders pending, settled, expanded, and error states without 
         .trimEnd()
     );
   assert.deepEqual(failed, [
-    "  ┊ ✗ 🤖 control inspect run:child-001 → No eligible subagent found",
+    "🤖 control inspect run:child-001 → No eligible subagent found",
   ]);
   assert.deepEqual([...new Set(backgrounds)], ["toolErrorBg"]);
 });

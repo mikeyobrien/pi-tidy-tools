@@ -12,7 +12,6 @@ const MAGENTA = "\x1b[35m";
 const RED = "\x1b[31m";
 const RESET = "\x1b[0m";
 const YELLOW = "\x1b[33m";
-const GUTTER = `${DIM}  ┊${RESET}`;
 const strip = (line: string): string => line.replace(/\x1b\[[0-9;]*m/g, "");
 
 function child(overrides: Partial<ChildState> = {}): ChildState {
@@ -92,9 +91,9 @@ test("every child status has an exact ANSI header while only active fallbacks st
       error: status === "failed" ? "boom" : undefined,
     });
     const expected = [
-      `${GUTTER} ${glyphs[status]} ${MAGENTA}🤖${RESET} ${BOLD}agent[m|off]${RESET} inspect state ${DIM}→ 0 tools · ↑12 ↓3 · <1s${RESET}`,
+      `${glyphs[status]} ${MAGENTA}🤖${RESET} ${BOLD}agent[m|off]${RESET} inspect state ${DIM}→ 0 tools · ↑12 ↓3 · <1s${RESET}`,
     ];
-    if (["queued", "starting", "running"].includes(status)) expected.push(`${GUTTER}     ${fallbacks[status]}`);
+    if (["queued", "starting", "running"].includes(status)) expected.push(`    ${fallbacks[status]}`);
     assert.deepEqual(renderLines(details([state]), false, 500, 200), expected);
   }
 });
@@ -109,18 +108,18 @@ test("wide and narrow layouts combine or split exact header and statistics lines
     startedAt: 1_000,
     endedAt: 63_000,
   });
-  const identity = `${GUTTER} ${GREEN}✓${RESET} ${MAGENTA}🤖${RESET} ${BOLD}worker[model|high]${RESET} do work ${DIM}(<1m ago)${RESET}`;
+  const identity = `${GREEN}✓${RESET} ${MAGENTA}🤖${RESET} ${BOLD}worker[model|high]${RESET} do work ${DIM}(<1m ago)${RESET}`;
   const statistics = `${DIM}→ 2 tools · ↑12 ↓3 · 1m 02s${RESET}`;
   assert.deepEqual(renderLines(details([state]), false, 99_000, 200), [
     `${identity} ${statistics}`,
   ]);
   assert.deepEqual(renderLines(details([state]), false, 99_000, 40), [
     identity,
-    `${GUTTER}   ${statistics}`,
+    `  ${statistics}`,
   ]);
   assert.deepEqual(renderLines(details([state]), false, 99_000), [
     identity,
-    `${GUTTER}   ${statistics}`,
+    `  ${statistics}`,
   ]);
 });
 
@@ -149,7 +148,7 @@ test("usage is directional, formats all scales, and omits provider and cache tot
         0
       )[1]!
     );
-    assert.equal(line, `  ┊   → 0 tools · ${usage} · <1s`);
+    assert.equal(line, `  → 0 tools · ${usage} · <1s`);
     assert.doesNotMatch(line, /cache|provider|55\.6m|66\.7m|tok/);
   }
   const legacy = child({ tokens: 2_100 }) as Partial<ChildState>;
@@ -158,7 +157,7 @@ test("usage is directional, formats all scales, and omits provider and cache tot
   delete legacy.activeTools;
   assert.equal(
     strip(renderLines(details([legacy as ChildState]), false, 0)[1]!),
-    "  ┊   → 0 tools · 2.1k tok · <1s"
+    "  → 0 tools · 2.1k tok · <1s"
   );
   delete legacy.tokens;
   delete legacy.toolCount;
@@ -166,8 +165,8 @@ test("usage is directional, formats all scales, and omits provider and cache tot
   assert.deepEqual(
     renderLines(details([legacy as ChildState]), false, 0).map(strip),
     [
-      "  ┊ ✓ 🤖 agent[m|off] inspect state",
-      "  ┊   → 0 tools · 0 tok · <1s",
+      "✓ 🤖 agent[m|off] inspect state",
+      "  → 0 tools · 0 tok · <1s",
     ]
   );
 });
@@ -178,7 +177,7 @@ test("collapsed activities select text, complete tool blocks, and one active too
   const activity = ["old prose", first, second, "new prose", "latest prose"];
   assert.deepEqual(
     renderLines(details([child({ status: "running", activities: activity })]), false, 0).slice(2),
-    [`${GUTTER}     new prose`, `${GUTTER}     latest prose`]
+    [`    new prose`, `    latest prose`]
   );
   assert.deepEqual(
     renderLines(
@@ -187,8 +186,8 @@ test("collapsed activities select text, complete tool blocks, and one active too
       0
     ).slice(2),
     [
-      `${GUTTER}   ${RED}✗${RESET} ${CYAN}📖 ${BOLD}read${RESET} inspect file`,
-      `${GUTTER}     ${DIM}/tmp/a.ts${RESET} ${DIM}→${RESET} ${RED}interrupted${RESET}`,
+      `  ${RED}✗${RESET} ${CYAN}📖 ${BOLD}read${RESET} inspect file`,
+      `    ${DIM}/tmp/a.ts${RESET} ${DIM}→${RESET} ${RED}interrupted${RESET}`,
     ]
   );
   assert.deepEqual(
@@ -203,11 +202,11 @@ test("collapsed activities select text, complete tool blocks, and one active too
       false,
       0
     ).slice(2),
-    [`${GUTTER}   ${first}`, `${GUTTER}   ${second}`]
+    [`  ${first}`, `  ${second}`]
   );
   assert.deepEqual(
     renderLines(details([child({ activities: [first] })]), false, 0).slice(2),
-    [`${GUTTER}   ${first}`]
+    [`  ${first}`]
   );
 });
 
@@ -223,8 +222,8 @@ test("collapsed parallel active tools render exact counted ANSI summary", () => 
     ],
   });
   assert.deepEqual(renderLines(details([state]), false, 0).slice(2), [
-    `${GUTTER}   ${CYAN}●${RESET} ${MAGENTA}◆ ${BOLD}parallel${RESET} 4 tools running`,
-    `${GUTTER}       ${CYAN}📖 ${BOLD}read${RESET} ×2 ${DIM}·${RESET} ${MAGENTA}⚡ ${BOLD}bash${RESET} ×1 ${DIM}·${RESET} ${MAGENTA}◆ ${BOLD}mystery${RESET} ×1`,
+    `  ${CYAN}●${RESET} ${MAGENTA}◆ ${BOLD}parallel${RESET} 4 tools running`,
+    `      ${CYAN}📖 ${BOLD}read${RESET} ×2 ${DIM}·${RESET} ${MAGENTA}⚡ ${BOLD}bash${RESET} ×1 ${DIM}·${RESET} ${MAGENTA}◆ ${BOLD}mystery${RESET} ×1`,
   ]);
 });
 
@@ -241,28 +240,28 @@ test("expanded activities keep the last fifteen, drop an orphan detail, and incl
     0
   ).slice(2);
   assert.deepEqual(rendered.map(strip), [
-    "  ┊     line 0",
-    "  ┊     line 1",
-    "  ┊     line 2",
-    "  ┊     line 3",
-    "  ┊     line 4",
-    "  ┊     line 5",
-    "  ┊     line 6",
-    "  ┊     line 7",
-    "  ┊     line 8",
-    "  ┊     line 9",
-    "  ┊     line 10",
-    "  ┊     line 11",
-    "  ┊     line 12",
-    "  ┊     line 13",
-    "  ┊      live stream ",
+    "    line 0",
+    "    line 1",
+    "    line 2",
+    "    line 3",
+    "    line 4",
+    "    line 5",
+    "    line 6",
+    "    line 7",
+    "    line 8",
+    "    line 9",
+    "    line 10",
+    "    line 11",
+    "    line 12",
+    "    line 13",
+    "     live stream ",
   ]);
   assert.equal(rendered.length, 15);
   assert.deepEqual(
     renderLines(details([child({ activities: [orphan, "kept"] })]), true, 0)
       .slice(2)
       .map(strip),
-    ["  ┊     kept"]
+    ["    kept"]
   );
   assert.deepEqual(
     renderLines(
@@ -272,7 +271,7 @@ test("expanded activities keep the last fifteen, drop an orphan detail, and incl
     )
       .slice(2)
       .map(strip),
-    ["  ┊     completed"]
+    ["    completed"]
   );
 });
 
@@ -286,10 +285,10 @@ test("activity indentation recognizes ANSI tool marks and running marks", () => 
   assert.deepEqual(
     renderLines(details([child({ activities: entries })]), true, 0).slice(2),
     [
-      `${GUTTER}   ${entries[0]}`,
-      `${GUTTER}   ${entries[1]}`,
-      `${GUTTER}   ${entries[2]}`,
-      `${GUTTER}     ordinary text`,
+      `  ${entries[0]}`,
+      `  ${entries[1]}`,
+      `  ${entries[2]}`,
+      `    ordinary text`,
     ]
   );
 });
@@ -317,9 +316,9 @@ test("multiple children preserve exact header-child line ordering", () => {
     200
   ).map(strip);
   assert.deepEqual(rendered, [
-    "  ┊ ✓ 🤖 alpha[m|off] first → 0 tools · ↑12 ↓3 · <1s",
+    "✓ 🤖 alpha[m|off] first → 0 tools · ↑12 ↓3 · <1s",
     "",
-    "  ┊ ✗ 🤖 beta[m|off] second → 0 tools · ↑12 ↓3 · <1s",
+    "✗ 🤖 beta[m|off] second → 0 tools · ↑12 ↓3 · <1s",
   ]);
 });
 
@@ -338,17 +337,17 @@ test("SnapshotComponent fits ANSI lines, preserves metric tails, and does not pa
   );
   const rendered = component.render(36);
   assert.deepEqual(rendered.map(strip), [
-    "  ┊ ✓ 🤖 long-agent-name[m|off] a d…",
-    "  ┊   → 31 tools · ↑99k ↓3.7k · <1s",
+    "✓ 🤖 long-agent-name[m|off] a delib…",
+    "  → 31 tools · ↑99k ↓3.7k · <1s",
   ]);
   assert.ok(rendered.every((line) => visibleWidth(line) <= 36));
   assert.ok(rendered.every((line) => !line.endsWith(" ")));
   assert.deepEqual(component.render(32).map(strip), [
-    "  ┊ ✓ 🤖 long-agent-name[m|off]…",
-    " … → 31 tools · ↑99k ↓3.7k · <1s",
+    "✓ 🤖 long-agent-name[m|off] a d…",
+    "  → 31 tools · ↑99k ↓3.7k · <1s",
   ]);
   assert.deepEqual(component.render(20).map(strip), [
-    "  ┊ ✓ 🤖 long-agent…",
+    "✓ 🤖 long-agent-nam…",
     "→ 31 tools · ↑99k ↓…",
   ]);
   assert.deepEqual(component.render(0).map(strip), ["…", "…"]);
@@ -361,9 +360,9 @@ test("SnapshotComponent honors expanded disclosure exactly", () => {
     true
   );
   assert.deepEqual(component.render(80).map(strip), [
-    "  ┊ ✓ 🤖 agent[m|off] inspect state → 0 tools · ↑12 ↓3 · <1s",
-    "  ┊     first",
-    "  ┊     second",
+    "✓ 🤖 agent[m|off] inspect state → 0 tools · ↑12 ↓3 · <1s",
+    "    first",
+    "    second",
   ]);
 });
 
@@ -409,7 +408,7 @@ test("control cards summarize every action without exposing raw prose", () => {
   for (const [args, result, summary] of cases) {
     const lines = renderControlLines(args, result as any).map(strip);
     assert.equal(lines.length, 1);
-    assert.match(lines[0]!, /┊ ✓ 🤖 control/);
+    assert.match(lines[0]!, /^🤖 control/);
     assert.match(lines[0]!, new RegExp(summary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.doesNotMatch(lines[0]!, /unsafe diagnostic prose|verbose status/);
   }
@@ -426,7 +425,7 @@ test("control cards disclose bounded raw detail, errors, pending state, and fit 
   assert.ok(component.render(42).every((line) => visibleWidth(line) <= 42));
 
   const pending = renderControlLines({ action: "cancel", target: "worker" }, undefined, false, true).map(strip);
-  assert.deepEqual(pending, ["  ┊ ● 🤖 control cancel worker → running"]);
+  assert.deepEqual(pending, ["● 🤖 control cancel worker → running"]);
   const failed = renderControlLines(
     { action: "inspect", target: "worker" },
     { content: [{ type: "text", text: "No eligible subagent found" }] },
@@ -434,7 +433,7 @@ test("control cards disclose bounded raw detail, errors, pending state, and fit 
     false,
     true,
   ).map(strip);
-  assert.deepEqual(failed, ["  ┊ ✗ 🤖 control inspect worker → No eligible subagent found"]);
+  assert.deepEqual(failed, ["🤖 control inspect worker → No eligible subagent found"]);
 });
 
 test("ControlSnapshotComponent reapplies settled backgrounds and invalidates inertly", () => {

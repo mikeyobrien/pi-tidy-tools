@@ -22,5 +22,5 @@ test("parallel running label stays in one column across live frames", () => {
  const columns = frames.map((line) => line.indexOf("parallel"));
 
  assert.ok(frames.every(Boolean), "every live frame must render the parallel summary");
- assert.deepEqual([...new Set(columns)], [10], frames.join("\n"));
+ assert.deepEqual([...new Set(columns)], [6], frames.join("\n"));
 });

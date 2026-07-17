@@ -50,7 +50,10 @@ child fails. Settled children read:
 Active children keep their latest activity visible. Once settled, response prose
 moves behind `ctrl+o`, leaving the child summary compact; interrupted tool state
 remains visible because it is terminal truth. Metrics show tool calls, token
-traffic (`↑` input, `↓` output), and elapsed time.
+traffic (`↑` input, `↓` output), and elapsed time. Cards start at the terminal's
+left edge without a decorative rail or outer indent. Child glyphs remain because
+a batch can contain mixed outcomes; settled control cards rely on Pi's native
+success/error background instead of a redundant check or cross.
 
 ## Background children
 

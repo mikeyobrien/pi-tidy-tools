@@ -33,7 +33,7 @@ pi-tidy-tools:
 
 ![Native Pi tool cards compared with compact pi-tidy-tools output](docs/comparison.png)
 
-- **Line 1** — status mark, tool icon/name, and the model's **goal/reasoning**.
+- **Line 1** — tool icon/name and the model's **goal/reasoning**; running calls add a live dot.
 - **Line 2** — the concrete target (path/command/pattern) and a colored result summary.
 
 By default, execution delegates to Pi's built-in tools unchanged; only the
@@ -117,8 +117,9 @@ malformed, unreadable, or not a boolean:
 `/tidy icons off` persistently removes only the decorative category icons `📖`,
 `✏️`, and `⚡` from tidy tool blocks, plus the decorative `◆` heading and file
 category icons from `/diff`. It does not reserve an empty icon column. The
-semantic running dot, success check, error cross, gutter, and result arrow stay
-visible, as do colors, names, summaries, expansion, and compact layouts.
+semantic running dot, hanging detail indent, and result arrow stay visible, as
+do colors, names, summaries, expansion, and compact layouts. Settled success
+and failure use Pi's native state backgrounds without redundant inline marks.
 `/tidy icons on|off` reloads after a change; `status` is read-only and repeated
 values do not write or reload.
 
@@ -184,7 +185,8 @@ Mirrors a clean, theme-agnostic palette + icon mapping:
 - Paths collapse `$HOME` → `~`
 - `edit` shows `+adds/-dels`; text `write` shows line count; `bash` shows status + elapsed time
 - `grep` shows `N matches in M files`; `find`/`ls` show file or entry counts
-- Every line is truncated to the live terminal width (ANSI-aware) so nothing wraps past the gutter
+- Tool blocks start at the left edge without a decorative border or outer indent
+- Every line is truncated to the live terminal width (ANSI-aware) so nothing wraps
 - Pi's native pending/success/error background colors remain, without restoring its padding or extra spacing
 
 Raw ANSI is intentional for the foreground palette; tool backgrounds follow the active Pi theme.

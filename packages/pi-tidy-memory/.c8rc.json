@@ -8,6 +8,7 @@
     "dist/**",
     "**/*.test.ts",
     "**/node_modules/**",
+    "**/.stryker-tmp/**",
     "types.ts"
   ],
   "reporter": ["text", "text-summary", "html", "lcov"],

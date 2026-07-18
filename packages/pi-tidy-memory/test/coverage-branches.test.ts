@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import {
   loadMemoryConfig,
@@ -77,10 +77,10 @@ test("config defensive branches normalize limits paths and summaries", async () 
     undefined
   );
   assert.equal(resolveApiKey(backend, {}), undefined);
-  assert.equal(resolveConfigPath("~").endsWith("/home"), true);
-  assert.match(resolveConfigPath("~/x"), /\/home\/x$/);
+  assert.equal(resolveConfigPath("~"), homedir());
+  assert.equal(resolveConfigPath("~/x"), join(homedir(), "x"));
   assert.equal(resolveConfigPath("/absolute"), "/absolute");
-  assert.match(resolveConfigPath("relative"), /\/home\/relative$/);
+  assert.equal(resolveConfigPath("relative"), resolve(homedir(), "relative"));
 
   const custom = parseMemoryConfig({
     ...baseConfig,

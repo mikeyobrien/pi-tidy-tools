@@ -69,8 +69,13 @@ test("maps health recall retain and reflect to Hindsight 0.8 paths", async () =>
     message: "healthy; database connected",
   });
   assert.deepEqual(
-    (await client.recall({ query: "package manager", maxTokens: 512 }))
-      .memories[0],
+    (
+      await client.recall({
+        query: "package manager",
+        maxTokens: 512,
+        tags: ["project:pi"],
+      })
+    ).memories[0],
     {
       id: "m1",
       text: "Use pnpm",
@@ -87,7 +92,13 @@ test("maps health recall retain and reflect to Hindsight 0.8 paths", async () =>
     }
   );
   assert.equal(
-    (await client.reflect({ query: "Why migrate?", maxTokens: 800 })).text,
+    (
+      await client.reflect({
+        query: "Why migrate?",
+        maxTokens: 800,
+        tags: ["project:pi"],
+      })
+    ).text,
     "The migration followed two failures."
   );
 
@@ -101,10 +112,20 @@ test("maps health recall retain and reflect to Hindsight 0.8 paths", async () =>
     budget: "mid",
     types: ["observation"],
     prefer_observations: true,
+    tags: ["project:pi"],
+    tags_match: "all_strict",
   });
   assert.deepEqual(requests[2].body, {
     items: [{ content: "Use pnpm", document_id: "doc1" }],
     async: true,
+  });
+  assert.deepEqual(requests[3].body, {
+    query: "Why migrate?",
+    budget: "low",
+    max_tokens: 800,
+    tags: ["project:pi"],
+    tags_match: "all_strict",
+    include: { facts: {} },
   });
   for (const request of requests) {
     assert.equal(

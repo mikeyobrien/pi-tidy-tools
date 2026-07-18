@@ -130,6 +130,15 @@ test("extracts only the last user and assistant text within bounds", () => {
   assert.equal(value, "User:\nnew question\n\nAssistant:\nnew answer");
   assert.doesNotMatch(value, /SECRET|old/);
   assert.equal(settledExchange(messages, 12), value.slice(0, 12));
+  const bounded = settledExchange(
+    [
+      { role: "user", content: "u".repeat(1_000) },
+      { role: "assistant", content: "final answer" },
+    ],
+    256
+  )!;
+  assert.equal(bounded.length, 256);
+  assert.match(bounded, /Assistant:\nfinal answer$/);
   assert.equal(settledExchange([], 100), undefined);
 });
 

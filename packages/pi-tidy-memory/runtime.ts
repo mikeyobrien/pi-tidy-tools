@@ -167,11 +167,30 @@ export function settledExchange(
     if (role === "assistant" && user) assistant = messageText(message);
   }
   if (!user.trim() || !assistant.trim()) return undefined;
-  const text = [
-    `User:\n${sanitizeTerminalText(user.trim())}`,
-    `Assistant:\n${sanitizeTerminalText(assistant.trim())}`,
-  ].join("\n\n");
-  return text.slice(0, maxChars);
+  const userText = sanitizeTerminalText(user.trim());
+  const assistantText = sanitizeTerminalText(assistant.trim());
+  const prefix = "User:\n";
+  const separator = "\n\nAssistant:\n";
+  const text = `${prefix}${userText}${separator}${assistantText}`;
+  if (text.length <= maxChars) return text;
+
+  const contentBudget = maxChars - prefix.length - separator.length;
+  if (contentBudget < 2) return text.slice(0, maxChars);
+  let userBudget = Math.min(userText.length, Math.floor(contentBudget / 2));
+  let assistantBudget = Math.min(
+    assistantText.length,
+    contentBudget - userBudget
+  );
+  let remaining = contentBudget - userBudget - assistantBudget;
+  const assistantExtra = Math.min(
+    remaining,
+    assistantText.length - assistantBudget
+  );
+  assistantBudget += assistantExtra;
+  remaining -= assistantExtra;
+  userBudget += Math.min(remaining, userText.length - userBudget);
+
+  return `${prefix}${userText.slice(0, userBudget)}${separator}${assistantText.slice(0, assistantBudget)}`;
 }
 
 export function stableDocumentId(sessionId: string, content: string): string {

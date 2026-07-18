@@ -80,7 +80,9 @@ Banks are hard isolation boundaries. Tags are filters inside a bank.
 
 For a small coding setup, a shared bank such as `pi-coding` is reasonable if every retained item uses stable project tags. For stronger isolation, use one bank per repository or domain. Do not mix coding history, personal assistant conversations, medical information, and arbitrary web chat in one bank.
 
-The package's manual tools accept tags. Automatic retain currently adds `source:pi`; it does not infer a project tag. If automatic retention is enabled against a shared bank, configure the surrounding workflow so project scope remains clear.
+The package's manual tools accept tags. When tags are supplied to recall or reflect, the Hindsight adapter uses `all_strict`: every requested tag must be present and untagged memories are excluded. This makes tag-scoped reads conservative rather than inheriting Hindsight's untagged-inclusive default.
+
+Automatic retain currently adds `source:pi`; it does not infer a project tag. If automatic retention is enabled against a shared bank, configure the surrounding workflow so project scope remains clear.
 
 ### Async retention
 

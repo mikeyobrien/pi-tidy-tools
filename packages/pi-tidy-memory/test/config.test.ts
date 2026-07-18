@@ -57,13 +57,15 @@ test("rejects unsafe or malformed configuration", () => {
     { ...valid, backend: { ...valid.backend, apiKey: "secret" } },
   ])
     assert.throws(() => parseMemoryConfig(raw));
-  assert.equal(
-    parseMemoryConfig({
-      ...valid,
-      backend: { ...valid.backend, baseUrl: "http://127.0.0.1:8888" },
-    }).backend.type,
-    "hindsight"
-  );
+  for (const baseUrl of ["http://127.0.0.1:8888", "http://[::1]:8888"]) {
+    assert.equal(
+      parseMemoryConfig({
+        ...valid,
+        backend: { ...valid.backend, baseUrl },
+      }).backend.type,
+      "hindsight"
+    );
+  }
   assert.equal(
     parseMemoryConfig({
       ...valid,
@@ -119,6 +121,18 @@ test("reports missing and valid agent-dir config safely", async () => {
     assert.match(summary, /host=memory\.example\.test/);
     assert.match(summary, /auth=HINDSIGHT_API_KEY:present/);
     assert.doesNotMatch(summary, /secret/);
+
+    const unreadable = parseMemoryConfig({
+      ...valid,
+      backend: {
+        ...valid.backend,
+        envFile: join(root, "missing.env"),
+      },
+    });
+    assert.match(
+      sanitizedConfigSummary({ config: unreadable, path: "config.json" }, {}),
+      /auth=HINDSIGHT_API_KEY:unreadable/
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

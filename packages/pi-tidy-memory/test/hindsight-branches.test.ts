@@ -76,6 +76,7 @@ test("normalizes optional memory fields and explicit request options", async () 
     types: ["experience"],
     prefer_observations: true,
     tags: ["tag"],
+    tags_match: "all_strict",
   });
   assert.deepEqual(bodies[1].items[0], {
     content: "c",

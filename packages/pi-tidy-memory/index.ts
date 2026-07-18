@@ -143,7 +143,9 @@ export function createMemoryExtension(
           maxLength: 4_000,
           description: "Focused natural-language memory query",
         }),
-        maxTokens: Type.Optional(Type.Number({ minimum: 128, maximum: 4_096 })),
+        maxTokens: Type.Optional(
+          Type.Integer({ minimum: 128, maximum: 4_096 })
+        ),
         tags: Type.Optional(
           Type.Array(Type.String({ minLength: 1, maxLength: 128 }), {
             maxItems: 20,
@@ -237,7 +239,9 @@ export function createMemoryExtension(
       ],
       parameters: Type.Object({
         query: Type.String({ minLength: 1, maxLength: 4_000 }),
-        maxTokens: Type.Optional(Type.Number({ minimum: 128, maximum: 4_096 })),
+        maxTokens: Type.Optional(
+          Type.Integer({ minimum: 128, maximum: 4_096 })
+        ),
         tags: Type.Optional(
           Type.Array(Type.String({ minLength: 1, maxLength: 128 }), {
             maxItems: 20,

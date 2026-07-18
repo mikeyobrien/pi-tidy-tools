@@ -106,6 +106,13 @@ test("publishes bounded tool schemas", () => {
     false
   );
   assert.equal(
+    Value.Check(tools.get("recall").parameters, {
+      query: "history",
+      maxTokens: 128.5,
+    }),
+    false
+  );
+  assert.equal(
     Value.Check(tools.get("retain").parameters, {
       content: "durable fact",
     }),
@@ -118,6 +125,13 @@ test("publishes bounded tool schemas", () => {
   assert.equal(
     Value.Check(tools.get("reflect").parameters, { query: "why?" }),
     true
+  );
+  assert.equal(
+    Value.Check(tools.get("reflect").parameters, {
+      query: "why?",
+      maxTokens: 128.5,
+    }),
+    false
   );
 });
 

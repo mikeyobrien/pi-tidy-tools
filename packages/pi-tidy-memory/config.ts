@@ -111,7 +111,7 @@ function parseHindsight(value: unknown): HindsightBackendConfig {
   }
   const baseUrl = parseBaseUrl(value.baseUrl);
   const parsedUrl = new URL(baseUrl);
-  const loopback = ["localhost", "127.0.0.1", "::1"].includes(
+  const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(
     parsedUrl.hostname
   );
   if (value.apiKeyEnv && parsedUrl.protocol === "http:" && !loopback) {
@@ -252,14 +252,19 @@ export function sanitizedConfigSummary(
     ].join(" ");
   }
   const backend = config.backend as HindsightBackendConfig;
-  const keyPresent = backend.apiKeyEnv
-    ? Boolean(resolveApiKey(backend, env))
-    : true;
+  let auth = "none";
+  if (backend.apiKeyEnv) {
+    try {
+      auth = `${backend.apiKeyEnv}:${resolveApiKey(backend, env) ? "present" : "missing"}`;
+    } catch {
+      auth = `${backend.apiKeyEnv}:unreadable`;
+    }
+  }
   return [
     `${config.enabled ? "enabled" : "disabled"} backend=${backend.type}`,
     `host=${new URL(backend.baseUrl).host}`,
     `bank=${backend.bankId}`,
-    `auth=${backend.apiKeyEnv ? `${backend.apiKeyEnv}:${keyPresent ? "present" : "missing"}` : "none"}`,
+    `auth=${auth}`,
     `autoRecall=${config.lifecycle.autoRecall}`,
     `autoRetain=${config.lifecycle.autoRetain}`,
   ].join(" ");

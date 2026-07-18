@@ -218,7 +218,9 @@ export class HindsightBackend implements MemoryBackend {
       budget: input.budget ?? this.options.config.recallBudget ?? "mid",
       types: input.types ?? this.options.config.recallTypes,
       prefer_observations: true,
-      ...(input.tags?.length ? { tags: input.tags } : {}),
+      ...(input.tags?.length
+        ? { tags: input.tags, tags_match: "all_strict" }
+        : {}),
     };
     const value = await this.request(
       this.bankPath("/memories/recall"),
@@ -292,7 +294,9 @@ export class HindsightBackend implements MemoryBackend {
           query: input.query,
           budget: input.budget ?? "low",
           ...(input.maxTokens ? { max_tokens: input.maxTokens } : {}),
-          ...(input.tags?.length ? { tags: input.tags } : {}),
+          ...(input.tags?.length
+            ? { tags: input.tags, tags_match: "all_strict" }
+            : {}),
           include: { facts: {} },
         }),
       },

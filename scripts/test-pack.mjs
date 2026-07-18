@@ -8,12 +8,14 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, normalize, relative } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const root = new URL("..", import.meta.url).pathname;
 const temp = mkdtempSync(join(tmpdir(), "pi-tidy-pack-"));
 const packages = [
   { name: "@mobrienv/pi-tidy-tools", dir: "packages/pi-tidy-tools" },
   { name: "@mobrienv/pi-tidy-subagents", dir: "packages/pi-tidy-subagents" },
+  { name: "@mobrienv/pi-tidy-footer", dir: "packages/pi-tidy-footer" },
 ];
 
 function readmeRelativeDocs(packageDir) {
@@ -63,6 +65,29 @@ try {
         listing.includes("pi-fff-installed")
       )
         throw new Error(`${name} shipped test/prototype files`);
+    }
+    if (name === "@mobrienv/pi-tidy-footer") {
+      for (const file of [
+        "package/types.ts",
+        "package/layout.ts",
+        "package/codexbar.ts",
+        "package/dist/index.js",
+        "package/dist/index.d.ts",
+      ]) {
+        if (!listing.includes(file))
+          throw new Error(`${name} omitted runtime file ${file}`);
+      }
+      if (listing.includes("package/test/"))
+        throw new Error(`${name} shipped tests`);
+      execFileSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          `const m=await import(${JSON.stringify(pathToFileURL(join(root, dir, "dist/index.js")).href)});if(typeof m.createFooterExtension!=="function")process.exit(1)`,
+        ],
+        { cwd: root, stdio: "pipe" }
+      );
     }
 
     for (const doc of readmeRelativeDocs(dir)) {

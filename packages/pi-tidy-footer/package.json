@@ -1,0 +1,68 @@
+{
+  "name": "@mobrienv/pi-tidy-footer",
+  "version": "0.1.0",
+  "description": "A responsive, width-safe Pi footer for narrow terminals, with CodexBar quotas.",
+  "license": "MIT",
+  "author": "Mikey O'Brien <m@mobrienv.dev>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mikeyobrien/pi-tidy-tools.git",
+    "directory": "packages/pi-tidy-footer"
+  },
+  "homepage": "https://github.com/mikeyobrien/pi-tidy-tools/tree/main/packages/pi-tidy-footer#readme",
+  "bugs": "https://github.com/mikeyobrien/pi-tidy-tools/issues",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "extension",
+    "footer",
+    "termux",
+    "codexbar"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "index.ts",
+    "codexbar.ts",
+    "layout.ts",
+    "types.ts",
+    "vendor/**/*.ts",
+    "dist/**/*",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "pretest": "node ../../scripts/bundle-core.mjs .",
+    "test": "node --import tsx --test test/*.test.ts",
+    "check": "node ../../scripts/bundle-core.mjs . && tsc --noEmit",
+    "prepack": "node ../../scripts/bundle-core.mjs . && node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
+    "test:coverage": "node ../../scripts/bundle-core.mjs . && c8 node --import tsx --test test/*.test.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.80.6 <0.81.0",
+    "@earendil-works/pi-tui": ">=0.80.6 <0.81.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.80.6",
+    "@earendil-works/pi-tui": "0.80.6",
+    "@types/node": "22.10.2",
+    "tsx": "^4.20.0",
+    "typescript": "5.6.3"
+  }
+}

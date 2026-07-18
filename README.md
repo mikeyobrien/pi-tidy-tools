@@ -9,6 +9,7 @@ Each package solves one transcript or workflow problem. Install only the ones yo
 ```bash
 pi install npm:@mobrienv/pi-tidy-tools      # compact, reason-first tool cards
 pi install npm:@mobrienv/pi-tidy-subagents  # foreground and background subagent fan-out
+pi install npm:@mobrienv/pi-tidy-footer     # responsive narrow-screen footer
 ```
 
 ## Packages
@@ -73,6 +74,23 @@ pi install npm:@mobrienv/pi-tidy-subagents
 
 [Read the full pi-tidy-subagents documentation →](packages/pi-tidy-subagents)
 
+---
+
+### [`@mobrienv/pi-tidy-footer`](packages/pi-tidy-footer)
+
+**Keep the important state visible on a phone-sized terminal.** The footer anchors model and context to the right while fitting branch, Codex quotas, and active extension statuses into the flexible left side.
+
+- Designed around 52–56-column Termux sessions
+- Uses two justified, ANSI- and Unicode-safe lines
+- Reads five-hour and seven-day quota usage from the `codexbar` CLI
+- Polls outside rendering and keeps the last good quota snapshot
+
+```bash
+pi install npm:@mobrienv/pi-tidy-footer
+```
+
+[Read the full pi-tidy-footer documentation →](packages/pi-tidy-footer)
+
 ## About the collection
 
 Published packages follow the `@mobrienv/pi-tidy-*` naming convention. Each package owns its runtime, documentation, tests, version, changelog, and npm release.
@@ -110,6 +128,11 @@ npm test --workspace @mobrienv/pi-tidy-subagents
 npm run check --workspace @mobrienv/pi-tidy-subagents
 npm run test:coverage --workspace @mobrienv/pi-tidy-subagents
 npm pack --workspace @mobrienv/pi-tidy-subagents --dry-run
+
+npm test --workspace @mobrienv/pi-tidy-footer
+npm run check --workspace @mobrienv/pi-tidy-footer
+npm run test:coverage --workspace @mobrienv/pi-tidy-footer
+npm pack --workspace @mobrienv/pi-tidy-footer --dry-run
 ```
 
 Publishable packages live at `packages/pi-tidy-<name>` and use the npm name `@mobrienv/pi-tidy-<name>`. Releases use package-qualified tags such as `pi-tidy-tools-v0.2.0` so every package can version and publish independently.

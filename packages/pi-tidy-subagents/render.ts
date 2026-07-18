@@ -14,7 +14,7 @@ export interface ControlRenderResult {
  details?: Record<string, unknown>;
 }
 
-const GUTTER = `${DIM}  ┊${RESET}`;
+const INDENT = "  ";
 const ansiPattern = /\x1b\[[0-9;]*m/g;
 const RUNNING_GLYPH = "●";
 function formatTokens(count: number): string {
@@ -110,14 +110,14 @@ export function renderLines(details: RunDetails | undefined, expanded = false, n
   const age = settled && Number.isFinite(child.endedAt)
    ? ` ${DIM}(${formatAge(now - child.endedAt!)} ago)${RESET}`
    : "";
-  const identity = `${GUTTER} ${statusGlyph(child.status)} ${MAGENTA}🤖${RESET} ${BOLD}${child.label}[${child.model}|${child.thinking}]${RESET} ${child.reason}${age}`;
+  const identity = `${statusGlyph(child.status)} ${MAGENTA}🤖${RESET} ${BOLD}${child.label}[${child.model}|${child.thinking}]${RESET} ${child.reason}${age}`;
   const backgroundMeta = child.ownership === "background"
    ? ` · ${child.deliveryPolicy ?? "auto"}${(child.pendingSteering ?? 0) > 0 ? ` · ↪${child.pendingSteering} steer` : ""}`
    : "";
   const statistics = `${DIM}→ ${child.toolCount ?? 0} tools · ${usageSummary(child)} · ${formatElapsed(elapsed)}${backgroundMeta}${RESET}`;
   const combined = `${identity} ${statistics}`;
   if (width !== undefined && visibleWidth(combined) <= width) lines.push(combined);
-  else lines.push(identity, `${GUTTER}   ${statistics}`);
+  else lines.push(identity, `${INDENT}${statistics}`);
   // Settled prose is result detail, not card chrome. Keep live activity visible while
   // work is active, and retain interrupted tool truth after settlement; other terminal
   // detail requires expansion.
@@ -128,7 +128,7 @@ export function renderLines(details: RunDetails | undefined, expanded = false, n
    : !settled
     ? collapsedActivity(displayChild)
     : collapsedActivity(displayChild).filter(isToolActivity);
-  for (const entry of entries) lines.push(`${GUTTER}${isToolActivity(entry) ? "   " : "     "}${entry}`);
+  for (const entry of entries) lines.push(`${isToolActivity(entry) ? INDENT : "    "}${entry}`);
  }
  return lines;
 }
@@ -160,9 +160,9 @@ function paintLines(lines: string[], width: number, background?: (text: string) 
 }
 
 export function renderBackgroundAcknowledgementLines(child: ChildState): string[] {
- const identity = `${GUTTER} ${statusGlyph(child.status)} ${MAGENTA}🤖${RESET} ${BOLD}${child.label}[${child.model}|${child.thinking}]${RESET} ${child.reason}`;
+ const identity = `${statusGlyph(child.status)} ${MAGENTA}🤖${RESET} ${BOLD}${child.label}[${child.model}|${child.thinking}]${RESET} ${child.reason}`;
  const delivery = child.deliveryPolicy ?? "auto";
- return [identity, `${GUTTER}   ${DIM}→ background · ${child.status} · delivery=${delivery} · ${child.target ?? child.id}${RESET}`, `${GUTTER}     ${DIM}artifact ${child.artifactPath}${RESET}`];
+ return [identity, `${INDENT}${DIM}→ background · ${child.status} · delivery=${delivery} · ${child.target ?? child.id}${RESET}`, `    ${DIM}artifact ${child.artifactPath}${RESET}`];
 }
 
 function controlText(result: ControlRenderResult | undefined): string {
@@ -221,12 +221,13 @@ export function renderControlLines(
  const child = controlChild(result);
  const target = child?.label || args.target?.trim();
  const action = args.action?.trim() || "control";
- const glyph = isPartial ? `${CYAN}${RUNNING_GLYPH}${RESET}` : isError ? `${RED}✗${RESET}` : `${GREEN}✓${RESET}`;
- const identity = `${GUTTER} ${glyph} ${MAGENTA}🤖${RESET} ${BOLD}control ${action}${RESET}${target ? ` ${target}` : ""}`;
+ // The native tool background already communicates settled success/error.
+ const runningPrefix = isPartial ? `${CYAN}${RUNNING_GLYPH}${RESET} ` : "";
+ const identity = `${runningPrefix}${MAGENTA}🤖${RESET} ${BOLD}control ${action}${RESET}${target ? ` ${target}` : ""}`;
  const summary = `${DIM}→ ${controlSummary(args, result, isPartial, isError)}${RESET}`;
  const lines = [`${identity} ${summary}`];
  if (expanded && !isPartial) {
-  for (const line of controlDetailLines(result)) lines.push(`${GUTTER}     ${line}`);
+  for (const line of controlDetailLines(result)) lines.push(`${INDENT}${line}`);
  }
  return lines;
 }

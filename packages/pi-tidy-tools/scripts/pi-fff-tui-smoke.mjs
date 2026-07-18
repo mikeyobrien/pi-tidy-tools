@@ -154,8 +154,8 @@ export default function(pi){
 	const send = async (text, delay = 500) => { child.stdin.write(text); await new Promise((resolveWait) => setTimeout(resolveWait, delay)); };
 	const persistCardEvidence = async (step, tool, after) => {
 		const output = clean(raw.slice(after));
-		if (!new RegExp(`┊[^\\n]*[✓✗][^\\n]*${tool}`).test(output)) throw new Error(`${step}: tidy-rendered ${tool} card was not observed`);
-		await appendFile(cardEvidencePath, JSON.stringify({ profile, step, tool, tidyRendered: true, excerpt: output.split("\n").filter((line) => line.includes("┊")).slice(-4) }) + "\n");
+		if (!new RegExp(`(?:^|\\n)(?:📖|✏️|⚡) ${tool}\\b`).test(output)) throw new Error(`${step}: tidy-rendered ${tool} card was not observed`);
+		await appendFile(cardEvidencePath, JSON.stringify({ profile, step, tool, tidyRendered: true, excerpt: output.split("\n").filter((line) => /^(?:📖|✏️|⚡) /.test(line)).slice(-4) }) + "\n");
 	};
 
 	await waitForOutput(/deterministic/i, "startup");

@@ -3,7 +3,13 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { CodexBarPoller, parseCodexBarJson, runCodexBar } from "../codexbar.js";
+import {
+  CodexBarPoller,
+  DEFAULT_POLL_MS,
+  DEFAULT_TIMEOUT_MS,
+  parseCodexBarJson,
+  runCodexBar,
+} from "../codexbar.js";
 
 const payload = (used = 28) =>
   JSON.stringify({
@@ -41,6 +47,11 @@ async function withCodexBar(
   }
 }
 
+test("exports stable polling defaults", () => {
+  assert.equal(DEFAULT_POLL_MS, 300_000);
+  assert.equal(DEFAULT_TIMEOUT_MS, 45_000);
+});
+
 test("parses documented CodexBar object and array payloads", () => {
   const direct = parseCodexBarJson(payload());
   const array = parseCodexBarJson(`[${payload(140)}]`);
@@ -69,6 +80,49 @@ test("rejects malformed and provider-error payloads", () => {
   assert.throws(() => parseCodexBarJson("not json"), SyntaxError);
 });
 
+test("parser validates window shapes and preserves only documented metadata", () => {
+  assert.deepEqual(
+    parseCodexBarJson(
+      JSON.stringify([
+        null,
+        { provider: "other", usage: {} },
+        {
+          provider: "codex",
+          error: false,
+          usage: {
+            primary: {
+              usedPercent: 50.4,
+              windowMinutes: "300",
+              resetsAt: 123,
+            },
+            secondary: { usedPercent: 25, resetsAt: "later" },
+            updatedAt: 123,
+          },
+        },
+      ])
+    ),
+    {
+      primary: { usedPercent: 50.4 },
+      secondary: { usedPercent: 25, resetsAt: "later" },
+    }
+  );
+  for (const usage of [null, "bad", 4]) {
+    assert.throws(
+      () => parseCodexBarJson(JSON.stringify({ provider: "codex", usage })),
+      /no usage snapshot/
+    );
+  }
+  for (const primary of [null, false, 4, { usedPercent: "1" }]) {
+    assert.throws(
+      () =>
+        parseCodexBarJson(
+          JSON.stringify({ provider: "codex", usage: { primary } })
+        ),
+      /no quota window/
+    );
+  }
+});
+
 test("poller caches the last good snapshot and deduplicates refreshes", async () => {
   let calls = 0;
   let release!: (value: string) => void;
@@ -93,6 +147,42 @@ test("poller caches the last good snapshot and deduplicates refreshes", async ()
   await failing.refresh();
   assert.equal(failing.snapshot?.primary?.usedPercent, 28);
   assert.equal(failing.lastError, "offline");
+});
+
+test("poller reports updates exactly once and normalizes non-Error failures", async () => {
+  let calls = 0;
+  let updates = 0;
+  const values: Array<string | Error> = [
+    "bad value",
+    new Error("broken"),
+    payload(7),
+  ];
+  const poller = new CodexBarPoller(async () => {
+    calls += 1;
+    const value = values.shift();
+    if (value instanceof Error) throw value;
+    if (value === "bad value") throw value;
+    return value!;
+  }, 5);
+
+  await poller.refresh(() => updates++);
+  assert.equal(poller.lastError, "bad value");
+  assert.equal(updates, 1);
+  await poller.refresh(() => updates++);
+  assert.equal(poller.lastError, "broken");
+  assert.equal(updates, 2);
+  await poller.refresh(() => updates++);
+  assert.equal(poller.snapshot?.primary?.usedPercent, 7);
+  assert.equal(poller.lastError, undefined);
+  assert.equal(updates, 3);
+  assert.equal(calls, 3);
+
+  poller.start(() => updates++);
+  poller.start(() => (updates += 100));
+  await new Promise((resolve) => setTimeout(resolve, 12));
+  poller.stop();
+  assert.ok(calls >= 5);
+  assert.ok(updates >= 5 && updates < 100);
 });
 
 test("stop followed by start launches a fresh request without a false error", async () => {
@@ -144,6 +234,22 @@ test("pre-aborted CodexBar requests do not spawn a process", async () => {
   const controller = new AbortController();
   controller.abort(new Error("stop"));
   await assert.rejects(() => runCodexBar(controller.signal), /stop/);
+});
+
+test("CodexBar process invocation uses the documented arguments and environment", async () => {
+  const expected =
+    "usage --provider codex --source cli --format json --json-only --no-color";
+  const script = `#!/bin/sh
+if [ "$*" != "${expected}" ]; then echo "bad args: $*" >&2; exit 9; fi
+if [ "$NO_COLOR|$TERM|$COLUMNS" != "1|dumb|80" ]; then echo "bad env" >&2; exit 9; fi
+printf '%s' '${payload(44)}'
+`;
+  await withCodexBar(script, async () => {
+    const parsed = parseCodexBarJson(
+      await runCodexBar(new AbortController().signal, 500)
+    );
+    assert.equal(parsed.primary?.usedPercent, 44);
+  });
 });
 
 test("CodexBar process runner handles success and bounded failures", async () => {

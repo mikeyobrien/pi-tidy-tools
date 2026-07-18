@@ -65,9 +65,10 @@ The fixed right-side fields are:
 The flexible left side is filled in this order:
 
 1. repository branch or directory;
-2. five-hour and seven-day Codex quota usage;
-3. failed, warning, then normal extension statuses;
-4. cumulative input/output totals when room remains.
+2. failed extension states and pressured quotas, ordered by severity;
+3. routine five-hour and seven-day Codex quota usage;
+4. normal extension statuses;
+5. cumulative input/output totals when room remains.
 
 Context and quota usage above 70% are prefixed with `!`; above 90% they use `!!`. Warning and error colors reinforce the marker but are not the only signal.
 

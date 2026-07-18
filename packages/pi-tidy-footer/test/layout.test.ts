@@ -4,6 +4,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import {
   alignSides,
   compactModelId,
+  formatTokens,
   renderFooter,
   sanitizeStatus,
 } from "../layout.js";
@@ -41,6 +42,28 @@ const snapshot = (overrides: Partial<FooterSnapshot> = {}): FooterSnapshot => ({
   ...overrides,
 });
 
+test("formats token counts at every representation boundary", () => {
+  assert.deepEqual(
+    [
+      0, 999, 1_000, 9_999, 10_000, 999_499, 999_500, 999_999, 1_000_000,
+      9_999_999, 10_000_000,
+    ].map(formatTokens),
+    [
+      "0",
+      "999",
+      "1.0k",
+      "10.0k",
+      "10k",
+      "999k",
+      "1.0M",
+      "1.0M",
+      "1.0M",
+      "10.0M",
+      "10M",
+    ]
+  );
+});
+
 test("alignSides keeps the right field pinned to the terminal edge", () => {
   const line = alignSides("left", "right", 20);
   assert.equal(line, `left${" ".repeat(11)}right`);
@@ -50,6 +73,12 @@ test("alignSides keeps the right field pinned to the terminal edge", () => {
   assert.equal(visibleWidth(narrow), 16);
   assert.ok(narrow.endsWith("ctx 28%"));
   assert.match(narrow, /…/);
+  assert.equal(alignSides("left", "right", 0), "");
+  assert.equal(alignSides("left", "right", -1), "");
+  assert.equal(alignSides("", "right", 8), "   right");
+  assert.equal(alignSides("left", "123456", 8), "  123456");
+  assert.equal(alignSides("left", "1234567", 8), " 1234567");
+  assert.equal(alignSides("a", "b", 4), "a  b");
 });
 
 test("the 52–56 column layout anchors identity and context on the right", () => {
@@ -208,7 +237,114 @@ test("Codex models get compact stable aliases", () => {
 
 test("status text cannot inject terminal controls or extra lines", () => {
   assert.equal(
-    sanitizeStatus("ok\n\x1b[31mfailed\x1b[0m\x1b]0;title\x07"),
+    sanitizeStatus("  ok\n\x1b[31mfailed\x1b[0m\x1b]0;title\x07  "),
     "ok failed"
   );
+  assert.equal(sanitizeStatus("\u0000a\u009fb\t c"), "a b c");
+});
+
+test("layout thresholds and fallbacks are exact", () => {
+  const plain: FooterPalette = {
+    dim: (text) => `dim(${text})`,
+    accent: (text) => `accent(${text})`,
+    warning: (text) => `warning(${text})`,
+    error: (text) => `error(${text})`,
+  };
+  assert.deepEqual(renderFooter(snapshot(), 0, plain), []);
+  assert.deepEqual(renderFooter(snapshot(), -1, plain), []);
+
+  const at70 = renderFooter(snapshot({ contextPercent: 70 }), 52, plain)[1]!;
+  const over70 = renderFooter(
+    snapshot({ contextPercent: 70.1 }),
+    52,
+    plain
+  )[1]!;
+  const at90 = renderFooter(snapshot({ contextPercent: 90 }), 52, plain)[1]!;
+  const over90 = renderFooter(
+    snapshot({ contextPercent: 90.1 }),
+    52,
+    plain
+  )[1]!;
+  assert.ok(at70.endsWith("accent(ctx 70%)"));
+  assert.ok(over70.endsWith("warning(! ctx 70%)"));
+  assert.ok(at90.endsWith("warning(! ctx 90%)"));
+  assert.ok(over90.endsWith("error(!! ctx 90%)"));
+
+  const unknown = renderFooter(
+    snapshot({
+      cwd: "",
+      branch: "",
+      modelId: undefined,
+      thinkingLevel: "off",
+      contextPercent: undefined,
+      contextWindow: undefined,
+      quota: undefined,
+      statuses: undefined,
+      usage: undefined,
+    }),
+    72,
+    plain
+  );
+  assert.ok(unknown[0]!.includes("dim(~)"));
+  assert.ok(unknown[0]!.endsWith("accent(no-model)"));
+  assert.ok(unknown[1]!.endsWith("accent(ctx ?)"));
+
+  assert.ok(
+    renderFooter(snapshot(), 71, plain)[0]!.includes("accent(sol/max)")
+  );
+  const at72 = renderFooter(snapshot(), 72, plain);
+  assert.ok(at72[0]!.includes("accent(sol · max)"));
+  assert.ok(at72[1]!.endsWith("accent(ctx 28%/272k)"));
+  assert.ok(
+    renderFooter(snapshot(), 95, plain)[0]!.includes("accent(sol · max)")
+  );
+  assert.ok(
+    renderFooter(snapshot(), 96, plain)[0]!.includes(
+      "accent(gpt-5.6-sol · max)"
+    )
+  );
+  assert.ok(
+    renderFooter(snapshot({ modelId: undefined }), 96, plain)[0]!.endsWith(
+      "accent(no-model · max)"
+    )
+  );
+  assert.ok(!renderFooter(snapshot(), 31, plain)[0]!.includes("main"));
+  assert.ok(renderFooter(snapshot(), 32, plain)[0]!.includes("main"));
+});
+
+test("capacity ordering, fallback labels, and width admission are deterministic", () => {
+  const ordered = renderFooter(
+    snapshot({
+      quota: {
+        primary: { usedPercent: 70, windowMinutes: 42 },
+        secondary: { usedPercent: 90, windowMinutes: 43 },
+      },
+      statuses: new Map([
+        ["z", "warning z"],
+        ["b", "ready b"],
+        ["a", "ready a"],
+        ["x", "failed x"],
+      ]),
+      usage: { input: 1_000, output: 2_000, cacheRead: 0, cacheWrite: 0 },
+    }),
+    120,
+    { dim: (x) => x, accent: (x) => x, warning: (x) => x, error: (x) => x }
+  )[1]!;
+  assert.match(
+    ordered,
+    /^failed x · warning z · ! 7d 90% · 5h 70% · ready a · ready b · ↑1\.0k · ↓2\.0k/
+  );
+
+  const exactCandidate = "x".repeat(24);
+  const justFits = renderFooter(
+    snapshot({
+      quota: undefined,
+      statuses: new Map([["exact", exactCandidate]]),
+      usage: undefined,
+      contextPercent: 0,
+    }),
+    32,
+    { dim: (x) => x, accent: (x) => x, warning: (x) => x, error: (x) => x }
+  )[1]!;
+  assert.equal(justFits, `${exactCandidate}  ctx 0%`);
 });

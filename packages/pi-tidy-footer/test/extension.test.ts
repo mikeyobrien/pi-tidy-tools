@@ -74,6 +74,20 @@ test("extension installs a responsive footer and exposes controls", async () => 
   assert.ok(handlers.has("model_select"));
   assert.ok(handlers.has("thinking_level_select"));
   assert.ok(commands.has("tidy-footer"));
+  assert.equal(
+    commands.get("tidy-footer").description,
+    "Control or inspect the responsive footer"
+  );
+  assert.deepEqual(
+    new Set(handlers.keys()),
+    new Set([
+      "session_start",
+      "model_select",
+      "thinking_level_select",
+      "message_end",
+      "session_shutdown",
+    ])
+  );
 
   handlers.get("session_start")![0]!({}, ctx);
   await poller.refresh();
@@ -119,13 +133,28 @@ test("extension installs a responsive footer and exposes controls", async () => 
   assert.equal(disposed, 1);
 
   await commands.get("tidy-footer").handler("status", ctx);
-  assert.match(notifications.at(-1)![0], /5h 3%, 7d 20%/);
+  assert.deepEqual(notifications.at(-1), [
+    "Responsive footer on; 5h 3%, 7d 20%",
+    "info",
+  ]);
   await commands.get("tidy-footer").handler("refresh", ctx);
-  assert.match(notifications.at(-1)![0], /refreshed/);
+  assert.deepEqual(notifications.at(-1), ["CodexBar quotas refreshed", "info"]);
   await commands.get("tidy-footer").handler("unknown", ctx);
-  assert.match(notifications.at(-1)![0], /Usage:/);
+  assert.deepEqual(notifications.at(-1), [
+    "Usage: /tidy-footer [status|refresh|on|default]",
+    "warning",
+  ]);
   await commands.get("tidy-footer").handler("default", ctx);
   assert.equal(footerFactories.at(-1), undefined);
+  assert.deepEqual(notifications.at(-1), [
+    "Default Pi footer restored",
+    "info",
+  ]);
+  await commands.get("tidy-footer").handler("status", ctx);
+  assert.deepEqual(notifications.at(-1), [
+    "Responsive footer off; 5h 3%, 7d 20%",
+    "info",
+  ]);
   const pollsWhileEnabled = polls;
   handlers.get("model_select")![0]!(
     { model: { provider: "openai-codex" } },
@@ -135,6 +164,7 @@ test("extension installs a responsive footer and exposes controls", async () => 
   assert.equal(polls, pollsWhileEnabled);
   await commands.get("tidy-footer").handler("on", ctx);
   assert.equal(typeof footerFactories.at(-1), "function");
+  assert.deepEqual(notifications.at(-1), ["Responsive footer enabled", "info"]);
 
   handlers.get("session_shutdown")![0]!({}, ctx);
 });
@@ -169,6 +199,84 @@ test("commands report pending and failed CodexBar state", async () => {
   assert.deepEqual(notices.at(-1), ["CodexBar: offline", "warning"]);
   await commands.get("tidy-footer").handler("status", ctx);
   assert.match(notices.at(-1)![0], /unavailable: offline/);
+});
+
+test("command aliases and model lifecycle call the poller exactly", async () => {
+  const handlers = new Map<string, Function>();
+  let command: any;
+  const calls: string[] = [];
+  const poller: any = {
+    snapshot: {
+      primary: { usedPercent: 12.4, windowMinutes: 42 },
+      secondary: { usedPercent: 56.6, windowMinutes: 10_080 },
+    },
+    start(callback: () => void) {
+      calls.push("start");
+      callback();
+    },
+    stop() {
+      calls.push("stop");
+    },
+    async refresh(callback: () => void) {
+      calls.push("refresh");
+      callback();
+    },
+  };
+  const pi = {
+    on(name: string, handler: Function) {
+      handlers.set(name, handler);
+    },
+    registerCommand(_name: string, value: any) {
+      command = value;
+    },
+    getThinkingLevel: () => "off",
+  };
+  createFooterExtension({ poller })(pi as any);
+  const footers: any[] = [];
+  const notices: Array<[string, string]> = [];
+  const ctx: any = {
+    mode: "tui",
+    model: { provider: "anthropic" },
+    ui: {
+      setFooter(value: any) {
+        footers.push(value);
+      },
+      notify(text: string, level: string) {
+        notices.push([text, level]);
+      },
+    },
+  };
+
+  await command.handler("   ", ctx);
+  assert.deepEqual(notices.at(-1), [
+    "Responsive footer on; 5h 12%, 7d 57%",
+    "info",
+  ]);
+  await command.handler(" OFF ", ctx);
+  assert.deepEqual(calls, ["stop"]);
+  assert.equal(footers.at(-1), undefined);
+  await command.handler("auto", ctx);
+  assert.equal(typeof footers.at(-1), "function");
+  assert.deepEqual(notices.at(-1), ["Responsive footer enabled", "info"]);
+
+  handlers.get("model_select")!({ model: { provider: "openai-codex" } }, ctx);
+  assert.deepEqual(calls, ["stop", "start", "refresh"]);
+  handlers.get("model_select")!({ model: { provider: "anthropic" } }, ctx);
+  assert.deepEqual(calls, ["stop", "start", "refresh", "stop"]);
+
+  handlers.get("session_shutdown")!();
+  assert.deepEqual(calls, ["stop", "start", "refresh", "stop", "stop"]);
+
+  poller.snapshot = { secondary: { usedPercent: 9.6, windowMinutes: 10_080 } };
+  await command.handler("status", ctx);
+  assert.deepEqual(notices.at(-1), ["Responsive footer on; 7d 10%", "info"]);
+  poller.snapshot = undefined;
+  poller.lastError = "offline";
+  await command.handler("status", ctx);
+  assert.deepEqual(notices.at(-1), [
+    "Responsive footer on; CodexBar unavailable: offline",
+    "info",
+  ]);
 });
 
 test("non-TUI sessions do not install a footer or poll CodexBar", async () => {

@@ -1,0 +1,21 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "rootDir": ".",
+    "outDir": "dist"
+  },
+  "include": [
+    "index.ts",
+    "config.ts",
+    "render.ts",
+    "runtime.ts",
+    "types.ts",
+    "backends/**/*.ts",
+    "vendor/**/*.ts"
+  ],
+  "exclude": ["test/**", "coverage/**"]
+}

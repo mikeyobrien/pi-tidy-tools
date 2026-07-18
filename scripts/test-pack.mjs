@@ -8,12 +8,14 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, normalize, relative } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const root = new URL("..", import.meta.url).pathname;
 const temp = mkdtempSync(join(tmpdir(), "pi-tidy-pack-"));
 const packages = [
   { name: "@mobrienv/pi-tidy-tools", dir: "packages/pi-tidy-tools" },
   { name: "@mobrienv/pi-tidy-subagents", dir: "packages/pi-tidy-subagents" },
+  { name: "@mobrienv/pi-tidy-memory", dir: "packages/pi-tidy-memory" },
 ];
 
 function readmeRelativeDocs(packageDir) {
@@ -63,6 +65,29 @@ try {
         listing.includes("pi-fff-installed")
       )
         throw new Error(`${name} shipped test/prototype files`);
+    }
+    if (name === "@mobrienv/pi-tidy-memory") {
+      for (const file of [
+        "package/types.ts",
+        "package/runtime.ts",
+        "package/backends/hindsight.ts",
+        "package/dist/index.js",
+        "package/dist/index.d.ts",
+      ]) {
+        if (!listing.includes(file))
+          throw new Error(`${name} omitted runtime file ${file}`);
+      }
+      if (listing.includes("package/test/") || listing.includes("homelab.env"))
+        throw new Error(`${name} shipped tests or credentials`);
+      execFileSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          `const m=await import(${JSON.stringify(pathToFileURL(join(root, dir, "dist/index.js")).href)});if(typeof m.createMemoryExtension!=="function")process.exit(1)`,
+        ],
+        { cwd: root, stdio: "pipe" }
+      );
     }
 
     for (const doc of readmeRelativeDocs(dir)) {

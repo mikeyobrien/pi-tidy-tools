@@ -8,6 +8,7 @@ node_modules/
 coverage/
 .nyc_output/
 reports/
+packages/*/dist/
 .stryker-tmp/
 packages/*/docs/comparison.html
 packages/*/docs/demo.html

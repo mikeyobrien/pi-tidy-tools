@@ -102,6 +102,50 @@ test("context pressure uses a non-color warning marker", () => {
   assert.ok(error.includes("\x1b[31m"));
 });
 
+test("quota pressure has a non-color marker and displaces routine state", () => {
+  const warning = renderFooter(
+    snapshot({
+      quota: {
+        primary: { usedPercent: 76, windowMinutes: 300 },
+        secondary: { usedPercent: 95, windowMinutes: 10_080 },
+      },
+      statuses: new Map([["healthy", "memory ready"]]),
+    }),
+    40,
+    palette
+  )[1]!;
+  assert.ok(warning.includes("!! 7d 95%"));
+  assert.ok(warning.includes("! 5h 76%"));
+  assert.ok(warning.includes("\x1b[31m"));
+  assert.ok(!warning.includes("memory ready"));
+});
+
+test("emergency widths preserve critical status text", () => {
+  const lines = renderFooter(
+    snapshot({ statuses: new Map([["critical", "blocked offline"]]) }),
+    9,
+    palette
+  );
+  assert.equal(lines.length, 2);
+  assert.ok(lines[1]!.includes("blocked"));
+  assert.ok(lines[1]!.includes("\x1b[31m"));
+  assert.equal(visibleWidth(lines[1]!), 9);
+});
+
+test("emergency context errors displace lower-severity status", () => {
+  const second = renderFooter(
+    snapshot({
+      contextPercent: 95,
+      statuses: new Map([["worker", "starting"]]),
+    }),
+    20,
+    palette
+  )[1]!;
+  assert.ok(second.includes("!! ctx 95%"));
+  assert.ok(second.includes("\x1b[31m"));
+  assert.ok(!second.includes("starting"));
+});
+
 test("critical extension state displaces quotas and remains visible", () => {
   const line = renderFooter(
     snapshot({

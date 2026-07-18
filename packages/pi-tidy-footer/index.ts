@@ -5,7 +5,13 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { CodexBarPoller } from "./codexbar.js";
 import { renderFooter } from "./layout.js";
-import type { FooterPalette, FooterSnapshot, FooterUsage } from "./types.js";
+import type {
+  CodexQuotaSnapshot,
+  CodexQuotaWindow,
+  FooterPalette,
+  FooterSnapshot,
+  FooterUsage,
+} from "./types.js";
 
 export { CodexBarPoller, parseCodexBarJson, runCodexBar } from "./codexbar.js";
 export {
@@ -44,6 +50,20 @@ function collectUsage(ctx: ExtensionContext): FooterUsage {
     usage.cacheWrite += message.usage.cacheWrite;
   }
   return usage;
+}
+
+function quotaSummary(snapshot: CodexQuotaSnapshot): string {
+  const windows: Array<[CodexQuotaWindow | undefined, string]> = [
+    [snapshot.primary, "5h"],
+    [snapshot.secondary, "7d"],
+  ];
+  return windows
+    .flatMap(([window, fallback]) =>
+      window
+        ? `${window.windowMinutes === 300 ? "5h" : window.windowMinutes === 10_080 ? "7d" : fallback} ${Math.round(window.usedPercent)}%`
+        : []
+    )
+    .join(", ");
 }
 
 function palette(theme: ExtensionContext["ui"]["theme"]): FooterPalette {
@@ -102,8 +122,12 @@ export function createFooterExtension(options: FooterExtensionOptions = {}) {
 
     pi.on("session_start", (_event, ctx) => install(ctx));
 
-    pi.on("model_select", (event) => {
-      if (event.model.provider === "openai-codex") {
+    pi.on("model_select", (event, ctx) => {
+      if (
+        enabled &&
+        ctx.mode === "tui" &&
+        event.model.provider === "openai-codex"
+      ) {
         poller.start(() => requestRender?.());
         void poller.refresh(() => requestRender?.());
       } else {
@@ -155,7 +179,7 @@ export function createFooterExtension(options: FooterExtensionOptions = {}) {
           return;
         }
         const source = poller.snapshot
-          ? `5h ${Math.round(poller.snapshot.primary.usedPercent)}%${poller.snapshot.secondary ? `, 7d ${Math.round(poller.snapshot.secondary.usedPercent)}%` : ""}`
+          ? quotaSummary(poller.snapshot)
           : poller.lastError
             ? `CodexBar unavailable: ${poller.lastError}`
             : "CodexBar pending";

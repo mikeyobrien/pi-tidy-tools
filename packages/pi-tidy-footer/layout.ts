@@ -86,17 +86,28 @@ function quotaWindowLabel(
   return `${label} ${Math.round(window.usedPercent)}%`;
 }
 
-function quotaItems(snapshot: FooterSnapshot): string[] {
-  if (!snapshot.quota) return [];
-  return [
-    quotaWindowLabel(snapshot.quota.primary, "5h"),
-    quotaWindowLabel(snapshot.quota.secondary, "7d"),
-  ].filter((value): value is string => Boolean(value));
-}
-
 interface StatusItem {
   text: string;
   severity: 0 | 1 | 2;
+}
+
+function quotaItems(snapshot: FooterSnapshot): StatusItem[] {
+  if (!snapshot.quota) return [];
+  return [
+    [snapshot.quota.primary, "5h"],
+    [snapshot.quota.secondary, "7d"],
+  ].flatMap(([window, fallback]) => {
+    const label = quotaWindowLabel(
+      window as CodexQuotaWindow | undefined,
+      fallback as string
+    );
+    if (!label) return [];
+    const usedPercent = (window as CodexQuotaWindow).usedPercent;
+    const severity: StatusItem["severity"] =
+      usedPercent > 90 ? 0 : usedPercent > 70 ? 1 : 2;
+    const marker = severity === 0 ? "!! " : severity === 1 ? "! " : "";
+    return [{ text: `${marker}${label}`, severity }];
+  });
 }
 
 function statusItems(
@@ -144,11 +155,14 @@ function capacityLeft(
 ): { text: string; severity: 0 | 1 | 2 } {
   const parts: string[] = [];
   const statuses = statusItems(snapshot.statuses);
+  const quotas = quotaItems(snapshot);
   let severity: 0 | 1 | 2 = 2;
 
-  // Critical statuses displace routine quota and accounting fields. Preserve a
-  // bounded first status instead of hiding it when its prose is too long.
-  for (const item of statuses.filter(({ severity }) => severity < 2)) {
+  // Critical statuses and quotas displace routine accounting fields. Preserve
+  // the first urgent item instead of hiding it when its prose is too long.
+  for (const item of [...statuses, ...quotas]
+    .filter(({ severity }) => severity < 2)
+    .sort((a, b) => a.severity - b.severity)) {
     const next = [...parts, item.text].join(SEPARATOR);
     if (visibleWidth(next) <= maxWidth) {
       parts.push(item.text);
@@ -159,7 +173,11 @@ function capacityLeft(
     }
   }
 
-  appendWhileFits(parts, quotaItems(snapshot), maxWidth);
+  appendWhileFits(
+    parts,
+    quotas.filter(({ severity }) => severity === 2).map(({ text }) => text),
+    maxWidth
+  );
   appendWhileFits(
     parts,
     statuses.filter(({ severity }) => severity === 2).map(({ text }) => text),
@@ -211,9 +229,33 @@ export function renderFooter(
 
   const location = locationText(snapshot, width);
   const model = modelText(snapshot, width);
-  const first = alignSides(palette.dim(location), palette.accent(model), width);
+  const first = alignSides(
+    width < 32 ? "" : palette.dim(location),
+    palette.accent(model),
+    width
+  );
 
   const context = contextText(snapshot, width);
+  if (width < 32) {
+    const urgent = statusItems(snapshot.statuses).find(
+      ({ severity }) => severity < 2
+    );
+    const contextSeverity: StatusItem["severity"] =
+      typeof snapshot.contextPercent === "number" &&
+      snapshot.contextPercent > 90
+        ? 0
+        : typeof snapshot.contextPercent === "number" &&
+            snapshot.contextPercent > 70
+          ? 1
+          : 2;
+    const showStatus = urgent && urgent.severity <= contextSeverity;
+    const second = showStatus
+      ? urgent.severity === 0
+        ? palette.error(urgent.text)
+        : palette.warning(urgent.text)
+      : styleContext(context, snapshot.contextPercent, palette);
+    return [first, truncateToWidth(second, width, "")];
+  }
   const contextWidth = visibleWidth(context);
   const leftBudget = Math.max(0, width - contextWidth - MIN_GAP);
   const capacity = capacityLeft(snapshot, leftBudget, width);

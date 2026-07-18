@@ -4,11 +4,12 @@ export interface CodexQuotaWindow {
   resetsAt?: string;
 }
 
-export interface CodexQuotaSnapshot {
-  primary: CodexQuotaWindow;
-  secondary?: CodexQuotaWindow;
+export type CodexQuotaSnapshot = (
+  | { primary: CodexQuotaWindow; secondary?: CodexQuotaWindow }
+  | { primary?: never; secondary: CodexQuotaWindow }
+) & {
   updatedAt?: string;
-}
+};
 
 export interface FooterUsage {
   input: number;

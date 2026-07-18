@@ -69,7 +69,7 @@ The flexible left side is filled in this order:
 3. failed, warning, then normal extension statuses;
 4. cumulative input/output totals when room remains.
 
-Context above 70% is prefixed with `!`; above 90% it uses `!!`. Warning and error colors reinforce the marker but are not the only signal.
+Context and quota usage above 70% are prefixed with `!`; above 90% they use `!!`. Warning and error colors reinforce the marker but are not the only signal.
 
 ## Research
 

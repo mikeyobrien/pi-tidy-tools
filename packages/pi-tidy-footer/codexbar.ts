@@ -42,16 +42,17 @@ export function parseCodexBarJson(text: string): CodexQuotaSnapshot {
     throw new Error("CodexBar returned no usage snapshot");
   const usageRecord = usage as Record<string, unknown>;
   const primary = quotaWindow(usageRecord.primary);
-  if (!primary) throw new Error("CodexBar returned no primary quota window");
   const secondary = quotaWindow(usageRecord.secondary);
+  if (!primary && !secondary)
+    throw new Error("CodexBar returned no quota window");
 
-  return {
-    primary,
-    ...(secondary ? { secondary } : {}),
-    ...(typeof usageRecord.updatedAt === "string"
+  const metadata =
+    typeof usageRecord.updatedAt === "string"
       ? { updatedAt: usageRecord.updatedAt }
-      : {}),
-  };
+      : {};
+  return primary
+    ? { primary, ...(secondary ? { secondary } : {}), ...metadata }
+    : { secondary: secondary!, ...metadata };
 }
 
 export function runCodexBar(

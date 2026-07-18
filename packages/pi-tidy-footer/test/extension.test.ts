@@ -63,7 +63,11 @@ test("extension installs a responsive footer and exposes controls", async () => 
       },
     },
   };
-  const poller = new CodexBarPoller(async () => quotaJson, 60_000);
+  let polls = 0;
+  const poller = new CodexBarPoller(async () => {
+    polls += 1;
+    return quotaJson;
+  }, 60_000);
   createFooterExtension({ poller })(pi as any);
 
   assert.ok(handlers.has("session_start"));
@@ -122,6 +126,13 @@ test("extension installs a responsive footer and exposes controls", async () => 
   assert.match(notifications.at(-1)![0], /Usage:/);
   await commands.get("tidy-footer").handler("default", ctx);
   assert.equal(footerFactories.at(-1), undefined);
+  const pollsWhileEnabled = polls;
+  handlers.get("model_select")![0]!(
+    { model: { provider: "openai-codex" } },
+    ctx
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(polls, pollsWhileEnabled);
   await commands.get("tidy-footer").handler("on", ctx);
   assert.equal(typeof footerFactories.at(-1), "function");
 
@@ -160,7 +171,7 @@ test("commands report pending and failed CodexBar state", async () => {
   assert.match(notices.at(-1)![0], /unavailable: offline/);
 });
 
-test("non-TUI sessions do not install a footer", () => {
+test("non-TUI sessions do not install a footer or poll CodexBar", async () => {
   const handlers = new Map<string, Function>();
   const pi = {
     on(name: string, handler: Function) {
@@ -171,9 +182,13 @@ test("non-TUI sessions do not install a footer", () => {
       return "off";
     },
   };
-  createFooterExtension({ poller: new CodexBarPoller(async () => quotaJson) })(
-    pi as any
-  );
+  let polls = 0;
+  createFooterExtension({
+    poller: new CodexBarPoller(async () => {
+      polls += 1;
+      return quotaJson;
+    }),
+  })(pi as any);
   let installed = false;
   handlers.get("session_start")!(
     {},
@@ -186,5 +201,14 @@ test("non-TUI sessions do not install a footer", () => {
       },
     }
   );
+  handlers.get("model_select")!(
+    { model: { provider: "openai-codex" } },
+    {
+      mode: "print",
+      ui: { setFooter() {} },
+    }
+  );
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(installed, false);
+  assert.equal(polls, 0);
 });

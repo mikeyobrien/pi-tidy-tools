@@ -24,6 +24,79 @@ test("renders one compact settled line", () => {
   );
 });
 
+test("render state matrix has exact stable text", () => {
+  const cases: Array<{
+    input: Parameters<typeof renderMemoryLines>;
+    expected: string[];
+  }> = [
+    {
+      input: ["recall", { query: "q" }, undefined, false, true, false],
+      expected: ["  ┊ · 🧠 recall q → working"],
+    },
+    {
+      input: ["recall", { query: "q" }, undefined, false, false, true],
+      expected: ["  ┊ ✗ 🧠 recall q → failed"],
+    },
+    {
+      input: [
+        "recall",
+        { query: "q" },
+        { operation: "recall", memories: [] },
+        false,
+        false,
+        false,
+      ],
+      expected: ["  ┊ ✓ 🧠 recall q → 0 memories"],
+    },
+    {
+      input: [
+        "retain",
+        { content: "fact" },
+        {
+          operation: "retain",
+          accepted: 2,
+          deferred: true,
+          operationId: "op",
+        },
+        true,
+        false,
+        false,
+      ],
+      expected: [
+        "  ┊ ✓ 🧠 retain fact → 2 accepted; queued",
+        "  ┊     operation op",
+      ],
+    },
+    {
+      input: [
+        "reflect",
+        { query: "why" },
+        {
+          operation: "reflect",
+          reflectedText: "a\nb",
+          memories: [{ id: "1", kind: "world", text: "fact" }],
+        },
+        true,
+        false,
+        false,
+      ],
+      expected: [
+        "  ┊ ✓ 🧠 reflect why → synthesized",
+        "  ┊     [world] fact",
+        "  ┊     a",
+        "  ┊     b",
+      ],
+    },
+    {
+      input: ["reflect", {}, undefined, false, false, false],
+      expected: ["  ┊ ✓ 🧠 reflect memory → done"],
+    },
+  ];
+  for (const { input, expected } of cases) {
+    assert.deepEqual(renderMemoryLines(...input).map(plain), expected);
+  }
+});
+
 test("expanded cards show bounded normalized details", () => {
   const lines = renderMemoryLines(
     "reflect",
@@ -60,6 +133,44 @@ test("expanded backend fields cannot emit terminal control sequences", () => {
   assert.doesNotMatch(lines, /\u001b\]52|kind\u0007|id\u0007/);
 });
 
+test("expanded detail limits are exact", () => {
+  const memories = Array.from({ length: 21 }, (_, index) => ({
+    id: String(index),
+    text: `fact-${index}`,
+  }));
+  const recall = renderMemoryLines(
+    "recall",
+    { query: "q" },
+    { operation: "recall", memories },
+    true,
+    false,
+    false
+  )
+    .map(plain)
+    .join("\n");
+  assert.match(recall, /fact-19/);
+  assert.doesNotMatch(recall, /fact-20/);
+
+  const reflection = renderMemoryLines(
+    "reflect",
+    { query: "q" },
+    {
+      operation: "reflect",
+      reflectedText: Array.from(
+        { length: 31 },
+        (_, index) => `line-${index}`
+      ).join("\n"),
+    },
+    true,
+    false,
+    false
+  )
+    .map(plain)
+    .join("\n");
+  assert.match(reflection, /line-29/);
+  assert.doesNotMatch(reflection, /line-30/);
+});
+
 test("component truncates to live width and paints every line", () => {
   const component = new MemoryToolComponent(
     "retain",
@@ -76,7 +187,15 @@ test("component truncates to live width and paints every line", () => {
   assert(
     lines.every(
       (line) =>
-        visibleWidth(line.replaceAll("BG(", "").replaceAll(")", "")) <= 28
+        visibleWidth(line.replaceAll("BG(", "").replaceAll(")", "")) === 28
+    )
+  );
+  const minimum = component.render(0);
+  assert(minimum.every((line) => line.includes("BG(")));
+  assert(
+    minimum.every(
+      (line) =>
+        visibleWidth(line.replaceAll("BG(", "").replaceAll(")", "")) === 1
     )
   );
 });

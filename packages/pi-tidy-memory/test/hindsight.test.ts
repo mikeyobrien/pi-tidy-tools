@@ -64,6 +64,12 @@ test("maps health recall retain and reflect to Hindsight 0.8 paths", async () =>
     return json({}, 404);
   };
   const client = backend(fake as typeof globalThis.fetch);
+  assert.equal(client.type, "hindsight");
+  assert.equal(client.label, "Hindsight");
+  assert.deepEqual(
+    [...client.capabilities],
+    ["health", "recall", "retain", "reflect"]
+  );
   assert.deepEqual(await client.health(), {
     ok: true,
     message: "healthy; database connected",
@@ -102,10 +108,13 @@ test("maps health recall retain and reflect to Hindsight 0.8 paths", async () =>
     "The migration followed two failures."
   );
 
+  assert.equal(requests[0].url, "https://memory.example.test/health");
+  assert.equal(requests[0].init.method, "GET");
   assert.equal(
     requests[1].url,
     "https://memory.example.test/v1/default/banks/pi%2Fcoding/memories/recall"
   );
+  assert.equal(requests[1].init.method, "POST");
   assert.deepEqual(requests[1].body, {
     query: "package manager",
     max_tokens: 512,
@@ -115,10 +124,20 @@ test("maps health recall retain and reflect to Hindsight 0.8 paths", async () =>
     tags: ["project:pi"],
     tags_match: "all_strict",
   });
+  assert.equal(
+    requests[2].url,
+    "https://memory.example.test/v1/default/banks/pi%2Fcoding/memories"
+  );
+  assert.equal(requests[2].init.method, "POST");
   assert.deepEqual(requests[2].body, {
     items: [{ content: "Use pnpm", document_id: "doc1" }],
     async: true,
   });
+  assert.equal(
+    requests[3].url,
+    "https://memory.example.test/v1/default/banks/pi%2Fcoding/reflect"
+  );
+  assert.equal(requests[3].init.method, "POST");
   assert.deepEqual(requests[3].body, {
     query: "Why migrate?",
     budget: "low",
@@ -127,11 +146,15 @@ test("maps health recall retain and reflect to Hindsight 0.8 paths", async () =>
     tags_match: "all_strict",
     include: { facts: {} },
   });
-  for (const request of requests) {
+  for (const [index, request] of requests.entries()) {
+    const headers = new Headers(request.init.headers);
+    assert.equal(headers.get("Accept"), "application/json");
+    assert.equal(headers.get("Authorization"), "Bearer secret");
     assert.equal(
-      new Headers(request.init.headers).get("Authorization"),
-      "Bearer secret"
+      headers.get("Content-Type"),
+      index === 0 ? null : "application/json"
     );
+    assert.equal(request.init.signal instanceof AbortSignal, true);
   }
 });
 
@@ -152,6 +175,23 @@ test("sanitizes HTTP and credential errors", async () => {
     () => missing.health(),
     /credential HINDSIGHT_API_KEY is unavailable/
   );
+});
+
+test("normalizes every HTTP error family without response-body leakage", async () => {
+  for (const [status, message] of [
+    [401, "Hindsight recall authentication failed (401)"],
+    [403, "Hindsight recall authentication failed (403)"],
+    [404, "Hindsight recall endpoint or bank was not found (404)"],
+    [429, "Hindsight recall failed with HTTP 429"],
+    [500, "Hindsight recall failed with HTTP 500"],
+  ] as const) {
+    const client = backend((async () =>
+      json({ secret: "must not leak" }, status)) as typeof globalThis.fetch);
+    await assert.rejects(() => client.recall({ query: "x" }), {
+      name: "Error",
+      message,
+    });
+  }
 });
 
 test("rejects invalid responses and respects cancellation", async () => {

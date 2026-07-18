@@ -80,6 +80,7 @@ The first accepted ratchet baseline after adopting this policy is:
 | Package             | Statements | Branches | Functions |  Lines | Mutation |
 | ------------------- | ---------: | -------: | --------: | -----: | -------: |
 | `pi-tidy-core`      |     97.84% |   96.57% |      100% | 97.84% |   91.57% |
+| `pi-tidy-footer`    |     99.27% |   93.92% |      100% | 99.27% |   80.43% |
 | `pi-tidy-memory`    |     99.38% |   94.14% |      100% | 99.38% |   85.35% |
 | `pi-tidy-subagents` |     99.66% |   94.55% |      100% | 99.66% |   88.41% |
 | `pi-tidy-tools`     |     98.42% |   94.52% |    97.29% | 98.42% |   81.97% |

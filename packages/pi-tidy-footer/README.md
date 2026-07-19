@@ -2,18 +2,27 @@
 
 A responsive Pi footer for narrow terminals. It keeps repository and capacity information on the left, pins model and context information to the right, and reads Codex quota windows from the `codexbar` CLI.
 
+> **Experimental.** This package is on `main` in [pi-tidy-tools](https://github.com/mikeyobrien/pi-tidy-tools) but is **not published to npm yet**. Layout tiers, status priority, and CodexBar integration may still change before a first release. Prefer a local checkout install and pin to a known commit if you rely on it day to day.
+
 ## Install
 
-Install [CodexBar](https://github.com/steipete/CodexBar) so `codexbar` is on `PATH`, then install the extension:
+Install [CodexBar](https://github.com/steipete/CodexBar) so `codexbar` is on `PATH` if you want quota polling, then install the extension from a monorepo checkout:
+
+```bash
+git clone https://github.com/mikeyobrien/pi-tidy-tools.git
+pi install ./pi-tidy-tools/packages/pi-tidy-footer
+```
+
+From inside a clone of this repository:
+
+```bash
+pi install ./packages/pi-tidy-footer
+```
+
+Quota polling is optional: without `codexbar`, the footer still shows branch, model, and context. After the first npm release, the stable install path will be:
 
 ```bash
 pi install npm:@mobrienv/pi-tidy-footer
-```
-
-For local development:
-
-```bash
-pi install ~/projects/pi-tidy-tools/packages/pi-tidy-footer
 ```
 
 ## Layout

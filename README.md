@@ -4,13 +4,21 @@ Focused, independently installable packages that make [Pi](https://github.com/ea
 
 Long agent turns are hard to read in Pi's native transcript: every tool call renders as a boxed card, the model's goal behind each call is invisible, and delegated work has no compact live view. pi-tidy replaces that with dense, reason-first output while preserving native execution behavior.
 
-Each package solves one transcript or workflow problem. Install only the ones you want — there is no umbrella runtime package:
+Each package solves one transcript or workflow problem. Install only the ones you want — there is no umbrella runtime package.
+
+**Stable (npm):**
 
 ```bash
 pi install npm:@mobrienv/pi-tidy-tools      # compact, reason-first tool cards
 pi install npm:@mobrienv/pi-tidy-subagents  # foreground and background subagent fan-out
-pi install npm:@mobrienv/pi-tidy-memory     # backend-neutral long-term memory
-pi install npm:@mobrienv/pi-tidy-footer     # responsive narrow-screen footer
+```
+
+**Experimental (source only for now):** `@mobrienv/pi-tidy-memory` and `@mobrienv/pi-tidy-footer` ship on `main` but are not published to npm yet. APIs, config, and layout may still change before a first release. Install from a checkout of this repo:
+
+```bash
+git clone https://github.com/mikeyobrien/pi-tidy-tools.git
+pi install ./pi-tidy-tools/packages/pi-tidy-memory   # long-term memory tools
+pi install ./pi-tidy-tools/packages/pi-tidy-footer   # narrow-screen footer
 ```
 
 ## Packages
@@ -77,9 +85,11 @@ pi install npm:@mobrienv/pi-tidy-subagents
 
 ---
 
-### [`@mobrienv/pi-tidy-memory`](packages/pi-tidy-memory)
+### [`@mobrienv/pi-tidy-memory`](packages/pi-tidy-memory) · experimental
 
 **Give Pi durable memory without tying the agent to one storage engine.** The package exposes compact recall, retain, and reflect tools through a backend-neutral contract. Hindsight is the first adapter.
+
+> Experimental: on `main`, not on npm yet. Install from a local checkout. Config and tool contracts may still change before `0.1.0` is published.
 
 - Connects to authenticated self-hosted Hindsight servers with native `fetch`
 - Keeps credentials in environment variables or a protected env file
@@ -88,16 +98,18 @@ pi install npm:@mobrienv/pi-tidy-subagents
 - Leaves room for additional backends without changing the Pi-facing tools
 
 ```bash
-pi install npm:@mobrienv/pi-tidy-memory
+pi install ./packages/pi-tidy-memory   # from a clone of this repository
 ```
 
 [Read the full pi-tidy-memory documentation →](packages/pi-tidy-memory)
 
 ---
 
-### [`@mobrienv/pi-tidy-footer`](packages/pi-tidy-footer)
+### [`@mobrienv/pi-tidy-footer`](packages/pi-tidy-footer) · experimental
 
 **Keep the important state visible on a phone-sized terminal.** The footer anchors model and context to the right while fitting branch, Codex quotas, and active extension statuses into the flexible left side.
+
+> Experimental: on `main`, not on npm yet. Install from a local checkout. Layout tiers and CodexBar integration may still change before `0.1.0` is published.
 
 - Designed around 52–56-column Termux sessions
 - Uses two justified, ANSI- and Unicode-safe lines
@@ -105,14 +117,16 @@ pi install npm:@mobrienv/pi-tidy-memory
 - Polls outside rendering and keeps the last good quota snapshot
 
 ```bash
-pi install npm:@mobrienv/pi-tidy-footer
+pi install ./packages/pi-tidy-footer   # from a clone of this repository
 ```
 
 [Read the full pi-tidy-footer documentation →](packages/pi-tidy-footer)
 
 ## About the collection
 
-Published packages follow the `@mobrienv/pi-tidy-*` naming convention. Each package owns its runtime, documentation, tests, version, changelog, and npm release.
+Packages follow the `@mobrienv/pi-tidy-*` naming convention. Each package owns its runtime, documentation, tests, version, changelog, and npm release when published.
+
+Today, `@mobrienv/pi-tidy-tools` and `@mobrienv/pi-tidy-subagents` are published on npm. `@mobrienv/pi-tidy-memory` and `@mobrienv/pi-tidy-footer` are experimental packages available from this repository only until their first releases.
 
 The private root manifest exists for workspace development and keeps existing local-checkout installs pointed at `pi-tidy-tools`; published packages remain independent.
 

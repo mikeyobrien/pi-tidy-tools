@@ -2,16 +2,27 @@
 
 Long-term memory for [Pi](https://github.com/earendil-works/pi), with a small backend interface and compact tool output. Hindsight is the first backend. More backends can be added without changing the tools or Pi lifecycle code.
 
+> **Experimental.** This package is on `main` in [pi-tidy-tools](https://github.com/mikeyobrien/pi-tidy-tools) but is **not published to npm yet**. Tool schemas, config, and adapters may still change before a first release. Prefer a local checkout install and pin to a known commit if you rely on it day to day.
+
 ## Install
+
+Clone the monorepo (or use an existing checkout), then install the package directory:
+
+```bash
+git clone https://github.com/mikeyobrien/pi-tidy-tools.git
+pi install ./pi-tidy-tools/packages/pi-tidy-memory
+```
+
+From inside a clone of this repository:
+
+```bash
+pi install ./packages/pi-tidy-memory
+```
+
+After the first npm release, the stable install path will be:
 
 ```bash
 pi install npm:@mobrienv/pi-tidy-memory
-```
-
-During development, install the local workspace instead:
-
-```bash
-pi install ~/projects/pi-tidy-tools/packages/pi-tidy-memory
 ```
 
 ## Configure Hindsight

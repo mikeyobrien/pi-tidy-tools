@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-19
+
+### Changed
+
+- Child cards no longer use a decorative gutter rail or outer indent; they start at the left edge while keeping hanging detail indentation.
+- Settled control cards rely on Pi's native success/error backgrounds instead of redundant inline marks, and collapsed control rows summarize the action outcome with raw detail behind `ctrl+o`.
+- Settled child response prose moves behind expansion, leaving the compact summary visible; interrupted tool state remains collapsed as terminal truth.
+
 ## [0.3.0] - 2026-07-15
 
 ### Added
@@ -59,7 +67,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Compact adaptive rendering with live child activity, progressive disclosure, directional provider usage, and elapsed duration.
 - Bounded ordered parent results plus persistent versioned manifests, responses, normalized events, and exact provider usage for every child.
 
-[Unreleased]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-subagents-v0.3.0...HEAD
+[Unreleased]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-subagents-v0.3.1...HEAD
+[0.3.1]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-subagents-v0.3.0...pi-tidy-subagents-v0.3.1
 [0.3.0]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-subagents-v0.2.0...pi-tidy-subagents-v0.3.0
 [0.2.0]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-subagents-v0.1.0...pi-tidy-subagents-v0.2.0
 [0.1.0]: https://github.com/mikeyobrien/pi-tidy-tools/tree/pi-tidy-subagents-v0.1.0/packages/pi-tidy-subagents

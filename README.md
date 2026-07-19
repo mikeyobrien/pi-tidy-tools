@@ -13,13 +13,18 @@ pi install npm:@mobrienv/pi-tidy-tools      # compact, reason-first tool cards
 pi install npm:@mobrienv/pi-tidy-subagents  # foreground and background subagent fan-out
 ```
 
-**Experimental (source only for now):** `@mobrienv/pi-tidy-memory` and `@mobrienv/pi-tidy-footer` ship on `main` but are not published to npm yet. APIs, config, and layout may still change before a first release. Install from a checkout of this repo:
+**Experimental (source only for now):** `@mobrienv/pi-tidy-memory` and `@mobrienv/pi-tidy-footer` ship on `main` but are not published to npm yet. APIs, config, and layout may still change before a first release. They live as monorepo package directories, so install the repo from git and then install each package path:
 
 ```bash
-git clone https://github.com/mikeyobrien/pi-tidy-tools.git
-pi install ./pi-tidy-tools/packages/pi-tidy-memory   # long-term memory tools
-pi install ./pi-tidy-tools/packages/pi-tidy-footer   # narrow-screen footer
+# clone via Pi's git installer (also registers the monorepo root)
+pi install git:github.com/mikeyobrien/pi-tidy-tools@main
+
+# experimental packages are workspace directories under that clone
+pi install ~/.pi/agent/git/github.com/mikeyobrien/pi-tidy-tools/packages/pi-tidy-memory
+pi install ~/.pi/agent/git/github.com/mikeyobrien/pi-tidy-tools/packages/pi-tidy-footer
 ```
+
+Equivalent sources: `https://github.com/mikeyobrien/pi-tidy-tools@main` or `git:git@github.com:mikeyobrien/pi-tidy-tools@main`. Pin a commit with `@<sha>` if you want a frozen experimental build. Project-local installs use the same sources with `-l`.
 
 ## Packages
 
@@ -98,7 +103,8 @@ pi install npm:@mobrienv/pi-tidy-subagents
 - Leaves room for additional backends without changing the Pi-facing tools
 
 ```bash
-pi install ./packages/pi-tidy-memory   # from a clone of this repository
+pi install git:github.com/mikeyobrien/pi-tidy-tools@main
+pi install ~/.pi/agent/git/github.com/mikeyobrien/pi-tidy-tools/packages/pi-tidy-memory
 ```
 
 [Read the full pi-tidy-memory documentation →](packages/pi-tidy-memory)
@@ -117,7 +123,8 @@ pi install ./packages/pi-tidy-memory   # from a clone of this repository
 - Polls outside rendering and keeps the last good quota snapshot
 
 ```bash
-pi install ./packages/pi-tidy-footer   # from a clone of this repository
+pi install git:github.com/mikeyobrien/pi-tidy-tools@main
+pi install ~/.pi/agent/git/github.com/mikeyobrien/pi-tidy-tools/packages/pi-tidy-footer
 ```
 
 [Read the full pi-tidy-footer documentation →](packages/pi-tidy-footer)

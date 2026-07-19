@@ -6,20 +6,28 @@ A responsive Pi footer for narrow terminals. It keeps repository and capacity in
 
 ## Install
 
-Install [CodexBar](https://github.com/steipete/CodexBar) so `codexbar` is on `PATH` if you want quota polling, then install the extension from a monorepo checkout:
+Install [CodexBar](https://github.com/steipete/CodexBar) so `codexbar` is on `PATH` if you want quota polling, then install from git:
 
 ```bash
-git clone https://github.com/mikeyobrien/pi-tidy-tools.git
-pi install ./pi-tidy-tools/packages/pi-tidy-footer
+pi install git:github.com/mikeyobrien/pi-tidy-tools@main
+pi install ~/.pi/agent/git/github.com/mikeyobrien/pi-tidy-tools/packages/pi-tidy-footer
 ```
 
-From inside a clone of this repository:
+Other accepted git forms:
+
+```bash
+pi install https://github.com/mikeyobrien/pi-tidy-tools@main
+pi install git:git@github.com:mikeyobrien/pi-tidy-tools@main
+pi install git:github.com/mikeyobrien/pi-tidy-tools@<commit>   # pin experimental builds
+```
+
+From an existing local checkout of this repository:
 
 ```bash
 pi install ./packages/pi-tidy-footer
 ```
 
-Quota polling is optional: without `codexbar`, the footer still shows branch, model, and context. After the first npm release, the stable install path will be:
+Quota polling is optional: without `codexbar`, the footer still shows branch, model, and context. Use `-l` for project-local installs. After the first npm release, the stable install path will be:
 
 ```bash
 pi install npm:@mobrienv/pi-tidy-footer

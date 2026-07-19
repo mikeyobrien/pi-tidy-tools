@@ -6,20 +6,28 @@ Long-term memory for [Pi](https://github.com/earendil-works/pi), with a small ba
 
 ## Install
 
-Clone the monorepo (or use an existing checkout), then install the package directory:
+Install the monorepo with Pi's git installer, then install this package directory from that clone:
 
 ```bash
-git clone https://github.com/mikeyobrien/pi-tidy-tools.git
-pi install ./pi-tidy-tools/packages/pi-tidy-memory
+pi install git:github.com/mikeyobrien/pi-tidy-tools@main
+pi install ~/.pi/agent/git/github.com/mikeyobrien/pi-tidy-tools/packages/pi-tidy-memory
 ```
 
-From inside a clone of this repository:
+Other accepted git forms:
+
+```bash
+pi install https://github.com/mikeyobrien/pi-tidy-tools@main
+pi install git:git@github.com:mikeyobrien/pi-tidy-tools@main
+pi install git:github.com/mikeyobrien/pi-tidy-tools@<commit>   # pin experimental builds
+```
+
+From an existing local checkout of this repository:
 
 ```bash
 pi install ./packages/pi-tidy-memory
 ```
 
-After the first npm release, the stable install path will be:
+Use `-l` for project-local installs. After the first npm release, the stable install path will be:
 
 ```bash
 pi install npm:@mobrienv/pi-tidy-memory

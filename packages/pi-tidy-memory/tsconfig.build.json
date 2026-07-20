@@ -11,6 +11,7 @@
   "include": [
     "index.ts",
     "config.ts",
+    "bank.ts",
     "render.ts",
     "runtime.ts",
     "types.ts",

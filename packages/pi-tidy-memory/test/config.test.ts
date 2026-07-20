@@ -39,6 +39,45 @@ test("parses defaults and normalizes Hindsight configuration", () => {
   assert.equal(config.lifecycle.maxRetainChars, 16_000);
 });
 
+test("parses documented dynamic bank settings without changing static defaults", () => {
+  const parsed = parseMemoryConfig({
+    ...valid,
+    backend: {
+      ...valid.backend,
+      dynamicBankId: true,
+      dynamicBankGranularity: ["agent", "project", "session"],
+      bankIdPrefix: "prod",
+      agentName: "pi",
+      resolveWorktrees: false,
+      directoryBankMap: {
+        "/work/sensitive": "isolated",
+      },
+    },
+  }).backend as HindsightBackendConfig;
+  assert.deepEqual(
+    {
+      dynamicBankId: parsed.dynamicBankId,
+      dynamicBankGranularity: parsed.dynamicBankGranularity,
+      bankIdPrefix: parsed.bankIdPrefix,
+      agentName: parsed.agentName,
+      resolveWorktrees: parsed.resolveWorktrees,
+      directoryBankMap: parsed.directoryBankMap,
+    },
+    {
+      dynamicBankId: true,
+      dynamicBankGranularity: ["agent", "project", "session"],
+      bankIdPrefix: "prod",
+      agentName: "pi",
+      resolveWorktrees: false,
+      directoryBankMap: { "/work/sensitive": "isolated" },
+    }
+  );
+  assert.equal(
+    (parseMemoryConfig(valid).backend as HindsightBackendConfig).dynamicBankId,
+    undefined
+  );
+});
+
 test("rejects unsafe or malformed configuration", () => {
   for (const raw of [
     {},
@@ -156,6 +195,67 @@ test("configuration errors identify the exact rejected contract", () => {
         },
       },
       "authenticated Hindsight requires HTTPS except on loopback",
+    ],
+    [
+      { ...valid, backend: { ...valid.backend, dynamicBankId: "yes" } },
+      "backend.dynamicBankId must be a boolean",
+    ],
+    [
+      {
+        ...valid,
+        backend: { ...valid.backend, dynamicBankGranularity: [] },
+      },
+      "backend.dynamicBankGranularity must be a non-empty array",
+    ],
+    [
+      {
+        ...valid,
+        backend: {
+          ...valid.backend,
+          dynamicBankGranularity: ["project", "project"],
+        },
+      },
+      "backend.dynamicBankGranularity must contain unique agent, project, session, channel, or user fields",
+    ],
+    [
+      {
+        ...valid,
+        backend: { ...valid.backend, dynamicBankGranularity: ["tenant"] },
+      },
+      "backend.dynamicBankGranularity must contain unique agent, project, session, channel, or user fields",
+    ],
+    [
+      { ...valid, backend: { ...valid.backend, bankIdPrefix: "bad prefix" } },
+      "backend.bankIdPrefix must be 1-64 safe identifier characters",
+    ],
+    [
+      { ...valid, backend: { ...valid.backend, agentName: "bad agent" } },
+      "backend.agentName must be 1-64 safe identifier characters",
+    ],
+    [
+      { ...valid, backend: { ...valid.backend, resolveWorktrees: "yes" } },
+      "backend.resolveWorktrees must be a boolean",
+    ],
+    [
+      { ...valid, backend: { ...valid.backend, directoryBankMap: [] } },
+      "backend.directoryBankMap must be an object",
+    ],
+    [
+      {
+        ...valid,
+        backend: { ...valid.backend, directoryBankMap: { relative: "bank" } },
+      },
+      "backend.directoryBankMap keys must be absolute paths",
+    ],
+    [
+      {
+        ...valid,
+        backend: {
+          ...valid.backend,
+          directoryBankMap: { "/work": "bad bank" },
+        },
+      },
+      "backend.directoryBankMap values must be 1-128 safe identifier characters",
     ],
   ];
   for (const [raw, message] of cases) {

@@ -16,6 +16,10 @@ Create `~/.pi/agent/pi-tidy-memory/config.json`:
     "type": "hindsight",
     "baseUrl": "https://hindsight-api.example.com",
     "bankId": "pi-coding",
+    "dynamicBankId": true,
+    "dynamicBankGranularity": ["agent", "project"],
+    "agentName": "pi",
+    "resolveWorktrees": true,
     "apiKeyEnv": "HINDSIGHT_API_KEY",
     "envFile": "~/.config/hindsight/homelab.env",
     "recallBudget": "mid",
@@ -34,20 +38,26 @@ Create `~/.pi/agent/pi-tidy-memory/config.json`:
 
 ### Fields
 
-| Field                       | Required | Meaning                                                            |
-| --------------------------- | -------- | ------------------------------------------------------------------ |
-| `backend.baseUrl`           | yes      | Hindsight API origin, without credentials, query, or fragment      |
-| `backend.bankId`            | yes      | Isolated Hindsight memory bank                                     |
-| `backend.apiKeyEnv`         | no       | Environment variable containing the bearer token                   |
-| `backend.envFile`           | no       | Fallback env file read when the process variable is absent         |
-| `backend.recallBudget`      | no       | Hindsight retrieval budget: `low`, `mid`, or `high`; default `mid` |
-| `backend.recallTypes`       | no       | Fact types requested from recall                                   |
-| `backend.asyncRetain`       | no       | Queue retains in Hindsight; default `true`                         |
-| `requestTimeoutMs`          | no       | Per-request timeout, clamped to 1–60 seconds                       |
-| `lifecycle.autoRecall`      | no       | Recall before each submitted Pi request; default `false`           |
-| `lifecycle.autoRetain`      | no       | Retain the final exchange after settlement; default `false`        |
-| `lifecycle.maxRecallTokens` | no       | Backend recall token request, clamped to 128–4096                  |
-| `lifecycle.maxRetainChars`  | no       | Maximum automatic exchange size, clamped to 256–64000              |
+| Field                            | Required | Meaning                                                             |
+| -------------------------------- | -------- | ------------------------------------------------------------------- |
+| `backend.baseUrl`                | yes      | Hindsight API origin, without credentials, query, or fragment       |
+| `backend.bankId`                 | yes      | Static bank, used when dynamic mode is off                          |
+| `backend.dynamicBankId`          | no       | Derive the active bank from runtime context; default `false`        |
+| `backend.dynamicBankGranularity` | no       | Ordered `agent`, `project`, `session`, `channel`, or `user` fields  |
+| `backend.bankIdPrefix`           | no       | Safe namespace prepended to static, dynamic, and mapped banks       |
+| `backend.agentName`              | no       | Dynamic `agent` value; default `pi`                                 |
+| `backend.resolveWorktrees`       | no       | Share the main repository bank across Git worktrees; default `true` |
+| `backend.directoryBankMap`       | no       | Absolute directory-to-bank overrides                                |
+| `backend.apiKeyEnv`              | no       | Environment variable containing the bearer token                    |
+| `backend.envFile`                | no       | Fallback env file read when the process variable is absent          |
+| `backend.recallBudget`           | no       | Hindsight retrieval budget: `low`, `mid`, or `high`; default `mid`  |
+| `backend.recallTypes`            | no       | Fact types requested from recall                                    |
+| `backend.asyncRetain`            | no       | Queue retains in Hindsight; default `true`                          |
+| `requestTimeoutMs`               | no       | Per-request timeout, clamped to 1–60 seconds                        |
+| `lifecycle.autoRecall`           | no       | Recall before each submitted Pi request; default `false`            |
+| `lifecycle.autoRetain`           | no       | Retain the final exchange after settlement; default `false`         |
+| `lifecycle.maxRecallTokens`      | no       | Backend recall token request, clamped to 128–4096                   |
+| `lifecycle.maxRetainChars`       | no       | Maximum automatic exchange size, clamped to 256–64000               |
 
 If `apiKeyEnv` is set, non-loopback HTTP is rejected. Use HTTPS for LAN and remote servers.
 
@@ -78,7 +88,20 @@ The bank ID is URL-encoded. Hindsight creates a bank with default settings on fi
 
 Banks are hard isolation boundaries. Tags are filters inside a bank.
 
-For a small coding setup, a shared bank such as `pi-coding` is reasonable if every retained item uses stable project tags. For stronger isolation, use one bank per repository or domain. Do not mix coding history, personal assistant conversations, medical information, and arbitrary web chat in one bank.
+For a small coding setup, a shared bank such as `pi-coding` is reasonable if every retained item uses stable project tags. For stronger isolation, enable dynamic banks:
+
+```json
+{
+  "dynamicBankId": true,
+  "dynamicBankGranularity": ["agent", "project"],
+  "agentName": "pi",
+  "resolveWorktrees": true
+}
+```
+
+This follows Hindsight's official coding-agent convention and produces `<agent>::<project>`. Project identity comes from Git's common directory, so linked worktrees share one stable bank. Outside Git it falls back to the working-directory basename. Because project identity is a basename, unrelated repositories with the same directory name would share a bank; use `directoryBankMap` to disambiguate them. A map entry overrides both static and dynamic selection; `bankIdPrefix` applies afterward. Session identity comes from Pi, while channel and user identity require `HINDSIGHT_CHANNEL_ID` and `HINDSIGHT_USER_ID`. Missing or unsafe fields fail closed rather than silently creating an unintended bank.
+
+Every new ID creates a new empty bank; switching strategy does not migrate existing memories. `/tidy-memory status` reports the resolved bank. Do not mix coding history, personal assistant conversations, medical information, and arbitrary web chat in one bank.
 
 The package's manual tools accept tags. When tags are supplied to recall or reflect, the Hindsight adapter uses `all_strict`: every requested tag must be present and untagged memories are excluded. This makes tag-scoped reads conservative rather than inheriting Hindsight's untagged-inclusive default.
 

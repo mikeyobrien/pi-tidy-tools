@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { DYNAMIC_BANK_FIELDS, type DynamicBankField } from "./bank.js";
 import type { MemoryBudget } from "./types.js";
 
 export const MEMORY_CONFIG_VERSION = 1 as const;
@@ -11,6 +12,12 @@ export interface HindsightBackendConfig {
   type: "hindsight";
   baseUrl: string;
   bankId: string;
+  dynamicBankId?: boolean;
+  dynamicBankGranularity?: DynamicBankField[];
+  bankIdPrefix?: string;
+  agentName?: string;
+  resolveWorktrees?: boolean;
+  directoryBankMap?: Record<string, string>;
   apiKeyEnv?: string;
   envFile?: string;
   recallBudget?: MemoryBudget;
@@ -45,6 +52,8 @@ export interface ConfigLoadResult {
 
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const BANK_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const BANK_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const DYNAMIC_BANK_FIELD_SET = new Set<string>(DYNAMIC_BANK_FIELDS);
 const BUDGETS = new Set<MemoryBudget>(["low", "mid", "high"]);
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -84,6 +93,44 @@ function parseBaseUrl(value: unknown): string {
   return url.toString().replace(/\/$/, "");
 }
 
+function parseDynamicBankGranularity(value: unknown): DynamicBankField[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error("backend.dynamicBankGranularity must be a non-empty array");
+  }
+  const fields = value.filter(
+    (field): field is DynamicBankField =>
+      typeof field === "string" && DYNAMIC_BANK_FIELD_SET.has(field)
+  );
+  if (
+    fields.length !== value.length ||
+    new Set(fields).size !== fields.length
+  ) {
+    throw new Error(
+      "backend.dynamicBankGranularity must contain unique agent, project, session, channel, or user fields"
+    );
+  }
+  return fields;
+}
+
+function parseDirectoryBankMap(value: unknown): Record<string, string> {
+  if (!object(value))
+    throw new Error("backend.directoryBankMap must be an object");
+  const entries = Object.entries(value);
+  const result: Record<string, string> = {};
+  for (const [directory, bankId] of entries) {
+    if (!isAbsolute(directory)) {
+      throw new Error("backend.directoryBankMap keys must be absolute paths");
+    }
+    if (typeof bankId !== "string" || !BANK_ID.test(bankId)) {
+      throw new Error(
+        "backend.directoryBankMap values must be 1-128 safe identifier characters"
+      );
+    }
+    result[resolve(directory)] = bankId;
+  }
+  return result;
+}
+
 function parseHindsight(value: unknown): HindsightBackendConfig {
   if (!object(value) || value.type !== "hindsight") {
     throw new Error("backend.type must be hindsight");
@@ -119,6 +166,43 @@ function parseHindsight(value: unknown): HindsightBackendConfig {
       "authenticated Hindsight requires HTTPS except on loopback"
     );
   }
+  if (
+    value.dynamicBankId !== undefined &&
+    typeof value.dynamicBankId !== "boolean"
+  ) {
+    throw new Error("backend.dynamicBankId must be a boolean");
+  }
+  if (
+    value.bankIdPrefix !== undefined &&
+    (typeof value.bankIdPrefix !== "string" ||
+      !BANK_SEGMENT.test(value.bankIdPrefix))
+  ) {
+    throw new Error(
+      "backend.bankIdPrefix must be 1-64 safe identifier characters"
+    );
+  }
+  if (
+    value.agentName !== undefined &&
+    (typeof value.agentName !== "string" || !BANK_SEGMENT.test(value.agentName))
+  ) {
+    throw new Error(
+      "backend.agentName must be 1-64 safe identifier characters"
+    );
+  }
+  if (
+    value.resolveWorktrees !== undefined &&
+    typeof value.resolveWorktrees !== "boolean"
+  ) {
+    throw new Error("backend.resolveWorktrees must be a boolean");
+  }
+  const dynamicBankGranularity =
+    value.dynamicBankGranularity === undefined
+      ? undefined
+      : parseDynamicBankGranularity(value.dynamicBankGranularity);
+  const directoryBankMap =
+    value.directoryBankMap === undefined
+      ? undefined
+      : parseDirectoryBankMap(value.directoryBankMap);
   const recallBudget =
     typeof value.recallBudget === "string" &&
     BUDGETS.has(value.recallBudget as MemoryBudget)
@@ -134,6 +218,14 @@ function parseHindsight(value: unknown): HindsightBackendConfig {
     type: "hindsight",
     baseUrl,
     bankId: value.bankId,
+    ...(value.dynamicBankId ? { dynamicBankId: true } : {}),
+    ...(dynamicBankGranularity ? { dynamicBankGranularity } : {}),
+    ...(value.bankIdPrefix ? { bankIdPrefix: value.bankIdPrefix } : {}),
+    ...(value.agentName ? { agentName: value.agentName } : {}),
+    ...(value.resolveWorktrees !== undefined
+      ? { resolveWorktrees: value.resolveWorktrees }
+      : {}),
+    ...(directoryBankMap ? { directoryBankMap } : {}),
     ...(value.apiKeyEnv ? { apiKeyEnv: value.apiKeyEnv } : {}),
     ...(value.envFile ? { envFile: value.envFile } : {}),
     recallBudget,
@@ -239,7 +331,8 @@ export function resolveApiKey(
 
 export function sanitizedConfigSummary(
   result: ConfigLoadResult,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  activeBankId?: string
 ): string {
   if (!result.config)
     return `disabled (${result.error ?? "not configured"}) at ${result.path}`;
@@ -263,7 +356,8 @@ export function sanitizedConfigSummary(
   return [
     `${config.enabled ? "enabled" : "disabled"} backend=${backend.type}`,
     `host=${new URL(backend.baseUrl).host}`,
-    `bank=${backend.bankId}`,
+    `bank=${activeBankId ?? backend.bankId}`,
+    ...(backend.dynamicBankId ? ["scope=dynamic"] : []),
     `auth=${auth}`,
     `autoRecall=${config.lifecycle.autoRecall}`,
     `autoRetain=${config.lifecycle.autoRetain}`,

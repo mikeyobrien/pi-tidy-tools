@@ -45,6 +45,10 @@ Create `~/.pi/agent/pi-tidy-memory/config.json`:
     "type": "hindsight",
     "baseUrl": "https://hindsight-api.example.com",
     "bankId": "pi-coding",
+    "dynamicBankId": true,
+    "dynamicBankGranularity": ["agent", "project"],
+    "agentName": "pi",
+    "resolveWorktrees": true,
     "apiKeyEnv": "HINDSIGHT_API_KEY",
     "envFile": "~/.config/hindsight/homelab.env",
     "recallBudget": "mid",
@@ -62,6 +66,10 @@ Create `~/.pi/agent/pi-tidy-memory/config.json`:
 ```
 
 `apiKeyEnv` names the credential variable. The package checks the process environment first, then the optional `envFile`. It never prints the credential. Inline `apiKey`, `token`, and custom headers are rejected.
+
+`dynamicBankId` follows Hindsight's coding-agent convention. The fields in `dynamicBankGranularity` are joined with `::`; the example resolves to `pi::<project>`. Supported fields are `agent`, `project`, `session`, `channel`, and `user`. Project identity uses the Git repository name, and linked worktrees share the main repository bank by default. Unrelated repositories with the same directory name need `directoryBankMap` overrides to avoid sharing a bank. `bankId` remains the static fallback when dynamic mode is off. Optional `bankIdPrefix` namespaces every resolved bank, while `directoryBankMap` can bind absolute directories to explicit bank IDs. Channel and user fields come from `HINDSIGHT_CHANNEL_ID` and `HINDSIGHT_USER_ID`; session comes from Pi's active session.
+
+A newly resolved ID creates a new empty Hindsight bank. Existing static-bank memories are not moved automatically. Confirm the active value with `/tidy-memory status` before retaining data.
 
 Reload Pi after changing the file:
 

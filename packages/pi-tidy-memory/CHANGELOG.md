@@ -7,3 +7,4 @@
 - Add compact `recall`, `retain`, and `reflect` tools.
 - Add optional automatic recall and retain lifecycle hooks, disabled by default.
 - Add `/tidy-memory status` and `/tidy-memory check` diagnostics.
+- Add Hindsight-compatible dynamic bank IDs with project, agent, session, channel, and user granularity, stable Git worktree resolution, prefixes, and directory overrides.

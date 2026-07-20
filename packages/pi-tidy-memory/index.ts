@@ -2,9 +2,15 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Container } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
+  HindsightBankResolver,
+  type BankResolverDependencies,
+} from "./bank.js";
+import {
   loadMemoryConfig,
   sanitizedConfigSummary,
   type ConfigLoadResult,
+  type HindsightBackendConfig,
+  type MemoryConfig,
 } from "./config.js";
 import { MemoryToolComponent, type MemoryToolDetails } from "./render.js";
 import {
@@ -26,6 +32,13 @@ export {
   HindsightBackend,
   createHindsightFactory,
 } from "./backends/hindsight.js";
+export { DYNAMIC_BANK_FIELDS, HindsightBankResolver } from "./bank.js";
+export type {
+  BankResolution,
+  BankResolutionContext,
+  BankResolverDependencies,
+  DynamicBankField,
+} from "./bank.js";
 export { MemoryRuntime, memoryContext } from "./runtime.js";
 export type * from "./types.js";
 
@@ -60,7 +73,8 @@ function callRenderer(operation: "recall" | "retain" | "reflect") {
       : new Container();
 }
 
-export interface MemoryExtensionDependencies extends RuntimeDependencies {
+export interface MemoryExtensionDependencies
+  extends RuntimeDependencies, BankResolverDependencies {
   configResult?: ConfigLoadResult;
 }
 
@@ -69,21 +83,61 @@ export function createMemoryExtension(
 ) {
   return function memoryExtension(pi: ExtensionAPI): void {
     const loaded = dependencies.configResult ?? loadMemoryConfig();
-    let runtime: MemoryRuntime | undefined;
+    const runtimes = new Map<string, MemoryRuntime>();
     let startupError = loaded.error;
-    if (loaded.config?.enabled) {
+    let bankResolver: HindsightBankResolver | undefined;
+
+    const configured = loaded.config?.enabled ? loaded.config : undefined;
+    if (configured) {
       try {
-        runtime = new MemoryRuntime(loaded.config, dependencies);
+        if (configured.backend.type === "hindsight") {
+          bankResolver = new HindsightBankResolver(
+            configured.backend as HindsightBackendConfig,
+            dependencies
+          );
+        }
+        const supported = dependencies.factories
+          ? dependencies.factories.some(
+              (factory) => factory.type === configured.backend.type
+            )
+          : configured.backend.type === "hindsight";
+        if (!supported) {
+          throw new Error(
+            `Unsupported memory backend: ${configured.backend.type}`
+          );
+        }
       } catch (error) {
         startupError = error instanceof Error ? error.message : String(error);
       }
     }
 
-    const requireRuntime = (): MemoryRuntime => {
-      if (!runtime)
+    const sessionId = (ctx?: any): string | undefined =>
+      ctx?.sessionManager?.getSessionId?.();
+
+    const activeBank = (ctx?: any) =>
+      bankResolver?.resolve({ sessionId: sessionId(ctx) });
+
+    const requireRuntime = (ctx?: any): MemoryRuntime => {
+      if (!configured || startupError) {
         throw new Error(
           `pi-tidy-memory is unavailable: ${startupError ?? "disabled"}. Configure ${loaded.path}, then /reload.`
         );
+      }
+      const resolution = activeBank(ctx);
+      const key = resolution?.bankId ?? "__default__";
+      const existing = runtimes.get(key);
+      if (existing) return existing;
+      const runtimeConfig: MemoryConfig = resolution
+        ? {
+            ...configured,
+            backend: {
+              ...(configured.backend as HindsightBackendConfig),
+              bankId: resolution.bankId,
+            },
+          }
+        : configured;
+      const runtime = new MemoryRuntime(runtimeConfig, dependencies);
+      runtimes.set(key, runtime);
       return runtime;
     };
 
@@ -100,19 +154,40 @@ export function createMemoryExtension(
           ctx.ui.notify("Usage: /tidy-memory [status|check]", "warning");
           return;
         }
-        const summary = sanitizedConfigSummary(
+        let summary = sanitizedConfigSummary(
           loaded,
           dependencies.env ?? process.env
         );
-        if (action === "status" || !runtime) {
+        try {
+          const resolution = activeBank(ctx);
+          if (resolution) {
+            summary = sanitizedConfigSummary(
+              loaded,
+              dependencies.env ?? process.env,
+              resolution.bankId
+            );
+          }
+        } catch (error) {
+          summary = sanitizedConfigSummary(
+            loaded,
+            dependencies.env ?? process.env,
+            "<unresolved>"
+          );
+          ctx.ui.notify(
+            `${summary}\nerror=${error instanceof Error ? error.message : String(error)}`,
+            "warning"
+          );
+          return;
+        }
+        if (action === "status" || !configured || startupError) {
           ctx.ui.notify(
             `${summary}${startupError && loaded.config ? `\nerror=${startupError}` : ""}`,
-            runtime ? "info" : "warning"
+            configured && !startupError ? "info" : "warning"
           );
           return;
         }
         try {
-          const health = await runtime.health();
+          const health = await requireRuntime(ctx).health();
           ctx.ui.notify(
             `${summary}\nhealth=${health.ok ? "ok" : "failed"} ${health.message}`,
             health.ok ? "info" : "warning"
@@ -152,8 +227,8 @@ export function createMemoryExtension(
           })
         ),
       }),
-      execute: async (_toolCallId, params, signal) => {
-        const output = await requireRuntime().recall(params, signal);
+      execute: async (_toolCallId, params, signal, _onUpdate, ctx) => {
+        const output = await requireRuntime(ctx).recall(params, signal);
         return {
           content: [{ type: "text", text: toolRecallText(output.memories) }],
           details: {
@@ -199,7 +274,7 @@ export function createMemoryExtension(
       }),
       execute: async (toolCallId, params, signal, _onUpdate, ctx) => {
         const sessionId = ctx.sessionManager.getSessionId();
-        const output = await requireRuntime().retain(
+        const output = await requireRuntime(ctx).retain(
           {
             ...params,
             documentId: `pi-tool:${sessionId}:${toolCallId}`,
@@ -248,8 +323,8 @@ export function createMemoryExtension(
           })
         ),
       }),
-      execute: async (_toolCallId, params, signal) => {
-        const output = await requireRuntime().reflect(params, signal);
+      execute: async (_toolCallId, params, signal, _onUpdate, ctx) => {
+        const output = await requireRuntime(ctx).reflect(params, signal);
         return {
           content: [{ type: "text", text: toolReflectText(output.text) }],
           details: {
@@ -264,18 +339,27 @@ export function createMemoryExtension(
       renderResult: resultRenderer("reflect"),
     });
 
-    if (!runtime || !loaded.config) return;
-    const config = loaded.config;
-    const lifecycleController = new AbortController();
+    if (!configured || startupError) return;
+    const config = configured;
+    let lifecycleController = new AbortController();
     let activeRecallContext = "";
     let warnedRecall = false;
     let warnedRetain = false;
+
+    pi.on("session_start", () => {
+      if (lifecycleController.signal.aborted) {
+        lifecycleController = new AbortController();
+      }
+      activeRecallContext = "";
+      warnedRecall = false;
+      warnedRetain = false;
+    });
 
     pi.on("before_agent_start", async (event, ctx) => {
       activeRecallContext = "";
       if (!config.lifecycle.autoRecall || !event.prompt.trim()) return;
       try {
-        const output = await runtime!.recall(
+        const output = await requireRuntime(ctx).recall(
           {
             query: event.prompt.slice(0, 4_000),
             maxTokens: config.lifecycle.maxRecallTokens,
@@ -321,7 +405,7 @@ export function createMemoryExtension(
         );
         if (!content) return;
         const sessionId = ctx.sessionManager.getSessionId();
-        await runtime!.retain(
+        await requireRuntime(ctx).retain(
           {
             content,
             context: `Pi session ${sessionId}`,
@@ -347,7 +431,10 @@ export function createMemoryExtension(
     pi.on("session_shutdown", async () => {
       lifecycleController.abort();
       activeRecallContext = "";
-      await runtime!.close();
+      await Promise.all(
+        [...runtimes.values()].map((runtime) => runtime.close())
+      );
+      runtimes.clear();
     });
   };
 }

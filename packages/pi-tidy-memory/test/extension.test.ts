@@ -83,7 +83,13 @@ test("registers backend-neutral tools command and lifecycle hooks", () => {
   assert.deepEqual([...registered.commands.keys()], ["tidy-memory"]);
   assert.deepEqual(
     [...registered.events.keys()],
-    ["before_agent_start", "context", "agent_settled", "session_shutdown"]
+    [
+      "session_start",
+      "before_agent_start",
+      "context",
+      "agent_settled",
+      "session_shutdown",
+    ]
   );
   for (const tool of registered.tools.values())
     assert.equal(tool.renderShell, "self");
@@ -499,4 +505,157 @@ test("status and health commands are useful without exposing credentials", async
     level: "info",
   });
   assert.deepEqual(calls.at(-1), { op: "health" });
+});
+
+test("dynamic banks bind operations and diagnostics to the active session scope", async () => {
+  const bankIds: string[] = [];
+  const operations: string[] = [];
+  const factory: BackendFactory = {
+    type: "hindsight",
+    create(value) {
+      bankIds.push((value as any).bankId);
+      return {
+        type: "fake",
+        label: "Fake",
+        capabilities: new Set(["health", "recall", "retain", "reflect"]),
+        async health() {
+          operations.push(`health:${(value as any).bankId}`);
+          return { ok: true, message: "ok" };
+        },
+        async recall() {
+          operations.push(`recall:${(value as any).bankId}`);
+          return { memories: [] };
+        },
+        async retain() {
+          return { accepted: 1, deferred: false };
+        },
+        async reflect() {
+          return { text: "ok" };
+        },
+      };
+    },
+  };
+  const dynamicConfig = {
+    ...config,
+    backend: {
+      ...config.backend,
+      dynamicBankId: true,
+      dynamicBankGranularity: ["agent", "project", "session"] as const,
+      bankIdPrefix: "prod",
+      agentName: "pi",
+    },
+    lifecycle: { ...config.lifecycle, autoRecall: false, autoRetain: false },
+  };
+  const tools = new Map<string, any>();
+  const commands = new Map<string, any>();
+  createMemoryExtension({
+    configResult: {
+      config: dynamicConfig as any,
+      path: "/agent/pi-tidy-memory/config.json",
+    },
+    factories: [factory],
+    cwd: "/work/pi-tidy-tools",
+    git: () => undefined,
+    env: {},
+  })({
+    registerTool(tool: any) {
+      tools.set(tool.name, tool);
+    },
+    registerCommand(name: string, command: any) {
+      commands.set(name, command);
+    },
+    on() {},
+  } as any);
+
+  const contextFor = (id: string, notes: string[] = []) => ({
+    sessionManager: { getSessionId: () => id },
+    ui: { notify: (message: string) => notes.push(message) },
+  });
+  await tools
+    .get("recall")
+    .execute("r1", { query: "one" }, undefined, undefined, contextFor("s1"));
+  await tools
+    .get("recall")
+    .execute("r2", { query: "two" }, undefined, undefined, contextFor("s1"));
+  await tools
+    .get("recall")
+    .execute("r3", { query: "three" }, undefined, undefined, contextFor("s2"));
+  assert.deepEqual(bankIds, [
+    "prod::pi::pi-tidy-tools::s1",
+    "prod::pi::pi-tidy-tools::s2",
+  ]);
+  assert.deepEqual(operations, [
+    "recall:prod::pi::pi-tidy-tools::s1",
+    "recall:prod::pi::pi-tidy-tools::s1",
+    "recall:prod::pi::pi-tidy-tools::s2",
+  ]);
+
+  const notes: string[] = [];
+  await commands.get("tidy-memory").handler("status", contextFor("s2", notes));
+  assert.equal(
+    notes[0],
+    "enabled backend=hindsight host=memory.example.test bank=prod::pi::pi-tidy-tools::s2 scope=dynamic auth=none autoRecall=false autoRetain=false"
+  );
+});
+
+test("session restart reopens runtimes and resets automatic recall cancellation", async () => {
+  const { events, calls } = setup();
+  await events.get("before_agent_start")({ prompt: "first" }, context);
+  await events.get("session_shutdown")({}, context);
+  await events.get("session_start")({}, context);
+  await events.get("before_agent_start")({ prompt: "second" }, context);
+  assert.deepEqual(
+    calls.map((call) => call.op),
+    ["recall", "close", "recall"]
+  );
+});
+
+test("dynamic status reports an unresolved bank instead of the static fallback", async () => {
+  const commands = new Map<string, any>();
+  createMemoryExtension({
+    configResult: {
+      config: {
+        ...config,
+        backend: {
+          ...config.backend,
+          dynamicBankId: true,
+          dynamicBankGranularity: ["channel"],
+        },
+      } as any,
+      path: "/agent/pi-tidy-memory/config.json",
+    },
+    factories: [
+      {
+        type: "hindsight",
+        create() {
+          throw new Error("must not create a runtime for unresolved status");
+        },
+      },
+    ],
+    cwd: "/work/pi-tidy-tools",
+    git: () => undefined,
+    env: {},
+  })({
+    registerTool() {},
+    registerCommand(name: string, command: any) {
+      commands.set(name, command);
+    },
+    on() {},
+  } as any);
+  const notes: Array<[string, string]> = [];
+  await commands.get("tidy-memory").handler("status", {
+    sessionManager: { getSessionId: () => "session-1" },
+    ui: {
+      notify(message: string, level: string) {
+        notes.push([message, level]);
+      },
+    },
+  });
+  assert.deepEqual(notes, [
+    [
+      "enabled backend=hindsight host=memory.example.test bank=<unresolved> scope=dynamic auth=none autoRecall=true autoRetain=true\n" +
+        "error=dynamic bank field channel is unavailable; configure HINDSIGHT_CHANNEL_ID or remove it from backend.dynamicBankGranularity",
+      "warning",
+    ],
+  ]);
 });

@@ -63,7 +63,7 @@ When enabled, the package waits for `agent_settled`. It reads Pi's settled sessi
 
 The extractor keeps only the latest user and assistant text. It excludes assistant messages whose final `stopReason` is `error` or `aborted`, along with tool calls, tool results, custom recall messages, images, and abandoned low-level runs. A stable document ID derived from the session and content makes retries idempotent.
 
-This is best-effort retention, not an offline queue. A failed retain is reported once during the session and is not replayed after restart.
+The supported single-user profile uses synchronous Hindsight retention. It is still best-effort delivery, not an offline queue: a failed retain is reported once during the session and is not retried or replayed after restart. There is no outbox, polling worker, or recovery service.
 
 ## Trust boundaries
 
@@ -111,6 +111,6 @@ Pre-aborted requests never reach the backend. Active requests honor cancellation
 - External memory is not rolled back when a Pi branch or session is deleted.
 - Automatic retention does not classify durability, PII, or every possible secret.
 - A typo in a bank ID can create a separate Hindsight bank.
-- Async Hindsight retain receipts are accepted but not polled by this package.
+- Async Hindsight retain receipts remain adapter-compatible for other deployments but are not polled; the supported `mobrienv` profile uses synchronous retention.
 - Project isolation is determined by bank and tag configuration, not inferred automatically.
 - Dynamic discovery of third-party adapter packages is not implemented. Adapters are passed explicitly through the factory API.

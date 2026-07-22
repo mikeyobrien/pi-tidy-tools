@@ -2,24 +2,18 @@
 
 Long-term memory for [Pi](https://github.com/earendil-works/pi), with a small backend interface and compact tool output. Hindsight is the first backend. More backends can be added without changing the tools or Pi lifecycle code.
 
-> **Experimental.** This package is on `main` in [pi-tidy-tools](https://github.com/mikeyobrien/pi-tidy-tools) but is **not published to npm yet**. Tool schemas, config, and adapters may still change before a first release. Prefer a local checkout install and pin to a known commit if you rely on it day to day.
+> **Experimental.** This package is **not published to npm yet**. The supported day-to-day installation is the immutable source revision below; do not install the moving `main` branch.
 
 ## Install
 
-Install the monorepo with Pi's git installer, then install this package directory from that clone:
+Install the pinned monorepo revision with Pi's git installer, then install this package directory from that clone:
 
 ```bash
-pi install git:github.com/mikeyobrien/pi-tidy-tools@main
+pi install git:github.com/mikeyobrien/pi-tidy-tools@752048a5788143e8f45ae2d59a976d5904362548
 pi install ~/.pi/agent/git/github.com/mikeyobrien/pi-tidy-tools/packages/pi-tidy-memory
 ```
 
-Other accepted git forms:
-
-```bash
-pi install https://github.com/mikeyobrien/pi-tidy-tools@main
-pi install git:git@github.com:mikeyobrien/pi-tidy-tools@main
-pi install git:github.com/mikeyobrien/pi-tidy-tools@<commit>   # pin experimental builds
-```
+The full 40-character commit is intentional. `/tidy-memory status` reports the package version and checked-out source revision so the running installation can be compared with this pin.
 
 From an existing local checkout of this repository:
 
@@ -44,16 +38,13 @@ Create `~/.pi/agent/pi-tidy-memory/config.json`:
   "backend": {
     "type": "hindsight",
     "baseUrl": "https://hindsight-api.example.com",
-    "bankId": "pi-coding",
-    "dynamicBankId": true,
-    "dynamicBankGranularity": ["agent", "project"],
-    "agentName": "pi",
-    "resolveWorktrees": true,
+    "bankId": "mobrienv",
+    "dynamicBankId": false,
     "apiKeyEnv": "HINDSIGHT_API_KEY",
     "envFile": "~/.config/hindsight/homelab.env",
     "recallBudget": "mid",
     "recallTypes": ["observation", "world", "experience"],
-    "asyncRetain": true
+    "asyncRetain": false
   },
   "requestTimeoutMs": 15000,
   "lifecycle": {
@@ -69,9 +60,9 @@ Create `~/.pi/agent/pi-tidy-memory/config.json`:
 
 Configuration is strict: boolean fields must be JSON booleans, and unknown keys in the top-level, lifecycle, and Hindsight backend objects are rejected instead of being silently ignored.
 
-`dynamicBankId` follows Hindsight's coding-agent convention. The fields in `dynamicBankGranularity` are joined with `::`; the example resolves to `pi::<project>`. Supported fields are `agent`, `project`, `session`, `channel`, and `user`. Project identity uses the Git repository name, and linked worktrees share the main repository bank by default. Unrelated repositories with the same directory name need `directoryBankMap` overrides to avoid sharing a bank. `bankId` remains the static fallback when dynamic mode is off. Optional `bankIdPrefix` namespaces every resolved bank, while `directoryBankMap` can bind absolute directories to explicit bank IDs. Channel and user fields come from `HINDSIGHT_CHANNEL_ID` and `HINDSIGHT_USER_ID`; session comes from Pi's active session.
+This integration intentionally uses the single static bank `mobrienv` with `dynamicBankId: false`. Do not add a prefix, granularity, or directory map: changing the resolved ID creates or selects another Hindsight bank rather than migrating the existing one. Confirm `bank=mobrienv` with `/tidy-memory status` before retaining data.
 
-A newly resolved ID creates a new empty Hindsight bank. Existing static-bank memories are not moved automatically. Confirm the active value with `/tidy-memory status` before retaining data.
+Synchronous retention is also intentional. A successful `retain` result means Hindsight completed the request; pi-tidy-memory does not operate an outbox, poll operation receipts, replay writes after restart, or run a retry service.
 
 Reload Pi after changing the file:
 
@@ -101,12 +92,21 @@ Both switches default to `false`. A shared runtime guard blocks common token, cr
 /tidy-memory check
 ```
 
-Status shows the backend, host, bank, credential-variable presence, and lifecycle switches. Check performs an authenticated `GET` against the active bank's memory-list endpoint with `limit=0`; it returns no memory content and writes nothing. Neither command reveals credentials.
+Status shows the package version, source revision when installed from Git, backend, host, bank, credential-variable presence, and lifecycle switches. Check performs an authenticated `GET` against the active bank's memory-list endpoint with `limit=0`; it returns no memory content and writes nothing. Neither command reveals credentials.
+
+Packed artifacts expose one dependency-light smoke path:
+
+```bash
+npm run smoke
+```
+
+Run it from the root of an extracted or installed `@mobrienv/pi-tidy-memory` tarball. It verifies the package identity, native Pi adapter entry, shipped source/build files, and revision-status contract without requiring publication or a copy of the monorepo test environment. It does not contact Hindsight or write memory; use `/tidy-memory check` for authenticated read-only integration verification.
 
 ## Documentation
 
 - [Architecture and safety](docs/architecture.md) covers the backend seam, ephemeral recall, settled-branch retention, trust boundaries, cancellation, output limits, and failure behavior.
-- [Backend guide](docs/backends.md) covers complete Hindsight configuration, bank strategy, async retention, package selection, and implementing another adapter.
+- [Backend guide](docs/backends.md) covers complete Hindsight configuration, bank strategy, retention execution, package selection, and implementing another adapter.
+- [Operations](docs/operations.md) covers pinned upgrades, credential-rotation restarts, verification, and rollback.
 
 The interface is intentionally narrow. Bank administration, deletion, migration, and queue management remain backend-specific operational tasks rather than model-facing tools.
 

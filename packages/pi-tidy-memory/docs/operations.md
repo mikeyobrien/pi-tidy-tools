@@ -7,13 +7,13 @@ This guide is for the supported single-user installation: native Pi adapter, one
 The current immutable source pin is:
 
 ```text
-752048a5788143e8f45ae2d59a976d5904362548
+069c46fd63a37343e34f758dab7055a85a3ae452
 ```
 
 Install it through Pi, then register the package directory from Pi's managed Git checkout:
 
 ```bash
-pi install git:github.com/mikeyobrien/pi-tidy-tools@752048a5788143e8f45ae2d59a976d5904362548
+pi install git:github.com/mikeyobrien/pi-tidy-tools@069c46fd63a37343e34f758dab7055a85a3ae452
 pi install ~/.pi/agent/git/github.com/mikeyobrien/pi-tidy-tools/packages/pi-tidy-memory
 ```
 
@@ -27,7 +27,7 @@ After Pi starts, run:
 Require all of the following before use:
 
 - status reports `package=@mobrienv/pi-tidy-memory@0.1.0`;
-- status reports `source=752048a5788143e8f45ae2d59a976d5904362548` for the managed Git install;
+- status reports `source=069c46fd63a37343e34f758dab7055a85a3ae452` for the managed Git install;
 - status reports `bank=mobrienv`, never a derived or prefixed bank;
 - status reports the credential variable as present without printing its value;
 - check reports authenticated read access.
@@ -71,7 +71,7 @@ Rollback means resetting the managed source checkout to the last known-good full
 2. Reinstall the known-good baseline:
 
    ```bash
-   pi install git:github.com/mikeyobrien/pi-tidy-tools@752048a5788143e8f45ae2d59a976d5904362548
+   pi install git:github.com/mikeyobrien/pi-tidy-tools@069c46fd63a37343e34f758dab7055a85a3ae452
    ```
 
 3. Restore the prior config only if the failed upgrade changed it. Preserve `bankId: "mobrienv"`, `dynamicBankId: false`, and `asyncRetain: false`.

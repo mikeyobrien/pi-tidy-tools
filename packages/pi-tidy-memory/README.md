@@ -9,7 +9,7 @@ Long-term memory for [Pi](https://github.com/earendil-works/pi), with a small ba
 Install the pinned monorepo revision with Pi's git installer, then install this package directory from that clone:
 
 ```bash
-pi install git:github.com/mikeyobrien/pi-tidy-tools@752048a5788143e8f45ae2d59a976d5904362548
+pi install git:github.com/mikeyobrien/pi-tidy-tools@069c46fd63a37343e34f758dab7055a85a3ae452
 pi install ~/.pi/agent/git/github.com/mikeyobrien/pi-tidy-tools/packages/pi-tidy-memory
 ```
 

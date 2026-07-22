@@ -21,6 +21,32 @@ function client(fetch: typeof globalThis.fetch, timeoutMs = 30) {
 const json = (value: unknown, status = 200, headers?: HeadersInit) =>
   new Response(JSON.stringify(value), { status, headers });
 
+test("defaults direct Hindsight retains to synchronous processing", async () => {
+  let requestBody: Record<string, unknown> | undefined;
+  const backend = new HindsightBackend({
+    config: {
+      type: "hindsight",
+      baseUrl: "https://memory.example.test",
+      bankId: "bank",
+    },
+    fetch: async (_url, init) => {
+      requestBody = JSON.parse(String(init?.body));
+      return json({
+        success: true,
+        bank_id: "bank",
+        items_count: 1,
+        async: false,
+      });
+    },
+    env: {},
+    timeoutMs: 30,
+  });
+
+  await backend.retain({ content: "durable fact" });
+
+  assert.equal(requestBody?.async, false);
+});
+
 test("normalizes optional memory fields and explicit request options", async () => {
   const bodies: any[] = [];
   const fake = (async (input, init) => {
@@ -108,15 +134,7 @@ test("normalizes optional memory fields and explicit request options", async () 
   });
 });
 
-test("normalizes unhealthy, endpoint, JSON, size, and timeout failures", async () => {
-  assert.deepEqual(
-    await client((async () =>
-      json({
-        status: "unhealthy",
-        database: "error",
-      })) as typeof globalThis.fetch).health(),
-    { ok: false, message: "unhealthy" }
-  );
+test("normalizes bank endpoint, JSON, size, and timeout failures", async () => {
   await assert.rejects(
     () =>
       client(
@@ -221,13 +239,13 @@ test("response streams stop at the byte limit and release cancellation", async (
 
   const atLimit = client(
     (async () =>
-      new Response('{"status":"healthy"}', {
+      new Response('{"items":[],"total":0,"limit":0,"offset":0}', {
         headers: { "content-length": "2000000" },
       })) as typeof globalThis.fetch
   );
   assert.deepEqual(await atLimit.health(), {
     ok: true,
-    message: "healthy; database connected",
+    message: "bank readable; 0 memories",
   });
 
   await assert.rejects(
@@ -239,20 +257,22 @@ test("response streams stop at the byte limit and release cancellation", async (
   );
 });
 
-test("health and retain validate every required response field", async () => {
-  assert.deepEqual(
-    await client((async () =>
-      json({
-        status: "healthy",
-        database: "disconnected",
-      })) as typeof globalThis.fetch).health(),
-    { ok: false, message: "healthy" }
-  );
-  assert.deepEqual(
-    await client((async () =>
-      json({ status: "degraded" })) as typeof globalThis.fetch).health(),
-    { ok: false, message: "degraded" }
-  );
+test("bank access check and retain validate every required response field", async () => {
+  for (const response of [
+    null,
+    {},
+    { items: null, total: 0, limit: 0, offset: 0 },
+    { items: [], total: "0", limit: 0, offset: 0 },
+    { items: [], total: 0, limit: "0", offset: 0 },
+    { items: [], total: 0, limit: 0, offset: "0" },
+  ]) {
+    await assert.rejects(
+      () =>
+        client((async () =>
+          json(response)) as typeof globalThis.fetch).health(),
+      /bank access check returned an invalid response/
+    );
+  }
 
   for (const response of [
     null,
@@ -276,7 +296,13 @@ test("factory constructs a working unauthenticated client", async () => {
   const factory = createHindsightFactory(100);
   const backend = factory.create(config, {
     env: {},
-    fetch: (async () => json({ status: "healthy" })) as typeof globalThis.fetch,
+    fetch: (async () =>
+      json({
+        items: [],
+        total: 0,
+        limit: 0,
+        offset: 0,
+      })) as typeof globalThis.fetch,
   });
   assert.equal(factory.type, "hindsight");
   assert.equal((await backend.health()).ok, true);

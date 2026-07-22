@@ -19,7 +19,7 @@
     ]
   },
   "scripts": {
-    "test": "npm test --workspaces --if-present && node scripts/test-pack.mjs",
+    "test": "npm test --workspaces --if-present && node --test scripts/test-embed-memory-revision.mjs scripts/test-publish-workflow.mjs && node scripts/test-pack.mjs",
     "check": "npm run check --workspaces --if-present",
     "test:pack": "node scripts/test-pack.mjs",
     "prepare": "husky",

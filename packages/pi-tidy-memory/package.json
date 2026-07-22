@@ -1,12 +1,15 @@
 {
   "name": "@mobrienv/pi-tidy-memory",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Compact, backend-neutral long-term memory for Pi, starting with Hindsight.",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "author": "Mikey O'Brien <m@mobrienv.dev>",
   "repository": {
     "type": "git",
-    "url": "https://github.com/mikeyobrien/pi-tidy-tools.git",
+    "url": "git+https://github.com/mikeyobrien/pi-tidy-tools.git",
     "directory": "packages/pi-tidy-memory"
   },
   "homepage": "https://github.com/mikeyobrien/pi-tidy-tools/tree/main/packages/pi-tidy-memory#readme",
@@ -36,8 +39,11 @@
     "bank.ts",
     "render.ts",
     "runtime.ts",
+    "revision.ts",
+    "source-revision.json",
     "types.ts",
     "backends/**/*.ts",
+    "scripts/smoke.mjs",
     "vendor/**/*.ts",
     "dist/**/*",
     "README.md",
@@ -51,11 +57,13 @@
     ]
   },
   "scripts": {
-    "pretest": "node ../../scripts/bundle-core.mjs .",
+    "revision:embed": "node ../../scripts/embed-memory-revision.mjs .",
+    "pretest": "node ../../scripts/bundle-core.mjs . && npm run revision:embed",
     "test": "node --import tsx --test test/*.test.ts",
-    "check": "node ../../scripts/bundle-core.mjs . && tsc --noEmit",
-    "prepack": "node ../../scripts/bundle-core.mjs . && node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
-    "test:coverage": "node ../../scripts/bundle-core.mjs . && c8 node --import tsx --test test/*.test.ts",
+    "check": "node ../../scripts/bundle-core.mjs . && npm run revision:embed && tsc --noEmit",
+    "prepack": "node ../../scripts/bundle-core.mjs . && npm run revision:embed && node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
+    "smoke": "node scripts/smoke.mjs",
+    "test:coverage": "node ../../scripts/bundle-core.mjs . && npm run revision:embed && c8 node --import tsx --test test/*.test.ts",
     "test:mutation": "stryker run"
   },
   "dependencies": {

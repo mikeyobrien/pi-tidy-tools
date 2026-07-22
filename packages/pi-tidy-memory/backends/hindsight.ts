@@ -190,21 +190,25 @@ export class HindsightBackend implements MemoryBackend {
 
   async health(signal?: AbortSignal): Promise<MemoryHealth> {
     const value = await this.request(
-      "/health",
+      this.bankPath("/memories/list?limit=0"),
       { method: "GET" },
-      "health check",
+      "bank access check",
       signal
     );
-    if (!object(value) || typeof value.status !== "string")
-      throw new Error("Hindsight health check returned an invalid response");
-    const ok =
-      value.status === "healthy" &&
-      (value.database === undefined || value.database === "connected");
+    if (
+      !object(value) ||
+      !Array.isArray(value.items) ||
+      !Number.isInteger(value.total) ||
+      !Number.isInteger(value.limit) ||
+      !Number.isInteger(value.offset)
+    ) {
+      throw new Error(
+        "Hindsight bank access check returned an invalid response"
+      );
+    }
     return {
-      ok,
-      message: ok
-        ? "healthy; database connected"
-        : (text(value.status) ?? "unhealthy"),
+      ok: true,
+      message: `bank readable; ${value.total} ${value.total === 1 ? "memory" : "memories"}`,
     };
   }
 
@@ -256,7 +260,7 @@ export class HindsightBackend implements MemoryBackend {
         method: "POST",
         body: JSON.stringify({
           items: [item],
-          async: this.options.config.asyncRetain ?? true,
+          async: this.options.config.asyncRetain ?? false,
         }),
       },
       "retain",

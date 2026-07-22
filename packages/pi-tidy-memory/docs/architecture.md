@@ -19,10 +19,15 @@ Pi tools and lifecycle hooks
 
 A backend implements four operations:
 
-- `health` checks whether the service is usable.
-- `recall` returns normalized memory records.
+- `health` checks whether the configured backend target is usable. Hindsight verifies authenticated access to the active bank with a zero-item read.
+- `recall` takes a natural-language query and returns normalized records.
 - `retain` accepts one durable item and returns a receipt.
 - `reflect` asks the backend to synthesize an answer from stored knowledge.
+
+All three tools also require a single-line model-facing `reasoning` phrase of at
+most 12 words and 64 characters. It drives the first line of the pi-tidy why/result
+card and is stripped before backend execution, so UI rationale never becomes
+memory content or protocol data.
 
 The tools and renderers never inspect backend response objects. This keeps protocol changes inside the adapter and allows another backend to use a database, local process, or remote API without changing the model-facing tool schemas.
 
@@ -38,7 +43,7 @@ retain
 reflect
 ```
 
-Manual retention is deliberately conservative. Its Pi prompt guidance permits retention only when the user asks to remember durable information or a standing policy requires it. Credentials, raw tool output, and transient conversation should not enter memory.
+Manual retention is deliberately conservative. Its Pi prompt guidance permits retention only when the user asks to remember durable information or a standing policy requires it. A backend-neutral runtime guard blocks obvious credential assignments, bearer tokens, known token prefixes, and private-key headers before a retain call reaches any adapter. Raw tool output and transient conversation should not enter memory.
 
 Recall and reflection output is historical evidence, not authority. The package labels it as untrusted and tells the model to verify consequential claims against the current task, repository, and user instructions.
 
@@ -61,29 +66,33 @@ Automatic retain is also off by default. It sends conversation text to the confi
 
 When enabled, the package waits for `agent_settled`. It reads Pi's settled session branch rather than a low-level `agent_end` event. This matters after retries and overflow compaction: the durable branch still contains the originating user prompt and final assistant response.
 
-The extractor keeps only the latest user and assistant text. It excludes tool calls, tool results, custom recall messages, images, and abandoned low-level runs. A stable document ID derived from the session and content makes retries idempotent.
+The extractor keeps only the latest user and assistant text. It excludes assistant messages whose final `stopReason` is `error` or `aborted`, along with tool calls, tool results, custom recall messages, images, and abandoned low-level runs. A stable document ID derived from the Pi session and persisted assistant-entry ID makes retries idempotent even if text normalization changes. Automatic retention skips malformed synthetic branches that do not have a persisted message identity.
 
-This is best-effort retention, not an offline queue. A failed retain is reported once during the session and is not replayed after restart.
+Every new write carries configured user, agent, canonical repository, and source metadata when present, plus the actual manual/automatic mode and active Pi session. Automatic writes use the originating user-message timestamp; manual writes preserve an explicit timestamp or use the current time.
+
+The supported single-user profile uses synchronous Hindsight retention. It is still best-effort delivery, not an offline queue: a failed retain is reported once during the session and is not retried or replayed after restart. There is no outbox, polling worker, or recovery service.
 
 ## Trust boundaries
 
 ### Recalled content
 
-Memory records are serialized as JSON Lines inside a marked block. Angle brackets in backend text are escaped, control sequences are removed, and space is reserved for the closing delimiter before any record is added. A record cannot close the wrapper by supplying `</long_term_memory>`.
+Memory records are serialized as JSON Lines inside a marked block. Each record may include a `provenance` object containing bounded context, occurrence time, tags, and metadata. Angle brackets in backend text are escaped, control sequences are removed, obvious credential-shaped values are redacted, and space is reserved for the closing delimiter before any record is added. A record cannot close the wrapper by supplying `</long_term_memory>`.
 
-The wrapper and reflection output are capped at 32,000 characters. Recall accepts at most 100 normalized records, and each record's text is capped at 8,000 characters.
+The wrapper and reflection output are capped at 32,000 characters. Recall accepts at most 100 normalized records, and each record's text is capped at 8,000 characters. Per record, provenance context is capped at 512 characters, occurrence time at 64 characters, tags at 16 × 128 characters, and metadata at 16 entries with 64-character keys and 512-character values.
 
 These measures reduce accidental prompt injection. They do not make backend content trustworthy. A model can still be influenced by hostile prose inside a quoted value, so current user instructions and repository evidence remain authoritative.
 
 ### Terminal output
 
-Backend-controlled memory text, memory kinds, reflection text, and operation IDs are stripped of C0/C1, CSI, and OSC sequences before rendering. This prevents stored content from changing the terminal title, emitting links, or attempting clipboard operations.
+Arguments, backend-controlled memory text, memory kinds, reflection text, errors, and operation IDs are stripped of C0/C1, CSI, and OSC sequences and passed through the same obvious-credential redactor before rendering. This prevents stored content from changing the terminal title, emitting links, attempting clipboard operations, or displaying common credential forms.
 
 ### Credentials
 
 Hindsight credentials are referenced by environment-variable name. The package checks the current process environment and then an optional protected env file. It rejects inline API keys, tokens, and custom authorization headers.
 
 Bearer credentials require HTTPS unless the destination is loopback (`localhost`, `127.0.0.1`, or `::1`). Status output reports only the variable name and whether a value was found.
+
+Manual and automatic retain calls share the same narrow obvious-credential detector. Retention blocks rather than redacts so the original content never reaches the backend; recall, reflection, and presentation redact common credential forms before display or model-facing output. This is defense in depth, not comprehensive secret or PII classification.
 
 ### Backend responses
 
@@ -107,8 +116,8 @@ Pre-aborted requests never reach the backend. Active requests honor cancellation
 ## Known limits
 
 - External memory is not rolled back when a Pi branch or session is deleted.
-- Automatic retention does not classify durability or detect every possible secret.
+- Automatic retention does not classify durability, PII, or every possible secret.
 - A typo in a bank ID can create a separate Hindsight bank.
-- Async Hindsight retain receipts are accepted but not polled by this package.
+- Async Hindsight retain receipts remain adapter-compatible for other deployments but are not polled; the supported single-user profile uses synchronous retention.
 - Project isolation is determined by bank and tag configuration, not inferred automatically.
 - Dynamic discovery of third-party adapter packages is not implemented. Adapters are passed explicitly through the factory API.

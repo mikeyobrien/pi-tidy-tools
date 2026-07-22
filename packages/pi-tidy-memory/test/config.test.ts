@@ -34,9 +34,46 @@ test("parses defaults and normalizes Hindsight configuration", () => {
     "world",
     "experience",
   ]);
-  assert.equal(config.backend.asyncRetain, true);
+  assert.equal(config.backend.asyncRetain, false);
   assert.equal(config.lifecycle.maxRecallTokens, 1_024);
   assert.equal(config.lifecycle.maxRetainChars, 16_000);
+});
+
+test("parses configurable provenance with safe generic defaults", () => {
+  const defaults = parseMemoryConfig(valid);
+  assert.deepEqual(defaults.provenance, {
+    agent: "pi",
+    source: "pi-tidy-memory",
+  });
+
+  const configured = parseMemoryConfig({
+    ...valid,
+    provenance: {
+      user: "mikeyobrien",
+      agent: "pi-coding-agent",
+      repository: "mikeyobrien/pi-tidy-tools",
+      source: "pi-tidy-memory/native",
+    },
+  });
+  assert.deepEqual(configured.provenance, {
+    user: "mikeyobrien",
+    agent: "pi-coding-agent",
+    repository: "mikeyobrien/pi-tidy-tools",
+    source: "pi-tidy-memory/native",
+  });
+});
+
+test("rejects malformed provenance and non-canonical repository identities", () => {
+  for (const provenance of [
+    null,
+    { user: "" },
+    { agent: "pi\nagent" },
+    { repository: "https://github.com/mikeyobrien/pi-tidy-tools" },
+    { repository: "group/subgroup/repository" },
+    { source: "x".repeat(129) },
+  ]) {
+    assert.throws(() => parseMemoryConfig({ ...valid, provenance }));
+  }
 });
 
 test("parses documented dynamic bank settings without changing static defaults", () => {
@@ -266,6 +303,57 @@ test("configuration errors identify the exact rejected contract", () => {
   }
 });
 
+test("rejects malformed boolean values instead of applying defaults", () => {
+  const cases: Array<[unknown, string]> = [
+    [{ ...valid, enabled: "yes" }, "config.enabled must be a boolean"],
+    [
+      { ...valid, backend: { ...valid.backend, asyncRetain: "yes" } },
+      "backend.asyncRetain must be a boolean",
+    ],
+    [
+      { ...valid, lifecycle: { ...valid.lifecycle, autoRecall: "yes" } },
+      "lifecycle.autoRecall must be a boolean",
+    ],
+    [
+      { ...valid, lifecycle: { ...valid.lifecycle, autoRetain: 1 } },
+      "lifecycle.autoRetain must be a boolean",
+    ],
+  ];
+  for (const [raw, message] of cases) {
+    assert.throws(() => parseMemoryConfig(raw), { name: "Error", message });
+  }
+});
+
+test("rejects unknown keys in known configuration objects", () => {
+  const cases: Array<[unknown, string]> = [
+    [{ ...valid, enabeld: true }, 'config contains unknown key "enabeld"'],
+    [
+      {
+        ...valid,
+        lifecycle: { ...valid.lifecycle, autoRacall: true },
+      },
+      'lifecycle contains unknown key "autoRacall"',
+    ],
+    [
+      {
+        ...valid,
+        backend: { ...valid.backend, recellBudget: "low" },
+      },
+      'backend contains unknown key "recellBudget"',
+    ],
+    [
+      {
+        ...valid,
+        provenance: { agent: "pi", source: "pi-tidy-memory", souce: "typo" },
+      },
+      'provenance contains unknown key "souce"',
+    ],
+  ];
+  for (const [raw, message] of cases) {
+    assert.throws(() => parseMemoryConfig(raw), { name: "Error", message });
+  }
+});
+
 test("configuration defaults and integer bounds are exact", () => {
   const defaults = parseMemoryConfig({
     version: 1,
@@ -284,8 +372,9 @@ test("configuration defaults and integer bounds are exact", () => {
       bankId: "bank:one",
       recallBudget: "mid",
       recallTypes: ["observation", "world", "experience"],
-      asyncRetain: true,
+      asyncRetain: false,
     },
+    provenance: { agent: "pi", source: "pi-tidy-memory" },
     requestTimeoutMs: 15_000,
     lifecycle: {
       autoRecall: false,
@@ -296,10 +385,8 @@ test("configuration defaults and integer bounds are exact", () => {
   });
   const bounded = parseMemoryConfig({
     ...valid,
-    enabled: "yes",
     requestTimeoutMs: 999,
     lifecycle: {
-      autoRecall: "yes",
       autoRetain: true,
       maxRecallTokens: 9_999,
       maxRetainChars: 255,

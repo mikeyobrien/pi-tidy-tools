@@ -101,7 +101,7 @@ function withPrefix(config: HindsightBackendConfig, bankId: string): string {
 export class HindsightBankResolver {
   private readonly cwd: string;
   private readonly env: NodeJS.ProcessEnv;
-  private readonly project: string;
+  private readonly project: string | undefined;
 
   constructor(
     private readonly config: HindsightBackendConfig,
@@ -109,8 +109,15 @@ export class HindsightBankResolver {
   ) {
     this.cwd = resolve(dependencies.cwd ?? process.cwd());
     this.env = dependencies.env ?? process.env;
-    const git = dependencies.git ?? defaultGit;
-    this.project = projectLabel(this.cwd, config.resolveWorktrees ?? true, git);
+    const dynamicFields = config.dynamicBankGranularity ?? ["agent", "project"];
+    if (config.dynamicBankId && dynamicFields.includes("project")) {
+      const git = dependencies.git ?? defaultGit;
+      this.project = projectLabel(
+        this.cwd,
+        config.resolveWorktrees ?? true,
+        git
+      );
+    }
   }
 
   resolve(context: BankResolutionContext = {}): BankResolution {

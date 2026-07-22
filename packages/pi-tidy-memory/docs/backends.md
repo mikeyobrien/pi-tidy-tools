@@ -15,16 +15,19 @@ Create `~/.pi/agent/pi-tidy-memory/config.json`:
   "backend": {
     "type": "hindsight",
     "baseUrl": "https://hindsight-api.example.com",
-    "bankId": "pi-coding",
-    "dynamicBankId": true,
-    "dynamicBankGranularity": ["agent", "project"],
-    "agentName": "pi",
-    "resolveWorktrees": true,
+    "bankId": "your-bank-id",
+    "dynamicBankId": false,
     "apiKeyEnv": "HINDSIGHT_API_KEY",
-    "envFile": "~/.config/hindsight/homelab.env",
+    "envFile": "~/.config/hindsight/hindsight.env",
     "recallBudget": "mid",
     "recallTypes": ["observation", "world", "experience"],
-    "asyncRetain": true
+    "asyncRetain": false
+  },
+  "provenance": {
+    "user": "your-user-id",
+    "agent": "pi",
+    "repository": "owner/repository",
+    "source": "pi-tidy-memory"
   },
   "requestTimeoutMs": 30000,
   "lifecycle": {
@@ -52,7 +55,11 @@ Create `~/.pi/agent/pi-tidy-memory/config.json`:
 | `backend.envFile`                | no       | Fallback env file read when the process variable is absent          |
 | `backend.recallBudget`           | no       | Hindsight retrieval budget: `low`, `mid`, or `high`; default `mid`  |
 | `backend.recallTypes`            | no       | Fact types requested from recall                                    |
-| `backend.asyncRetain`            | no       | Queue retains in Hindsight; default `true`                          |
+| `backend.asyncRetain`            | no       | Queue retains in Hindsight; default `false`                         |
+| `provenance.user`                | no       | Stable user identity added to new-write metadata                    |
+| `provenance.agent`               | no       | Agent identity; default `pi`                                        |
+| `provenance.repository`          | no       | Canonical `owner/name` repository identity                          |
+| `provenance.source`              | no       | Source identity; default `pi-tidy-memory`                           |
 | `requestTimeoutMs`               | no       | Per-request timeout, clamped to 1–60 seconds                        |
 | `lifecycle.autoRecall`           | no       | Recall before each submitted Pi request; default `false`            |
 | `lifecycle.autoRetain`           | no       | Retain the final exchange after settlement; default `false`         |
@@ -60,6 +67,8 @@ Create `~/.pi/agent/pi-tidy-memory/config.json`:
 | `lifecycle.maxRetainChars`       | no       | Maximum automatic exchange size, clamped to 256–64000               |
 
 If `apiKeyEnv` is set, non-loopback HTTP is rejected. Use HTTPS for LAN and remote servers.
+
+The parser rejects malformed boolean values and unknown keys in the top-level, lifecycle, and built-in Hindsight configuration objects. Generic third-party backend objects retain their adapter-specific fields.
 
 ### Environment file
 
@@ -75,12 +84,12 @@ The process environment wins over the file. This permits credential rotation wit
 
 ### API mapping
 
-| Memory operation | Hindsight request                                 |
-| ---------------- | ------------------------------------------------- |
-| Health           | `GET /health`                                     |
-| Recall           | `POST /v1/default/banks/{bankId}/memories/recall` |
-| Retain           | `POST /v1/default/banks/{bankId}/memories`        |
-| Reflect          | `POST /v1/default/banks/{bankId}/reflect`         |
+| Memory operation | Hindsight request                                      |
+| ---------------- | ------------------------------------------------------ |
+| Bank access      | `GET /v1/default/banks/{bankId}/memories/list?limit=0` |
+| Recall           | `POST /v1/default/banks/{bankId}/memories/recall`      |
+| Retain           | `POST /v1/default/banks/{bankId}/memories`             |
+| Reflect          | `POST /v1/default/banks/{bankId}/reflect`              |
 
 The bank ID is URL-encoded. Hindsight creates a bank with default settings on first use, so verify the value with `/tidy-memory status` before retaining data.
 
@@ -88,34 +97,34 @@ The bank ID is URL-encoded. Hindsight creates a bank with default settings on fi
 
 Banks are hard isolation boundaries. Tags are filters inside a bank.
 
-For a small coding setup, a shared bank such as `pi-coding` is reasonable if every retained item uses stable project tags. For stronger isolation, enable dynamic banks:
+One static bank can intentionally preserve continuity for one user across multiple agents, repositories, and subject domains:
 
 ```json
 {
-  "dynamicBankId": true,
-  "dynamicBankGranularity": ["agent", "project"],
-  "agentName": "pi",
-  "resolveWorktrees": true
+  "bankId": "your-bank-id",
+  "dynamicBankId": false
 }
 ```
 
-This follows Hindsight's official coding-agent convention and produces `<agent>::<project>`. Project identity comes from Git's common directory, so linked worktrees share one stable bank. Outside Git it falls back to the working-directory basename. Because project identity is a basename, unrelated repositories with the same directory name would share a bank; use `directoryBankMap` to disambiguate them. A map entry overrides both static and dynamic selection; `bankIdPrefix` applies afterward. Session identity comes from Pi, while channel and user identity require `HINDSIGHT_CHANNEL_ID` and `HINDSIGHT_USER_ID`. Missing or unsafe fields fail closed rather than silently creating an unintended bank.
+Use provenance and tags to distinguish agents, repositories, sources, and subjects inside a shared user bank. Use separate banks for different users, authorization or trust boundaries, and materially different retention policies. Banks are an isolation decision, not a substitute for provenance.
 
-Every new ID creates a new empty bank; switching strategy does not migrate existing memories. `/tidy-memory status` reports the resolved bank. Do not mix coding history, personal assistant conversations, medical information, and arbitrary web chat in one bank.
+If the chosen profile is static, do not add a prefix, granularity, or directory map during an ordinary upgrade. Those settings intentionally select other banks; they do not partition or migrate the existing bank. Every new ID creates a new empty bank, and switching strategy does not migrate memories. `/tidy-memory status` reports the resolved bank.
 
 The package's manual tools accept tags. When tags are supplied to recall or reflect, the Hindsight adapter uses `all_strict`: every requested tag must be present and untagged memories are excluded. This makes tag-scoped reads conservative rather than inheriting Hindsight's untagged-inclusive default.
 
-Automatic retain currently adds `source:pi`; it does not infer a project tag. If automatic retention is enabled against a shared bank, configure the surrounding workflow so project scope remains clear.
+All new retains include configured provenance metadata plus the actual mode and Pi session. Hindsight receives the occurrence time as its item `timestamp`. Automatic retention uses the originating user-message time and a document ID derived from the persisted assistant-entry ID; manual retention uses the tool-call ID. Retry writes therefore upsert the same Hindsight document without requiring full-session replay semantics.
 
-### Async retention
+Automatic retain also adds `source:pi`; it does not infer a project tag. If automatic retention is enabled, the surrounding workflow still owns durability and privacy classification.
 
-With `asyncRetain: true`, Hindsight returns an operation receipt before extraction and consolidation finish. pi-tidy-memory displays the operation ID when expanded but does not poll it. A successful receipt means the item was queued, not that every derived fact and observation has completed.
+### Retention execution
 
-Use synchronous retention during setup or smoke testing when immediate recall must confirm the write. For normal interactive use, async retention avoids holding Pi open while Hindsight runs extraction.
+The supported profile uses `asyncRetain: false`. The tool waits for Hindsight to finish the request, so success is a completed request rather than a queue receipt. This deliberately avoids an outbox, operation polling, restart replay, and a separate retry service in a single-user integration.
+
+The adapter still accepts `asyncRetain: true` for other deployments, but pi-tidy-memory does not poll or replay those operation receipts. Do not enable it when the deployment requires a successful result to mean Hindsight completed the write.
 
 ### Verification
 
-After changing configuration, reload Pi and check the service:
+After changing configuration, reload Pi and verify authenticated read access to the active bank:
 
 ```text
 /reload
@@ -123,7 +132,7 @@ After changing configuration, reload Pi and check the service:
 /tidy-memory check
 ```
 
-Then ask Pi to retain a harmless test fact and recall it. Remove or replace the test document through Hindsight's control plane if it should not remain in the bank.
+The standard check is read-only. Any write-path integration test must use a uniquely named ephemeral bank and must verify that the bank was deleted through Hindsight's control plane before the test is considered complete. Never write smoke data into the live bank.
 
 ## Choosing this package or a dedicated Hindsight extension
 

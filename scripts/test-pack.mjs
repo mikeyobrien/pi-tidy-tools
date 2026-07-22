@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   mkdtempSync,
   mkdirSync,
@@ -71,9 +71,13 @@ try {
       for (const file of [
         "package/types.ts",
         "package/runtime.ts",
+        "package/revision.ts",
+        "package/source-revision.json",
         "package/backends/hindsight.ts",
         "package/dist/index.js",
         "package/dist/index.d.ts",
+        "package/dist/revision.js",
+        "package/scripts/smoke.mjs",
       ]) {
         if (!listing.includes(file))
           throw new Error(`${name} omitted runtime file ${file}`);
@@ -153,7 +157,7 @@ try {
         "install",
         tarball,
         "--ignore-scripts",
-        "--omit=peer",
+        ...(name === "@mobrienv/pi-tidy-memory" ? [] : ["--omit=peer"]),
         "--package-lock=false",
         "--no-audit",
         "--no-fund",
@@ -170,6 +174,104 @@ try {
     );
     if (!readFileSync(installedCore, "utf8").includes("summarizeToolActivity"))
       throw new Error(`${name} installed without a usable tidy core`);
+    if (name === "@mobrienv/pi-tidy-memory") {
+      execFileSync(
+        "npm",
+        [
+          "run",
+          "smoke",
+          "--prefix",
+          join(installDir, "node_modules", ...name.split("/")),
+        ],
+        {
+          cwd: root,
+          stdio: "pipe",
+        }
+      );
+
+      const installedPackage = join(
+        installDir,
+        "node_modules",
+        ...name.split("/")
+      );
+      const agentDir = join(installDir, "pi-agent");
+      const rpc = spawnSync(
+        join(installDir, "node_modules", ".bin", "pi"),
+        [
+          "--mode",
+          "rpc",
+          "--offline",
+          "--no-session",
+          "--no-extensions",
+          "--no-skills",
+          "--no-prompt-templates",
+          "--no-context-files",
+          "-e",
+          join(installedPackage, "index.ts"),
+        ],
+        {
+          cwd: installDir,
+          env: {
+            PATH: process.env.PATH ?? "",
+            HOME: join(installDir, "home"),
+            PI_CODING_AGENT_DIR: agentDir,
+            PI_OFFLINE: "1",
+          },
+          input: [
+            JSON.stringify({ id: "commands", type: "get_commands" }),
+            JSON.stringify({
+              id: "status",
+              type: "prompt",
+              message: "/tidy-memory status",
+            }),
+            "",
+          ].join("\n"),
+          encoding: "utf8",
+          timeout: 30_000,
+        }
+      );
+      if (rpc.error) throw rpc.error;
+      if (rpc.status !== 0)
+        throw new Error(
+          `${name} failed Pi RPC load (${rpc.status}): ${rpc.stderr}`
+        );
+      const messages = rpc.stdout
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+      const commands = messages.find(
+        (message) => message.id === "commands" && message.success === true
+      )?.data?.commands;
+      if (
+        !Array.isArray(commands) ||
+        !commands.some(
+          (command) =>
+            command.name === "tidy-memory" && command.source === "extension"
+        )
+      )
+        throw new Error(`${name} Pi RPC load omitted /tidy-memory`);
+      const notice = messages.find(
+        (message) =>
+          message.type === "extension_ui_request" &&
+          message.method === "notify" &&
+          message.message?.includes(`package=${name}@`) &&
+          message.message?.includes("disabled (not configured)")
+      );
+      if (!notice)
+        throw new Error(
+          `${name} Pi RPC status omitted safe revision diagnostics`
+        );
+      if (
+        !messages.some(
+          (message) =>
+            message.id === "status" &&
+            message.command === "prompt" &&
+            message.success === true
+        )
+      )
+        throw new Error(`${name} Pi RPC /tidy-memory status did not complete`);
+    }
   }
 } finally {
   rmSync(temp, { recursive: true, force: true });

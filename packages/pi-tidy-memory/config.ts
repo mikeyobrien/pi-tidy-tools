@@ -31,10 +31,18 @@ export interface GenericBackendConfig extends Record<string, unknown> {
 
 export type MemoryBackendConfig = HindsightBackendConfig | GenericBackendConfig;
 
+export interface MemoryProvenanceConfig {
+  user?: string;
+  agent: string;
+  repository?: string;
+  source: string;
+}
+
 export interface MemoryConfig {
   version: typeof MEMORY_CONFIG_VERSION;
   enabled: boolean;
   backend: MemoryBackendConfig;
+  provenance: MemoryProvenanceConfig;
   requestTimeoutMs: number;
   lifecycle: {
     autoRecall: boolean;
@@ -53,15 +61,62 @@ export interface ConfigLoadResult {
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const BANK_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const BANK_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const PROVENANCE_TEXT = /^[^\x00-\x1f\x7f]+$/;
+const CANONICAL_REPOSITORY =
+  /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9])?\/[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$/;
 const DYNAMIC_BANK_FIELD_SET = new Set<string>(DYNAMIC_BANK_FIELDS);
 const BUDGETS = new Set<MemoryBudget>(["low", "mid", "high"]);
+const CONFIG_KEYS = new Set([
+  "version",
+  "enabled",
+  "backend",
+  "provenance",
+  "requestTimeoutMs",
+  "lifecycle",
+]);
+const PROVENANCE_KEYS = new Set(["user", "agent", "repository", "source"]);
+const LIFECYCLE_KEYS = new Set([
+  "autoRecall",
+  "autoRetain",
+  "maxRecallTokens",
+  "maxRetainChars",
+]);
+const HINDSIGHT_KEYS = new Set([
+  "type",
+  "baseUrl",
+  "bankId",
+  "dynamicBankId",
+  "dynamicBankGranularity",
+  "bankIdPrefix",
+  "agentName",
+  "resolveWorktrees",
+  "directoryBankMap",
+  "apiKeyEnv",
+  "envFile",
+  "recallBudget",
+  "recallTypes",
+  "asyncRetain",
+]);
 
 function object(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function bool(value: unknown, fallback: boolean): boolean {
-  return typeof value === "boolean" ? value : fallback;
+function rejectUnknownKeys(
+  value: Record<string, unknown>,
+  allowed: ReadonlySet<string>,
+  field: string
+): void {
+  const unknown = Object.keys(value).find((key) => !allowed.has(key));
+  if (unknown !== undefined) {
+    throw new Error(`${field} contains unknown key "${unknown}"`);
+  }
+}
+
+function bool(value: unknown, fallback: boolean, field: string): boolean {
+  if (value === undefined) return fallback;
+  if (typeof value === "boolean") return value;
+  throw new Error(`${field} must be a boolean`);
 }
 
 function boundedInt(
@@ -72,6 +127,42 @@ function boundedInt(
 ): number {
   if (typeof value !== "number" || !Number.isInteger(value)) return fallback;
   return Math.max(min, Math.min(max, value));
+}
+
+function provenanceText(
+  value: unknown,
+  field: string,
+  fallback?: string
+): string | undefined {
+  if (value === undefined) return fallback;
+  if (
+    typeof value !== "string" ||
+    !value.trim() ||
+    value.trim().length > 128 ||
+    !PROVENANCE_TEXT.test(value.trim())
+  ) {
+    throw new Error(`provenance.${field} must be 1-128 characters`);
+  }
+  return value.trim();
+}
+
+function parseProvenance(value: unknown): MemoryProvenanceConfig {
+  if (value !== undefined && !object(value)) {
+    throw new Error("provenance must be an object");
+  }
+  const configured = object(value) ? value : {};
+  rejectUnknownKeys(configured, PROVENANCE_KEYS, "provenance");
+  const user = provenanceText(configured.user, "user");
+  const repository = provenanceText(configured.repository, "repository");
+  if (repository && !CANONICAL_REPOSITORY.test(repository)) {
+    throw new Error("provenance.repository must be a canonical owner/name");
+  }
+  return {
+    ...(user ? { user } : {}),
+    agent: provenanceText(configured.agent, "agent", "pi")!,
+    ...(repository ? { repository } : {}),
+    source: provenanceText(configured.source, "source", "pi-tidy-memory")!,
+  };
 }
 
 function parseBaseUrl(value: unknown): string {
@@ -156,6 +247,7 @@ function parseHindsight(value: unknown): HindsightBackendConfig {
       "inline credentials are forbidden; use apiKeyEnv and optional envFile"
     );
   }
+  rejectUnknownKeys(value, HINDSIGHT_KEYS, "backend");
   const baseUrl = parseBaseUrl(value.baseUrl);
   const parsedUrl = new URL(baseUrl);
   const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(
@@ -230,7 +322,7 @@ function parseHindsight(value: unknown): HindsightBackendConfig {
     ...(value.envFile ? { envFile: value.envFile } : {}),
     recallBudget,
     recallTypes,
-    asyncRetain: bool(value.asyncRetain, true),
+    asyncRetain: bool(value.asyncRetain, false, "backend.asyncRetain"),
   };
 }
 
@@ -260,15 +352,18 @@ export function parseMemoryConfig(raw: unknown): MemoryConfig {
   if (!object(raw)) throw new Error("config must be a JSON object");
   if (raw.version !== MEMORY_CONFIG_VERSION)
     throw new Error(`config.version must be ${MEMORY_CONFIG_VERSION}`);
+  rejectUnknownKeys(raw, CONFIG_KEYS, "config");
   const lifecycle = object(raw.lifecycle) ? raw.lifecycle : {};
+  rejectUnknownKeys(lifecycle, LIFECYCLE_KEYS, "lifecycle");
   return {
     version: MEMORY_CONFIG_VERSION,
-    enabled: bool(raw.enabled, true),
+    enabled: bool(raw.enabled, true, "config.enabled"),
     backend: parseBackend(raw.backend),
+    provenance: parseProvenance(raw.provenance),
     requestTimeoutMs: boundedInt(raw.requestTimeoutMs, 15_000, 1_000, 60_000),
     lifecycle: {
-      autoRecall: bool(lifecycle.autoRecall, false),
-      autoRetain: bool(lifecycle.autoRetain, false),
+      autoRecall: bool(lifecycle.autoRecall, false, "lifecycle.autoRecall"),
+      autoRetain: bool(lifecycle.autoRetain, false, "lifecycle.autoRetain"),
       maxRecallTokens: boundedInt(lifecycle.maxRecallTokens, 1_024, 128, 4_096),
       maxRetainChars: boundedInt(lifecycle.maxRetainChars, 16_000, 256, 64_000),
     },

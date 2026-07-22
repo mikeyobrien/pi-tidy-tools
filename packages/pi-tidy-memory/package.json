@@ -1,12 +1,15 @@
 {
   "name": "@mobrienv/pi-tidy-memory",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Compact, backend-neutral long-term memory for Pi, starting with Hindsight.",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "author": "Mikey O'Brien <m@mobrienv.dev>",
   "repository": {
     "type": "git",
-    "url": "https://github.com/mikeyobrien/pi-tidy-tools.git",
+    "url": "git+https://github.com/mikeyobrien/pi-tidy-tools.git",
     "directory": "packages/pi-tidy-memory"
   },
   "homepage": "https://github.com/mikeyobrien/pi-tidy-tools/tree/main/packages/pi-tidy-memory#readme",

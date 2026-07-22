@@ -151,7 +151,7 @@ test("runtime and rendering defensive branches stay bounded", async () => {
   );
 
   assert.match(
-    renderMemoryLines("retain", {}, undefined, false, true, false)[0],
+    renderMemoryLines("retain", {}, undefined, false, true, false)[1],
     /working/
   );
   assert.match(
@@ -162,15 +162,15 @@ test("runtime and rendering defensive branches stay bounded", async () => {
       false,
       false,
       false
-    )[0],
+    )[1],
     /1 accepted/
   );
   assert.match(
-    renderMemoryLines("recall", {}, undefined, false, false, true)[0],
+    renderMemoryLines("recall", {}, undefined, false, false, true)[1],
     /failed/
   );
   assert.match(
-    renderMemoryLines("reflect", {}, undefined, false, false, false)[0],
+    renderMemoryLines("reflect", {}, undefined, false, false, false)[1],
     /done/
   );
   const component = new MemoryToolComponent(
@@ -182,7 +182,7 @@ test("runtime and rendering defensive branches stay bounded", async () => {
     false
   );
   component.invalidate();
-  assert.equal(component.render(200).length, 1);
+  assert.equal(component.render(200).length, 2);
 });
 
 function registerExtension(config: any, backend?: MemoryBackend) {

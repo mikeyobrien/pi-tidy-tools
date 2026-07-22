@@ -4,7 +4,7 @@ This guide covers the supported single-user profile: native Pi adapter, one chos
 
 ## Installation pin
 
-Choose a reviewed full commit from an external release or installation receipt. Never use a moving branch, an abbreviated hash, or a hash hard-coded inside the source commit itself—the repository cannot truthfully contain its own final commit hash.
+For npm deployments, choose an exact published version with registry provenance and record the source revision reported by the installed artifact. For source deployments, choose a reviewed full commit from an external release or installation receipt. Never use a moving branch, an abbreviated hash, or a hash hard-coded inside the source commit itself—the repository cannot truthfully contain its own final commit hash.
 
 Build the exact artifact and record its digest:
 
@@ -29,6 +29,14 @@ npm run smoke --prefix node_modules/@mobrienv/pi-tidy-memory
 The smoke imports the installed compiled extension, validates package identity and the native `./index.ts` Pi adapter, and requires the reported revision to match the embedded full hash. It is offline and read-only.
 
 ## Installation modes
+
+### Published npm package
+
+```bash
+pi install npm:@mobrienv/pi-tidy-memory@<version>
+```
+
+Use an exact version for controlled deployments rather than relying on the moving `latest` tag. Record the resolved package version, tarball digest, embedded source revision, and active path in the installation receipt. Package publication is not activation approval: complete both phases below before enabling automatic retention.
 
 ### Pi-managed Git checkout
 
@@ -113,10 +121,11 @@ Treat every upgrade as a move between reviewed full commit hashes, not branches 
 
 1. Record current status and the installation receipt.
 2. Review the candidate and run its normal tests, type checks, pack gate, and installed-artifact smoke.
-3. Execute both phases above using a new staging and rollback directory.
-4. Preserve the prior receipt until the new post-deployment review passes.
+3. For npm installs, install the exact intended version with `pi install npm:@mobrienv/pi-tidy-memory@<version>`; for source installs, move to the reviewed full commit.
+4. Execute both phases above using a new staging and rollback directory.
+5. Preserve the prior receipt until the new post-deployment review passes.
 
-An npm publication, signed release, durable outbox, or receipt-polling service is not required for this local single-user profile.
+A local source deployment does not require npm publication, a signed release, a durable outbox, or a receipt-polling service for this supported single-user profile.
 
 ## Credential rotation
 

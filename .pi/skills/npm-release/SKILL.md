@@ -28,7 +28,7 @@ Normalize `v0.2.0` to `0.2.0`. The release tag is `$SLUG-v<TARGET>`.
 ## Safety
 
 - Run from the repository root with a clean `main` synchronized to `origin/main`.
-- Publish only through a GitHub Release and `.github/workflows/publish.yml`; local `npm publish` is outside this process.
+- Publish functional releases only through a GitHub Release and `.github/workflows/publish.yml`. The sole exception is the explicitly approved `0.0.0` first-package bootstrap below; never publish functional package code locally.
 - Use GitHub OIDC. Keep npm tokens absent from prompts, files, output, and workflow configuration.
 - Preserve independent package versions. Update only the selected manifest, its changelog, and the root lockfile.
 - Stop on ambiguous input, failed validation, an existing npm version/tag/changelog heading, or a package with no user-visible changes.
@@ -79,9 +79,34 @@ gh auth status
 npm view "$PACKAGE" version --json
 ```
 
-Require `$DIR/package.json`, package name exactly `$PACKAGE`, an empty working tree, branch `main`, no ahead/behind count, and valid GitHub authentication. Local npm authentication is unnecessary.
+Require `$DIR/package.json`, package name exactly `$PACKAGE`, an empty working tree, branch `main`, no ahead/behind count, and valid GitHub authentication. Treat npm `E404` for the unversioned package lookup as a first-publication signal, not proof that OIDC is ready: npm cannot attach a trusted publisher until the package record exists.
 
-Confirm `.github/workflows/publish.yml` has `id-token: write`, uses environment `npm`, resolves release tags to an allowlisted workspace path, publishes with `--workspace`, and contains no `NODE_AUTH_TOKEN` or `NPM_TOKEN` reference.
+Confirm `.github/workflows/publish.yml` has `id-token: write`, uses environment `npm`, has no alternate functional trigger such as `workflow_dispatch`, pins third-party actions to full commit hashes, disables persisted checkout credentials and `setup-node` package-manager caching, installs the lockfile with `npm ci --ignore-scripts`, resolves release tags to an allowlisted public workspace path, publishes with `--workspace`, and contains no `NODE_AUTH_TOKEN` or `NPM_TOKEN` reference.
+
+### 1a. Bootstrap a new npm package record when required
+
+Run this step only when `npm view "$PACKAGE" version --json` returns a genuine registry `E404`. Do not create the target release commit, tag, or GitHub Release first: the OIDC workflow cannot publish a package that does not yet exist.
+
+This is an irreversible external action and requires the owner's explicit approval. In an isolated temporary directory, prepare a public `0.0.0` placeholder containing only:
+
+- `package.json` with the exact package name, version `0.0.0`, public access, license, description, and repository metadata;
+- a README stating that the artifact is a non-functional Trusted Publishing bootstrap and that functional releases begin at the approved `TARGET`;
+- no package runtime, scripts, dependencies, credentials, or repository checkout files.
+
+Inspect `npm pack --dry-run` and the actual tarball before the owner publishes that temporary directory once with interactive npm authentication, 2FA, `--access public`, and `--tag oidc-bootstrap`. The dedicated dist-tag prevents the non-functional placeholder from becoming `latest` while trust is configured. Never substitute the real workspace package or a pre-release functional build for the placeholder.
+
+After `npm view "$PACKAGE@0.0.0" version --json` succeeds and `npm view "$PACKAGE" dist-tags --json` reports `oidc-bootstrap: 0.0.0` with no `latest`, configure the package's npm Trusted Publisher exactly as follows:
+
+```text
+provider: GitHub Actions
+organization/user: mikeyobrien
+repository: pi-tidy-tools
+workflow: publish.yml
+environment: npm
+allowed action: npm publish
+```
+
+Then require two-factor authentication and disallow ordinary tokens for publishing. Verify the saved publisher fields and package access in npm's settings before continuing. The placeholder gets no repository tag, GitHub Release, or changelog section; it exists only to break npm's first-publish/OIDC dependency cycle. All functional versions still follow the tokenless GitHub process below.
 
 ### 2. Determine and guard the target
 

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   MemoryRuntime,
   memoryContext,
+  redactObviousCredentials,
   sanitizeTerminalText,
   settledExchange,
   stableDocumentId,
@@ -149,6 +150,35 @@ test("terminal sanitization and tool wrappers are exact and bounded", () => {
     )
   );
   assert.doesNotMatch(reflection, /\u001b/);
+});
+
+test("credential-shaped values are redacted from model-facing memory output", () => {
+  const secret = "SECRET_SYNTHETIC_987654321";
+  const values = [
+    `api_key=${secret}`,
+    `recover token=${secret}`,
+    `{"password":"${secret}"}`,
+    `Authorization: Bearer ${secret}`,
+    `ghp_${"a".repeat(24)}`,
+  ];
+  for (const value of values) {
+    const redacted = redactObviousCredentials(value);
+    assert.doesNotMatch(redacted, new RegExp(secret));
+    assert.match(redacted, /redacted/);
+  }
+
+  const recall = memoryContext([
+    {
+      id: "1",
+      kind: `token=${secret}`,
+      text: `api_key=${secret}`,
+      context: `password=${secret}`,
+      metadata: { auth: `Authorization: Bearer ${secret}` },
+    },
+  ]);
+  const reflection = toolReflectText(`token=${secret}`);
+  assert.doesNotMatch(`${recall}\n${reflection}`, new RegExp(secret));
+  assert.match(`${recall}\n${reflection}`, /redacted/);
 });
 
 test("labels, escapes, and bounds recalled memory as untrusted data", () => {

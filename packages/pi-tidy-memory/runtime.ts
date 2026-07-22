@@ -20,8 +20,8 @@ export interface RuntimeDependencies {
 const OBVIOUS_CREDENTIAL_PATTERNS = [
   /-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----/i,
   /\bauthorization\s*:\s*bearer\s+[A-Za-z0-9._~+/=-]{16,}/i,
-  /\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd|secret)\s*=\s*["'`]?[^\s"'`;,}]{8,}/i,
-  /["'](?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd|secret)["']\s*:\s*["'][^"'\r\n]{8,}["']/i,
+  /\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|client[_-]?secret|password|passwd|secret)\s*=\s*["'`]?[^\s"'`;,}]{8,}/i,
+  /["'](?:api[_-]?key|access[_-]?token|auth[_-]?token|token|client[_-]?secret|password|passwd|secret)["']\s*:\s*["'][^"'\r\n]{8,}["']/i,
   /\bgh[pousr]_[A-Za-z0-9]{20,}\b/,
   /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/,
   /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/,
@@ -31,6 +31,38 @@ const OBVIOUS_CREDENTIAL_PATTERNS = [
 
 export function containsObviousCredential(value: string): boolean {
   return OBVIOUS_CREDENTIAL_PATTERNS.some((pattern) => pattern.test(value));
+}
+
+const CREDENTIAL_REDACTION_RULES: readonly (readonly [RegExp, string])[] = [
+  [
+    /-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----[\s\S]*?(?:-----END (?:[A-Z0-9 ]+ )?PRIVATE KEY-----|$)/gi,
+    "[redacted private key]",
+  ],
+  [
+    /(\bauthorization\s*:\s*bearer\s+)[A-Za-z0-9._~+/=-]{16,}/gi,
+    "$1[redacted]",
+  ],
+  [
+    /(\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|client[_-]?secret|password|passwd|secret)\s*=\s*)["'`]?[^\s"'`;,}]{8,}/gi,
+    "$1[redacted]",
+  ],
+  [
+    /(["'](?:api[_-]?key|access[_-]?token|auth[_-]?token|token|client[_-]?secret|password|passwd|secret)["']\s*:\s*["'])[^"'\r\n]{8,}(["'])/gi,
+    "$1[redacted]$2",
+  ],
+  [/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, "[redacted credential]"],
+  [/\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/g, "[redacted credential]"],
+  [/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, "[redacted credential]"],
+  [/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, "[redacted credential]"],
+  [/\bAIza[0-9A-Za-z_-]{35}\b/g, "[redacted credential]"],
+];
+
+export function redactObviousCredentials(value: string): string {
+  return CREDENTIAL_REDACTION_RULES.reduce(
+    (redacted, [pattern, replacement]) =>
+      redacted.replace(pattern, replacement),
+    value
+  );
 }
 
 function assertRetentionSafe(input: RetainInput): void {
@@ -111,7 +143,7 @@ export function sanitizeTerminalText(value: string): string {
 }
 
 function safeMemoryText(value: string): string {
-  return sanitizeTerminalText(value)
+  return redactObviousCredentials(sanitizeTerminalText(value))
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, MAX_MEMORY_TEXT_CHARS);
@@ -124,7 +156,7 @@ function escapedJson(value: unknown): string {
 }
 
 function boundedProvenanceText(value: string, maxChars: number): string {
-  return sanitizeTerminalText(value)
+  return redactObviousCredentials(sanitizeTerminalText(value))
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, maxChars);
@@ -182,8 +214,8 @@ export function memoryContext(memories: readonly MemoryRecord[]): string {
   for (const item of memories.slice(0, MAX_MEMORY_RECORDS)) {
     const provenance = memoryProvenance(item);
     const record = escapedJson({
-      id: item.id,
-      ...(item.kind ? { kind: item.kind } : {}),
+      id: safeMemoryText(item.id).slice(0, 512),
+      ...(item.kind ? { kind: safeMemoryText(item.kind).slice(0, 128) } : {}),
       text: safeMemoryText(item.text),
       ...(provenance ? { provenance } : {}),
     });
@@ -203,7 +235,7 @@ export function toolRecallText(memories: readonly MemoryRecord[]): string {
 export function toolReflectText(value: string): string {
   const prefix =
     "Untrusted synthesis from long-term memory; verify consequential claims:\n\n";
-  const safe = sanitizeTerminalText(value).slice(
+  const safe = redactObviousCredentials(sanitizeTerminalText(value)).slice(
     0,
     MAX_TOOL_OUTPUT_CHARS - prefix.length
   );

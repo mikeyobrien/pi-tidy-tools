@@ -11,16 +11,16 @@ Each package solves one transcript or workflow problem. Install only the ones yo
 ```bash
 pi install npm:@mobrienv/pi-tidy-tools      # compact, reason-first tool cards
 pi install npm:@mobrienv/pi-tidy-subagents  # foreground and background subagent fan-out
+pi install npm:@mobrienv/pi-tidy-memory     # durable, backend-neutral memory
 ```
 
-**Experimental (source only for now):** `@mobrienv/pi-tidy-memory` and `@mobrienv/pi-tidy-footer` ship on `main` but are not published to npm yet. APIs, config, and layout may still change before a first release. They live as monorepo package directories, so install the repo from git and then install each package path:
+**Experimental (source only for now):** `@mobrienv/pi-tidy-footer` ships on `main` but is not published to npm yet. Its API, config, and layout may still change before a first release. It lives as a monorepo package directory, so install the repo from git and then install that package path:
 
 ```bash
 # clone via Pi's git installer (also registers the monorepo root)
 pi install git:github.com/mikeyobrien/pi-tidy-tools@main
 
-# experimental packages are workspace directories under that clone
-pi install ~/.pi/agent/git/github.com/mikeyobrien/pi-tidy-tools/packages/pi-tidy-memory
+# the experimental package is a workspace directory under that clone
 pi install ~/.pi/agent/git/github.com/mikeyobrien/pi-tidy-tools/packages/pi-tidy-footer
 ```
 
@@ -90,21 +90,21 @@ pi install npm:@mobrienv/pi-tidy-subagents
 
 ---
 
-### [`@mobrienv/pi-tidy-memory`](packages/pi-tidy-memory) · experimental
+### [`@mobrienv/pi-tidy-memory`](packages/pi-tidy-memory)
+
+[![npm version](https://img.shields.io/npm/v/%40mobrienv%2Fpi-tidy-memory)](https://www.npmjs.com/package/@mobrienv/pi-tidy-memory)
 
 **Give Pi durable memory without tying the agent to one storage engine.** The package exposes compact recall, retain, and reflect tools through a backend-neutral contract. Hindsight is the first adapter.
-
-> Experimental: on `main`, not on npm yet. Install from a local checkout. Config and tool contracts may still change before `0.1.0` is published.
 
 - Connects to authenticated self-hosted Hindsight servers with native `fetch`
 - Keeps credentials in environment variables or a protected env file
 - Marks recalled content as untrusted historical data
 - Offers optional automatic recall and retain hooks, both disabled by default
+- Uses left-edge, two-line why/result cards with a live-only state mark and native settled backgrounds
 - Leaves room for additional backends without changing the Pi-facing tools
 
 ```bash
-pi install git:github.com/mikeyobrien/pi-tidy-tools@main
-pi install ~/.pi/agent/git/github.com/mikeyobrien/pi-tidy-tools/packages/pi-tidy-memory
+pi install npm:@mobrienv/pi-tidy-memory
 ```
 
 [Read the full pi-tidy-memory documentation →](packages/pi-tidy-memory)
@@ -133,7 +133,7 @@ pi install ~/.pi/agent/git/github.com/mikeyobrien/pi-tidy-tools/packages/pi-tidy
 
 Packages follow the `@mobrienv/pi-tidy-*` naming convention. Each package owns its runtime, documentation, tests, version, changelog, and npm release when published.
 
-Today, `@mobrienv/pi-tidy-tools` and `@mobrienv/pi-tidy-subagents` are published on npm. `@mobrienv/pi-tidy-memory` and `@mobrienv/pi-tidy-footer` are experimental packages available from this repository only until their first releases.
+`@mobrienv/pi-tidy-tools`, `@mobrienv/pi-tidy-subagents`, and `@mobrienv/pi-tidy-memory` are published independently on npm. `@mobrienv/pi-tidy-footer` remains experimental and is available from this repository until its first release.
 
 The private root manifest exists for workspace development and keeps existing local-checkout installs pointed at `pi-tidy-tools`; published packages remain independent.
 

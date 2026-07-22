@@ -2,8 +2,6 @@
 
 Long-term memory for [Pi](https://github.com/earendil-works/pi), with a small backend interface and compact tool output. Hindsight is the first backend. More backends can be added without changing the tools or Pi lifecycle code.
 
-> **Experimental.** This package is **not published to npm yet**. Install a reviewed full commit from an external release or installation receipt; do not install the moving `main` branch.
-
 ## Compatibility
 
 - Node.js `>=22.19.0`
@@ -11,9 +9,33 @@ Long-term memory for [Pi](https://github.com/earendil-works/pi), with a small ba
 - `@earendil-works/pi-tui` `>=0.80.6 <0.81.0`
 - Hindsight `0.8.x` REST API
 
-The Pi packages are peer dependencies and must match the Pi host. Test upgrades against the exact Pi version that will load the extension.
+The package is ESM-only; CommonJS consumers must use dynamic `import()`. The Pi packages are peer dependencies and must match the Pi host. Test upgrades against the exact Pi version that will load the extension.
+
+## 1.x stability contract
+
+The documented `recall`, `retain`, and `reflect` tools, `/tidy-memory` command,
+configuration schema and safe defaults, extension entry point, and
+`MemoryBackend` / `BackendFactory` integration seam are stable throughout 1.x.
+Renaming them, making optional configuration required, weakening safe defaults,
+or changing backend semantics requires a new major version. Additive optional
+backends, diagnostics, and visual refinements may ship in minor or patch
+releases when they preserve those contracts.
 
 ## Install
+
+Install the stable npm package:
+
+```bash
+pi install npm:@mobrienv/pi-tidy-memory
+```
+
+For a reproducible deployment, pin an exact published version in the package source and record it in the installation receipt described in [Operations](docs/operations.md):
+
+```bash
+pi install npm:@mobrienv/pi-tidy-memory@<version>
+```
+
+Use `pi update --extension npm:@mobrienv/pi-tidy-memory` for an intentional upgrade and `pi remove npm:@mobrienv/pi-tidy-memory` to remove the package.
 
 ### Pi-managed Git install
 
@@ -41,11 +63,7 @@ pi install ./packages/pi-tidy-memory
 
 Pi can also load an explicit local path listed in its `packages` settings. That path is operator-managed rather than pinned by a moving source directory: build and smoke an exact artifact, preserve the previous package and configuration, replace the active directory while automatic retention remains disabled, and verify the embedded revision before enabling writes. Follow [Operations](docs/operations.md) for the staged procedure and receipt format.
 
-Use `-l` for project-local installs. After the first npm release, the stable install path will be:
-
-```bash
-pi install npm:@mobrienv/pi-tidy-memory
-```
+Use `-l` for project-local installs.
 
 ## Configure Hindsight
 
@@ -106,7 +124,27 @@ Reload Pi after changing the file:
 - `retain` stores one self-contained fact, decision, preference, or lesson. Its prompt guidance limits use to explicit requests or a standing memory policy.
 - `reflect` asks Hindsight to answer temporal, causal, or multi-hop questions over retained knowledge.
 
-Each tool renders as one compact line. Expand a result in Pi to inspect recalled memories or reflection detail.
+Each tool requires a bounded, single-line `reasoning` phrase—12 words or fewer,
+64 characters or fewer, present tense, no period, and distinct from its query or
+content. The rationale is display-only: the extension strips it before any backend
+request or durable write.
+
+Each tool renders as a compact two-line why-and-result block. Expand a result in Pi
+to inspect recalled memories or reflection detail.
+
+```text
+· 🧠 recall restore release context
+  deployment preferences → working
+🧠 recall restore release context
+  deployment preferences → 3 memories
+🧠 retain preserve operator preference
+  prefer exact release pins → 1 accepted
+```
+
+Cards start at Pi's left edge. Line one explains why the call helps; line two shows
+its target and outcome. Only active work carries the live dot; settled success and
+failure use Pi's native card backgrounds instead of duplicating state with
+decorative rails or check/cross glyphs.
 
 ## Automatic memory
 
@@ -144,5 +182,6 @@ The interface is intentionally narrow. Bank administration, deletion, migration,
 
 - Recalled memory can be stale or malicious. Verify consequential claims against current files and user instructions.
 - Do not retain secrets, credentials, raw tool output, or transient chatter.
+- Common credential-shaped values are blocked on retention and redacted from recalled, reflected, and terminal-rendered output; this is defense in depth, not comprehensive secret or PII detection.
 - A mistyped Hindsight bank ID creates or selects a separate bank. Check `/tidy-memory status` before retaining data.
 - External memory is not rolled back when a Pi conversation is forked or deleted.

@@ -208,7 +208,7 @@ export class HindsightBackend implements MemoryBackend {
     }
     return {
       ok: true,
-      message: `bank readable; ${value.total} memories`,
+      message: `bank readable; ${value.total} ${value.total === 1 ? "memory" : "memories"}`,
     };
   }
 

@@ -1,27 +1,59 @@
 # Changelog
 
-## Unreleased
+All notable changes to this package are documented here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this package uses
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-- Make distributable documentation deployment-neutral instead of hard-coding an operator bank.
-- Document supported Node, Pi, and Hindsight versions plus explicit local-path installations.
-- Add the two-phase activation sequence, external installation-receipt schema, rollback evidence, and troubleshooting guidance.
-- Clarify that one static bank may intentionally preserve continuity for one user across agents and subjects, while different users and trust boundaries require separate banks.
+## [Unreleased]
 
-## 0.1.0 - 2026-07-22
+## [1.0.0] - 2026-07-22
 
-- Add a backend-neutral memory contract and registry.
-- Add the first backend adapter for authenticated Hindsight 0.8.x servers.
-- Add compact `recall`, `retain`, and `reflect` tools.
-- Add optional automatic recall and retain lifecycle hooks, disabled by default.
-- Add `/tidy-memory status` and `/tidy-memory check` diagnostics.
-- Add Hindsight-compatible dynamic bank IDs with project, agent, session, channel, and user granularity, stable Git worktree resolution, prefixes, and directory overrides.
-- Skip automatic retention for errored or aborted assistant outcomes and block obvious credentials at the shared runtime boundary.
-- Reject malformed booleans and unknown built-in configuration keys.
-- Verify authenticated bank access with a zero-item read instead of relying on the global health endpoint.
-- Default Hindsight retains to synchronous completion for the supported single-user profile; no outbox, receipt polling, restart replay, or retry subsystem is added.
-- Report sanitized package and embedded source revision metadata in `/tidy-memory status` without executing Git for revision reporting.
-- Ship an `npm run smoke` check that loads the packed compiled extension and verifies its embedded full source revision while retaining the native Pi adapter entry.
-- Document externally receipted immutable commit pins plus upgrade, credential-rotation restart, and rollback procedures for a selected static bank.
-- Add configurable user, agent, canonical-repository, and source provenance to new writes, with mode, session, and meaningful timestamps.
-- Preserve bounded context, occurrence time, tags, and metadata in model-visible recall while keeping the entire JSONL block explicitly untrusted.
-- Derive automatic retain document IDs from persisted Pi message identities so retries remain idempotent when serialized text changes.
+### Added
+
+- Backend-neutral `recall`, `retain`, and `reflect` tools with a native
+  Hindsight REST adapter.
+- Optional automatic recall and settled-turn retention lifecycle hooks, both
+  disabled by default.
+- Strict versioned configuration, static and dynamic bank routing, provenance
+  metadata, bounded output, cancellation, and runtime cleanup.
+- `/tidy-memory status` and authenticated read-only `/tidy-memory check`
+  diagnostics.
+- Embedded immutable source-revision reporting for packed artifacts, plus an
+  offline installed-package smoke test.
+- Package architecture, backend, and operations guides covering compatibility,
+  controlled installation, receipts, two-phase activation, upgrades, and
+  rollback.
+
+### Changed
+
+- Use synchronous Hindsight retention by default so successful retains mean the
+  backend completed the request; deferred execution remains an explicit opt-in.
+- Preserve backend-ranked recall order, include bounded provenance in tool and
+  automatic-recall output, and label recalled content as untrusted historical
+  data.
+- Derive automatic-retain document identity from Pi's persisted assistant entry
+  and original user-message time for stable replay behavior.
+- Align memory tools with the pi-tidy reason-first contract: required single-line,
+  12-word/64-character display-only rationale, left-edge two-line why/result cards, a live-only state
+  dot, no decorative rail, no duplicate settled check/cross glyphs,
+  outcome-preserving narrow-width truncation, and correct memory-count grammar in
+  cards and diagnostics.
+- Make public documentation deployment-neutral and npm-first while preserving
+  exact-version source and local-artifact procedures.
+
+### Security
+
+- Reject inline credentials and custom authorization headers; resolve named
+  environment variables without logging values.
+- Apply a shared secret-pattern guard to manual and automatic writes.
+- Strip tool traffic from automatic retention, fail closed on malformed settled
+  entries, and skip assistant outcomes marked errored or aborted.
+- Escape recalled/reflected text as inert historical data and sanitize terminal
+  control sequences before rendering.
+- Redact common credential-shaped values from model-facing recall/reflection and
+  from collapsed, expanded, error, and background-painted terminal cards.
+- Harden npm publication with commit-pinned GitHub Actions, disabled dependency
+  caching, tokenless OIDC, provenance, and a regression-tested workflow policy.
+
+[Unreleased]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-memory-v1.0.0...HEAD
+[1.0.0]: https://github.com/mikeyobrien/pi-tidy-tools/tree/pi-tidy-memory-v1.0.0

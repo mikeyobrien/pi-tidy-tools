@@ -20,9 +20,14 @@ Pi tools and lifecycle hooks
 A backend implements four operations:
 
 - `health` checks whether the configured backend target is usable. Hindsight verifies authenticated access to the active bank with a zero-item read.
-- `recall` returns normalized memory records.
+- `recall` takes a natural-language query and returns normalized records.
 - `retain` accepts one durable item and returns a receipt.
 - `reflect` asks the backend to synthesize an answer from stored knowledge.
+
+All three tools also require a single-line model-facing `reasoning` phrase of at
+most 12 words and 64 characters. It drives the first line of the pi-tidy why/result
+card and is stripped before backend execution, so UI rationale never becomes
+memory content or protocol data.
 
 The tools and renderers never inspect backend response objects. This keeps protocol changes inside the adapter and allows another backend to use a database, local process, or remote API without changing the model-facing tool schemas.
 
@@ -71,7 +76,7 @@ The supported single-user profile uses synchronous Hindsight retention. It is st
 
 ### Recalled content
 
-Memory records are serialized as JSON Lines inside a marked block. Each record may include a `provenance` object containing bounded context, occurrence time, tags, and metadata. Angle brackets in backend text are escaped, control sequences are removed, and space is reserved for the closing delimiter before any record is added. A record cannot close the wrapper by supplying `</long_term_memory>`.
+Memory records are serialized as JSON Lines inside a marked block. Each record may include a `provenance` object containing bounded context, occurrence time, tags, and metadata. Angle brackets in backend text are escaped, control sequences are removed, obvious credential-shaped values are redacted, and space is reserved for the closing delimiter before any record is added. A record cannot close the wrapper by supplying `</long_term_memory>`.
 
 The wrapper and reflection output are capped at 32,000 characters. Recall accepts at most 100 normalized records, and each record's text is capped at 8,000 characters. Per record, provenance context is capped at 512 characters, occurrence time at 64 characters, tags at 16 × 128 characters, and metadata at 16 entries with 64-character keys and 512-character values.
 
@@ -79,7 +84,7 @@ These measures reduce accidental prompt injection. They do not make backend cont
 
 ### Terminal output
 
-Backend-controlled memory text, memory kinds, reflection text, and operation IDs are stripped of C0/C1, CSI, and OSC sequences before rendering. This prevents stored content from changing the terminal title, emitting links, or attempting clipboard operations.
+Arguments, backend-controlled memory text, memory kinds, reflection text, errors, and operation IDs are stripped of C0/C1, CSI, and OSC sequences and passed through the same obvious-credential redactor before rendering. This prevents stored content from changing the terminal title, emitting links, attempting clipboard operations, or displaying common credential forms.
 
 ### Credentials
 
@@ -87,7 +92,7 @@ Hindsight credentials are referenced by environment-variable name. The package c
 
 Bearer credentials require HTTPS unless the destination is loopback (`localhost`, `127.0.0.1`, or `::1`). Status output reports only the variable name and whether a value was found.
 
-Manual and automatic retain calls share the same narrow obvious-credential detector. It blocks rather than redacts so the original content never reaches the backend. It is defense in depth, not comprehensive secret or PII classification.
+Manual and automatic retain calls share the same narrow obvious-credential detector. Retention blocks rather than redacts so the original content never reaches the backend; recall, reflection, and presentation redact common credential forms before display or model-facing output. This is defense in depth, not comprehensive secret or PII classification.
 
 ### Backend responses
 

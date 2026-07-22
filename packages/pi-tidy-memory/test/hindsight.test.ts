@@ -96,7 +96,7 @@ test("maps health recall retain and reflect to Hindsight 0.8 paths", async () =>
   );
   assert.deepEqual(await client.health(), {
     ok: true,
-    message: "bank readable; 1 memories",
+    message: "bank readable; 1 memory",
   });
   assert.deepEqual(
     (

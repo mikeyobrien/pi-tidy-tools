@@ -37,6 +37,7 @@
     "render.ts",
     "runtime.ts",
     "revision.ts",
+    "source-revision.json",
     "types.ts",
     "backends/**/*.ts",
     "scripts/smoke.mjs",
@@ -53,12 +54,13 @@
     ]
   },
   "scripts": {
-    "pretest": "node ../../scripts/bundle-core.mjs .",
+    "revision:embed": "node ../../scripts/embed-memory-revision.mjs .",
+    "pretest": "node ../../scripts/bundle-core.mjs . && npm run revision:embed",
     "test": "node --import tsx --test test/*.test.ts",
-    "check": "node ../../scripts/bundle-core.mjs . && tsc --noEmit",
-    "prepack": "node ../../scripts/bundle-core.mjs . && node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
+    "check": "node ../../scripts/bundle-core.mjs . && npm run revision:embed && tsc --noEmit",
+    "prepack": "node ../../scripts/bundle-core.mjs . && npm run revision:embed && node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
     "smoke": "node scripts/smoke.mjs",
-    "test:coverage": "node ../../scripts/bundle-core.mjs . && c8 node --import tsx --test test/*.test.ts",
+    "test:coverage": "node ../../scripts/bundle-core.mjs . && npm run revision:embed && c8 node --import tsx --test test/*.test.ts",
     "test:mutation": "stryker run"
   },
   "dependencies": {

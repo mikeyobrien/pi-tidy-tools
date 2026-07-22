@@ -29,7 +29,7 @@ const revision = {
 const revisionLine =
   "package=@mobrienv/pi-tidy-memory@0.1.0 source=0123456789abcdef0123456789abcdef01234567";
 
-function setup() {
+function setup(dependencies: Record<string, unknown> = {}) {
   const calls: Array<{ op: string; value?: any }> = [];
   const backend: MemoryBackend = {
     type: "fake",
@@ -63,6 +63,7 @@ function setup() {
     configResult: { config, path: "/agent/pi-tidy-memory/config.json" },
     factories: [factory],
     revision,
+    ...dependencies,
   })({
     registerTool(tool: any) {
       tools.set(tool.name, tool);
@@ -81,6 +82,17 @@ const context = {
   sessionManager: { getSessionId: () => "session-1" },
   ui: { notify() {} },
 };
+
+test("enabled static-bank initialization never invokes Git", () => {
+  let gitCalls = 0;
+  setup({
+    git() {
+      gitCalls += 1;
+      throw new Error("static bank initialization must not invoke Git");
+    },
+  });
+  assert.equal(gitCalls, 0);
+});
 
 test("registers backend-neutral tools command and lifecycle hooks", () => {
   const registered = setup();

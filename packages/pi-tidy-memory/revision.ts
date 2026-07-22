@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,21 +12,11 @@ export interface MemoryRevision {
 export interface MemoryRevisionDependencies {
   moduleUrl?: string;
   readFile?: (path: string) => string;
-  git?: (cwd: string) => string;
 }
 
 const VERSION =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
-const GIT_REVISION = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
-
-function defaultGit(cwd: string): string {
-  return execFileSync("git", ["rev-parse", "--verify", "HEAD"], {
-    cwd,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-    timeout: 1_000,
-  });
-}
+const SOURCE_REVISION = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 export function resolveMemoryRevision(
   dependencies: MemoryRevisionDependencies = {}
@@ -57,13 +46,18 @@ export function resolveMemoryRevision(
     }
   }
   if (!packageRoot) return { packageVersion, sourceRevision: "unavailable" };
+
   try {
-    const revision = (dependencies.git ?? defaultGit)(packageRoot)
-      .trim()
-      .toLowerCase();
+    const embedded = JSON.parse(
+      readFile(join(packageRoot, "source-revision.json"))
+    );
+    const revision =
+      typeof embedded?.sourceRevision === "string"
+        ? embedded.sourceRevision.trim().toLowerCase()
+        : "";
     return {
       packageVersion,
-      sourceRevision: GIT_REVISION.test(revision) ? revision : "unavailable",
+      sourceRevision: SOURCE_REVISION.test(revision) ? revision : "unavailable",
     };
   } catch {
     return { packageVersion, sourceRevision: "unavailable" };

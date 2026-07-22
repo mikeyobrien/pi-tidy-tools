@@ -2,22 +2,25 @@
 
 Long-term memory for [Pi](https://github.com/earendil-works/pi), with a small backend interface and compact tool output. Hindsight is the first backend. More backends can be added without changing the tools or Pi lifecycle code.
 
-> **Experimental.** This package is **not published to npm yet**. The supported day-to-day installation is the immutable source revision below; do not install the moving `main` branch.
+> **Experimental.** This package is **not published to npm yet**. Install a reviewed full commit from an external release or installation receipt; do not install the moving `main` branch.
 
 ## Install
 
-Install the pinned monorepo revision with Pi's git installer, then install this package directory from that clone:
+Install the reviewed monorepo commit with Pi's git installer, embed that checkout's immutable revision, then install this package directory from the managed clone:
 
 ```bash
-pi install git:github.com/mikeyobrien/pi-tidy-tools@069c46fd63a37343e34f758dab7055a85a3ae452
-pi install ~/.pi/agent/git/github.com/mikeyobrien/pi-tidy-tools/packages/pi-tidy-memory
+pi install git:github.com/mikeyobrien/pi-tidy-tools@<verified-full-commit>
+cd ~/.pi/agent/git/github.com/mikeyobrien/pi-tidy-tools
+npm run revision:embed --workspace @mobrienv/pi-tidy-memory
+pi install ./packages/pi-tidy-memory
 ```
 
-The full 40-character commit is intentional. `/tidy-memory status` reports the package version and checked-out source revision so the running installation can be compared with this pin.
+The full 40-character commit is intentional. The source repository cannot truthfully contain its own commit hash; the reviewed release or installation receipt supplies the pin. `/tidy-memory status` reads the generated `source-revision.json` shipped with the package without invoking Git for revision reporting, so the running installation can be compared with that receipt. The supported static-bank configuration performs no Git probing at startup; optional dynamic bank routing with project scope may inspect local Git metadata but does not contact a remote.
 
-From an existing local checkout of this repository:
+From an existing local checkout of the reviewed commit:
 
 ```bash
+npm run revision:embed --workspace @mobrienv/pi-tidy-memory
 pi install ./packages/pi-tidy-memory
 ```
 
@@ -92,9 +95,9 @@ Both switches default to `false`. A shared runtime guard blocks common token, cr
 /tidy-memory check
 ```
 
-Status shows the package version, source revision when installed from Git, backend, host, bank, credential-variable presence, and lifecycle switches. Check performs an authenticated `GET` against the active bank's memory-list endpoint with `limit=0`; it returns no memory content and writes nothing. Neither command reveals credentials.
+Status shows the package version, embedded source revision, backend, host, bank, credential-variable presence, and lifecycle switches. Check performs an authenticated `GET` against the active bank's memory-list endpoint with `limit=0`; it returns no memory content and writes nothing. Neither command reveals credentials.
 
-Packed artifacts expose one dependency-light smoke path:
+Packed artifacts expose one offline smoke path:
 
 ```bash
 npm run smoke

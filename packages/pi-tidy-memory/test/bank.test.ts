@@ -30,20 +30,43 @@ function runGit(args: string[]): void {
 }
 
 test("static banks remain unchanged and accept an optional prefix", () => {
+  let gitCalls = 0;
+  const forbiddenGit = () => {
+    gitCalls += 1;
+    throw new Error("static bank resolution must not invoke Git");
+  };
   assert.deepEqual(
     new HindsightBankResolver(config(), {
       cwd: "/work/project",
-      git: noGit,
+      git: forbiddenGit,
     }).resolve(),
     { bankId: "pi-coding", source: "static" }
   );
   assert.deepEqual(
     new HindsightBankResolver(config({ bankIdPrefix: "prod" }), {
       cwd: "/work/project",
-      git: noGit,
+      git: forbiddenGit,
     }).resolve(),
     { bankId: "prod::pi-coding", source: "static" }
   );
+  assert.equal(gitCalls, 0);
+});
+
+test("dynamic banks without project scope do not invoke Git", () => {
+  let gitCalls = 0;
+  const resolver = new HindsightBankResolver(
+    config({ dynamicBankId: true, dynamicBankGranularity: ["agent"] }),
+    {
+      cwd: "/work/project",
+      env: {},
+      git: () => {
+        gitCalls += 1;
+        throw new Error("agent-only bank resolution must not invoke Git");
+      },
+    }
+  );
+  assert.deepEqual(resolver.resolve(), { bankId: "pi", source: "dynamic" });
+  assert.equal(gitCalls, 0);
 });
 
 test("dynamic banks compose documented context fields in configured order", () => {

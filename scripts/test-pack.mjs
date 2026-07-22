@@ -174,10 +174,19 @@ try {
     if (!readFileSync(installedCore, "utf8").includes("summarizeToolActivity"))
       throw new Error(`${name} installed without a usable tidy core`);
     if (name === "@mobrienv/pi-tidy-memory") {
-      execFileSync("npm", ["run", "smoke", "--prefix", join(installDir, "node_modules", ...name.split("/"))], {
-        cwd: root,
-        stdio: "pipe",
-      });
+      execFileSync(
+        "npm",
+        [
+          "run",
+          "smoke",
+          "--prefix",
+          join(installDir, "node_modules", ...name.split("/")),
+        ],
+        {
+          cwd: root,
+          stdio: "pipe",
+        }
+      );
     }
   }
 } finally {

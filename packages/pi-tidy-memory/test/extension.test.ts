@@ -502,14 +502,12 @@ test("status and bank access commands are useful without exposing credentials", 
   ]);
   await command.handler("  STATUS  ", ctx);
   assert.deepEqual(notes[0], {
-    value:
-      `${revisionLine}\nenabled backend=hindsight host=memory.example.test bank=pi auth=none autoRecall=true autoRetain=true`,
+    value: `${revisionLine}\nenabled backend=hindsight host=memory.example.test bank=pi auth=none autoRecall=true autoRetain=true`,
     level: "info",
   });
   await command.handler("check", ctx);
   assert.deepEqual(notes[1], {
-    value:
-      `${revisionLine}\nenabled backend=hindsight host=memory.example.test bank=pi auth=none autoRecall=true autoRetain=true\ncheck=ok ok`,
+    value: `${revisionLine}\nenabled backend=hindsight host=memory.example.test bank=pi auth=none autoRecall=true autoRetain=true\ncheck=ok ok`,
     level: "info",
   });
   assert.deepEqual(calls.at(-1), { op: "health" });

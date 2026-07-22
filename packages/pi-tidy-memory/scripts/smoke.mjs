@@ -15,7 +15,12 @@ if (
 ) {
   throw new Error("native Pi adapter entry is not configured");
 }
-for (const path of ["index.ts", "revision.ts", "dist/index.js", "dist/revision.js"]) {
+for (const path of [
+  "index.ts",
+  "revision.ts",
+  "dist/index.js",
+  "dist/revision.js",
+]) {
   await readFile(join(root, path));
 }
 

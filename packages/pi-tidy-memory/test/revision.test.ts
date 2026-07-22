@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
-import * as revisionModule from "../revision.js";
+import { formatMemoryRevision, resolveMemoryRevision } from "../revision.js";
 
 test("resolves package version and immutable Git source revision", () => {
   const root = "/checkout/packages/pi-tidy-memory";
-  const resolveMemoryRevision = (revisionModule as any).resolveMemoryRevision;
 
-  const revision = resolveMemoryRevision?.({
+  const revision = resolveMemoryRevision({
     moduleUrl: pathToFileURL(`${root}/revision.ts`).href,
     readFile(path: string) {
       assert.equal(path, `${root}/package.json`);
@@ -32,14 +31,6 @@ test("sanitizes malformed or absent package and source metadata", () => {
   const moduleUrl = pathToFileURL(
     "/checkout/packages/pi-tidy-memory/revision.ts"
   ).href;
-  const resolveMemoryRevision = (
-    revisionModule as typeof revisionModule & {
-      resolveMemoryRevision: (dependencies: unknown) => {
-        packageVersion: string;
-        sourceRevision: string;
-      };
-    }
-  ).resolveMemoryRevision;
 
   const malformed = resolveMemoryRevision({
     moduleUrl,
@@ -55,7 +46,7 @@ test("sanitizes malformed or absent package and source metadata", () => {
     sourceRevision: "unavailable",
   });
   assert.doesNotMatch(
-    revisionModule.formatMemoryRevision(malformed),
+    formatMemoryRevision(malformed),
     /credential|example\.com/
   );
 

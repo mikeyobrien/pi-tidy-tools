@@ -32,7 +32,8 @@ function defaultGit(cwd: string): string {
 export function resolveMemoryRevision(
   dependencies: MemoryRevisionDependencies = {}
 ): MemoryRevision {
-  const readFile = dependencies.readFile ?? ((path) => readFileSync(path, "utf8"));
+  const readFile =
+    dependencies.readFile ?? ((path) => readFileSync(path, "utf8"));
   const moduleDirectory = dirname(
     fileURLToPath(dependencies.moduleUrl ?? import.meta.url)
   );

@@ -16,7 +16,8 @@ export interface MemoryRevisionDependencies {
   git?: (cwd: string) => string;
 }
 
-const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/;
+const VERSION =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const GIT_REVISION = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 function defaultGit(cwd: string): string {
@@ -43,6 +44,7 @@ export function resolveMemoryRevision(
       if (
         manifest?.name === MEMORY_PACKAGE_NAME &&
         typeof manifest.version === "string" &&
+        manifest.version.length <= 64 &&
         VERSION.test(manifest.version)
       ) {
         packageRoot = candidate;

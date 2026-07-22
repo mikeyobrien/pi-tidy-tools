@@ -27,3 +27,51 @@ test("resolves package version and immutable Git source revision", () => {
     sourceRevision: "abcdef0123456789abcdef0123456789abcdef01",
   });
 });
+
+test("sanitizes malformed or absent package and source metadata", () => {
+  const moduleUrl = pathToFileURL(
+    "/checkout/packages/pi-tidy-memory/revision.ts"
+  ).href;
+  const resolveMemoryRevision = (
+    revisionModule as typeof revisionModule & {
+      resolveMemoryRevision: (dependencies: unknown) => {
+        packageVersion: string;
+        sourceRevision: string;
+      };
+    }
+  ).resolveMemoryRevision;
+
+  const malformed = resolveMemoryRevision({
+    moduleUrl,
+    readFile: () =>
+      JSON.stringify({
+        name: "@mobrienv/pi-tidy-memory",
+        version: "not-a-version",
+      }),
+    git: () => "https://user:credential@example.com/private.git",
+  });
+  assert.deepEqual(malformed, {
+    packageVersion: "unknown",
+    sourceRevision: "unavailable",
+  });
+  assert.doesNotMatch(
+    revisionModule.formatMemoryRevision(malformed),
+    /credential|example\.com/
+  );
+
+  assert.deepEqual(
+    resolveMemoryRevision({
+      moduleUrl,
+      readFile: () => {
+        throw new Error("missing manifest");
+      },
+      git: () => {
+        throw new Error("missing git metadata");
+      },
+    }),
+    {
+      packageVersion: "unknown",
+      sourceRevision: "unavailable",
+    }
+  );
+});

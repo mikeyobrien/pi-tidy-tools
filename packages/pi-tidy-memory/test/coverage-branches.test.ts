@@ -303,7 +303,7 @@ test("extension active diagnostics and lifecycle failures warn once", async () =
     [{ value: "check", label: "check" }]
   );
   await active.commands.get("tidy-memory").handler("check", context);
-  assert.match(notes.at(-1)![0], /health=failed down/);
+  assert.match(notes.at(-1)![0], /check=failed down/);
   await active.events.get("before_agent_start")(
     { prompt: "question" },
     context
@@ -331,7 +331,7 @@ test("extension active diagnostics and lifecycle failures warn once", async () =
   };
   const brokenHealth = registerExtension(baseConfig, throwing);
   await brokenHealth.commands.get("tidy-memory").handler("check", context);
-  assert.match(notes.at(-1)![0], /health=failed health boom/);
+  assert.match(notes.at(-1)![0], /check=failed health boom/);
 
   const unsupported = registerExtension({
     ...baseConfig,

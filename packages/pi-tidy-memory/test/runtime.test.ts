@@ -64,6 +64,46 @@ test("selects an injected backend factory without coupling tools to Hindsight", 
   assert.deepEqual(calls, ["health", "recall", "retain", "reflect", "close"]);
 });
 
+test("blocks obvious credentials before retention reaches the backend", async () => {
+  const retained: string[] = [];
+  const backend: MemoryBackend = {
+    type: "fake",
+    label: "Fake",
+    capabilities: new Set(),
+    async health() {
+      return { ok: true, message: "ok" };
+    },
+    async recall() {
+      return { memories: [] };
+    },
+    async retain(input) {
+      retained.push(input.content);
+      return { accepted: 1, deferred: false };
+    },
+    async reflect() {
+      return { text: "" };
+    },
+  };
+  const runtime = new MemoryRuntime(config, {
+    factories: [{ type: "hindsight", create: () => backend }],
+  });
+  const obviousCredentials = [
+    `api_key=${"x".repeat(24)}`,
+    `Authorization: Bearer ${"x".repeat(24)}`,
+    "-----BEGIN PRIVATE KEY-----",
+  ];
+  for (const content of obviousCredentials) {
+    await assert.rejects(
+      () => runtime.retain({ content }),
+      /retention blocked: content appears to contain a credential/i
+    );
+  }
+  assert.deepEqual(retained, []);
+
+  await runtime.retain({ content: "Prefer short-lived credentials." });
+  assert.deepEqual(retained, ["Prefer short-lived credentials."]);
+});
+
 test("runtime close propagates backend cleanup failure", async () => {
   const factory: BackendFactory = {
     type: "hindsight",
@@ -210,6 +250,21 @@ test("extracts only the last user and assistant text within bounds", () => {
   assert.equal(bounded.length, 256);
   assert.match(bounded, /Assistant:\nfinal answer$/);
   assert.equal(settledExchange([], 100), undefined);
+});
+
+test("skips failed assistant outcomes from settled exchanges", () => {
+  for (const stopReason of ["error", "aborted"] as const) {
+    assert.equal(
+      settledExchange(
+        [
+          { role: "user", content: "question" },
+          { role: "assistant", content: "partial answer", stopReason },
+        ],
+        1_000
+      ),
+      undefined
+    );
+  }
 });
 
 test("extractor accepts native message forms and rejects tool/custom traffic", () => {

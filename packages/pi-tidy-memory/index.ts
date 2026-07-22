@@ -143,7 +143,7 @@ export function createMemoryExtension(
 
     pi.registerCommand("tidy-memory", {
       description:
-        "Show pi-tidy-memory configuration and optionally check backend health",
+        "Show pi-tidy-memory configuration and optionally verify bank access",
       getArgumentCompletions: (prefix: string) =>
         ["status", "check"]
           .filter((value) => value.startsWith(prefix.trim().toLowerCase()))
@@ -187,14 +187,14 @@ export function createMemoryExtension(
           return;
         }
         try {
-          const health = await requireRuntime(ctx).health();
+          const check = await requireRuntime(ctx).health();
           ctx.ui.notify(
-            `${summary}\nhealth=${health.ok ? "ok" : "failed"} ${health.message}`,
-            health.ok ? "info" : "warning"
+            `${summary}\ncheck=${check.ok ? "ok" : "failed"} ${check.message}`,
+            check.ok ? "info" : "warning"
           );
         } catch (error) {
           ctx.ui.notify(
-            `${summary}\nhealth=failed ${error instanceof Error ? error.message : String(error)}`,
+            `${summary}\ncheck=failed ${error instanceof Error ? error.message : String(error)}`,
             "error"
           );
         }

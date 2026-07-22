@@ -67,6 +67,8 @@ Create `~/.pi/agent/pi-tidy-memory/config.json`:
 
 `apiKeyEnv` names the credential variable. The package checks the process environment first, then the optional `envFile`. It never prints the credential. Inline `apiKey`, `token`, and custom headers are rejected.
 
+Configuration is strict: boolean fields must be JSON booleans, and unknown keys in the top-level, lifecycle, and Hindsight backend objects are rejected instead of being silently ignored.
+
 `dynamicBankId` follows Hindsight's coding-agent convention. The fields in `dynamicBankGranularity` are joined with `::`; the example resolves to `pi::<project>`. Supported fields are `agent`, `project`, `session`, `channel`, and `user`. Project identity uses the Git repository name, and linked worktrees share the main repository bank by default. Unrelated repositories with the same directory name need `directoryBankMap` overrides to avoid sharing a bank. `bankId` remains the static fallback when dynamic mode is off. Optional `bankIdPrefix` namespaces every resolved bank, while `directoryBankMap` can bind absolute directories to explicit bank IDs. Channel and user fields come from `HINDSIGHT_CHANNEL_ID` and `HINDSIGHT_USER_ID`; session comes from Pi's active session.
 
 A newly resolved ID creates a new empty Hindsight bank. Existing static-bank memories are not moved automatically. Confirm the active value with `/tidy-memory status` before retaining data.
@@ -88,9 +90,9 @@ Each tool renders as one compact line. Expand a result in Pi to inspect recalled
 
 ## Automatic memory
 
-Automatic recall fetches once in `before_agent_start`, then injects the result ephemerally through Pi's `context` hook. It is never written into the session transcript. Automatic retain waits for `agent_settled`, reads the settled session branch, strips tool traffic, and saves the final user/assistant exchange.
+Automatic recall fetches once in `before_agent_start`, then injects the result ephemerally through Pi's `context` hook. It is never written into the session transcript. Automatic retain waits for `agent_settled`, reads the settled session branch, strips tool traffic, and saves the final user/assistant exchange. Assistant outcomes marked `error` or `aborted` are not retained.
 
-Both switches default to `false`. Automatic retention sends conversation text to the configured backend, so turn it on only after reviewing the privacy boundary and bank scope. Manual tools remain available when automatic behavior is off.
+Both switches default to `false`. A shared runtime guard blocks common token, credential-assignment, bearer-header, and private-key patterns before either manual or automatic retention reaches a backend. This is a narrow leak-prevention check, not a PII classifier. Automatic retention still sends conversation text to the configured backend, so turn it on only after reviewing the privacy boundary and bank scope. Manual tools remain available when automatic behavior is off.
 
 ## Diagnostics
 
@@ -99,7 +101,7 @@ Both switches default to `false`. Automatic retention sends conversation text to
 /tidy-memory check
 ```
 
-Status shows the backend, host, bank, credential-variable presence, and lifecycle switches. Check also calls the backend health endpoint. Neither command reveals credentials.
+Status shows the backend, host, bank, credential-variable presence, and lifecycle switches. Check performs an authenticated `GET` against the active bank's memory-list endpoint with `limit=0`; it returns no memory content and writes nothing. Neither command reveals credentials.
 
 ## Documentation
 

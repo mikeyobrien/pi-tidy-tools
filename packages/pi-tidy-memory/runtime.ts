@@ -16,6 +16,38 @@ export interface RuntimeDependencies {
   factories?: BackendFactory[];
 }
 
+const OBVIOUS_CREDENTIAL_PATTERNS = [
+  /-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----/i,
+  /\bauthorization\s*:\s*bearer\s+[A-Za-z0-9._~+/=-]{16,}/i,
+  /\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd|secret)\s*=\s*["'`]?[^\s"'`;,}]{8,}/i,
+  /["'](?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd|secret)["']\s*:\s*["'][^"'\r\n]{8,}["']/i,
+  /\bgh[pousr]_[A-Za-z0-9]{20,}\b/,
+  /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/,
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/,
+  /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/,
+  /\bAIza[0-9A-Za-z_-]{35}\b/,
+] as const;
+
+export function containsObviousCredential(value: string): boolean {
+  return OBVIOUS_CREDENTIAL_PATTERNS.some((pattern) => pattern.test(value));
+}
+
+function assertRetentionSafe(input: RetainInput): void {
+  const values = [
+    input.content,
+    input.context,
+    input.occurredAt,
+    input.documentId,
+    ...(input.tags ?? []),
+    ...Object.values(input.metadata ?? {}),
+  ];
+  if (values.some((value) => value && containsObviousCredential(value))) {
+    throw new Error(
+      "Memory retention blocked: content appears to contain a credential"
+    );
+  }
+}
+
 export class MemoryRuntime {
   readonly backend: MemoryBackend;
 
@@ -41,7 +73,8 @@ export class MemoryRuntime {
     return this.backend.recall(input, signal);
   }
 
-  retain(input: RetainInput, signal?: AbortSignal) {
+  async retain(input: RetainInput, signal?: AbortSignal) {
+    assertRetentionSafe(input);
     return this.backend.retain(input, signal);
   }
 
@@ -164,7 +197,13 @@ export function settledExchange(
       user = messageText(message);
       assistant = "";
     }
-    if (role === "assistant" && user) assistant = messageText(message);
+    if (role === "assistant" && user) {
+      const stopReason = (message as { stopReason?: unknown }).stopReason;
+      assistant =
+        stopReason === "error" || stopReason === "aborted"
+          ? ""
+          : messageText(message);
+    }
   }
   if (!user.trim() || !assistant.trim()) return undefined;
   const userText = sanitizeTerminalText(user.trim());

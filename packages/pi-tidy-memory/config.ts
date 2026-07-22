@@ -55,13 +55,55 @@ const BANK_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const BANK_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const DYNAMIC_BANK_FIELD_SET = new Set<string>(DYNAMIC_BANK_FIELDS);
 const BUDGETS = new Set<MemoryBudget>(["low", "mid", "high"]);
+const CONFIG_KEYS = new Set([
+  "version",
+  "enabled",
+  "backend",
+  "requestTimeoutMs",
+  "lifecycle",
+]);
+const LIFECYCLE_KEYS = new Set([
+  "autoRecall",
+  "autoRetain",
+  "maxRecallTokens",
+  "maxRetainChars",
+]);
+const HINDSIGHT_KEYS = new Set([
+  "type",
+  "baseUrl",
+  "bankId",
+  "dynamicBankId",
+  "dynamicBankGranularity",
+  "bankIdPrefix",
+  "agentName",
+  "resolveWorktrees",
+  "directoryBankMap",
+  "apiKeyEnv",
+  "envFile",
+  "recallBudget",
+  "recallTypes",
+  "asyncRetain",
+]);
 
 function object(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function bool(value: unknown, fallback: boolean): boolean {
-  return typeof value === "boolean" ? value : fallback;
+function rejectUnknownKeys(
+  value: Record<string, unknown>,
+  allowed: ReadonlySet<string>,
+  field: string
+): void {
+  const unknown = Object.keys(value).find((key) => !allowed.has(key));
+  if (unknown !== undefined) {
+    throw new Error(`${field} contains unknown key "${unknown}"`);
+  }
+}
+
+function bool(value: unknown, fallback: boolean, field: string): boolean {
+  if (value === undefined) return fallback;
+  if (typeof value === "boolean") return value;
+  throw new Error(`${field} must be a boolean`);
 }
 
 function boundedInt(
@@ -156,6 +198,7 @@ function parseHindsight(value: unknown): HindsightBackendConfig {
       "inline credentials are forbidden; use apiKeyEnv and optional envFile"
     );
   }
+  rejectUnknownKeys(value, HINDSIGHT_KEYS, "backend");
   const baseUrl = parseBaseUrl(value.baseUrl);
   const parsedUrl = new URL(baseUrl);
   const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(
@@ -230,7 +273,7 @@ function parseHindsight(value: unknown): HindsightBackendConfig {
     ...(value.envFile ? { envFile: value.envFile } : {}),
     recallBudget,
     recallTypes,
-    asyncRetain: bool(value.asyncRetain, true),
+    asyncRetain: bool(value.asyncRetain, true, "backend.asyncRetain"),
   };
 }
 
@@ -260,15 +303,17 @@ export function parseMemoryConfig(raw: unknown): MemoryConfig {
   if (!object(raw)) throw new Error("config must be a JSON object");
   if (raw.version !== MEMORY_CONFIG_VERSION)
     throw new Error(`config.version must be ${MEMORY_CONFIG_VERSION}`);
+  rejectUnknownKeys(raw, CONFIG_KEYS, "config");
   const lifecycle = object(raw.lifecycle) ? raw.lifecycle : {};
+  rejectUnknownKeys(lifecycle, LIFECYCLE_KEYS, "lifecycle");
   return {
     version: MEMORY_CONFIG_VERSION,
-    enabled: bool(raw.enabled, true),
+    enabled: bool(raw.enabled, true, "config.enabled"),
     backend: parseBackend(raw.backend),
     requestTimeoutMs: boundedInt(raw.requestTimeoutMs, 15_000, 1_000, 60_000),
     lifecycle: {
-      autoRecall: bool(lifecycle.autoRecall, false),
-      autoRetain: bool(lifecycle.autoRetain, false),
+      autoRecall: bool(lifecycle.autoRecall, false, "lifecycle.autoRecall"),
+      autoRetain: bool(lifecycle.autoRetain, false, "lifecycle.autoRetain"),
       maxRecallTokens: boundedInt(lifecycle.maxRecallTokens, 1_024, 128, 4_096),
       maxRetainChars: boundedInt(lifecycle.maxRetainChars, 16_000, 256, 64_000),
     },

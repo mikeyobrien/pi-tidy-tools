@@ -266,6 +266,50 @@ test("configuration errors identify the exact rejected contract", () => {
   }
 });
 
+test("rejects malformed boolean values instead of applying defaults", () => {
+  const cases: Array<[unknown, string]> = [
+    [{ ...valid, enabled: "yes" }, "config.enabled must be a boolean"],
+    [
+      { ...valid, backend: { ...valid.backend, asyncRetain: "yes" } },
+      "backend.asyncRetain must be a boolean",
+    ],
+    [
+      { ...valid, lifecycle: { ...valid.lifecycle, autoRecall: "yes" } },
+      "lifecycle.autoRecall must be a boolean",
+    ],
+    [
+      { ...valid, lifecycle: { ...valid.lifecycle, autoRetain: 1 } },
+      "lifecycle.autoRetain must be a boolean",
+    ],
+  ];
+  for (const [raw, message] of cases) {
+    assert.throws(() => parseMemoryConfig(raw), { name: "Error", message });
+  }
+});
+
+test("rejects unknown keys in known configuration objects", () => {
+  const cases: Array<[unknown, string]> = [
+    [{ ...valid, enabeld: true }, 'config contains unknown key "enabeld"'],
+    [
+      {
+        ...valid,
+        lifecycle: { ...valid.lifecycle, autoRacall: true },
+      },
+      'lifecycle contains unknown key "autoRacall"',
+    ],
+    [
+      {
+        ...valid,
+        backend: { ...valid.backend, recellBudget: "low" },
+      },
+      'backend contains unknown key "recellBudget"',
+    ],
+  ];
+  for (const [raw, message] of cases) {
+    assert.throws(() => parseMemoryConfig(raw), { name: "Error", message });
+  }
+});
+
 test("configuration defaults and integer bounds are exact", () => {
   const defaults = parseMemoryConfig({
     version: 1,
@@ -296,10 +340,8 @@ test("configuration defaults and integer bounds are exact", () => {
   });
   const bounded = parseMemoryConfig({
     ...valid,
-    enabled: "yes",
     requestTimeoutMs: 999,
     lifecycle: {
-      autoRecall: "yes",
       autoRetain: true,
       maxRecallTokens: 9_999,
       maxRetainChars: 255,

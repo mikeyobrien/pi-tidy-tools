@@ -470,7 +470,7 @@ test("automatic lifecycle uses exact bounded recall and retention payloads", asy
   assert.deepEqual(calls[2], { op: "close" });
 });
 
-test("status and health commands are useful without exposing credentials", async () => {
+test("status and bank access commands are useful without exposing credentials", async () => {
   const { commands, calls } = setup();
   const notes: Array<{ value: string; level: string }> = [];
   const ctx = {
@@ -483,7 +483,7 @@ test("status and health commands are useful without exposing credentials", async
   const command = commands.get("tidy-memory");
   assert.equal(
     command.description,
-    "Show pi-tidy-memory configuration and optionally check backend health"
+    "Show pi-tidy-memory configuration and optionally verify bank access"
   );
   assert.deepEqual(command.getArgumentCompletions(""), [
     { value: "status", label: "status" },
@@ -501,7 +501,7 @@ test("status and health commands are useful without exposing credentials", async
   await command.handler("check", ctx);
   assert.deepEqual(notes[1], {
     value:
-      "enabled backend=hindsight host=memory.example.test bank=pi auth=none autoRecall=true autoRetain=true\nhealth=ok ok",
+      "enabled backend=hindsight host=memory.example.test bank=pi auth=none autoRecall=true autoRetain=true\ncheck=ok ok",
     level: "info",
   });
   assert.deepEqual(calls.at(-1), { op: "health" });

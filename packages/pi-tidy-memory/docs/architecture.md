@@ -19,7 +19,7 @@ Pi tools and lifecycle hooks
 
 A backend implements four operations:
 
-- `health` checks whether the service is usable.
+- `health` checks whether the configured backend target is usable. Hindsight verifies authenticated access to the active bank with a zero-item read.
 - `recall` returns normalized memory records.
 - `retain` accepts one durable item and returns a receipt.
 - `reflect` asks the backend to synthesize an answer from stored knowledge.
@@ -38,7 +38,7 @@ retain
 reflect
 ```
 
-Manual retention is deliberately conservative. Its Pi prompt guidance permits retention only when the user asks to remember durable information or a standing policy requires it. Credentials, raw tool output, and transient conversation should not enter memory.
+Manual retention is deliberately conservative. Its Pi prompt guidance permits retention only when the user asks to remember durable information or a standing policy requires it. A backend-neutral runtime guard blocks obvious credential assignments, bearer tokens, known token prefixes, and private-key headers before a retain call reaches any adapter. Raw tool output and transient conversation should not enter memory.
 
 Recall and reflection output is historical evidence, not authority. The package labels it as untrusted and tells the model to verify consequential claims against the current task, repository, and user instructions.
 
@@ -61,7 +61,7 @@ Automatic retain is also off by default. It sends conversation text to the confi
 
 When enabled, the package waits for `agent_settled`. It reads Pi's settled session branch rather than a low-level `agent_end` event. This matters after retries and overflow compaction: the durable branch still contains the originating user prompt and final assistant response.
 
-The extractor keeps only the latest user and assistant text. It excludes tool calls, tool results, custom recall messages, images, and abandoned low-level runs. A stable document ID derived from the session and content makes retries idempotent.
+The extractor keeps only the latest user and assistant text. It excludes assistant messages whose final `stopReason` is `error` or `aborted`, along with tool calls, tool results, custom recall messages, images, and abandoned low-level runs. A stable document ID derived from the session and content makes retries idempotent.
 
 This is best-effort retention, not an offline queue. A failed retain is reported once during the session and is not replayed after restart.
 
@@ -85,6 +85,8 @@ Hindsight credentials are referenced by environment-variable name. The package c
 
 Bearer credentials require HTTPS unless the destination is loopback (`localhost`, `127.0.0.1`, or `::1`). Status output reports only the variable name and whether a value was found.
 
+Manual and automatic retain calls share the same narrow obvious-credential detector. It blocks rather than redacts so the original content never reaches the backend. It is defense in depth, not comprehensive secret or PII classification.
+
 ### Backend responses
 
 Hindsight responses are streamed through a 2 MB limit. The reader is canceled as soon as the limit is crossed; the package does not fully buffer an oversized chunked response. Response shapes are validated before crossing the backend boundary.
@@ -107,7 +109,7 @@ Pre-aborted requests never reach the backend. Active requests honor cancellation
 ## Known limits
 
 - External memory is not rolled back when a Pi branch or session is deleted.
-- Automatic retention does not classify durability or detect every possible secret.
+- Automatic retention does not classify durability, PII, or every possible secret.
 - A typo in a bank ID can create a separate Hindsight bank.
 - Async Hindsight retain receipts are accepted but not polled by this package.
 - Project isolation is determined by bank and tag configuration, not inferred automatically.

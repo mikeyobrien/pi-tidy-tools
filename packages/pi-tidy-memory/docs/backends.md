@@ -61,6 +61,8 @@ Create `~/.pi/agent/pi-tidy-memory/config.json`:
 
 If `apiKeyEnv` is set, non-loopback HTTP is rejected. Use HTTPS for LAN and remote servers.
 
+The parser rejects malformed boolean values and unknown keys in the top-level, lifecycle, and built-in Hindsight configuration objects. Generic third-party backend objects retain their adapter-specific fields.
+
 ### Environment file
 
 The env file uses ordinary assignment syntax:
@@ -75,12 +77,12 @@ The process environment wins over the file. This permits credential rotation wit
 
 ### API mapping
 
-| Memory operation | Hindsight request                                 |
-| ---------------- | ------------------------------------------------- |
-| Health           | `GET /health`                                     |
-| Recall           | `POST /v1/default/banks/{bankId}/memories/recall` |
-| Retain           | `POST /v1/default/banks/{bankId}/memories`        |
-| Reflect          | `POST /v1/default/banks/{bankId}/reflect`         |
+| Memory operation | Hindsight request                                      |
+| ---------------- | ------------------------------------------------------ |
+| Bank access      | `GET /v1/default/banks/{bankId}/memories/list?limit=0` |
+| Recall           | `POST /v1/default/banks/{bankId}/memories/recall`      |
+| Retain           | `POST /v1/default/banks/{bankId}/memories`             |
+| Reflect          | `POST /v1/default/banks/{bankId}/reflect`              |
 
 The bank ID is URL-encoded. Hindsight creates a bank with default settings on first use, so verify the value with `/tidy-memory status` before retaining data.
 
@@ -115,7 +117,7 @@ Use synchronous retention during setup or smoke testing when immediate recall mu
 
 ### Verification
 
-After changing configuration, reload Pi and check the service:
+After changing configuration, reload Pi and verify authenticated read access to the active bank:
 
 ```text
 /reload

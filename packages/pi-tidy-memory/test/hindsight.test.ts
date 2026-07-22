@@ -30,6 +30,30 @@ function json(value: unknown, status = 200): Response {
   });
 }
 
+test("diagnostic performs an authenticated bank-scoped read without writing", async () => {
+  const requests: Array<{ url: string; init: RequestInit }> = [];
+  const client = backend((async (input, init) => {
+    requests.push({ url: String(input), init: init ?? {} });
+    return json({ items: [], total: 0, limit: 0, offset: 0 });
+  }) as typeof globalThis.fetch);
+
+  assert.deepEqual(await client.health(), {
+    ok: true,
+    message: "bank readable; 0 memories",
+  });
+  assert.equal(requests.length, 1);
+  assert.equal(
+    requests[0].url,
+    "https://memory.example.test/v1/default/banks/pi%2Fcoding/memories/list?limit=0"
+  );
+  assert.equal(requests[0].init.method, "GET");
+  assert.equal(requests[0].init.body, undefined);
+  assert.equal(
+    new Headers(requests[0].init.headers).get("Authorization"),
+    "Bearer secret"
+  );
+});
+
 test("maps health recall retain and reflect to Hindsight 0.8 paths", async () => {
   const requests: Array<{ url: string; init: RequestInit; body?: any }> = [];
   const fake = async (
@@ -40,8 +64,8 @@ test("maps health recall retain and reflect to Hindsight 0.8 paths", async () =>
     const body =
       typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
     requests.push({ url, init: init ?? {}, body });
-    if (url.endsWith("/health"))
-      return json({ status: "healthy", database: "connected" });
+    if (url.endsWith("/memories/list?limit=0"))
+      return json({ items: [], total: 1, limit: 0, offset: 0 });
     if (url.endsWith("/memories/recall"))
       return json({
         results: [
@@ -72,7 +96,7 @@ test("maps health recall retain and reflect to Hindsight 0.8 paths", async () =>
   );
   assert.deepEqual(await client.health(), {
     ok: true,
-    message: "healthy; database connected",
+    message: "bank readable; 1 memories",
   });
   assert.deepEqual(
     (
@@ -108,7 +132,10 @@ test("maps health recall retain and reflect to Hindsight 0.8 paths", async () =>
     "The migration followed two failures."
   );
 
-  assert.equal(requests[0].url, "https://memory.example.test/health");
+  assert.equal(
+    requests[0].url,
+    "https://memory.example.test/v1/default/banks/pi%2Fcoding/memories/list?limit=0"
+  );
   assert.equal(requests[0].init.method, "GET");
   assert.equal(
     requests[1].url,

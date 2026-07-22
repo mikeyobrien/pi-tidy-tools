@@ -49,6 +49,12 @@ Create `~/.pi/agent/pi-tidy-memory/config.json`:
     "recallTypes": ["observation", "world", "experience"],
     "asyncRetain": false
   },
+  "provenance": {
+    "user": "your-user-id",
+    "agent": "pi",
+    "repository": "owner/repository",
+    "source": "pi-tidy-memory"
+  },
   "requestTimeoutMs": 15000,
   "lifecycle": {
     "autoRecall": false,
@@ -65,6 +71,8 @@ Configuration is strict: boolean fields must be JSON booleans, and unknown keys 
 
 This integration intentionally uses the single static bank `mobrienv` with `dynamicBankId: false`. Do not add a prefix, granularity, or directory map: changing the resolved ID creates or selects another Hindsight bank rather than migrating the existing one. Confirm `bank=mobrienv` with `/tidy-memory status` before retaining data.
 
+`provenance` supplies metadata defaults for new writes. `agent` defaults to `pi` and `source` defaults to `pi-tidy-memory`; `user` and the canonical `owner/repository` are optional. The extension adds the actual `manual` or `automatic` mode, active Pi session, and timestamp. Automatic writes use the originating user-message time and a document identity derived from Pi's persisted assistant entry. Manual writes use an explicit `occurredAt` when supplied and otherwise use the current time.
+
 Synchronous retention is also intentional. A successful `retain` result means Hindsight completed the request; pi-tidy-memory does not operate an outbox, poll operation receipts, replay writes after restart, or run a retry service.
 
 Reload Pi after changing the file:
@@ -76,7 +84,7 @@ Reload Pi after changing the file:
 
 ## Tools
 
-- `recall` searches durable memory. Returned text is marked as untrusted historical data so the model does not mistake old content for current instructions.
+- `recall` searches durable memory. Returned text and bounded provenance (`context`, occurrence time, tags, and metadata) are marked as untrusted historical data so the model does not mistake old content for current instructions.
 - `retain` stores one self-contained fact, decision, preference, or lesson. Its prompt guidance limits use to explicit requests or a standing memory policy.
 - `reflect` asks Hindsight to answer temporal, causal, or multi-hop questions over retained knowledge.
 
@@ -84,7 +92,7 @@ Each tool renders as one compact line. Expand a result in Pi to inspect recalled
 
 ## Automatic memory
 
-Automatic recall fetches once in `before_agent_start`, then injects the result ephemerally through Pi's `context` hook. It is never written into the session transcript. Automatic retain waits for `agent_settled`, reads the settled session branch, strips tool traffic, and saves the final user/assistant exchange. Assistant outcomes marked `error` or `aborted` are not retained.
+Automatic recall fetches once in `before_agent_start`, then injects the result ephemerally through Pi's `context` hook. It is never written into the session transcript. Automatic retain waits for `agent_settled`, reads the settled session branch, strips tool traffic, and saves the final user/assistant exchange. Assistant outcomes marked `error` or `aborted` are not retained. Successful automatic retention requires the persisted assistant-entry ID; retries reuse the same backend document identity rather than hashing the exchange text.
 
 Both switches default to `false`. A shared runtime guard blocks common token, credential-assignment, bearer-header, and private-key patterns before either manual or automatic retention reaches a backend. This is a narrow leak-prevention check, not a PII classifier. Automatic retention still sends conversation text to the configured backend, so turn it on only after reviewing the privacy boundary and bank scope. Manual tools remain available when automatic behavior is off.
 

@@ -15,3 +15,6 @@
 - Report sanitized package and embedded source revision metadata in `/tidy-memory status` without executing Git for revision reporting.
 - Ship an `npm run smoke` check that loads the packed compiled extension and verifies its embedded full source revision while retaining the native Pi adapter entry.
 - Document externally receipted immutable commit pins plus upgrade, credential-rotation restart, and rollback procedures for the static `mobrienv` bank.
+- Add configurable user, agent, canonical-repository, and source provenance to new writes, with mode, session, and meaningful timestamps.
+- Preserve bounded context, occurrence time, tags, and metadata in model-visible recall while keeping the entire JSONL block explicitly untrusted.
+- Derive automatic retain document IDs from persisted Pi message identities so retries remain idempotent when serialized text changes.

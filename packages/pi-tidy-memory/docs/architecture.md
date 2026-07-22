@@ -61,7 +61,9 @@ Automatic retain is also off by default. It sends conversation text to the confi
 
 When enabled, the package waits for `agent_settled`. It reads Pi's settled session branch rather than a low-level `agent_end` event. This matters after retries and overflow compaction: the durable branch still contains the originating user prompt and final assistant response.
 
-The extractor keeps only the latest user and assistant text. It excludes assistant messages whose final `stopReason` is `error` or `aborted`, along with tool calls, tool results, custom recall messages, images, and abandoned low-level runs. A stable document ID derived from the session and content makes retries idempotent.
+The extractor keeps only the latest user and assistant text. It excludes assistant messages whose final `stopReason` is `error` or `aborted`, along with tool calls, tool results, custom recall messages, images, and abandoned low-level runs. A stable document ID derived from the Pi session and persisted assistant-entry ID makes retries idempotent even if text normalization changes. Automatic retention skips malformed synthetic branches that do not have a persisted message identity.
+
+Every new write carries configured user, agent, canonical repository, and source metadata when present, plus the actual manual/automatic mode and active Pi session. Automatic writes use the originating user-message timestamp; manual writes preserve an explicit timestamp or use the current time.
 
 The supported single-user profile uses synchronous Hindsight retention. It is still best-effort delivery, not an offline queue: a failed retain is reported once during the session and is not retried or replayed after restart. There is no outbox, polling worker, or recovery service.
 
@@ -69,9 +71,9 @@ The supported single-user profile uses synchronous Hindsight retention. It is st
 
 ### Recalled content
 
-Memory records are serialized as JSON Lines inside a marked block. Angle brackets in backend text are escaped, control sequences are removed, and space is reserved for the closing delimiter before any record is added. A record cannot close the wrapper by supplying `</long_term_memory>`.
+Memory records are serialized as JSON Lines inside a marked block. Each record may include a `provenance` object containing bounded context, occurrence time, tags, and metadata. Angle brackets in backend text are escaped, control sequences are removed, and space is reserved for the closing delimiter before any record is added. A record cannot close the wrapper by supplying `</long_term_memory>`.
 
-The wrapper and reflection output are capped at 32,000 characters. Recall accepts at most 100 normalized records, and each record's text is capped at 8,000 characters.
+The wrapper and reflection output are capped at 32,000 characters. Recall accepts at most 100 normalized records, and each record's text is capped at 8,000 characters. Per record, provenance context is capped at 512 characters, occurrence time at 64 characters, tags at 16 × 128 characters, and metadata at 16 entries with 64-character keys and 512-character values.
 
 These measures reduce accidental prompt injection. They do not make backend content trustworthy. A model can still be influenced by hostile prose inside a quoted value, so current user instructions and repository evidence remain authoritative.
 

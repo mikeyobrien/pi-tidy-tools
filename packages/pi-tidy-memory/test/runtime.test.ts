@@ -19,6 +19,7 @@ const config = {
     baseUrl: "https://example.test",
     bankId: "test",
   },
+  provenance: { agent: "pi", source: "pi-tidy-memory" },
   requestTimeoutMs: 1_000,
   lifecycle: {
     autoRecall: false,
@@ -197,6 +198,64 @@ test("memory context serializes only bounded safe records exactly", () => {
   assert.doesNotMatch(serialized, /"id":"100"/);
 });
 
+test("memory context preserves bounded provenance as untrusted JSONL data", () => {
+  const context = memoryContext([
+    {
+      id: "memory-1",
+      text: "Use the repository quality gates.",
+      kind: "world",
+      context: `repository:${"x".repeat(1_000)}`,
+      occurredAt: `${"2026-07-22T01:02:03.000Z"}${"x".repeat(100)}`,
+      tags: Array.from(
+        { length: 20 },
+        (_, index) => `tag-${index}:${"x".repeat(200)}`
+      ),
+      metadata: Object.fromEntries(
+        Array.from({ length: 20 }, (_, index) => [
+          `key-${index}`,
+          `${index}:${"x".repeat(700)}`,
+        ])
+      ),
+    },
+  ]);
+
+  assert.match(context, /^<long_term_memory format="jsonl" trust="untrusted">/);
+  const lines = context.split("\n");
+  const record = JSON.parse(lines[2]);
+  assert.equal(record.text, "Use the repository quality gates.");
+  assert.equal(record.provenance.context.length, 512);
+  assert.equal(record.provenance.occurredAt.length, 64);
+  assert.equal(record.provenance.tags.length, 16);
+  assert.ok(record.provenance.tags.every((tag: string) => tag.length <= 128));
+  assert.equal(Object.keys(record.provenance.metadata).length, 16);
+  assert.ok(
+    Object.values(record.provenance.metadata).every(
+      (value) => typeof value === "string" && value.length <= 512
+    )
+  );
+  assert.equal(lines.at(-1), "</long_term_memory>");
+  assert.ok(context.length <= 32_000);
+});
+
+test("memory context ignores malformed provenance fields from custom backends", () => {
+  const context = memoryContext([
+    {
+      id: "memory-1",
+      text: "Safe memory",
+      context: 42,
+      occurredAt: null,
+      tags: ["safe-tag", 2],
+      metadata: { safe: "value", unsafe: false },
+    } as any,
+  ]);
+
+  const record = JSON.parse(context.split("\n")[2]);
+  assert.deepEqual(record.provenance, {
+    tags: ["safe-tag"],
+    metadata: { safe: "value" },
+  });
+});
+
 test("extracts only the last user and assistant text within bounds", () => {
   const messages = [
     {
@@ -337,17 +396,17 @@ test("balanced truncation preserves both exchange sides", () => {
   assert.equal(tiny, "User:\nuser");
 });
 
-test("builds deterministic document ids", () => {
+test("builds deterministic document ids from persisted message identities", () => {
   assert.equal(
-    stableDocumentId("session", "content"),
-    stableDocumentId("session", "content")
+    stableDocumentId("session", "assistant-entry"),
+    stableDocumentId("session", "assistant-entry")
   );
   assert.notEqual(
-    stableDocumentId("session", "content"),
-    stableDocumentId("session", "other")
+    stableDocumentId("session", "assistant-entry"),
+    stableDocumentId("session", "other-entry")
   );
   assert.equal(
-    stableDocumentId("session", "content"),
-    "pi:session:ed7002b439e9ac84"
+    stableDocumentId("session", "assistant-entry"),
+    "pi:session:5dae7299680d3cdd"
   );
 });

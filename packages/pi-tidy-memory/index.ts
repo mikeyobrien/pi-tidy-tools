@@ -21,7 +21,7 @@ import {
 import {
   MemoryRuntime,
   memoryContext,
-  settledExchange,
+  settledExchangeRecord,
   stableDocumentId,
   toolRecallText,
   toolReflectText,
@@ -126,6 +126,18 @@ export function createMemoryExtension(
 
     const sessionId = (ctx?: any): string | undefined =>
       ctx?.sessionManager?.getSessionId?.();
+
+    const currentTimestamp = (): string =>
+      (dependencies.now?.() ?? new Date()).toISOString();
+
+    const retentionMetadata = (
+      mode: "manual" | "automatic",
+      activeSessionId: string
+    ): Record<string, string> => ({
+      ...configured!.provenance,
+      mode,
+      session: activeSessionId,
+    });
 
     const activeBank = (ctx?: any) =>
       bankResolver?.resolve({ sessionId: sessionId(ctx) });
@@ -279,8 +291,9 @@ export function createMemoryExtension(
         const output = await requireRuntime(ctx).retain(
           {
             ...params,
+            occurredAt: params.occurredAt ?? currentTimestamp(),
             documentId: `pi-tool:${sessionId}:${toolCallId}`,
-            metadata: { source: "pi-tidy-memory" },
+            metadata: retentionMetadata("manual", sessionId),
           },
           signal
         );
@@ -401,19 +414,20 @@ export function createMemoryExtension(
     pi.on("agent_settled", async (_event, ctx) => {
       try {
         if (!config.lifecycle.autoRetain) return;
-        const content = settledExchange(
+        const exchange = settledExchangeRecord(
           ctx.sessionManager.getBranch(),
           config.lifecycle.maxRetainChars
         );
-        if (!content) return;
+        if (!exchange?.messageId) return;
         const sessionId = ctx.sessionManager.getSessionId();
         await requireRuntime(ctx).retain(
           {
-            content,
+            content: exchange.content,
             context: `Pi session ${sessionId}`,
-            documentId: stableDocumentId(sessionId, content),
+            documentId: stableDocumentId(sessionId, exchange.messageId),
+            occurredAt: exchange.occurredAt ?? currentTimestamp(),
             tags: ["source:pi"],
-            metadata: { source: "pi-tidy-memory", mode: "automatic" },
+            metadata: retentionMetadata("automatic", sessionId),
           },
           lifecycleController.signal
         );

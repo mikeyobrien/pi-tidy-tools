@@ -31,6 +31,7 @@ const baseConfig = {
   version: 1 as const,
   enabled: true,
   backend: hindsight,
+  provenance: { agent: "pi", source: "pi-tidy-memory" },
   requestTimeoutMs: 1_000,
   lifecycle: {
     autoRecall: false,
@@ -293,8 +294,16 @@ test("extension active diagnostics and lifecycle failures warn once", async () =
     sessionManager: {
       getSessionId: () => "s",
       getBranch: () => [
-        { type: "message", message: { role: "user", content: "question" } },
-        { type: "message", message: { role: "assistant", content: "answer" } },
+        {
+          type: "message",
+          id: "user-entry",
+          message: { role: "user", content: "question" },
+        },
+        {
+          type: "message",
+          id: "assistant-entry",
+          message: { role: "assistant", content: "answer" },
+        },
       ],
     },
   };

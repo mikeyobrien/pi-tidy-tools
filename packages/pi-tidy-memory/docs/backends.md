@@ -23,6 +23,12 @@ Create `~/.pi/agent/pi-tidy-memory/config.json`:
     "recallTypes": ["observation", "world", "experience"],
     "asyncRetain": false
   },
+  "provenance": {
+    "user": "your-user-id",
+    "agent": "pi",
+    "repository": "owner/repository",
+    "source": "pi-tidy-memory"
+  },
   "requestTimeoutMs": 30000,
   "lifecycle": {
     "autoRecall": false,
@@ -50,6 +56,10 @@ Create `~/.pi/agent/pi-tidy-memory/config.json`:
 | `backend.recallBudget`           | no       | Hindsight retrieval budget: `low`, `mid`, or `high`; default `mid`  |
 | `backend.recallTypes`            | no       | Fact types requested from recall                                    |
 | `backend.asyncRetain`            | no       | Queue retains in Hindsight; default `false`                         |
+| `provenance.user`                | no       | Stable user identity added to new-write metadata                    |
+| `provenance.agent`               | no       | Agent identity; default `pi`                                        |
+| `provenance.repository`          | no       | Canonical `owner/name` repository identity                          |
+| `provenance.source`              | no       | Source identity; default `pi-tidy-memory`                           |
 | `requestTimeoutMs`               | no       | Per-request timeout, clamped to 1–60 seconds                        |
 | `lifecycle.autoRecall`           | no       | Recall before each submitted Pi request; default `false`            |
 | `lifecycle.autoRetain`           | no       | Retain the final exchange after settlement; default `false`         |
@@ -102,7 +112,9 @@ Every new ID creates a new empty bank; switching strategy does not migrate exist
 
 The package's manual tools accept tags. When tags are supplied to recall or reflect, the Hindsight adapter uses `all_strict`: every requested tag must be present and untagged memories are excluded. This makes tag-scoped reads conservative rather than inheriting Hindsight's untagged-inclusive default.
 
-Automatic retain adds `source:pi`; it does not infer a project tag. If automatic retention is enabled, the surrounding workflow still owns durability and privacy classification.
+All new retains include configured provenance metadata plus the actual mode and Pi session. Hindsight receives the occurrence time as its item `timestamp`. Automatic retention uses the originating user-message time and a document ID derived from the persisted assistant-entry ID; manual retention uses the tool-call ID. Retry writes therefore upsert the same Hindsight document without requiring full-session replay semantics.
+
+Automatic retain also adds `source:pi`; it does not infer a project tag. If automatic retention is enabled, the surrounding workflow still owns durability and privacy classification.
 
 ### Retention execution
 

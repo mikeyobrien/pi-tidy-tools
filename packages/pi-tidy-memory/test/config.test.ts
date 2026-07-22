@@ -39,6 +39,43 @@ test("parses defaults and normalizes Hindsight configuration", () => {
   assert.equal(config.lifecycle.maxRetainChars, 16_000);
 });
 
+test("parses configurable provenance with safe generic defaults", () => {
+  const defaults = parseMemoryConfig(valid);
+  assert.deepEqual(defaults.provenance, {
+    agent: "pi",
+    source: "pi-tidy-memory",
+  });
+
+  const configured = parseMemoryConfig({
+    ...valid,
+    provenance: {
+      user: "mikeyobrien",
+      agent: "pi-coding-agent",
+      repository: "mikeyobrien/pi-tidy-tools",
+      source: "pi-tidy-memory/native",
+    },
+  });
+  assert.deepEqual(configured.provenance, {
+    user: "mikeyobrien",
+    agent: "pi-coding-agent",
+    repository: "mikeyobrien/pi-tidy-tools",
+    source: "pi-tidy-memory/native",
+  });
+});
+
+test("rejects malformed provenance and non-canonical repository identities", () => {
+  for (const provenance of [
+    null,
+    { user: "" },
+    { agent: "pi\nagent" },
+    { repository: "https://github.com/mikeyobrien/pi-tidy-tools" },
+    { repository: "group/subgroup/repository" },
+    { source: "x".repeat(129) },
+  ]) {
+    assert.throws(() => parseMemoryConfig({ ...valid, provenance }));
+  }
+});
+
 test("parses documented dynamic bank settings without changing static defaults", () => {
   const parsed = parseMemoryConfig({
     ...valid,
@@ -304,6 +341,13 @@ test("rejects unknown keys in known configuration objects", () => {
       },
       'backend contains unknown key "recellBudget"',
     ],
+    [
+      {
+        ...valid,
+        provenance: { agent: "pi", source: "pi-tidy-memory", souce: "typo" },
+      },
+      'provenance contains unknown key "souce"',
+    ],
   ];
   for (const [raw, message] of cases) {
     assert.throws(() => parseMemoryConfig(raw), { name: "Error", message });
@@ -330,6 +374,7 @@ test("configuration defaults and integer bounds are exact", () => {
       recallTypes: ["observation", "world", "experience"],
       asyncRetain: false,
     },
+    provenance: { agent: "pi", source: "pi-tidy-memory" },
     requestTimeoutMs: 15_000,
     lifecycle: {
       autoRecall: false,

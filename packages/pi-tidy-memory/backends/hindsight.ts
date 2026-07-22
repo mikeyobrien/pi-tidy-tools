@@ -260,7 +260,7 @@ export class HindsightBackend implements MemoryBackend {
         method: "POST",
         body: JSON.stringify({
           items: [item],
-          async: this.options.config.asyncRetain ?? true,
+          async: this.options.config.asyncRetain ?? false,
         }),
       },
       "retain",

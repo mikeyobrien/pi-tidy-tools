@@ -34,7 +34,7 @@ test("parses defaults and normalizes Hindsight configuration", () => {
     "world",
     "experience",
   ]);
-  assert.equal(config.backend.asyncRetain, true);
+  assert.equal(config.backend.asyncRetain, false);
   assert.equal(config.lifecycle.maxRecallTokens, 1_024);
   assert.equal(config.lifecycle.maxRetainChars, 16_000);
 });
@@ -328,7 +328,7 @@ test("configuration defaults and integer bounds are exact", () => {
       bankId: "bank:one",
       recallBudget: "mid",
       recallTypes: ["observation", "world", "experience"],
-      asyncRetain: true,
+      asyncRetain: false,
     },
     requestTimeoutMs: 15_000,
     lifecycle: {

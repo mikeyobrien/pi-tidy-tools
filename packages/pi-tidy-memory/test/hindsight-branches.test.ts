@@ -21,6 +21,32 @@ function client(fetch: typeof globalThis.fetch, timeoutMs = 30) {
 const json = (value: unknown, status = 200, headers?: HeadersInit) =>
   new Response(JSON.stringify(value), { status, headers });
 
+test("defaults direct Hindsight retains to synchronous processing", async () => {
+  let requestBody: Record<string, unknown> | undefined;
+  const backend = new HindsightBackend({
+    config: {
+      type: "hindsight",
+      baseUrl: "https://memory.example.test",
+      bankId: "bank",
+    },
+    fetch: async (_url, init) => {
+      requestBody = JSON.parse(String(init?.body));
+      return json({
+        success: true,
+        bank_id: "bank",
+        items_count: 1,
+        async: false,
+      });
+    },
+    env: {},
+    timeoutMs: 30,
+  });
+
+  await backend.retain({ content: "durable fact" });
+
+  assert.equal(requestBody?.async, false);
+});
+
 test("normalizes optional memory fields and explicit request options", async () => {
   const bodies: any[] = [];
   const fake = (async (input, init) => {

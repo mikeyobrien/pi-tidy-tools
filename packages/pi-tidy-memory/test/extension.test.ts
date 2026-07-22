@@ -22,6 +22,13 @@ const config = {
   },
 };
 
+const revision = {
+  packageVersion: "0.1.0",
+  sourceRevision: "0123456789abcdef0123456789abcdef01234567",
+};
+const revisionLine =
+  "package=@mobrienv/pi-tidy-memory@0.1.0 source=0123456789abcdef0123456789abcdef01234567";
+
 function setup() {
   const calls: Array<{ op: string; value?: any }> = [];
   const backend: MemoryBackend = {
@@ -55,6 +62,7 @@ function setup() {
   createMemoryExtension({
     configResult: { config, path: "/agent/pi-tidy-memory/config.json" },
     factories: [factory],
+    revision,
   })({
     registerTool(tool: any) {
       tools.set(tool.name, tool);
@@ -495,13 +503,13 @@ test("status and bank access commands are useful without exposing credentials", 
   await command.handler("  STATUS  ", ctx);
   assert.deepEqual(notes[0], {
     value:
-      "enabled backend=hindsight host=memory.example.test bank=pi auth=none autoRecall=true autoRetain=true",
+      `${revisionLine}\nenabled backend=hindsight host=memory.example.test bank=pi auth=none autoRecall=true autoRetain=true`,
     level: "info",
   });
   await command.handler("check", ctx);
   assert.deepEqual(notes[1], {
     value:
-      "enabled backend=hindsight host=memory.example.test bank=pi auth=none autoRecall=true autoRetain=true\ncheck=ok ok",
+      `${revisionLine}\nenabled backend=hindsight host=memory.example.test bank=pi auth=none autoRecall=true autoRetain=true\ncheck=ok ok`,
     level: "info",
   });
   assert.deepEqual(calls.at(-1), { op: "health" });
@@ -554,6 +562,7 @@ test("dynamic banks bind operations and diagnostics to the active session scope"
       path: "/agent/pi-tidy-memory/config.json",
     },
     factories: [factory],
+    revision,
     cwd: "/work/pi-tidy-tools",
     git: () => undefined,
     env: {},
@@ -594,7 +603,7 @@ test("dynamic banks bind operations and diagnostics to the active session scope"
   await commands.get("tidy-memory").handler("status", contextFor("s2", notes));
   assert.equal(
     notes[0],
-    "enabled backend=hindsight host=memory.example.test bank=prod::pi::pi-tidy-tools::s2 scope=dynamic auth=none autoRecall=false autoRetain=false"
+    `${revisionLine}\nenabled backend=hindsight host=memory.example.test bank=prod::pi::pi-tidy-tools::s2 scope=dynamic auth=none autoRecall=false autoRetain=false`
   );
 });
 
@@ -632,6 +641,7 @@ test("dynamic status reports an unresolved bank instead of the static fallback",
         },
       },
     ],
+    revision,
     cwd: "/work/pi-tidy-tools",
     git: () => undefined,
     env: {},
@@ -653,7 +663,7 @@ test("dynamic status reports an unresolved bank instead of the static fallback",
   });
   assert.deepEqual(notes, [
     [
-      "enabled backend=hindsight host=memory.example.test bank=<unresolved> scope=dynamic auth=none autoRecall=true autoRetain=true\n" +
+      `${revisionLine}\nenabled backend=hindsight host=memory.example.test bank=<unresolved> scope=dynamic auth=none autoRecall=true autoRetain=true\n` +
         "error=dynamic bank field channel is unavailable; configure HINDSIGHT_CHANNEL_ID or remove it from backend.dynamicBankGranularity",
       "warning",
     ],

@@ -36,8 +36,10 @@
     "bank.ts",
     "render.ts",
     "runtime.ts",
+    "revision.ts",
     "types.ts",
     "backends/**/*.ts",
+    "scripts/smoke.mjs",
     "vendor/**/*.ts",
     "dist/**/*",
     "README.md",
@@ -55,6 +57,7 @@
     "test": "node --import tsx --test test/*.test.ts",
     "check": "node ../../scripts/bundle-core.mjs . && tsc --noEmit",
     "prepack": "node ../../scripts/bundle-core.mjs . && node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
+    "smoke": "node scripts/smoke.mjs",
     "test:coverage": "node ../../scripts/bundle-core.mjs . && c8 node --import tsx --test test/*.test.ts",
     "test:mutation": "stryker run"
   },

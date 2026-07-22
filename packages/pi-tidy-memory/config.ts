@@ -273,7 +273,7 @@ function parseHindsight(value: unknown): HindsightBackendConfig {
     ...(value.envFile ? { envFile: value.envFile } : {}),
     recallBudget,
     recallTypes,
-    asyncRetain: bool(value.asyncRetain, true, "backend.asyncRetain"),
+    asyncRetain: bool(value.asyncRetain, false, "backend.asyncRetain"),
   };
 }
 

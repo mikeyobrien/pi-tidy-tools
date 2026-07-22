@@ -14,6 +14,11 @@ import {
 } from "./config.js";
 import { MemoryToolComponent, type MemoryToolDetails } from "./render.js";
 import {
+  formatMemoryRevision,
+  resolveMemoryRevision,
+  type MemoryRevision,
+} from "./revision.js";
+import {
   MemoryRuntime,
   memoryContext,
   settledExchange,
@@ -76,6 +81,7 @@ function callRenderer(operation: "recall" | "retain" | "reflect") {
 export interface MemoryExtensionDependencies
   extends RuntimeDependencies, BankResolverDependencies {
   configResult?: ConfigLoadResult;
+  revision?: MemoryRevision;
 }
 
 export function createMemoryExtension(
@@ -86,6 +92,13 @@ export function createMemoryExtension(
     const runtimes = new Map<string, MemoryRuntime>();
     let startupError = loaded.error;
     let bankResolver: HindsightBankResolver | undefined;
+    const revision = dependencies.revision ?? resolveMemoryRevision();
+    const statusSummary = (activeBankId?: string): string =>
+      `${formatMemoryRevision(revision)}\n${sanitizedConfigSummary(
+        loaded,
+        dependencies.env ?? process.env,
+        activeBankId
+      )}`;
 
     const configured = loaded.config?.enabled ? loaded.config : undefined;
     if (configured) {
@@ -154,25 +167,14 @@ export function createMemoryExtension(
           ctx.ui.notify("Usage: /tidy-memory [status|check]", "warning");
           return;
         }
-        let summary = sanitizedConfigSummary(
-          loaded,
-          dependencies.env ?? process.env
-        );
+        let summary = statusSummary();
         try {
           const resolution = activeBank(ctx);
           if (resolution) {
-            summary = sanitizedConfigSummary(
-              loaded,
-              dependencies.env ?? process.env,
-              resolution.bankId
-            );
+            summary = statusSummary(resolution.bankId);
           }
         } catch (error) {
-          summary = sanitizedConfigSummary(
-            loaded,
-            dependencies.env ?? process.env,
-            "<unresolved>"
-          );
+          summary = statusSummary("<unresolved>");
           ctx.ui.notify(
             `${summary}\nerror=${error instanceof Error ? error.message : String(error)}`,
             "warning"

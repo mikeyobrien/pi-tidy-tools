@@ -71,9 +71,12 @@ try {
       for (const file of [
         "package/types.ts",
         "package/runtime.ts",
+        "package/revision.ts",
         "package/backends/hindsight.ts",
         "package/dist/index.js",
         "package/dist/index.d.ts",
+        "package/dist/revision.js",
+        "package/scripts/smoke.mjs",
       ]) {
         if (!listing.includes(file))
           throw new Error(`${name} omitted runtime file ${file}`);
@@ -170,6 +173,12 @@ try {
     );
     if (!readFileSync(installedCore, "utf8").includes("summarizeToolActivity"))
       throw new Error(`${name} installed without a usable tidy core`);
+    if (name === "@mobrienv/pi-tidy-memory") {
+      execFileSync("npm", ["run", "smoke", "--prefix", join(installDir, "node_modules", ...name.split("/"))], {
+        cwd: root,
+        stdio: "pipe",
+      });
+    }
   }
 } finally {
   rmSync(temp, { recursive: true, force: true });

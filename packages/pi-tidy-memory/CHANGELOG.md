@@ -1,6 +1,13 @@
 # Changelog
 
-## 0.1.0
+## Unreleased
+
+- Make distributable documentation deployment-neutral instead of hard-coding an operator bank.
+- Document supported Node, Pi, and Hindsight versions plus explicit local-path installations.
+- Add the two-phase activation sequence, external installation-receipt schema, rollback evidence, and troubleshooting guidance.
+- Clarify that one static bank may intentionally preserve continuity for one user across agents and subjects, while different users and trust boundaries require separate banks.
+
+## 0.1.0 - 2026-07-22
 
 - Add a backend-neutral memory contract and registry.
 - Add the first backend adapter for authenticated Hindsight 0.8.x servers.
@@ -14,7 +21,7 @@
 - Default Hindsight retains to synchronous completion for the supported single-user profile; no outbox, receipt polling, restart replay, or retry subsystem is added.
 - Report sanitized package and embedded source revision metadata in `/tidy-memory status` without executing Git for revision reporting.
 - Ship an `npm run smoke` check that loads the packed compiled extension and verifies its embedded full source revision while retaining the native Pi adapter entry.
-- Document externally receipted immutable commit pins plus upgrade, credential-rotation restart, and rollback procedures for the static `mobrienv` bank.
+- Document externally receipted immutable commit pins plus upgrade, credential-rotation restart, and rollback procedures for a selected static bank.
 - Add configurable user, agent, canonical-repository, and source provenance to new writes, with mode, session, and meaningful timestamps.
 - Preserve bounded context, occurrence time, tags, and metadata in model-visible recall while keeping the entire JSONL block explicitly untrusted.
 - Derive automatic retain document IDs from persisted Pi message identities so retries remain idempotent when serialized text changes.

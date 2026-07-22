@@ -113,6 +113,6 @@ Pre-aborted requests never reach the backend. Active requests honor cancellation
 - External memory is not rolled back when a Pi branch or session is deleted.
 - Automatic retention does not classify durability, PII, or every possible secret.
 - A typo in a bank ID can create a separate Hindsight bank.
-- Async Hindsight retain receipts remain adapter-compatible for other deployments but are not polled; the supported `mobrienv` profile uses synchronous retention.
+- Async Hindsight retain receipts remain adapter-compatible for other deployments but are not polled; the supported single-user profile uses synchronous retention.
 - Project isolation is determined by bank and tag configuration, not inferred automatically.
 - Dynamic discovery of third-party adapter packages is not implemented. Adapters are passed explicitly through the factory API.

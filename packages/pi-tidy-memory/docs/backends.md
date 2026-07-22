@@ -15,10 +15,10 @@ Create `~/.pi/agent/pi-tidy-memory/config.json`:
   "backend": {
     "type": "hindsight",
     "baseUrl": "https://hindsight-api.example.com",
-    "bankId": "mobrienv",
+    "bankId": "your-bank-id",
     "dynamicBankId": false,
     "apiKeyEnv": "HINDSIGHT_API_KEY",
-    "envFile": "~/.config/hindsight/homelab.env",
+    "envFile": "~/.config/hindsight/hindsight.env",
     "recallBudget": "mid",
     "recallTypes": ["observation", "world", "experience"],
     "asyncRetain": false
@@ -97,18 +97,18 @@ The bank ID is URL-encoded. Hindsight creates a bank with default settings on fi
 
 Banks are hard isolation boundaries. Tags are filters inside a bank.
 
-The supported single-user integration uses one static bank:
+One static bank can intentionally preserve continuity for one user across multiple agents, repositories, and subject domains:
 
 ```json
 {
-  "bankId": "mobrienv",
+  "bankId": "your-bank-id",
   "dynamicBankId": false
 }
 ```
 
-Do not add a prefix, granularity, or directory map to this installation. Those settings intentionally select other banks; they do not partition or migrate the existing `mobrienv` bank. The adapter retains dynamic-bank support for other deployments, but it is outside this operational profile.
+Use provenance and tags to distinguish agents, repositories, sources, and subjects inside a shared user bank. Use separate banks for different users, authorization or trust boundaries, and materially different retention policies. Banks are an isolation decision, not a substitute for provenance.
 
-Every new ID creates a new empty bank; switching strategy does not migrate existing memories. `/tidy-memory status` reports the resolved bank. Do not mix coding history, personal assistant conversations, medical information, and arbitrary web chat in one bank.
+If the chosen profile is static, do not add a prefix, granularity, or directory map during an ordinary upgrade. Those settings intentionally select other banks; they do not partition or migrate the existing bank. Every new ID creates a new empty bank, and switching strategy does not migrate memories. `/tidy-memory status` reports the resolved bank.
 
 The package's manual tools accept tags. When tags are supplied to recall or reflect, the Hindsight adapter uses `all_strict`: every requested tag must be present and untagged memories are excluded. This makes tag-scoped reads conservative rather than inheriting Hindsight's untagged-inclusive default.
 
@@ -120,7 +120,7 @@ Automatic retain also adds `source:pi`; it does not infer a project tag. If auto
 
 The supported profile uses `asyncRetain: false`. The tool waits for Hindsight to finish the request, so success is a completed request rather than a queue receipt. This deliberately avoids an outbox, operation polling, restart replay, and a separate retry service in a single-user integration.
 
-The adapter still accepts `asyncRetain: true` for other deployments, but pi-tidy-memory does not poll or replay those operation receipts. Do not enable it for the `mobrienv` installation.
+The adapter still accepts `asyncRetain: true` for other deployments, but pi-tidy-memory does not poll or replay those operation receipts. Do not enable it when the deployment requires a successful result to mean Hindsight completed the write.
 
 ### Verification
 
@@ -132,7 +132,7 @@ After changing configuration, reload Pi and verify authenticated read access to 
 /tidy-memory check
 ```
 
-The standard check is read-only. Any write-path integration test must use a uniquely named ephemeral bank and must verify that the bank was deleted through Hindsight's control plane before the test is considered complete. Never write smoke data into `mobrienv`.
+The standard check is read-only. Any write-path integration test must use a uniquely named ephemeral bank and must verify that the bank was deleted through Hindsight's control plane before the test is considered complete. Never write smoke data into the live bank.
 
 ## Choosing this package or a dedicated Hindsight extension
 

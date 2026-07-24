@@ -252,6 +252,31 @@ test("settled extension rows stay byte-stable across six ordinary editor renders
   }
 });
 
+test("settled rows reuse their fitted lines until the width changes", async () => {
+  const harness = await registerEnabledExtension();
+  const bash = harness.tools.get("bash");
+  const theme = { bg: (_name: string, text: string) => text };
+  const row = bash.renderResult(
+    { content: [{ type: "text", text: "done" }], details: { piTidyElapsedMs: 8_000 } },
+    { isPartial: false, expanded: false },
+    theme,
+    {
+      isPartial: false,
+      isError: false,
+      toolCallId: "cached",
+      args: { command: "sleep 8", reasoning: "cache the settled row" },
+    }
+  );
+  // Same width: the settled block returns its cached array, so a long
+  // transcript costs O(1) per settled row per frame instead of re-fitting.
+  const wide = row.render(120);
+  assert.equal(row.render(120), wide);
+  // Resize: the block re-fits for the new width, then caches that instead.
+  const narrow = row.render(72);
+  assert.notEqual(narrow, wide);
+  assert.equal(row.render(72), narrow);
+});
+
 test("tool results persist elapsed duration for reload", async () => {
   const handlers = new Map<string, (event: any) => Promise<any>>();
   const previous = process.env.PI_TIDY_TOOLS;

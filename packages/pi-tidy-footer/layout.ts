@@ -130,10 +130,11 @@ function statusItems(
 
 function usageItems(snapshot: FooterSnapshot): string[] {
   if (!snapshot.usage) return [];
-  const { input, output } = snapshot.usage;
+  const { input, output, reasoning } = snapshot.usage;
   return [
     input ? `↑${formatTokens(input)}` : "",
     output ? `↓${formatTokens(output)}` : "",
+    reasoning ? `∿${formatTokens(reasoning)}` : "",
   ].filter(Boolean);
 }
 

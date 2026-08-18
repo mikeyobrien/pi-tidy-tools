@@ -30,6 +30,7 @@ const snapshot = (overrides: Partial<FooterSnapshot> = {}): FooterSnapshot => ({
     output: 37_000,
     cacheRead: 6_700_000,
     cacheWrite: 492_000,
+    reasoning: 12_000,
   },
   quota: {
     primary: { usedPercent: 3, windowMinutes: 300 },
@@ -225,7 +226,49 @@ test("wide layout expands location context and accounting", () => {
   assert.ok(lines[0]!.includes("gpt-5.6-sol · max"));
   assert.ok(lines[1]!.includes("↑83k"));
   assert.ok(lines[1]!.includes("↓37k"));
+  assert.ok(lines[1]!.includes("∿12k"));
   assert.ok(lines[1]!.includes("ctx 28%/272k"));
+});
+
+test("thinking tokens appear only when the provider reports them", () => {
+  const plain: FooterPalette = {
+    dim: (text) => `dim(${text})`,
+    accent: (text) => `accent(${text})`,
+    warning: (text) => `warning(${text})`,
+    error: (text) => `error(${text})`,
+  };
+  const base = { quota: undefined, statuses: undefined };
+
+  const reported = renderFooter(snapshot(base), 120, plain)[1]!;
+  assert.ok(reported.includes("∿12k"));
+
+  const zero = renderFooter(
+    snapshot({
+      ...base,
+      usage: {
+        input: 100,
+        output: 200,
+        cacheRead: 0,
+        cacheWrite: 0,
+        reasoning: 0,
+      },
+    }),
+    120,
+    plain
+  )[1]!;
+  assert.ok(zero.includes("↑100"));
+  assert.ok(zero.includes("↓200"));
+  assert.ok(!zero.includes("∿"));
+
+  const unreported = renderFooter(
+    snapshot({
+      ...base,
+      usage: { input: 100, output: 200, cacheRead: 0, cacheWrite: 0 },
+    }),
+    120,
+    plain
+  )[1]!;
+  assert.ok(!unreported.includes("∿"));
 });
 
 test("Codex models get compact stable aliases", () => {

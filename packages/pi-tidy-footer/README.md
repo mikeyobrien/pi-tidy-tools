@@ -25,7 +25,7 @@ main                                      sol/max
 5h 3% · 7d 20%                            ctx 28%
 ```
 
-Active extension statuses fill unused space on the lower left. The right side remains anchored to the terminal edge. At wider widths, the location and context window expand and cumulative input/output totals appear when space remains.
+Active extension statuses fill unused space on the lower left. The right side remains anchored to the terminal edge. At wider widths, the location and context window expand and cumulative input/output totals appear when space remains. When the provider reports a reasoning breakdown, thinking tokens (a subset of output) appear as a third total.
 
 The footer composes semantic fields before styling. It measures ANSI and Unicode display cells with Pi's TUI utilities, gives the left side the flexible budget, and applies truncation only there. Every completed line has a final width guard.
 
@@ -68,7 +68,7 @@ The flexible left side is filled in this order:
 2. failed extension states and pressured quotas, ordered by severity;
 3. routine five-hour and seven-day Codex quota usage;
 4. normal extension statuses;
-5. cumulative input/output totals when room remains.
+5. cumulative input (↑), output (↓), and thinking (∿) totals when room remains.
 
 Context and quota usage above 70% are prefixed with `!`; above 90% they use `!!`. Warning and error colors reinforce the marker but are not the only signal.
 

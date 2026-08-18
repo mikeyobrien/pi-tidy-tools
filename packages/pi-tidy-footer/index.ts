@@ -39,6 +39,7 @@ function collectUsage(ctx: ExtensionContext): FooterUsage {
     output: 0,
     cacheRead: 0,
     cacheWrite: 0,
+    reasoning: 0,
   };
   for (const entry of ctx.sessionManager.getBranch()) {
     if (entry.type !== "message" || entry.message.role !== "assistant")
@@ -48,6 +49,7 @@ function collectUsage(ctx: ExtensionContext): FooterUsage {
     usage.output += message.usage.output;
     usage.cacheRead += message.usage.cacheRead;
     usage.cacheWrite += message.usage.cacheWrite;
+    usage.reasoning = (usage.reasoning ?? 0) + (message.usage.reasoning ?? 0);
   }
   return usage;
 }

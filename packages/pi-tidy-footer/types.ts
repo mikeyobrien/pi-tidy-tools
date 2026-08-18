@@ -16,6 +16,8 @@ export interface FooterUsage {
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  /** Reasoning/thinking tokens; a subset of `output` when the provider reports it. */
+  reasoning?: number;
 }
 
 export interface FooterSnapshot {

@@ -48,7 +48,13 @@ test("extension installs a responsive footer and exposes controls", async () => 
           message: {
             role: "assistant",
             content: [],
-            usage: { input: 1200, output: 34, cacheRead: 500, cacheWrite: 20 },
+            usage: {
+              input: 1200,
+              output: 34,
+              cacheRead: 500,
+              cacheWrite: 20,
+              reasoning: 8,
+            },
           },
         },
       ],
@@ -119,6 +125,7 @@ test("extension installs a responsive footer and exposes controls", async () => 
   const wide = component.render(120);
   assert.ok(wide[1].includes("↑1.2k"));
   assert.ok(wide[1].includes("↓34"));
+  assert.ok(wide[1].includes("∿8"));
 
   handlers.get("thinking_level_select")![0]!({}, ctx);
   handlers.get("message_end")![0]!({}, ctx);

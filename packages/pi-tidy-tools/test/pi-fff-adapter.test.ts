@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
@@ -584,6 +584,70 @@ test("running Pi resolution handles host manifests and rejects missing Jiti capa
 	} finally {
 		process.argv[1] = previousArgv;
 		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("bundled Pi runtime resolves aliases from the process entry when the bare specifier is unresolvable", async () => {
+	const root = await realpath(await mkdtemp(join(tmpdir(), "tidy-pi-fff-bundled-")));
+	const piRoot = join(root, "node_modules", "@earendil-works", "pi-coding-agent");
+	const jitiRoot = join(piRoot, "node_modules", "jiti");
+	const previousArgv = process.argv[1];
+	const unresolvable = (): string => { throw new Error("Cannot find module '@earendil-works/pi-coding-agent'"); };
+	try {
+		await mkdir(join(piRoot, "dist", "bundle"), { recursive: true });
+		await mkdir(jitiRoot, { recursive: true });
+		await mkdir(join(piRoot, "node_modules", "@earendil-works", "pi-tui"), { recursive: true });
+		await mkdir(join(piRoot, "node_modules", "typebox"), { recursive: true });
+		await writeFile(join(piRoot, "dist", "index.js"), "export {};\n");
+		await writeFile(join(piRoot, "dist", "bundle", "cli.js"), "#!/usr/bin/env node\n");
+		await writeFile(join(piRoot, "package.json"), JSON.stringify({
+			name: "@earendil-works/pi-coding-agent", version: "0.84.3",
+			exports: { ".": { import: "./dist/index.js" } },
+		}));
+		await writeFile(join(piRoot, "node_modules", "@earendil-works", "pi-tui", "package.json"), JSON.stringify({ name: "@earendil-works/pi-tui", main: "index.js" }));
+		await writeFile(join(piRoot, "node_modules", "@earendil-works", "pi-tui", "index.js"), "export {};\n");
+		await writeFile(join(piRoot, "node_modules", "typebox", "package.json"), JSON.stringify({ name: "typebox", main: "index.js" }));
+		for (const file of ["index.js", "compile.js", "value.js"]) await writeFile(join(piRoot, "node_modules", "typebox", file), "export {};\n");
+		await writeFile(join(jitiRoot, "package.json"), JSON.stringify({
+			name: "jiti", exports: { "./package.json": "./package.json", "./static": { import: "./static.mjs" } },
+		}));
+		await writeFile(join(jitiRoot, "static.mjs"), "export const unavailable = true;\n");
+
+		process.argv[1] = join(piRoot, "dist", "bundle", "cli.js");
+		const direct = resolveRunningPiAliases({ resolveModule: unresolvable });
+		assert.equal(direct.aliases.codingAgent, join(piRoot, "dist", "index.js"));
+		assert.equal(direct.aliases["@earendil-works/pi-coding-agent"], direct.aliases.codingAgent);
+		assert.equal(direct.jitiEntry, join(jitiRoot, "static.mjs"));
+
+		const binDir = join(root, "bin");
+		await mkdir(binDir, { recursive: true });
+		await symlink(join(piRoot, "dist", "bundle", "cli.js"), join(binDir, "pi"));
+		process.argv[1] = join(binDir, "pi");
+		const linked = resolveRunningPiAliases({ resolveModule: unresolvable });
+		assert.equal(linked.aliases.codingAgent, join(piRoot, "dist", "index.js"));
+		assert.equal(linked.jitiEntry, join(jitiRoot, "static.mjs"));
+	} finally {
+		process.argv[1] = previousArgv;
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("unlocatable running Pi fails closed with PIFFF_PI_ROOT_UNAVAILABLE", async () => {
+	const root = await realpath(await mkdtemp(join(tmpdir(), "tidy-pi-fff-orphan-")));
+	const f = await fixture({ userEntry: filtered() });
+	const previousArgv = process.argv[1];
+	const unresolvable = (): string => { throw new Error("Cannot find module '@earendil-works/pi-coding-agent'"); };
+	try {
+		await writeFile(join(root, "orphan-run.js"), "// not inside any Pi package\n");
+		process.argv[1] = join(root, "orphan-run.js");
+		assert.throws(() => resolveRunningPiAliases({ resolveModule: unresolvable }), /running Pi package root is unavailable/);
+		const result = await buildPiFffRegistrationPlan({ cwd: f.cwd, agentDir: f.agentDir, piVersion: "0.84.3", api: apiRecorder().api, resolvePiModule: unresolvable });
+		expectCode(result, "PIFFF_PI_ROOT_UNAVAILABLE");
+		assert.match(!result.ok ? result.diagnostic.summary : "", /running Pi installation could not be located/);
+	} finally {
+		process.argv[1] = previousArgv;
+		await rm(root, { recursive: true, force: true });
+		await rm(f.root, { recursive: true, force: true });
 	}
 });
 

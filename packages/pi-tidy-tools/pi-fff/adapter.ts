@@ -17,6 +17,7 @@ export type { PiFffCapabilityProfile, PiFffPackageIdentity } from "./profiles.js
 export type PiFffDiagnosticCode =
 	| "PIFFF_BELOW_MINIMUM"
 	| "PIFFF_CAPABILITY_MISSING"
+	| "PIFFF_PI_ROOT_UNAVAILABLE"
 	| "PIFFF_CONFIG_MISSING"
 	| "PIFFF_CONFIG_AMBIGUOUS"
 	| "PIFFF_CONFIG_FILTER_REQUIRED"
@@ -96,6 +97,8 @@ export interface BuildPiFffPlanOptions {
 	piVersion?: string;
 	loader?: PiFffModuleLoader;
 	aliases?: PiFffLoaderAliases;
+	/** Bare-specifier Pi resolution override used by the running-Pi loader; hermetic tests stub bundled runtimes. */
+	resolvePiModule?: (specifier: string) => string;
 	conflicts?: PiFffConflictSet;
 	/** Registry integrity already available to the host; this adapter never fetches it. */
 	registryIntegrity?: string;
@@ -165,6 +168,7 @@ function diagnostic(
 	const summaries: Record<PiFffDiagnosticCode, string> = {
 		PIFFF_BELOW_MINIMUM: `pi-fff adapter inactive: minimums are Pi ${MIN_PI} and ${profile.identity} ${profile.minimum}.`,
 		PIFFF_CAPABILITY_MISSING: "pi-fff adapter inactive: a required running Pi capability is unavailable.",
+		PIFFF_PI_ROOT_UNAVAILABLE: "pi-fff adapter inactive: the running Pi installation could not be located.",
 		PIFFF_CONFIG_MISSING: "pi-fff adapter inactive: no managed pi-fff package entry is selected.",
 		PIFFF_CONFIG_AMBIGUOUS: "pi-fff adapter inactive: package identity selection is ambiguous.",
 		PIFFF_CONFIG_FILTER_REQUIRED: "pi-fff adapter inactive: pi-fff must use object form with extensions: [].",
@@ -183,6 +187,7 @@ function diagnostic(
 	const actions: Record<PiFffDiagnosticCode, string> = {
 		PIFFF_BELOW_MINIMUM: "Upgrade the below-minimum component, then /reload; this version is outside the supported range, not necessarily broken.",
 		PIFFF_CAPABILITY_MISSING: "Upgrade or reinstall Pi so the named capability is available, then /reload.",
+		PIFFF_PI_ROOT_UNAVAILABLE: "Reinstall Pi through npm or the official installer so `pi -v` runs from a package root, then /reload.",
 		PIFFF_CONFIG_MISSING: "Install pi-fff or @ff-labs/pi-fff in a managed Pi npm scope, then run /tidy pi-fff setup.",
 		PIFFF_CONFIG_AMBIGUOUS: "Keep exactly one pi-fff package identity in each settings scope, then /reload.",
 		PIFFF_CONFIG_FILTER_REQUIRED: "Run /tidy pi-fff setup to set extensions: [], then /reload.",
@@ -565,11 +570,14 @@ export async function buildPiFffRegistrationPlan(options: BuildPiFffPlanOptions)
 	let aliases = options.aliases;
 	if (!loader) {
 		try {
-			const running = createRunningPiFffLoader();
+			const running = createRunningPiFffLoader(options.resolvePiModule ? { resolveModule: options.resolvePiModule } : undefined);
 			loader = running.loader;
 			aliases ??= running.aliases;
 		} catch (error) {
-			return { ok: false, diagnostic: diagnostic("PIFFF_CAPABILITY_MISSING", piVersion, piFffVersion, `loader aliases: ${oneLine(error)}`) };
+			const code = /running Pi package root is unavailable/.test(String(error instanceof Error ? error.message : error))
+				? "PIFFF_PI_ROOT_UNAVAILABLE"
+				: "PIFFF_CAPABILITY_MISSING";
+			return { ok: false, diagnostic: diagnostic(code, piVersion, piFffVersion, `loader aliases: ${oneLine(error)}`) };
 		}
 	}
 	if (!aliases) {

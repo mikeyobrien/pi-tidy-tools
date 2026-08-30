@@ -1,6 +1,6 @@
 # pi-tidy-memory
 
-Long-term memory for [Pi](https://github.com/earendil-works/pi), with a small backend interface and compact tool output. Hindsight is the first backend. More backends can be added without changing the tools or Pi lifecycle code.
+Long-term memory for [Pi](https://github.com/earendil-works/pi), with a small backend interface and compact tool output. Hindsight and Honcho are the first backends. More backends can be added without changing the tools or Pi lifecycle code.
 
 ## Compatibility
 

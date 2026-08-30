@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { createHindsightFactory } from "./backends/hindsight.js";
+import { createHonchoFactory } from "./backends/honcho.js";
 import type { MemoryConfig } from "./config.js";
 import type {
   BackendFactory,
@@ -90,6 +91,7 @@ export class MemoryRuntime {
   ) {
     const factories = dependencies.factories ?? [
       createHindsightFactory(config.requestTimeoutMs),
+      createHonchoFactory(config.requestTimeoutMs),
     ];
     const factory = factories.find(
       (candidate) => candidate.type === config.backend.type

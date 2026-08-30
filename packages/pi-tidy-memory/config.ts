@@ -25,11 +25,35 @@ export interface HindsightBackendConfig {
   asyncRetain?: boolean;
 }
 
+export interface HonchoBackendConfig {
+  type: "honcho";
+  baseUrl?: string;
+  workspace?: string;
+  userPeer?: string;
+  aiPeer?: string;
+  configFile?: string;
+  apiKeyEnv?: string;
+  envFile?: string;
+  staticSessionId?: string;
+  reasoningLevel?: string;
+  recallMode?: string;
+  bankId?: string;
+  dynamicBankId?: boolean;
+  dynamicBankGranularity?: DynamicBankField[];
+  bankIdPrefix?: string;
+  agentName?: string;
+  resolveWorktrees?: boolean;
+  directoryBankMap?: Record<string, string>;
+}
+
 export interface GenericBackendConfig extends Record<string, unknown> {
   type: string;
 }
 
-export type MemoryBackendConfig = HindsightBackendConfig | GenericBackendConfig;
+export type MemoryBackendConfig =
+  | HindsightBackendConfig
+  | HonchoBackendConfig
+  | GenericBackendConfig;
 
 export interface MemoryProvenanceConfig {
   user?: string;

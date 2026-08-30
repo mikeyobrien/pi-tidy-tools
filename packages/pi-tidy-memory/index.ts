@@ -135,7 +135,10 @@ export function createMemoryExtension(
     const configured = loaded.config?.enabled ? loaded.config : undefined;
     if (configured) {
       try {
-        if (configured.backend.type === "hindsight") {
+        if (
+          configured.backend.type === "hindsight" ||
+          configured.backend.type === "honcho"
+        ) {
           bankResolver = new HindsightBankResolver(
             configured.backend as HindsightBackendConfig,
             dependencies
@@ -145,7 +148,8 @@ export function createMemoryExtension(
           ? dependencies.factories.some(
               (factory) => factory.type === configured.backend.type
             )
-          : configured.backend.type === "hindsight";
+          : configured.backend.type === "hindsight" ||
+            configured.backend.type === "honcho";
         if (!supported) {
           throw new Error(
             `Unsupported memory backend: ${configured.backend.type}`

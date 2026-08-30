@@ -28,13 +28,14 @@ const valid = {
 
 test("parses defaults and normalizes Hindsight configuration", () => {
   const config = parseMemoryConfig(valid);
-  assert.equal(config.backend.baseUrl, "https://memory.example.test");
-  assert.deepEqual(config.backend.recallTypes, [
+  const backend = config.backend as HindsightBackendConfig;
+  assert.equal(backend.baseUrl, "https://memory.example.test");
+  assert.deepEqual(backend.recallTypes, [
     "observation",
     "world",
     "experience",
   ]);
-  assert.equal(config.backend.asyncRetain, false);
+  assert.equal(backend.asyncRetain, false);
   assert.equal(config.lifecycle.maxRecallTokens, 1_024);
   assert.equal(config.lifecycle.maxRetainChars, 16_000);
 });

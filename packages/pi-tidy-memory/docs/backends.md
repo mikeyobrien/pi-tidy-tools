@@ -134,6 +134,48 @@ After changing configuration, reload Pi and verify authenticated read access to 
 
 The standard check is read-only. Any write-path integration test must use a uniquely named ephemeral bank and must verify that the bank was deleted through Hindsight's control plane before the test is considered complete. Never write smoke data into the live bank.
 
+## Honcho
+
+The `honcho` backend talks to a self-hosted or hosted [Honcho](https://honcho.dev) v3 server. It shares the same user peer with an existing Honcho deployment (for example a Hermes agent profile) by reusing that deployment's config file, while keeping this agent's own peer identity separate.
+
+### Configuration
+
+```json
+{
+  "backend": {
+    "type": "honcho",
+    "configFile": "~/.honcho/config.json",
+    "aiPeer": "pi",
+    "dynamicBankId": true,
+    "dynamicBankGranularity": ["agent", "project"],
+    "agentName": "pi",
+    "recallMode": "hybrid",
+    "reasoningLevel": "low"
+  }
+}
+```
+
+### Fields
+
+- `configFile` — path to a Honcho client config (the same JSON the Hermes agent writes: `baseUrl`, `apiKey`, `workspace`, `peerName`, `aiPeer`). Values there act as defaults; explicit keys in the backend config override them.
+- `baseUrl`, `workspace`, `userPeer`, `aiPeer` — explicit overrides. `userPeer` defaults to the file's `peerName` (the human), `aiPeer` defaults to the file's `aiPeer` or `pi`.
+- `apiKeyEnv` / `envFile` — optional credential override; when set, they take precedence over the `configFile` `apiKey`.
+- `staticSessionId` — session id when dynamic bank resolution is off (default `"<aiPeer>-default"`).
+- `recallMode` — `hybrid` (default; dialectic synthesis plus raw search, degrading to whichever leg succeeds), `dialectic`, or `search`.
+- `reasoningLevel` — Honcho dialectic reasoning level, default `low`.
+- Dynamic bank fields (`dynamicBankId`, `dynamicBankGranularity`, `bankIdPrefix`, `agentName`, `resolveWorktrees`, `directoryBankMap`) mirror the Hindsight semantics: the resolved bank id becomes the Honcho session id after mapping runs of characters outside `[a-zA-Z0-9_-]` to a single dash (Honcho session ids reject dots and colons).
+
+### API mapping
+
+- `health` — `GET /health`.
+- `recall` — `POST /v3/workspaces/{workspace}/peers/{aiPeer}/chat` (dialectic, target = user peer) and/or `POST .../peers/{aiPeer}/search` (raw messages). Hybrid recall merges the dialectic answer with search hits and only fails when both legs fail.
+- `retain` — ensures the session exists (`POST /v3/workspaces/{workspace}/sessions` with both peers), then appends one message attributed to `aiPeer` via `POST .../sessions/{session}/messages` with the retention metadata attached.
+- `reflect` — dialectic chat; returns the synthesized text.
+
+Recently deleted session ids stay shadowed by a server-side tombstone and fail re-creation with 404 for a while. `ensureSession` retries once and then falls back to a unique time-suffixed session id so retention cannot hard-fail on a recycled id.
+
+Note: dialectic chat and semantic search require the server's deriver to be healthy. When it is down, hybrid recall degrades to the working leg and reports a combined error when neither works; retain and health are unaffected.
+
 ## Choosing this package or a dedicated Hindsight extension
 
 Use pi-tidy-memory when:

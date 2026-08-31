@@ -137,3 +137,35 @@ test("relativeTime rounds now/Nm/Nh/Nd and goes absolute past 7d", async () => {
   assert.equal(absoluteTime("not-a-date"), "");
   assert.match(absoluteTime(at(5)), /\d/);
 });
+
+test("markdown tables render th/td with escaped cells", async () => {
+  // @ts-expect-error browser-global script, intentionally untyped
+  await import("../public/md.js");
+  const { render } = (globalThis as any).PiMd;
+  const out = render("| Name | Value |\n| --- | --- |\n| **gpu** | <script> |");
+  assert.match(out, /<table>/);
+  assert.match(out, /<th[^>]*>Name<\/th><th[^>]*>Value<\/th>/);
+  assert.match(out, /<td[^>]*><strong>gpu<\/strong><\/td>/);
+  assert.match(out, /&lt;script&gt;/, "raw html in cells stays escaped");
+  assert.ok(!out.includes("<script>"));
+});
+
+test("markdown table alignment comes from separator colons", async () => {
+  // @ts-expect-error browser-global script, intentionally untyped
+  await import("../public/md.js");
+  const { render } = (globalThis as any).PiMd;
+  const out = render("| L | C | R |\n| :- | :--: | -: |\n| a | b | c |");
+  assert.match(out, /<th style="text-align:left">L<\/th>/);
+  assert.match(out, /<th style="text-align:center">C<\/th>/);
+  assert.match(out, /<th style="text-align:right">R<\/th>/);
+  assert.match(out, /<td style="text-align:center">b<\/td>/);
+});
+
+test("malformed table without separator falls back to text", async () => {
+  // @ts-expect-error browser-global script, intentionally untyped
+  await import("../public/md.js");
+  const { render } = (globalThis as any).PiMd;
+  const out = render("| Name | Value |\n| no separator follows |\n");
+  assert.ok(!out.includes("<table>"), "never half-rendered");
+  assert.match(out, /Name \| Value/);
+});

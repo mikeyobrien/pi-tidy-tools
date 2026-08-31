@@ -36,6 +36,45 @@
   function renderInline(text) {
     return inlineCore(String(text), false);
   }
+  function splitCells(row) {
+    return row
+      .trim()
+      .replace(/^\|/, "")
+      .replace(/\|$/, "")
+      .split("|")
+      .map((cell) => cell.trim());
+  }
+
+  const isTableLine = (line) => /^\s*\|.*\|\s*$/.test(line);
+  const isSeparatorRow = (line) =>
+    /^\s*\|?[\s:|-]+\|?\s*$/.test(line) && /-/.test(line);
+
+  // Issue 44: markdown tables — header row + separator row (`|---|:--:|`),
+  // alignment from the colons, cells through inline() (escape-first holds).
+  function renderTable(headerRow, separatorRowLine, bodyRows) {
+    const aligns = splitCells(separatorRowLine).map((cell) => {
+      const align =
+        cell.startsWith(":") && cell.endsWith(":")
+          ? "center"
+          : cell.endsWith(":")
+            ? "right"
+            : "left";
+      return ` style="text-align:${align}"`;
+    });
+    const head = `<tr>${splitCells(headerRow)
+      .map((cell, i) => `<th${aligns[i] ?? ""}>${inline(cell)}</th>`)
+      .join("")}</tr>`;
+    const body = bodyRows
+      .map(
+        (row) =>
+          `<tr>${splitCells(row)
+            .map((cell, i) => `<td${aligns[i] ?? ""}>${inline(cell)}</td>`)
+            .join("")}</tr>`
+      )
+      .join("");
+    return `<table>${head}${body}</table>`;
+  }
+
   function render(text) {
     const lines = String(text).split("\n");
     const html = [];
@@ -58,7 +97,8 @@
         codeLines = [];
       }
     };
-    for (const line of lines) {
+    for (let li = 0; li < lines.length; li++) {
+      const line = lines[li];
       const fence = line.match(/^```\s*\w*$/);
       if (fence) {
         flushList();
@@ -81,6 +121,25 @@
         continue;
       }
       flushList();
+      // Issue 44: table = header row + separator row (`|---|:--:|`). Malformed
+      // (no separator) falls through as plain text — never half-rendered.
+      if (
+        isTableLine(line) &&
+        li + 1 < lines.length &&
+        isSeparatorRow(lines[li + 1]) &&
+        !inCode
+      ) {
+        const bodyRows = [];
+        let cursor = li + 2;
+        while (cursor < lines.length && isTableLine(lines[cursor])) {
+          bodyRows.push(lines[cursor]);
+          cursor++;
+        }
+        flushList();
+        html.push(renderTable(line, lines[li + 1], bodyRows));
+        li = cursor - 1;
+        continue;
+      }
       const heading = line.match(/^(#{1,4})\s+(.*)$/);
       if (heading) {
         html.push("<strong>" + inline(heading[2]) + "</strong>");

@@ -700,6 +700,24 @@ body {
   }
 }
 
+/* ── Markdown tables (issue 44) ─────────────────────── */
+.md-body table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.md-body th,
+.md-body td {
+  border: 1px solid var(--border, #232a38);
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+.md-body th {
+  background: var(--surface-2, #171c27);
+}
+
 /* ── Inline markdown images ─────────────────────────── */
 .md-body img {
   max-width: 100%;

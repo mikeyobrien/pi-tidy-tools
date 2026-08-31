@@ -1,18 +1,29 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { networkInterfaces } from "node:os";
 import { startFleet } from "./daemon.ts";
-import { NAME_PATTERN } from "./config.ts";
+import { loadFleetConfig, NAME_PATTERN } from "./config.ts";
 import {
+  CliError,
+  daemonPidPath,
   EXIT,
   formatError,
   initJsonPayload,
+  pickStopPid,
+  pidAlive,
+  readDaemonPid,
   resolveStartToken,
   startReadinessPayload,
   versionJsonPayload,
+  waitForReady,
 } from "./cli-core.ts";
-import { buildPairingUrl, pickLanIp, resolvePairingTarget } from "./pairing.ts";
+import {
+  buildPairingUrl,
+  pickLanIp,
+  readStoredToken,
+  resolvePairingTarget,
+} from "./pairing.ts";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
@@ -51,6 +62,8 @@ Usage:
   pi-tidy-bots start [fleetDir]           Start the fleet daemon and web UI
   pi-tidy-bots add <name> [--dir fleetDir] [--title t] [--avatar e]
                                           Scaffold a bot and append its manifest row
+  pi-tidy-bots status [fleetDir]          Show daemon pid, port, per-bot state
+  pi-tidy-bots stop [fleetDir]            Gracefully stop the running fleet
 
 Start flags:
   --port <n>        Web UI port (default 4317, or [fleet] port in bots.toml)
@@ -63,6 +76,7 @@ Start flags:
   --url <url>       Chat client: fleet daemon URL (default http://127.0.0.1:4317)
   --version         Print package version
   --json            Machine-readable output: init/start emit one JSON line; --version emits {name, version}
+  --daemon          (start) Run detached; pid in .fleet/daemon.pid, log in .fleet/daemon.log
 `);
   process.exit(1);
 }
@@ -215,9 +229,74 @@ function cmdAdd(args: Args): never {
   process.exit(0);
 }
 
+/** Port for readiness/status when the manifest may be broken: parse or default. */
+function bestEffortPort(fleetDir: string): number {
+  try {
+    // Lazy import keeps the hot path free of an extra round trip.
+    return 0 + loadFleetConfig(fleetDir).port;
+  } catch {
+    return 4317;
+  }
+}
+
 async function cmdStart(args: Args): Promise<void> {
   const dir = resolve(args.positional[0] ?? ".");
   const json = args.flags.json === true;
+  const daemonize = args.flags.daemon === true;
+
+  // Parent side of --daemon: spawn a detached child running the same start
+  // (minus --daemon/--json), wait until it serves, print readiness, exit.
+  if (daemonize && process.env.PI_TIDY_BOTS_DAEMON_CHILD !== "1") {
+    const { spawn } = await import("node:child_process");
+    const childArgs = process.argv
+      .slice(1)
+      .filter((arg) => arg !== "--daemon" && arg !== "--json");
+    const logFile = join(dir, ".fleet", "daemon.log");
+    mkdirSync(join(dir, ".fleet"), { recursive: true });
+    const log = writeFileSync(logFile, "");
+    void log;
+    const child = spawn(process.execPath, childArgs, {
+      detached: true,
+      stdio: ["ignore", log as unknown as number, log as unknown as number],
+      env: { ...process.env, PI_TIDY_BOTS_DAEMON_CHILD: "1" },
+    });
+    child.unref();
+    const port =
+      typeof args.flags.port === "string"
+        ? Number(args.flags.port)
+        : bestEffortPort(dir);
+    const host =
+      typeof args.flags.host === "string" ? args.flags.host : "127.0.0.1";
+    const url = `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${port}`;
+    const token = readStoredToken(dir);
+    const ready = await waitForReady(async () => {
+      try {
+        const res = await fetch(`${url}/api/fleet`, {
+          headers: token ? { authorization: `Bearer ${token}` } : {},
+        });
+        return res.status === 200 || res.status === 401;
+      } catch {
+        return false;
+      }
+    }, 15000);
+    if (!ready) {
+      throw new CliError(
+        `daemonized fleet did not become ready within 15s — log: ${logFile}`,
+        { exitCode: EXIT.runtime, remedy: `inspect ${logFile}` }
+      );
+    }
+    const pid = readDaemonPid(dir) ?? child.pid ?? 0;
+    if (json) {
+      console.log(JSON.stringify(startReadinessPayload(url, port, pid, token)));
+    } else {
+      console.log(
+        `daemon started: pid ${pid} · ${url}${token ? " (token required)" : ""}`
+      );
+      console.log(`log: ${logFile}`);
+    }
+    process.exit(ready ? EXIT.ok : EXIT.runtime);
+  }
+
   const wantsQr = args.flags.qr === true;
   const wantsRotate = args.flags["rotate-token"] === true;
   const explicitToken =
@@ -251,6 +330,9 @@ async function cmdStart(args: Args): Promise<void> {
     log: json ? (line) => console.error(line) : (line) => console.log(line),
   });
   const displayToken = handle.token ?? "";
+  if (process.env.PI_TIDY_BOTS_DAEMON_CHILD === "1") {
+    writeFileSync(daemonPidPath(dir), String(process.pid));
+  }
   if (json) {
     // One clean readiness line on stdout — daemon chatter goes to stderr.
     console.log(
@@ -263,30 +345,30 @@ async function cmdStart(args: Args): Promise<void> {
         )
       )
     );
-    return;
-  }
-  console.log(
-    `\npi-tidy-bots ready: ${handle.url}${displayToken ? `/?token=${displayToken}` : ""}`
-  );
-  if (displayToken) console.log(`token: ${displayToken}`);
-  if (wantsQr && displayToken) {
-    const port = Number(new URL(handle.url).port);
-    const lanIp = pickLanIp({ addresses: lanAddresses() });
-    const target = resolvePairingTarget(host, lanIp);
-    if (!target.ok) {
-      console.log(`qr: skipped — ${target.reason}`);
-    } else {
-      const url = buildPairingUrl(target.ip, port, displayToken);
-      const { renderUnicode } = await import("uqr");
-      console.log(
-        `\nscan to open the console on your phone:\n\n${renderUnicode(url)}`
-      );
-      console.log(url);
+  } else {
+    console.log(
+      `\npi-tidy-bots ready: ${handle.url}${displayToken ? `/?token=${displayToken}` : ""}`
+    );
+    if (displayToken) console.log(`token: ${displayToken}`);
+    if (wantsQr && displayToken) {
+      const port = Number(new URL(handle.url).port);
+      const lanIp = pickLanIp({ addresses: lanAddresses() });
+      const target = resolvePairingTarget(host, lanIp);
+      if (!target.ok) {
+        console.log(`qr: skipped — ${target.reason}`);
+      } else {
+        const url = buildPairingUrl(target.ip, port, displayToken);
+        const { renderUnicode } = await import("uqr");
+        console.log(
+          `\nscan to open the console on your phone:\n\n${renderUnicode(url)}`
+        );
+        console.log(url);
+      }
     }
+    console.log(
+      "Ctrl-C stops the fleet. Sessions persist under .fleet/sessions/.\n"
+    );
   }
-  console.log(
-    "Ctrl-C stops the fleet. Sessions persist under .fleet/sessions/.\n"
-  );
   process.on("SIGINT", () => {
     console.log("\nstopping fleet…");
     void handle.stop().then(() => process.exit(0));
@@ -308,6 +390,90 @@ function printVersion(json: boolean): void {
   );
 }
 
+async function cmdStatus(args: Args, json: boolean): Promise<void> {
+  const dir = resolve(args.positional[0] ?? ".");
+  const pid = readDaemonPid(dir) ?? pickStopPid(dir)?.pid;
+  const port = bestEffortPort(dir);
+  const url = `http://127.0.0.1:${port}`;
+  const token = readStoredToken(dir);
+  let bots: { name: string; online: boolean; queued: number }[] = [];
+  try {
+    const res = await fetch(`${url}/api/fleet`, {
+      headers: token ? { authorization: `Bearer ${token}` } : {},
+    });
+    if (res.ok) {
+      const data = (await res.json()) as {
+        bots?: { name: string; online: boolean; queued: number }[];
+      };
+      bots = (data.bots ?? []).map((b) => ({
+        name: b.name,
+        online: b.online,
+        queued: b.queued,
+      }));
+    }
+  } catch {
+    // Daemon not serving — fall through to the not-running error below.
+  }
+  const running = bots.length > 0 || (pid !== undefined && pidAlive(pid));
+  if (!running) {
+    throw new CliError("fleet is not running", {
+      exitCode: EXIT.runtime,
+      remedy: "pi-tidy-bots start <dir>",
+    });
+  }
+  if (json) {
+    console.log(JSON.stringify({ pid, port, url, bots }));
+    return;
+  }
+  console.log(`daemon: pid ${pid ?? "?"} · port ${port}`);
+  for (const bot of bots) {
+    console.log(
+      `${bot.online ? "●" : "○"} ${bot.name} — ${bot.online ? "online" : "offline"}${bot.queued > 0 ? ` · queued ${bot.queued}` : ""}`
+    );
+  }
+}
+
+async function cmdStop(args: Args, json: boolean): Promise<void> {
+  const dir = resolve(args.positional[0] ?? ".");
+  const stop = pickStopPid(dir);
+  if (!stop) {
+    throw new CliError("fleet is not running", {
+      exitCode: EXIT.usage,
+      remedy: "pi-tidy-bots start <dir>",
+    });
+  }
+  if (!pidAlive(stop.pid)) {
+    // Stale pidfile/lock: the fleet is already gone.
+    rmSync(daemonPidPath(dir), { force: true });
+    throw new CliError("fleet is not running", {
+      exitCode: EXIT.usage,
+      remedy: "pi-tidy-bots start <dir>",
+    });
+  }
+  try {
+    process.kill(stop.pid, "SIGTERM");
+  } catch {
+    // Died between the liveness probe and the signal — same as stopped.
+  }
+  // Wait for a graceful shutdown: pid gone (lock is released on the way out).
+  const graceful = await waitForReady(() => !pidAlive(stop.pid), 10_000, 200);
+  if (!graceful) {
+    process.kill(stop.pid, "SIGKILL");
+    const killed = await waitForReady(() => !pidAlive(stop.pid), 3_000, 100);
+    if (!killed) {
+      throw new CliError(`fleet pid ${stop.pid} refused to stop`, {
+        exitCode: EXIT.runtime,
+      });
+    }
+  }
+  rmSync(daemonPidPath(dir), { force: true });
+  if (json) {
+    console.log(JSON.stringify({ stopped: true, pid: stop.pid }));
+  } else {
+    console.log(`fleet stopped (pid ${stop.pid})`);
+  }
+}
+
 async function cmdChat(args: Args): Promise<void> {
   const { startChat } = await import("./tui.ts");
   startChat({
@@ -324,19 +490,37 @@ async function cmdChat(args: Args): Promise<void> {
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const command = args.positional.shift();
-  if (args.flags.version !== undefined) {
-    printVersion(args.flags.json === true);
-    return;
+  try {
+    if (args.flags.version !== undefined) {
+      printVersion(args.flags.json === true);
+      return;
+    }
+    if (command === "init")
+      cmdInit(args.positional[0], args.flags.json === true);
+    if (command === "chat") return void (await cmdChat(args));
+    if (command === "add") cmdAdd(args);
+    if (command === "start") return void (await cmdStart(args));
+    if (command === "status") {
+      await cmdStatus(args, args.flags.json === true);
+      return;
+    }
+    if (command === "stop") {
+      await cmdStop(args, args.flags.json === true);
+      return;
+    }
+    if (command === "id") {
+      console.log(randomUUID());
+      process.exit(0);
+    }
+    usage();
+  } catch (error) {
+    if (error instanceof CliError) {
+      // Lifecycle/status failures: one clean line on stderr, classified exit.
+      console.error(formatError(error));
+      process.exit(error.exitCode);
+    }
+    throw error;
   }
-  if (command === "init") cmdInit(args.positional[0], args.flags.json === true);
-  if (command === "chat") await cmdChat(args);
-  if (command === "add") cmdAdd(args);
-  if (command === "start") await cmdStart(args);
-  if (command === "id") {
-    console.log(randomUUID());
-    process.exit(0);
-  }
-  usage();
 }
 
 await main();

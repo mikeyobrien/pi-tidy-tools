@@ -91,6 +91,14 @@ export function ensureStoredToken(
   return { token: writeToken(fleetDir, randomUUID()), generated: true };
 }
 
+/** The stored `.fleet/token`, if any — used by status to authenticate. */
+export function readStoredToken(fleetDir: string): string | undefined {
+  const file = tokenFile(fleetDir);
+  if (!existsSync(file)) return undefined;
+  const stored = readFileSync(file, "utf8").trim();
+  return stored || undefined;
+}
+
 /** `--rotate-token`: mint a fresh stored token and return it. */
 export function rotateStoredToken(fleetDir: string): string {
   return writeToken(fleetDir, randomUUID());

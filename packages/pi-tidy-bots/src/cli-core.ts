@@ -113,3 +113,69 @@ export function versionJsonPayload(
 ): { name: string; version: string } {
   return { name, version };
 }
+
+// ── Lifecycle helpers (issue 29 item 3) ────────────────
+
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
+/** `.fleet/daemon.pid` — written by a daemonized start child. */
+export function daemonPidPath(fleetDir: string): string {
+  return join(fleetDir, ".fleet", "daemon.pid");
+}
+
+export function readDaemonPid(fleetDir: string): number | undefined {
+  try {
+    const raw = readFileSync(daemonPidPath(fleetDir), "utf8").trim();
+    const pid = Number(raw);
+    return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function readLockHolderPid(fleetDir: string): number | undefined {
+  try {
+    const lock = JSON.parse(
+      readFileSync(join(fleetDir, ".fleet", "lock.json"), "utf8")
+    ) as { pid?: unknown };
+    return typeof lock.pid === "number" ? lock.pid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Which pid owns the fleet? The daemon pidfile wins over the lock holder. */
+export function pickStopPid(
+  fleetDir: string
+): { pid: number; from: "daemon.pid" | "lock.json" } | undefined {
+  const daemonPid = readDaemonPid(fleetDir);
+  if (daemonPid) return { pid: daemonPid, from: "daemon.pid" };
+  const lockPid = readLockHolderPid(fleetDir);
+  if (lockPid) return { pid: lockPid, from: "lock.json" };
+  return undefined;
+}
+
+/** True while the pid is alive (signal 0 probe). */
+export function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Poll until `probe` is true or the deadline passes. */
+export async function waitForReady(
+  probe: () => boolean | Promise<boolean>,
+  timeoutMs: number,
+  stepMs = 150
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await probe()) return true;
+    await new Promise((r) => setTimeout(r, stepMs));
+  }
+  return false;
+}

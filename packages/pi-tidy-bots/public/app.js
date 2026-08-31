@@ -499,13 +499,14 @@ function renderSteps(steps) {
     const row = el("div", "step");
     const check = el("span", "step-check", "✓");
     row.appendChild(check);
-    row.appendChild(
-      el(
-        "span",
-        "step-name",
-        step.reason ? `${step.name} — ${step.reason}` : step.name
-      )
-    );
+    // Issue 36: compact digest (`name — label`) outranks the model's stated
+    // reason; the raw args payload never reaches the step row.
+    const stepName = step.label
+      ? `${step.name} — ${step.label}`
+      : step.reason
+        ? `${step.name} — ${step.reason}`
+        : step.name;
+    row.appendChild(el("span", "step-name", stepName));
     if (step.duration !== undefined)
       row.appendChild(el("span", "step-dur", `${step.duration} ms`));
     if (state.toolOutput === "full" && step.output) {

@@ -18,6 +18,38 @@ export interface RpcSpawnOptions {
   onLine?: (line: string) => void;
 }
 
+/** Compact, non-sensitive args digest for a tool step row (issue 36). */
+export function stepLabel(toolName: string, args: unknown): string | undefined {
+  if (typeof args !== "object" || args === null) return undefined;
+  const record = args as Record<string, unknown>;
+  const first = (...keys: string[]): string | undefined => {
+    for (const key of keys) {
+      const value = record[key];
+      if (typeof value === "string" && value.trim().length > 0)
+        return value.trim();
+    }
+    return undefined;
+  };
+  const truncate = (value: string, max: number) =>
+    value.length > max ? `${value.slice(0, max)}…` : value;
+  if (toolName === "message_agent") {
+    const target = first("target");
+    return target ? `→ ${target}` : undefined;
+  }
+  if (toolName === "read" || toolName === "edit" || toolName === "write") {
+    const path = first("file_path", "path", "notebook_path");
+    if (path === undefined) return undefined;
+    const base = path.split(/[\\/]/).pop();
+    return base ? `✎ ${base}` : undefined;
+  }
+  if (toolName === "bash") {
+    const command = first("command");
+    return command ? truncate(command.replace(/\s+/g, " "), 60) : undefined;
+  }
+  const stringified = JSON.stringify(record);
+  return stringified === undefined ? undefined : truncate(stringified, 40);
+}
+
 export type RpcEvent =
   | { kind: "agent_start" }
   | { kind: "turn_start" }
@@ -25,7 +57,13 @@ export type RpcEvent =
   | { kind: "agent_settled" }
   | { kind: "assistant_delta"; delta: string }
   | { kind: "assistant_message"; text: string }
-  | { kind: "tool_start"; toolCallId: string; toolName: string; reason: string }
+  | {
+      kind: "tool_start";
+      toolCallId: string;
+      toolName: string;
+      reason: string;
+      label?: string;
+    }
   | { kind: "tool_output"; toolCallId: string; text: string }
   | { kind: "tool_end"; toolCallId: string }
   | { kind: "tool_result"; toolCallId: string; text: string; isError: boolean }
@@ -397,6 +435,7 @@ export class RpcSession {
           toolCallId: String(parsed.toolCallId ?? ""),
           toolName: String(parsed.toolName ?? "tool"),
           reason: stepReason(parsed.args),
+          label: stepLabel(String(parsed.toolName ?? "tool"), parsed.args),
         });
         return;
       case "tool_execution_end":

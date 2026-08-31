@@ -105,6 +105,7 @@ interface BotRuntime {
     toolCallId: string;
     name: string;
     reason: string;
+    label?: string;
     started: number;
     duration?: number;
     output?: string;
@@ -430,6 +431,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       toolCallId: string;
       name: string;
       reason: string;
+      label?: string;
       started: number;
       duration?: number;
       output?: string;
@@ -440,6 +442,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       toolCallId: step.toolCallId,
       name: step.name,
       reason: step.reason,
+      ...(step.label ? { label: step.label } : {}),
       ...(activeToolOutput === "full" && step.output
         ? { output: step.output }
         : {}),
@@ -778,6 +781,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           toolCallId: event.toolCallId,
           name: event.toolName,
           reason: event.reason,
+          ...(event.label ? { label: event.label } : {}),
           started: Date.now(),
         });
         if (activeToolOutput !== "off") {

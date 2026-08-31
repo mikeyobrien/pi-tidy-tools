@@ -40,6 +40,7 @@ export function versionPayload(): {
 // ── Transcript entries ─────────────────────────────────
 export const TranscriptStepSchema = Type.Object({
   name: Type.String(),
+  label: Type.Optional(Type.String()),
   duration: Type.Optional(Type.Number()),
 });
 

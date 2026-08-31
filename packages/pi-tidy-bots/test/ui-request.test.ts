@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   autoUiAnswer,
   describeUiAnswer,
+  isFireAndForgetUiMethod,
   isInteractiveUiMethod,
   uiResponseFrame,
 } from "../src/rpc.ts";
@@ -19,6 +20,26 @@ test("interactive UI methods need an answer; notify and status do not", () => {
     "",
   ])
     assert.equal(isInteractiveUiMethod(method), false);
+});
+
+test("fire-and-forget UI methods are known and never await an answer", () => {
+  for (const method of [
+    "notify",
+    "setStatus",
+    "setWidget",
+    "setTitle",
+    "set_editor_text",
+  ])
+    assert.equal(isFireAndForgetUiMethod(method), true);
+  for (const method of [
+    "select",
+    "confirm",
+    "input",
+    "editor",
+    "future_modal",
+    "",
+  ])
+    assert.equal(isFireAndForgetUiMethod(method), false);
 });
 
 test("uiResponseFrame selects the exact wire shape per answer kind", () => {

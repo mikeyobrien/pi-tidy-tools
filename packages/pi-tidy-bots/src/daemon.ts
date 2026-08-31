@@ -28,6 +28,7 @@ import {
   RpcSession,
   autoUiAnswer,
   describeUiAnswer,
+  isFireAndForgetUiMethod,
   isInteractiveUiMethod,
   type RpcEvent,
   type UiAnswer,
@@ -725,7 +726,20 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         return;
       }
       case "ui_request": {
-        if (!isInteractiveUiMethod(event.method) || !event.id) return;
+        if (!event.id) return;
+        if (isFireAndForgetUiMethod(event.method)) return;
+        if (!isInteractiveUiMethod(event.method)) {
+          // Unknown method: defuse it immediately so a future interactive UI
+          // request can never wedge a turn. The child ignores unmatched
+          // responses, so a cancelled answer is safe for any method.
+          resolveUi(
+            runtime,
+            { id: event.id, method: event.method, title: event.title },
+            { cancel: true },
+            true
+          );
+          return;
+        }
         if (runtime.pendingUi.has(event.id)) return;
         const view: UiRequestView = {
           id: event.id,

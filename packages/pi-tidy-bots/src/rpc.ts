@@ -56,6 +56,19 @@ export function isInteractiveUiMethod(method: string): boolean {
   return INTERACTIVE_UI_METHODS.has(method);
 }
 
+const FIRE_AND_FORGET_UI_METHODS = new Set([
+  "notify",
+  "setStatus",
+  "setWidget",
+  "setTitle",
+  "set_editor_text",
+]);
+
+/** Known UI methods the child emits without waiting for an answer. */
+export function isFireAndForgetUiMethod(method: string): boolean {
+  return FIRE_AND_FORGET_UI_METHODS.has(method);
+}
+
 /** Wire frame answering a pending extension UI request. */
 export function uiResponseFrame(
   id: string,
@@ -392,7 +405,10 @@ export class RpcSession {
       case "extension_ui_request": {
         const method = String(parsed.method ?? "");
         const id = typeof parsed.id === "string" ? parsed.id : "";
-        if (id && isInteractiveUiMethod(method)) {
+        // Every id'd request crosses to the daemon: interactive methods become
+        // answerable cards, unknown methods get defused there, and known
+        // fire-and-forget methods are ignored without a response.
+        if (id) {
           this.options.onEvent({
             kind: "ui_request",
             id,

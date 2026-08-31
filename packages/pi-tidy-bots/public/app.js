@@ -990,6 +990,13 @@ function updateAttachmentChip(file) {
   if (!file) return;
   if (pendingImageUrl) URL.revokeObjectURL(pendingImageUrl);
   pendingImageUrl = URL.createObjectURL(file);
+  // Unrenderable images (e.g. iOS HEIC) must not show an empty box.
+  thumb.onerror = () => {
+    thumb.hidden = true;
+  };
+  thumb.onload = () => {
+    thumb.hidden = false;
+  };
   thumb.src = pendingImageUrl;
   name.textContent = file.name;
   name.title = file.name;

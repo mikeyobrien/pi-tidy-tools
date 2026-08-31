@@ -84,10 +84,10 @@ export class RpcSession {
   /** Assistant text of the most recently completed assistant message this turn. */
   lastAssistant = "";
 
-  private constructor(
-    private readonly options: RpcSpawnOptions,
-    process_: ChildProcess
-  ) {
+  private readonly options: RpcSpawnOptions;
+
+  private constructor(options: RpcSpawnOptions, process_: ChildProcess) {
+    this.options = options;
     this.process = process_;
     this.process.stdout?.setEncoding("utf8");
     this.process.stdout?.on("data", (chunk: string) => this.ingest(chunk));

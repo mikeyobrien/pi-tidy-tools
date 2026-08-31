@@ -4,7 +4,7 @@ Focused, independently installable packages that make [Pi](https://github.com/ea
 
 Long agent turns are hard to read in Pi's native transcript: every tool call renders as a boxed card, the model's goal behind each call is invisible, and delegated work has no compact live view. pi-tidy replaces that with dense, reason-first output while preserving native execution behavior.
 
-Each package solves one transcript or workflow problem. Install only the ones you want — there is no umbrella runtime package.
+Each package solves one transcript or workflow problem. Install only the ones you want — nothing in the suite depends on another package. See [docs/north-star.md](docs/north-star.md) for the suite vision and how the packages compound.
 
 **Stable (npm):**
 
@@ -129,11 +129,29 @@ pi install ~/.pi/agent/git/github.com/mikeyobrien/pi-tidy-tools/packages/pi-tidy
 
 [Read the full pi-tidy-footer documentation →](packages/pi-tidy-footer)
 
+### [`@mobrienv/pi-tidy-bots`](packages/pi-tidy-bots) · experimental
+
+**Operate a fleet of perpetual Pi bots.** One command turns a directory into a fleet of named bots — each with its own persistent session, persona, and presence — driveable from a web UI or any HTTP client.
+
+> Experimental: on `main`, not on npm yet. Install from a local checkout. Fleet manifest format and web console layout may still change before `0.1.0` is published.
+
+- Perpetual rpc sessions with a session-ownership lock and respawn
+- `message_agent` bus with typed failure codes and per-bot route allowlists
+- Web console with roster, presence, status bubbles, and routing pills
+- Ships a hermetic demo fleet (Atlas + Forge) with handoffs
+
+```bash
+pi install git:github.com/mikeyobrien/pi-tidy-tools@main
+pi install ~/.pi/agent/git/github.com/mikeyobrien/pi-tidy-tools/packages/pi-tidy-bots
+```
+
+[Read the full pi-tidy-bots documentation →](packages/pi-tidy-bots)
+
 ## About the collection
 
 Packages follow the `@mobrienv/pi-tidy-*` naming convention. Each package owns its runtime, documentation, tests, version, changelog, and npm release when published.
 
-`@mobrienv/pi-tidy-tools`, `@mobrienv/pi-tidy-subagents`, and `@mobrienv/pi-tidy-memory` are published independently on npm. `@mobrienv/pi-tidy-footer` remains experimental and is available from this repository until its first release.
+`@mobrienv/pi-tidy-tools`, `@mobrienv/pi-tidy-subagents`, and `@mobrienv/pi-tidy-memory` are published independently on npm. `@mobrienv/pi-tidy-footer` and `@mobrienv/pi-tidy-bots` remain experimental and are available from this repository until their first release.
 
 The private root manifest exists for workspace development and keeps existing local-checkout installs pointed at `pi-tidy-tools`; published packages remain independent.
 

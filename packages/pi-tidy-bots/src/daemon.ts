@@ -734,7 +734,10 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           bot: botName,
           turnId: runtime.turnId,
           phase: "delta",
-          text: runtime.turnText,
+          // Server-side marker stripping: any WS client gets clean streaming
+          // text. A marker line still open mid-stream becomes visible only
+          // until its closing ]] arrives — the grammar is line-based.
+          text: stripActionMarkers(runtime.turnText),
         });
         return;
       }
@@ -745,7 +748,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           bot: botName,
           turnId: runtime.turnId,
           phase: "delta",
-          text: runtime.turnText,
+          text: stripActionMarkers(runtime.turnText),
         });
         return;
       }

@@ -97,3 +97,26 @@ test("attribution and notification formatting follow the wire contracts", () => 
   const long = "x".repeat(2000);
   assert.ok(completionNotification("forge", long).length < 2000);
 });
+
+test("ws delta text carries no action markers after server-side stripping", () => {
+  // Mirrors the assistant_delta emission: stripActionMarkers over the
+  // accumulated turn text before it crosses the WS.
+  const frames = [
+    "Checking GPU 3...",
+    "Checking GPU 3...\n\n[[action: Fail over now]]",
+    "Checking GPU 3...\n\n[[action: Fail over now]]\nGPU 3 recovered.",
+    "Partial marker without a closing bracket: [[action: Fail",
+  ];
+  for (const frame of frames.slice(0, 3)) {
+    const text = stripActionMarkers(frame);
+    assert.equal(text.includes("[[action:"), false, `clean: ${frame}`);
+  }
+  // Known streaming limit: a marker line still open mid-stream is visible
+  // until its closing ]] arrives — the grammar is line-based.
+  assert.equal(stripActionMarkers(frames[3]).includes("[[action: Fail"), true);
+  // Settled path unchanged: the full accumulated text strips identically.
+  assert.equal(
+    stripActionMarkers("Verdict here.\n[[action: Retry]]\n"),
+    "Verdict here."
+  );
+});

@@ -180,27 +180,18 @@ body {
   border-radius: 50%;
   position: relative;
   flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  font-weight: 700;
+  color: rgba(0, 0, 0, 0.6);
+  user-select: none;
   background: radial-gradient(
     circle at 35% 30%,
     var(--blob, #2dd4bf),
     color-mix(in srgb, var(--blob, #2dd4bf) 60%, #000)
   );
-}
-.blob::before,
-.blob::after {
-  content: "";
-  position: absolute;
-  top: 40%;
-  width: 5px;
-  height: 7px;
-  border-radius: 3px;
-  background: #0a0c10;
-}
-.blob::before {
-  left: 28%;
-}
-.blob::after {
-  right: 28%;
 }
 .blob.large {
   width: 38px;

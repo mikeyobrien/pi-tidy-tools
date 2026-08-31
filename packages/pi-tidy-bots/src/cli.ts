@@ -71,14 +71,12 @@ port = 4317
 [[bot]]
 name = "atlas"
 title = "Infrastructure Operator"
-avatar = "🛰️"
 dir = "bots/atlas"
 routes = ["forge"]
 
 [[bot]]
 name = "forge"
 title = "Remediation Worker"
-avatar = "🔨"
 dir = "bots/forge"
 `;
 
@@ -178,7 +176,7 @@ export function scaffoldBot(
   if (manifest.includes(`name = "${name}"`))
     throw new Error(`bot "${name}" already exists in bots.toml`);
   const title = options.title ?? "Fleet Bot";
-  const avatar = options.avatar ?? "🤖";
+  const avatar = options.avatar ?? "";
   const botDir = join(fleetDir, "bots", name);
   mkdirSync(botDir, { recursive: true });
   writeFileSync(join(botDir, "AGENTS.md"), starterPersona(name, title));

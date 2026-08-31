@@ -109,7 +109,7 @@ export function loadFleetConfig(
       dir: botDir,
       model: table.model === undefined ? undefined : String(table.model),
       title: table.title === undefined ? undefined : String(table.title),
-      avatar: table.avatar === undefined ? "🤖" : String(table.avatar),
+      avatar: table.avatar === undefined ? "" : String(table.avatar),
       routes,
       approve: table.approve === undefined ? true : table.approve === true,
       routines,

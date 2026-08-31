@@ -31,6 +31,29 @@ test("loadFleetConfig fails fast naming bot and field", () => {
   assert.throws(() => loadFleetConfig("/nonexistent-fleet"), /no bots\.toml/);
 });
 
+test("loadFleetConfig defaults avatar to empty (blob+initial identity)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ptb-avatar-"));
+  try {
+    const botDir = join(dir, "atlas");
+    mkdirSync(botDir, { recursive: true });
+    writeFileSync(join(botDir, "AGENTS.md"), "# atlas\n");
+    writeFileSync(
+      join(dir, "bots.toml"),
+      `[[bot]]\nname = "atlas"\ndir = "atlas"\n`
+    );
+    const fleet = loadFleetConfig(dir);
+    assert.equal(fleet.bots[0].avatar, "", "no emoji default");
+    // A manifest that sets avatar still gets honored (backward compat).
+    writeFileSync(
+      join(dir, "bots.toml"),
+      `[[bot]]\nname = "atlas"\ndir = "atlas"\navatar = "🛰️"\n`
+    );
+    assert.equal(loadFleetConfig(dir).bots[0].avatar, "🛰️");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("loadFleetConfig rejects a manifest still carrying an actions row", () => {
   const dir = mkdtempSync(join(tmpdir(), "ptb-actions-"));
   try {

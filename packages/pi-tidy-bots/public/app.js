@@ -70,6 +70,14 @@ const el = (tag, className, text) => {
 function blobAvatar(name, large) {
   const blob = el("div", `blob${large ? " large" : ""}`);
   blob.style.setProperty("--blob", colorFor(name));
+  // Identity = blob color + initial. A manifest avatar (legacy) renders its
+  // text instead; emoji defaults are gone (ADR 0001).
+  const bot = state.fleet.find((candidate) => candidate.name === name);
+  const text =
+    bot?.avatar && bot.avatar.trim().length > 0
+      ? bot.avatar
+      : name.charAt(0).toUpperCase();
+  blob.textContent = text;
   return blob;
 }
 
@@ -151,7 +159,7 @@ function transcriptEl(entry) {
     const wrap = el("div", "entry routing");
     const pill = el("div", "routing-pill");
     pill.appendChild(el("span", null, "→"));
-    pill.appendChild(el("span", "names", `🤖 ${entry.originFrom ?? "bot"}`));
+    pill.appendChild(el("span", "names", `${entry.originFrom ?? "bot"}`));
     const pillText = el("span", "routing-text");
     pillText.innerHTML = PiMd.renderInline(entry.text);
     pill.appendChild(pillText);
@@ -197,7 +205,7 @@ function uiRequestEl(entry) {
   const wrap = el("div", "entry system");
   const card = el("div", resolved ? "ui-card resolved" : "ui-card");
   card.id = `ui-${ui.id}`;
-  card.appendChild(el("div", "source", `❓ ${ui.title}`));
+  card.appendChild(el("div", "source", ui.title));
   if (ui.message) card.appendChild(el("div", "ui-message", ui.message));
   if (resolved) {
     card.appendChild(

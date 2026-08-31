@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parse } from "smol-toml";
 
@@ -84,18 +85,29 @@ export function loadFleetConfig(
       throw new ConfigError(`${where}: duplicate bot name "${name}"`);
     }
     seen.add(name);
-    const relDir = String(table.dir ?? name);
-    const botDir = resolve(dir, relDir);
-    if (!isDirectory(botDir)) {
-      throw new ConfigError(
-        `${where} (${name}): dir "${relDir}" does not exist`
-      );
+    let botDirOverride: string;
+    // Issue 41 (ADR 0002): fleet membership is orchestration, not scope.
+    // `dir` omitted => the bot runs from the user home (global ~/.pi config
+    // active), persona via title + global config + steering. An explicit dir
+    // opts INTO scoping and keeps today's validation.
+    if (table.dir === undefined) {
+      botDirOverride = homedir();
+    } else {
+      const relDir = String(table.dir);
+      const scoped = resolve(dir, relDir);
+      if (!isDirectory(scoped)) {
+        throw new ConfigError(
+          `${where} (${name}): dir "${relDir}" does not exist`
+        );
+      }
+      if (!existsSync(join(scoped, "AGENTS.md"))) {
+        throw new ConfigError(
+          `${where} (${name}): missing AGENTS.md in "${relDir}"`
+        );
+      }
+      botDirOverride = scoped;
     }
-    if (!existsSync(join(botDir, "AGENTS.md"))) {
-      throw new ConfigError(
-        `${where} (${name}): missing AGENTS.md in "${relDir}"`
-      );
-    }
+    const botDir = botDirOverride;
     const routes = Array.isArray(table.routes)
       ? table.routes.map((value) => String(value))
       : undefined;

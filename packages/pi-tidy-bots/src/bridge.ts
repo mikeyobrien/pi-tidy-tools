@@ -2,6 +2,12 @@
 // Loaded by the fleet runtime into every bot session (`pi -e <package>/src/bridge.ts`).
 // Registers the message_agent tool (fleet handoffs) and the /bots-reload command
 // (persona hot-apply). Expects PI_TIDY_BOTS_* env from the runtime.
+//
+// Non-coupling contract (ADR 0002): this extension provides ORCHESTRATION
+// only — routed messages, reload. It never sets or changes the child's
+// working directory, never assumes a project or fleet dir, and injects no
+// scope. Bots are uncoupled by default; scoping is the operator's opt-in via
+// steering, AGENTS.md, or the manifest's explicit `dir`.
 import { Type } from "typebox";
 
 interface BridgeDeps {

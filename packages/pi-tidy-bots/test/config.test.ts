@@ -11,7 +11,13 @@ import {
   attributionPrefix,
   completionNotification,
 } from "../src/actions.ts";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -182,4 +188,63 @@ test("diffFleet classifies add, remove, change, and untouched bots", () => {
     ["bravo"]
   );
   assert.deepEqual(removal.added, []);
+});
+
+test("loadFleetConfig defaults an unscoped bot to the user home (ADR 0002)", async () => {
+  const { homedir } = await import("node:os");
+  const dir = mkdtempSync(join(tmpdir(), "ptb-unscoped-"));
+  try {
+    writeFileSync(
+      join(dir, "bots.toml"),
+      `[[bot]]\nname = "rover"\ntitle = "Rover"\n`
+    );
+    const fleet = loadFleetConfig(dir);
+    assert.equal(fleet.bots[0].dir, homedir(), "cwd is the user home");
+    // No AGENTS.md requirement for unscoped bots.
+    assert.equal(
+      existsSync(join(homedir(), "AGENTS.md")),
+      existsSync(join(homedir(), "AGENTS.md"))
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("explicit dir keeps full validation: existence and persona file", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ptb-scoped-"));
+  try {
+    mkdirSync(join(dir, "bots", "ghost"), { recursive: true });
+    writeFileSync(
+      join(dir, "bots.toml"),
+      `[[bot]]\nname = "ghost"\ndir = "bots/ghost"\n`
+    );
+    assert.throws(
+      () => loadFleetConfig(dir),
+      (error: unknown) =>
+        error instanceof ConfigError && error.message.includes("AGENTS.md")
+    );
+    // Dir does not exist at all.
+    writeFileSync(
+      join(dir, "bots.toml"),
+      `[[bot]]\nname = "ghost"\ndir = "bots/vanished"\n`
+    );
+    assert.throws(
+      () => loadFleetConfig(dir),
+      (error: unknown) =>
+        error instanceof ConfigError && error.message.includes("vanished")
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("bridge never touches the child working directory (ADR 0002)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(
+    new URL("../src/bridge.ts", import.meta.url),
+    "utf8"
+  );
+  // Non-coupling contract: orchestration only — no cwd writes, no chdir.
+  assert.ok(!/cwd\s*[:=]/.test(source), "bridge must not set child cwd");
+  assert.ok(!source.includes("process.chdir"), "bridge must not chdir");
 });

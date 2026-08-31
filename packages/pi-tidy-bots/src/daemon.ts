@@ -41,6 +41,7 @@ import {
   stripActionMarkers,
 } from "./actions.ts";
 import { classifyFailure, isRetryable } from "./reasons.ts";
+import { versionPayload } from "./contract.ts";
 
 export interface TranscriptEntry {
   id: string;
@@ -1375,6 +1376,10 @@ function buildHttpServer(deps: ServerDeps): Hono {
       latest: runtime.transcript.at(-1)?.text ?? "",
     }));
     return context.json({ dir: deps.fleet.dir, bots });
+  });
+
+  app.get("/api/version", (context) => {
+    return context.json(versionPayload());
   });
 
   app.get("/api/settings", (context) => {

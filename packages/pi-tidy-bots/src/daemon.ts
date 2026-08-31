@@ -25,7 +25,7 @@ import {
   type ToolOutputMode,
 } from "./config.ts";
 import { RpcSession, type RpcEvent } from "./rpc.ts";
-import { isDue, minuteKey } from "./cron.ts";
+import { isDue, minuteKey, parseCron } from "./cron.ts";
 import { createEventLog } from "./eventlog.ts";
 import {
   actionPrompt,
@@ -91,6 +91,28 @@ const MAX_RESTARTS_PER_WINDOW = 3;
 const RESTART_WINDOW_MS = 60_000;
 
 const PUBLIC_DIR = new URL("../public/", import.meta.url).pathname;
+
+/**
+ * Boot-time routine validation. A schedule parseCron rejects can never fire —
+ * every scheduler tick throws and the catch skips the row — so surface each
+ * one as a warning naming bot, routine, schedule, and reason. Fail-soft: the
+ * fleet still boots and valid routines keep firing.
+ */
+export function routineBootWarnings(
+  routines: { bot: string; name: string; schedule: string }[]
+): string[] {
+  const warnings: string[] = [];
+  for (const routine of routines) {
+    try {
+      parseCron(routine.schedule);
+    } catch {
+      warnings.push(
+        `routine "${routine.name}" for bot "${routine.bot}": schedule "${routine.schedule}" will never fire [reason: invalid cron]`
+      );
+    }
+  }
+  return warnings;
+}
 
 export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
   const log = options.log ?? ((line: string) => console.log(line));
@@ -283,6 +305,8 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       });
     }
   }
+  for (const warning of routineBootWarnings(routines)) log(warning);
+
   const firedKeys = new Set<string>();
   const fireRoutine = (routine: RoutineRuntime, manual: boolean): boolean => {
     const runtime = runtimes.get(routine.bot);

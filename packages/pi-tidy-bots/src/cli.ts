@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { networkInterfaces } from "node:os";
 import { startFleet } from "./daemon.ts";
+import { NAME_PATTERN } from "./config.ts";
 import {
   buildPairingUrl,
   ensureStoredToken,
@@ -46,6 +47,8 @@ function usage(): never {
 Usage:
   pi-tidy-bots init <fleetDir>            Scaffold a demo fleet (Atlas ops + Forge worker)
   pi-tidy-bots start [fleetDir]           Start the fleet daemon and web UI
+  pi-tidy-bots add <name> [--dir fleetDir] [--title t] [--avatar e]
+                                          Scaffold a bot and append its manifest row
 
 Start flags:
   --port <n>        Web UI port (default 4317, or [fleet] port in bots.toml)
@@ -143,6 +146,70 @@ function lanAddresses() {
   return out;
 }
 
+function starterPersona(name: string, title: string): string {
+  return `# ${name} — ${title}
+
+You are ${name}, a bot in a pi-tidy-bots fleet.
+
+## Voice
+Terse: verdict first, at most two supporting facts. No filler.
+
+## Fleet
+- Teammates are reachable with the message_agent tool (fire-and-forget;
+  replies arrive as completion notifications).
+- Finish your turn promptly after a handoff.
+`;
+}
+
+export function scaffoldBot(
+  fleetDir: string,
+  name: string,
+  options: { title?: string; avatar?: string } = {}
+): void {
+  if (!NAME_PATTERN.test(name)) {
+    throw new Error(
+      `bot name "${name}" must match ${NAME_PATTERN} (lowercase letter first, 2-32 chars)`
+    );
+  }
+  const manifestPath = join(fleetDir, "bots.toml");
+  if (!existsSync(manifestPath))
+    throw new Error(`no bots.toml in fleet dir ${fleetDir}`);
+  const manifest = readFileSync(manifestPath, "utf8");
+  if (manifest.includes(`name = "${name}"`))
+    throw new Error(`bot "${name}" already exists in bots.toml`);
+  const title = options.title ?? "Fleet Bot";
+  const avatar = options.avatar ?? "🤖";
+  const botDir = join(fleetDir, "bots", name);
+  mkdirSync(botDir, { recursive: true });
+  writeFileSync(join(botDir, "AGENTS.md"), starterPersona(name, title));
+  const row = `\n[[bot]]\nname = "${name}"\ntitle = "${title}"\navatar = "${avatar}"\ndir = "bots/${name}"\n`;
+  writeFileSync(
+    manifestPath,
+    `${manifest.endsWith("\n") ? manifest : manifest + "\n"}${row}`
+  );
+}
+
+function cmdAdd(args: Args): never {
+  const name = args.positional[0] ?? "";
+  const fleetDir = resolve(
+    typeof args.flags.dir === "string" ? args.flags.dir : "."
+  );
+  try {
+    scaffoldBot(fleetDir, name, {
+      title:
+        typeof args.flags.title === "string" ? args.flags.title : undefined,
+      avatar:
+        typeof args.flags.avatar === "string" ? args.flags.avatar : undefined,
+    });
+  } catch (error) {
+    console.error((error as Error).message);
+    process.exit(1);
+  }
+  console.log(`scaffolded bots/${name}/AGENTS.md + appended the [[bot]] row`);
+  console.log("editing bots.toml — the fleet picks it up live");
+  process.exit(0);
+}
+
 async function cmdStart(args: Args): Promise<void> {
   const dir = resolve(args.positional[0] ?? ".");
   const wantsQr = args.flags.qr === true;
@@ -237,6 +304,7 @@ async function main(): Promise<void> {
   }
   if (command === "init") cmdInit(args.positional[0]);
   if (command === "chat") await cmdChat(args);
+  if (command === "add") cmdAdd(args);
   if (command === "start") await cmdStart(args);
   if (command === "id") {
     console.log(randomUUID());

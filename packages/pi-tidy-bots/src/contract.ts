@@ -116,10 +116,16 @@ export const ConfigPayloadSchema = Type.Object({
   ]),
 });
 
+export const ConfigErrorPayloadSchema = Type.Object({
+  type: Type.Literal("config-error"),
+  error: Type.String(),
+});
+
 export const WsEventSchema = Type.Union([
   HelloPayloadSchema,
   RosterPayloadSchema,
   AppendPayloadSchema,
   BubblePayloadSchema,
   ConfigPayloadSchema,
+  ConfigErrorPayloadSchema,
 ]);

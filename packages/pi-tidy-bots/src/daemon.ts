@@ -18,6 +18,7 @@ import { acquireFleetLock } from "./lock.ts";
 import {
   loadFleetConfig,
   checkRoute,
+  diffFleet,
   ConfigError,
   normalizeToolOutput,
   type BotConfig,
@@ -287,10 +288,8 @@ export function writeWsAuthFailure(socket: {
 
 export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
   const log = options.log ?? ((line: string) => console.log(line));
-  const fleet: FleetConfig = loadFleetConfig(options.dir, {
-    port: options.port,
-    host: options.host,
-  });
+  const fleetOverrides = { port: options.port, host: options.host };
+  let fleet: FleetConfig = loadFleetConfig(options.dir, fleetOverrides);
   const childSecret = randomUUID();
 
   // Fleet state: routines toggles + console settings persist in .fleet/state.json;
@@ -371,23 +370,24 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
   persistToolOutputRef = persistToolOutput;
 
   const runtimes = new Map<string, BotRuntime>();
+  const makeRuntime = (config: BotConfig): BotRuntime => ({
+    config,
+    session: null,
+    online: false,
+    lastActive: new Date().toISOString(),
+    transcript: [],
+    pendingFrom: [],
+    restartTimes: [],
+    stopping: false,
+    turnId: null,
+    deltaSent: null,
+    turnText: "",
+    queuedCount: 0,
+    steps: [],
+    pendingUi: new Map(),
+  });
   for (const config of fleet.bots) {
-    runtimes.set(config.name, {
-      config,
-      session: null,
-      online: false,
-      lastActive: new Date().toISOString(),
-      transcript: [],
-      pendingFrom: [],
-      restartTimes: [],
-      stopping: false,
-      turnId: null,
-      deltaSent: null,
-      turnText: "",
-      queuedCount: 0,
-      steps: [],
-      pendingUi: new Map(),
-    });
+    runtimes.set(config.name, makeRuntime(config));
   }
 
   const sockets = new Set<WebSocket>();
@@ -596,8 +596,16 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       bridgePath,
       daemonUrl,
       childSecret,
-      onEvent: (event) => handleEvent(runtime, event),
-      onExit: (code, signal) => handleExit(runtime, code, signal),
+      onEvent: (event) => {
+        // Reconcile respawns can supersede a session mid-flight — events from
+        // a superseded child are stale and must not touch the runtime.
+        if (runtime.session !== session) return;
+        handleEvent(runtime, event);
+      },
+      onExit: (code, signal) => {
+        if (runtime.session !== session) return;
+        handleExit(runtime, code, signal);
+      },
       onLine: (line) => {
         if (line.includes('"message_update"')) return;
         log(`[${name}] ${line.length > 500 ? `${line.slice(0, 500)}…` : line}`);
@@ -1295,6 +1303,111 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     });
   });
 
+  // ── Hot bot onboarding (issue 27): watch bots.toml and reconcile live. ──
+  let manifestWatcher: import("node:fs").FSWatcher | null = null;
+  let reconcileTimer: NodeJS.Timeout | null = null;
+
+  const closeBotRuntime = (name: string): void => {
+    const runtime = runtimes.get(name);
+    if (!runtime) return;
+    runtime.stopping = true; // handleExit must not respawn a removed bot.
+    personaWatchers.get(name)?.close();
+    personaWatchers.delete(name);
+    runtime.session?.stop();
+    runtimes.delete(name);
+  };
+
+  const reconcileFleet = async (next: FleetConfig): Promise<void> => {
+    const diff = diffFleet(fleet.bots, next.bots);
+    for (const bot of diff.removed) {
+      closeBotRuntime(bot.name);
+      log(`[fleet] bot "${bot.name}" removed — transcript journal kept`);
+    }
+    for (const bot of diff.added) {
+      runtimes.set(bot.name, makeRuntime(bot));
+      log(`[fleet] bot "${bot.name}" added`);
+      void spawnBot(bot.name);
+    }
+    for (const bot of diff.changed) {
+      const runtime = runtimes.get(bot.name);
+      if (!runtime) continue;
+      runtime.stopping = true;
+      personaWatchers.get(bot.name)?.close();
+      personaWatchers.delete(bot.name);
+      runtime.session?.stop();
+      runtime.config = bot;
+      runtime.stopping = false;
+      runtime.restartTimes = [];
+      log(
+        `[fleet] bot "${bot.name}" reconfigured — respawning (session dir kept)`
+      );
+      void spawnBot(bot.name);
+    }
+    for (const bot of diff.untouched) {
+      const runtime = runtimes.get(bot.name);
+      if (runtime) runtime.config = bot; // title/avatar copy updates live.
+    }
+    fleet = next;
+    if (diff.added.length > 0 || diff.removed.length > 0)
+      routines.splice(
+        0,
+        routines.length,
+        ...next.bots.flatMap((bot) =>
+          bot.routines.map((routine) => ({
+            bot: bot.name,
+            name: routine.name,
+            schedule: routine.schedule,
+            prompt: routine.prompt,
+            enabled:
+              routineState.routines?.[`${bot.name}:${routine.name}`]?.enabled ??
+              true,
+          }))
+        )
+      );
+    emitRoster();
+  };
+
+  const reconcileFromDisk = async (): Promise<void> => {
+    let next: FleetConfig;
+    try {
+      next = loadFleetConfig(fleet.dir, fleetOverrides);
+    } catch (error) {
+      // A bad edit must never kill a running fleet.
+      const message = (error as Error).message;
+      log(`config error: ${message} — keeping the running fleet`);
+      emit({ type: "config-error", error: message });
+      return;
+    }
+    if (next.port !== fleet.port || next.host !== fleet.host) {
+      const message =
+        "[fleet] table changed — port/host changes need a daemon restart";
+      log(`config error: ${message}`);
+      emit({ type: "config-error", error: message });
+      return;
+    }
+    await reconcileFleet(next);
+  };
+
+  try {
+    // Watch the fleet DIR (not the file): editors atomically replace
+    // bots.toml, which kills file watches.
+    manifestWatcher = watch(fleet.dir, (_event, filename) => {
+      if (filename && filename !== "bots.toml") return;
+      if (reconcileTimer) clearTimeout(reconcileTimer);
+      reconcileTimer = setTimeout(() => {
+        reconcileTimer = null;
+        void reconcileFromDisk();
+      }, 300);
+      reconcileTimer.unref?.();
+    });
+    manifestWatcher.on("error", () => {
+      manifestWatcher?.close();
+      manifestWatcher = null;
+    });
+  } catch {
+    // Manifest watching is best-effort; restart-based onboarding still works.
+  }
+
   return new Promise<FleetHandle>((resolvePromise) => {
     httpServer.addListener("listening", () => {
       const url = `http://${fleet.host === "0.0.0.0" ? "127.0.0.1" : fleet.host}:${fleet.port}`;
@@ -1307,6 +1420,8 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         token,
         fleetDir: fleet.dir,
         stop: async () => {
+          manifestWatcher?.close();
+          if (reconcileTimer) clearTimeout(reconcileTimer);
           schedulerTimer.unref?.();
           clearInterval(schedulerTimer);
           for (const watcher of personaWatchers.values()) watcher.close();

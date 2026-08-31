@@ -28,7 +28,7 @@ export interface FleetConfig {
 
 export class ConfigError extends Error {}
 
-const NAME_PATTERN = /^[a-z][a-z0-9-]{1,31}$/;
+export const NAME_PATTERN = /^[a-z][a-z0-9-]{1,31}$/;
 const DEFAULT_PORT = 4317;
 
 export type ToolOutputMode = "off" | "reasons" | "full";
@@ -127,6 +127,39 @@ export function loadFleetConfig(
       (typeof fleet.host === "string" ? fleet.host : "127.0.0.1"),
     bots,
   };
+}
+
+/** Reconcile diff for hot onboarding: which bots to add, remove, respawn. */
+export function diffFleet(
+  current: BotConfig[],
+  next: BotConfig[]
+): {
+  added: BotConfig[];
+  removed: BotConfig[];
+  changed: BotConfig[];
+  untouched: BotConfig[];
+} {
+  const currentByName = new Map(current.map((bot) => [bot.name, bot]));
+  const nextByName = new Map(next.map((bot) => [bot.name, bot]));
+  const added: BotConfig[] = [];
+  const changed: BotConfig[] = [];
+  const untouched: BotConfig[] = [];
+  for (const bot of next) {
+    const existing = currentByName.get(bot.name);
+    if (!existing) {
+      added.push(bot);
+      continue;
+    }
+    const same = (a: unknown, b: unknown) =>
+      JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+    const differs =
+      existing.dir !== bot.dir ||
+      !same(existing.model, bot.model) ||
+      !same(existing.routes, bot.routes);
+    (differs ? changed : untouched).push(bot);
+  }
+  const removed = current.filter((bot) => !nextByName.has(bot.name));
+  return { added, removed, changed, untouched };
 }
 
 /** Pure routing check: unknown_target outranks route_forbidden. */

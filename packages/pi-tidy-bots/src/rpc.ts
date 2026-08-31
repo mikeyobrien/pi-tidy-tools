@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 
 export interface RpcSpawnOptions {
   name: string;
+  /** Executable to spawn (defaults to "pi"); tests use a stub. */
+  piBin?: string;
   cwd: string;
   sessionDir: string;
   resume: boolean;
@@ -208,7 +210,7 @@ export class RpcSession {
       "-e",
       options.bridgePath,
     ];
-    const child = spawn("pi", args, {
+    const child = spawn(options.piBin ?? "pi", args, {
       cwd: options.cwd,
       env: {
         ...process.env,

@@ -538,6 +538,9 @@ function connectSocket() {
       localStorage.setItem("fleet-seq", String(state.lastSeq));
     }
     switch (message.type) {
+      case "config-error":
+        console.warn(`[fleet] ${message.error}`);
+        break;
       case "config":
         state.toolOutput = message.toolOutput ?? state.toolOutput;
         renderTranscript(state.selected);

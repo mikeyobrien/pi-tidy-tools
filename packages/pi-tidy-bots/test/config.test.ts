@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { checkRoute, loadFleetConfig, ConfigError } from "../src/config.ts";
+import {
+  checkRoute,
+  diffFleet,
+  loadFleetConfig,
+  ConfigError,
+} from "../src/config.ts";
 import {
   stripActionMarkers,
   attributionPrefix,
@@ -119,4 +124,39 @@ test("ws delta text carries no action markers after server-side stripping", () =
     stripActionMarkers("Verdict here.\n[[action: Retry]]\n"),
     "Verdict here."
   );
+});
+
+test("diffFleet classifies add, remove, change, and untouched bots", () => {
+  const base = (name: string, extra: Record<string, unknown> = {}) =>
+    loadFleetConfig(fixtureFleet, { port: 4599 }).bots[0];
+  const mk = (name: string, model?: string, dir = `bots/${name}`) => ({
+    name,
+    dir: fixtureFleet + dir,
+    avatar: "🤖",
+    approve: true,
+    routines: [],
+    ...(model ? { model } : {}),
+  });
+  const current = [mk("alpha"), mk("bravo")];
+  const next = [mk("alpha"), { ...mk("bravo", "custom-model") }, mk("charlie")];
+  const diff = diffFleet(current as never, next as never);
+  assert.deepEqual(
+    diff.added.map((b) => b.name),
+    ["charlie"]
+  );
+  assert.deepEqual(
+    diff.changed.map((b) => b.name),
+    ["bravo"]
+  );
+  assert.deepEqual(
+    diff.untouched.map((b) => b.name),
+    ["alpha"]
+  );
+  // Removing bravo from next marks it removed.
+  const removal = diffFleet(current as never, [next[0]] as never);
+  assert.deepEqual(
+    removal.removed.map((b) => b.name),
+    ["bravo"]
+  );
+  assert.deepEqual(removal.added, []);
 });

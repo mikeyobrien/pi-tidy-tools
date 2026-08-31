@@ -239,7 +239,7 @@ function transcriptEl(entry) {
     for (const group of Parts.groupConsecutiveTools(entry.parts)) {
       if (group.type === "text") {
         const body = el("span", "md-body");
-        body.innerHTML = PiMd.render(group.text);
+        body.innerHTML = PiMd.render(visibleStreamText(group.text));
         bubble.appendChild(body);
       } else {
         bubble.appendChild(renderPartGroup(group, false));
@@ -565,7 +565,6 @@ function bubbleWorking(botName, turnId, steps = []) {
   working.appendChild(el("div", "spinner"));
   working.appendChild(el("span", null, "working…"));
   bubble.appendChild(working);
-  bubble.appendChild(el("div", "text-zone"));
   if (steps.length > 0) bubble.appendChild(renderSteps(steps));
   wrap.appendChild(bubble);
   state.bubbles.set(`${botName}:${turnId}`, { wrap, bubble });
@@ -594,20 +593,6 @@ function visibleStreamText(text) {
     .filter((line) => !/^\s*\[\[\s*action\s*:/i.test(line))
     .join("\n")
     .trimEnd();
-}
-
-function bubbleDelta(botName, turnId, text) {
-  const record = state.bubbles.get(`${botName}:${turnId}`);
-  if (!record) return;
-  const working = record.bubble.querySelector(".working");
-  if (working) working.remove();
-  let zone = record.bubble.querySelector(".text-zone");
-  if (!zone) {
-    zone = el("div", "text-zone");
-    record.bubble.appendChild(zone);
-  }
-  zone.innerHTML = PiMd.render(visibleStreamText(text));
-  if (botName === state.selected) scrollBottomIfPinned();
 }
 
 function bubbleFinal(botName, turnId) {
@@ -789,10 +774,10 @@ function connectSocket() {
           bubbleWorking(message.bot, message.turnId, message.steps ?? []);
         if (message.phase === "parts")
           bubbleParts(message.bot, message.turnId, message.parts ?? []);
+        // Issue 48: the compat `delta` phase is intentionally ignored —
+        // streaming text renders ONLY through the parts model.
         if (message.phase === "steps")
           bubbleSteps(message.bot, message.turnId, message.steps ?? []);
-        if (message.phase === "delta")
-          bubbleDelta(message.bot, message.turnId, message.text);
         if (message.phase === "final") bubbleFinal(message.bot, message.turnId);
         break;
       default:

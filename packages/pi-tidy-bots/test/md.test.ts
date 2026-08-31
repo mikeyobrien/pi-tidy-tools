@@ -169,3 +169,19 @@ test("malformed table without separator falls back to text", async () => {
   assert.ok(!out.includes("<table>"), "never half-rendered");
   assert.match(out, /Name \| Value/);
 });
+
+test("console retires the legacy text-zone (issue 48 single-source render)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const app = readFileSync(
+    new URL("../public/app.js", import.meta.url),
+    "utf8"
+  );
+  assert.ok(
+    !app.includes('"text-zone"'),
+    "the legacy streaming zone must stay retired"
+  );
+  assert.ok(
+    app.includes("bubbleParts"),
+    "streaming text renders only through the parts model"
+  );
+});

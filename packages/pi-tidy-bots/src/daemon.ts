@@ -926,7 +926,15 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           originFrom: botName,
           text,
           ts: new Date().toISOString(),
-          parts: runtime.turnParts.snapshot(),
+          // Marker stripping applies to parts too: settled history never
+          // carries [[action:]] lines in any surface.
+          parts: runtime.turnParts
+            .snapshot()
+            .map((part) =>
+              part.type === "text"
+                ? { ...part, text: stripActionMarkers(part.text) }
+                : part
+            ),
           ...(runtime.steps.length > 0
             ? {
                 steps: runtime.steps.map((step) => ({

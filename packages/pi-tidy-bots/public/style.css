@@ -322,10 +322,6 @@ body {
     transform: rotate(360deg);
   }
 }
-.text-zone:empty {
-  display: none;
-}
-
 /* ── Steps checklist card ───────────────────────────── */
 .steps {
   display: flex;

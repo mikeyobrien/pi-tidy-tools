@@ -132,3 +132,31 @@ test("resolveStartToken auto-enables auth on non-loopback binds only", async () 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("json payloads: init, start readiness, version", async () => {
+  const { initJsonPayload, startReadinessPayload, versionJsonPayload } =
+    await import("../src/cli-core.ts");
+  assert.deepEqual(initJsonPayload("/fleets/demo"), {
+    fleetDir: "/fleets/demo",
+    created: true,
+  });
+  const withToken = startReadinessPayload(
+    "http://0.0.0.0:4317",
+    4317,
+    4242,
+    "t"
+  );
+  assert.deepEqual(withToken, {
+    url: "http://0.0.0.0:4317",
+    port: 4317,
+    pid: 4242,
+    token: "t",
+  });
+  // No token: the key is omitted entirely (not null).
+  const noToken = startReadinessPayload("http://127.0.0.1:4317", 4317, 4242);
+  assert.deepEqual(Object.keys(noToken).sort(), ["pid", "port", "url"]);
+  assert.deepEqual(versionJsonPayload("@mobrienv/pi-tidy-bots", "0.1.0"), {
+    name: "@mobrienv/pi-tidy-bots",
+    version: "0.1.0",
+  });
+});

@@ -4,7 +4,14 @@ import { join, resolve } from "node:path";
 import { networkInterfaces } from "node:os";
 import { startFleet } from "./daemon.ts";
 import { NAME_PATTERN } from "./config.ts";
-import { EXIT, formatError, resolveStartToken } from "./cli-core.ts";
+import {
+  EXIT,
+  formatError,
+  initJsonPayload,
+  resolveStartToken,
+  startReadinessPayload,
+  versionJsonPayload,
+} from "./cli-core.ts";
 import { buildPairingUrl, pickLanIp, resolvePairingTarget } from "./pairing.ts";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -22,7 +29,7 @@ function parseArgs(argv: string[]): Args {
     if (arg.startsWith("--")) {
       const key = arg.slice(2);
       const next = argv[index + 1];
-      const boolean = key === "qr" || key === "rotate-token";
+      const boolean = key === "qr" || key === "rotate-token" || key === "json";
       if (!boolean && next !== undefined && !next.startsWith("--")) {
         flags[key] = next;
         index++;
@@ -55,6 +62,7 @@ Start flags:
   --bot <name>      Chat client: start with this bot selected
   --url <url>       Chat client: fleet daemon URL (default http://127.0.0.1:4317)
   --version         Print package version
+  --json            Machine-readable output: init/start emit one JSON line; --version emits {name, version}
 `);
   process.exit(1);
 }
@@ -108,19 +116,23 @@ Terse: verdict first, at most two supporting facts. No filler.
   stop.
 `;
 
-function cmdInit(fleetDirArg: string | undefined): never {
+function cmdInit(fleetDirArg: string | undefined, json: boolean): never {
   const fleetDir = resolve(fleetDirArg ?? ".");
   if (existsSync(join(fleetDir, "bots.toml"))) {
     console.error(`refusing to overwrite existing fleet at ${fleetDir}`);
-    process.exit(1);
+    process.exit(2);
   }
   mkdirSync(join(fleetDir, "bots", "atlas"), { recursive: true });
   mkdirSync(join(fleetDir, "bots", "forge"), { recursive: true });
   writeFileSync(join(fleetDir, "bots.toml"), DEMO_BOTS_TOML);
   writeFileSync(join(fleetDir, "bots", "atlas", "AGENTS.md"), ATLAS_AGENTS);
   writeFileSync(join(fleetDir, "bots", "forge", "AGENTS.md"), FORGE_AGENTS);
-  console.log(`scaffolded demo fleet at ${fleetDir}`);
-  console.log(`next: pi-tidy-bots start ${fleetDir}`);
+  if (json) {
+    console.log(JSON.stringify(initJsonPayload(fleetDir)));
+  } else {
+    console.log(`scaffolded demo fleet at ${fleetDir}`);
+    console.log(`next: pi-tidy-bots start ${fleetDir}`);
+  }
   process.exit(0);
 }
 
@@ -205,6 +217,7 @@ function cmdAdd(args: Args): never {
 
 async function cmdStart(args: Args): Promise<void> {
   const dir = resolve(args.positional[0] ?? ".");
+  const json = args.flags.json === true;
   const wantsQr = args.flags.qr === true;
   const wantsRotate = args.flags["rotate-token"] === true;
   const explicitToken =
@@ -235,9 +248,23 @@ async function cmdStart(args: Args): Promise<void> {
       typeof args.flags["tool-output"] === "string"
         ? (args.flags["tool-output"] as any)
         : undefined,
-    log: (line) => console.log(line),
+    log: json ? (line) => console.error(line) : (line) => console.log(line),
   });
   const displayToken = handle.token ?? "";
+  if (json) {
+    // One clean readiness line on stdout — daemon chatter goes to stderr.
+    console.log(
+      JSON.stringify(
+        startReadinessPayload(
+          handle.url,
+          Number(new URL(handle.url).port),
+          process.pid,
+          displayToken || undefined
+        )
+      )
+    );
+    return;
+  }
   console.log(
     `\npi-tidy-bots ready: ${handle.url}${displayToken ? `/?token=${displayToken}` : ""}`
   );
@@ -270,11 +297,15 @@ async function cmdStart(args: Args): Promise<void> {
   await new Promise<never>(() => {});
 }
 
-function printVersion(): void {
+function printVersion(json: boolean): void {
   const manifest = JSON.parse(
     readFileSync(new URL("../package.json", import.meta.url), "utf8")
   );
-  console.log(`${manifest.name} ${manifest.version}`);
+  console.log(
+    json
+      ? JSON.stringify(versionJsonPayload(manifest.name, manifest.version))
+      : `${manifest.name} ${manifest.version}`
+  );
 }
 
 async function cmdChat(args: Args): Promise<void> {
@@ -294,10 +325,10 @@ async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const command = args.positional.shift();
   if (args.flags.version !== undefined) {
-    printVersion();
+    printVersion(args.flags.json === true);
     return;
   }
-  if (command === "init") cmdInit(args.positional[0]);
+  if (command === "init") cmdInit(args.positional[0], args.flags.json === true);
   if (command === "chat") await cmdChat(args);
   if (command === "add") cmdAdd(args);
   if (command === "start") await cmdStart(args);

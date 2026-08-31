@@ -418,6 +418,51 @@ body {
   color: var(--text);
 }
 
+/* ── Routing pill expand (issue 35) ─────────────────── */
+.routing-card {
+  cursor: pointer;
+  min-width: 0;
+}
+.routing-card.expanded .routing-pill {
+  display: none;
+}
+.routing-expanded {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  overflow: hidden;
+  transition:
+    grid-template-rows 0.18s ease,
+    opacity 0.18s ease;
+}
+.routing-card.expanded .routing-expanded {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.routing-expanded-body {
+  background: var(--surface);
+  border: 1px solid var(--border, #232a38);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.routing-expanded-footer {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-top: 8px;
+}
+.routing-expanded-footer button {
+  all: unset;
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 12px;
+}
+.routing-expanded-footer button:hover {
+  text-decoration: underline;
+}
+
 /* ── Composer card ──────────────────────────────────── */
 #composer {
   margin: 0 clamp(12px, 1.6vw, 22px);

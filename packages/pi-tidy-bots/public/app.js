@@ -156,14 +156,60 @@ function renderRoster() {
 function transcriptEl(entry) {
   if (entry.ui) return uiRequestEl(entry);
   if (entry.role === "user" && entry.origin === "bot") {
+    // Issue 35: click the clamped pill to expand it in place into a bordered
+    // card (full markdown + follow-the-delegation link). Expansion is
+    // ephemeral view state and never auto-scrolls (scroll doctrine): it only
+    // nudges the pane when the pill's top edge sits above the viewport.
     const wrap = el("div", "entry routing");
+    const card = el("div", "routing-card");
+    card.setAttribute("role", "button");
+    card.setAttribute("aria-expanded", "false");
     const pill = el("div", "routing-pill");
     pill.appendChild(el("span", null, "→"));
     pill.appendChild(el("span", "names", `${entry.originFrom ?? "bot"}`));
     const pillText = el("span", "routing-text");
     pillText.innerHTML = PiMd.renderInline(entry.text);
     pill.appendChild(pillText);
-    wrap.appendChild(pill);
+    card.appendChild(pill);
+
+    const expanded = el("div", "routing-expanded");
+    const body = el("div", "routing-expanded-body md-body");
+    body.innerHTML = PiMd.render(entry.text);
+    expanded.appendChild(body);
+    const from = entry.originFrom ?? "bot";
+    const footer = el("div", "routing-expanded-footer");
+    const open = el("button", null, `→ open ${from}'s transcript`);
+    open.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (state.fleet.some((candidate) => candidate.name === from))
+        selectBot(from);
+    });
+    const less = el("button", null, "▲ show less");
+    footer.appendChild(open);
+    footer.appendChild(less);
+    expanded.appendChild(footer);
+    card.appendChild(expanded);
+
+    const setExpanded = (on) => {
+      card.classList.toggle("expanded", on);
+      card.setAttribute("aria-expanded", String(on));
+      // Keep the pill's top edge visible when expanding near the viewport top.
+      if (on) {
+        const pane = document.getElementById("transcript");
+        const top = card.getBoundingClientRect().top;
+        const paneTop = pane.getBoundingClientRect().top;
+        if (top < paneTop + 4) pane.scrollTop += top - paneTop - 8;
+      }
+    };
+    card.addEventListener("click", (event) => {
+      if (event.target.closest("button")) return;
+      setExpanded(!card.classList.contains("expanded"));
+    });
+    less.addEventListener("click", (event) => {
+      event.stopPropagation();
+      setExpanded(false);
+    });
+    wrap.appendChild(card);
     return wrap;
   }
   const wrap = el("div", `entry ${entry.role}`);

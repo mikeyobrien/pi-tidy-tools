@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>pi-tidy-bots — fleet console</title>
-    <link rel="stylesheet" href="/style.css?v=12" />
+    <link rel="stylesheet" href="/style.css?v=13" />
   </head>
   <body>
     <div id="conn-banner" hidden>Reconnecting to fleet…</div>
@@ -49,23 +49,42 @@
         <div id="routines-panel" hidden></div>
         <div id="settings-panel" hidden></div>
         <form id="composer">
-          <div class="composer-agent">
-            <span class="composer-agent-dot"></span>
-            <span id="composer-agent-name">Agent</span>
+          <div class="composer-top">
+            <button
+              type="button"
+              id="composer-target"
+              aria-label="Choose target bot"
+            >
+              <span class="composer-target-label">To:</span>
+              <span id="composer-target-dot" class="online-dot"></span>
+              <span id="composer-target-name">Agent</span>
+              <span class="composer-target-caret" aria-hidden="true">▾</span>
+            </button>
           </div>
-          <textarea
-            id="composer-input"
-            rows="1"
-            enterkeyhint="send"
-            autocapitalize="sentences"
-            placeholder="Type a message…"
-            aria-label="Message the selected bot"
-          ></textarea>
-          <button id="send" type="submit" aria-label="Send">↑</button>
+          <div class="composer-bottom">
+            <input type="file" id="composer-image" accept="image/*" hidden />
+            <button
+              id="composer-attach"
+              type="button"
+              aria-label="Attach image"
+              title="Attach image"
+            >
+              ⊞
+            </button>
+            <textarea
+              id="composer-input"
+              rows="1"
+              enterkeyhint="send"
+              autocapitalize="sentences"
+              placeholder="Type a message…"
+              aria-label="Message the selected bot"
+            ></textarea>
+            <button id="send" type="submit" aria-label="Send">↑</button>
+          </div>
         </form>
       </main>
     </div>
-    <script src="/md.js?v=12"></script>
-    <script src="/app.js?v=12"></script>
+    <script src="/md.js?v=13"></script>
+    <script src="/app.js?v=13"></script>
   </body>
 </html>

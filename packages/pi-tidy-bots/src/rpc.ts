@@ -265,12 +265,14 @@ export class RpcSession {
 
   async prompt(
     message: string,
-    streamingBehavior?: "steer" | "followUp"
+    streamingBehavior?: "steer" | "followUp",
+    images?: { type: "image"; data: string; mimeType: string }[]
   ): Promise<void> {
     await this.request({
       type: "prompt",
       message,
       ...(streamingBehavior ? { streamingBehavior } : {}),
+      ...(images ? { images } : {}),
     });
   }
 
@@ -278,8 +280,15 @@ export class RpcSession {
     await this.request({ type: "steer", message });
   }
 
-  async followUp(message: string): Promise<void> {
-    await this.request({ type: "follow_up", message });
+  async followUp(
+    message: string,
+    images?: { type: "image"; data: string; mimeType: string }[]
+  ): Promise<void> {
+    await this.request({
+      type: "follow_up",
+      message,
+      ...(images ? { images } : {}),
+    });
   }
 
   async abort(): Promise<void> {

@@ -189,7 +189,6 @@ export function runSchedulerTick<
 }
 
 export type BusBehavior = "steer" | "followUp";
-
 /**
  * Validate the optional /bus/send behavior field. Omitted = auto delivery;
  * anything outside the two-value enum fails the request with a 400 naming
@@ -202,6 +201,35 @@ export function coerceBusBehavior(
   return value === "steer" || value === "followUp"
     ? { ok: true, behavior: value }
     : { ok: false };
+}
+
+/**
+ * Validate optional composer images for POST /message: at most one, each with
+ * string mediaType + base64 data. Forwarded to the child as pi ImageContent.
+ */
+export function coerceMessageImages(
+  value: unknown
+):
+  | { ok: true; images?: { type: "image"; data: string; mimeType: string }[] }
+  | { ok: false } {
+  if (value === undefined) return { ok: true, images: undefined };
+  if (!Array.isArray(value) || value.length > 1) return { ok: false };
+  if (value.length === 0) return { ok: true, images: undefined };
+  const [image] = value as unknown[];
+  if (
+    typeof image !== "object" ||
+    image === null ||
+    typeof (image as { mediaType?: unknown }).mediaType !== "string" ||
+    (image as { mediaType: string }).mediaType.length === 0 ||
+    typeof (image as { data?: unknown }).data !== "string" ||
+    (image as { data: string }).data.length === 0
+  )
+    return { ok: false };
+  const { mediaType, data } = image as { mediaType: string; data: string };
+  return {
+    ok: true,
+    images: [{ type: "image", data, mimeType: mediaType }],
+  };
 }
 
 export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
@@ -438,7 +466,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     };
     const busy = runtime.session.streaming;
     if (busy) {
-      // Queued behind the in-flight turn; agent_start decrements.
+      // Queued behind the in-flight turn; turn_start decrements.
       runtime.queuedCount++;
       emitRoster();
     }
@@ -872,13 +900,14 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     runtime: BotRuntime,
     text: string,
     entry: TranscriptEntry,
-    behavior?: "followUp"
+    behavior?: "followUp",
+    images?: { type: "image"; data: string; mimeType: string }[]
   ): Promise<void> => {
     appendTranscript(runtime, entry);
     const session = runtime.session;
     if (!session || !session.alive) throw new Error("runtime_offline");
     try {
-      await session.prompt(text, behavior);
+      await session.prompt(text, behavior, images);
     } catch (error) {
       // Fresh-bot boot race: the agent can reject plain prompts while its first
       // turn is still settling. One followUp queues behind it; genuine failures
@@ -888,8 +917,8 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         session.alive &&
         classifyFailure(String(error)) === "turn_in_flight"
       ) {
-        await session.followUp(text);
-        // Queued behind the in-flight turn; agent_start decrements.
+        await session.followUp(text, images);
+        // Queued behind the in-flight turn; turn_start decrements.
         runtime.queuedCount++;
         emitRoster();
         return;
@@ -939,7 +968,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         await runtime.session.steer(text);
         return;
       }
-      // Queued behind the in-flight turn; agent_start decrements.
+      // Queued behind the in-flight turn; turn_start decrements.
       runtime.queuedCount++;
       emitRoster();
       await runtime.session.prompt(text, behavior ?? "followUp");
@@ -1063,7 +1092,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         resolveUi(runtime, pending.view, answer, false);
         return { status: 200, body: { accepted: true } };
       },
-      message: async (name, text) => {
+      message: async (name, text, images) => {
         const runtime = runtimes.get(name);
         if (!runtime) return { status: 404, body: { error: "unknown bot" } };
         if (text.trim() === "/new") {
@@ -1095,7 +1124,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           ts: new Date().toISOString(),
         };
         try {
-          await deliver(runtime, text, entry);
+          await deliver(runtime, text, entry, undefined, images);
           return { status: 200, body: { accepted: true } };
         } catch {
           entry.delivering = false;
@@ -1226,7 +1255,8 @@ interface ServerDeps {
   handlers: {
     message(
       name: string,
-      text: string
+      text: string,
+      images?: { type: "image"; data: string; mimeType: string }[]
     ): Promise<{ status: number; body: unknown }>;
     steer(
       name: string,
@@ -1375,12 +1405,24 @@ function buildHttpServer(deps: ServerDeps): Hono {
   app.post("/api/bots/:name/message", async (context) => {
     const body = (await context.req.json().catch(() => ({}))) as {
       text?: string;
+      images?: unknown;
     };
     if (!body.text || body.text.trim().length === 0)
       return context.json({ error: "text required" }, 400);
+    const images = coerceMessageImages(body.images);
+    if (!images.ok) {
+      return context.json(
+        {
+          error:
+            "images must be one { mediaType, data } object with non-empty strings",
+        },
+        400
+      );
+    }
     const result = await deps.handlers.message(
       context.req.param("name"),
-      body.text.trim()
+      body.text.trim(),
+      images.images
     );
     return context.json(result.body, result.status as 200 | 404 | 503);
   });

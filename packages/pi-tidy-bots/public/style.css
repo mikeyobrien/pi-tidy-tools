@@ -432,26 +432,71 @@ body {
   margin: 0 clamp(12px, 1.6vw, 22px);
   margin-bottom: max(clamp(10px, 1.6vw, 16px), env(safe-area-inset-bottom));
   background: var(--surface);
+  border: 1px solid var(--border, #232a38);
   border-radius: var(--radius);
   display: flex;
   flex-direction: column;
-  padding: 10px 12px 12px;
+  padding: 8px 10px 10px;
   gap: 6px;
 }
-.composer-agent {
+.composer-top {
   display: flex;
   align-items: center;
-  gap: 8px;
-  color: var(--muted);
-  font-size: 12px;
-  padding: 2px 4px;
 }
-.composer-agent-dot {
+#composer-target {
+  all: unset;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--surface-2, #171c27);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+}
+#composer-target:focus-visible {
+  outline: 1px solid var(--accent);
+}
+.composer-target-label {
+  color: var(--muted);
+}
+.composer-target-caret {
+  color: var(--muted);
+  font-size: 10px;
+}
+#composer-target-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--accent);
   display: inline-block;
+}
+.composer-bottom {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+#composer-attach {
+  all: unset;
+  cursor: pointer;
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-2, #171c27);
+  color: var(--muted);
+  font-size: 16px;
+}
+#composer-attach.has-image {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+#composer-attach:focus-visible {
+  outline: 1px solid var(--accent);
 }
 #composer-input {
   background: none;
@@ -461,13 +506,14 @@ body {
   font-size: 16px;
   outline: none;
   resize: none;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   min-height: 24px;
   max-height: 160px;
   padding: 2px 4px 4px;
 }
 #send {
-  align-self: flex-end;
+  flex: none;
   width: 38px;
   height: 38px;
   border-radius: 50%;

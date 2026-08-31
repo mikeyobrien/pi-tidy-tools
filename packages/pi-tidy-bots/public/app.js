@@ -136,6 +136,7 @@ function renderRoster() {
   );
   document.getElementById("bot-count").textContent = String(state.fleet.length);
   updateHeaderQueue();
+  updateComposerTargetDot();
 }
 
 function transcriptEl(entry) {
@@ -490,7 +491,8 @@ function selectBot(name) {
     fresh.id = "header-avatar-blob";
     blobHost.replaceWith(fresh);
   }
-  setText("composer-agent-name", name);
+  setText("composer-target-name", name);
+  updateComposerTargetDot();
   const presence = $id("header-presence");
   if (presence) presence.hidden = !(bot?.online && bot?.active);
   document.body.classList.remove("drawer-open");
@@ -723,11 +725,59 @@ document.getElementById("composer").addEventListener("submit", (event) => {
   composerInput.value = "";
   autoGrow();
   scrollBottom();
+  const images = pendingImage ? [pendingImage] : undefined;
+  clearPendingImage();
   api(`/api/bots/${state.selected}/message`, {
     method: "POST",
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({ text, ...(images ? { images } : {}) }),
   }).catch(() => {});
 });
+
+// ── Composer target pill + image attach ──────────────
+function updateComposerTargetDot() {
+  const dot = document.getElementById("composer-target-dot");
+  const bot = state.fleet.find(
+    (candidate) => candidate.name === state.selected
+  );
+  if (!dot) return;
+  dot.className = bot?.online ? "online-dot" : "offline-dot";
+}
+
+document.getElementById("composer-target").addEventListener("click", () => {
+  // Opens the existing roster drawer, which doubles as the bot picker.
+  document.body.classList.toggle("drawer-open");
+});
+
+let pendingImage = null; // { mediaType, data } — base64, no dataURL prefix
+
+function clearPendingImage() {
+  pendingImage = null;
+  document.getElementById("composer-image").value = "";
+  document.getElementById("composer-attach").classList.remove("has-image");
+}
+
+document.getElementById("composer-attach").addEventListener("click", () => {
+  document.getElementById("composer-image").click();
+});
+
+document
+  .getElementById("composer-image")
+  .addEventListener("change", (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result ?? "");
+      const base64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
+      if (!base64) {
+        clearPendingImage();
+        return;
+      }
+      pendingImage = { mediaType: file.type || "image/png", data: base64 };
+      document.getElementById("composer-attach").classList.add("has-image");
+    };
+    reader.readAsDataURL(file);
+  });
 
 // iOS keyboard: the layout viewport does not resize — the visual viewport does.
 // Fit the app to the visual viewport and keep the transcript pinned to its newest entry.

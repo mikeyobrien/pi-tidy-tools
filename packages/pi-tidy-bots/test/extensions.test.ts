@@ -22,12 +22,12 @@ import { join } from "node:path";
 // fixtures/extensions/ document the real extension shapes these behaviors
 // model.
 
-const PORT = 4696;
 const runner = new URL(
   "./fixtures/extensions/pathological-pi.mjs",
   import.meta.url
 ).pathname;
 
+let suiteBase = "";
 const BOTS = ["crasher", "unknown", "flood", "garbage", "hang"];
 // Runner modes keyed by bot (see pathological-pi.mjs).
 const MODES: Record<string, string> = {
@@ -57,7 +57,7 @@ test(
     ).join("\n");
     writeFileSync(
       join(fleetDir, "bots.toml"),
-      `[fleet]\nport = ${PORT}\n${manifest}`
+      `[fleet]\nport = 0\n${manifest}`
     );
 
     // Wrapper the daemon spawns instead of `pi`: hands off to the runner.
@@ -66,15 +66,17 @@ test(
     spawnSync("chmod", ["+x", wrapper]);
 
     const { startFleet } = await import("../src/daemon.ts");
+    // handle.port carries the OS-assigned port (manifest declares port 0).
     const handle = await startFleet({
       dir: fleetDir,
-      port: PORT,
+      port: 0,
       host: "127.0.0.1",
       piBin: wrapper,
       log: (line) => console.error(line),
     });
+    suiteBase = `http://127.0.0.1:${handle.port}`;
 
-    const fleet = () => fetch(`http://127.0.0.1:${PORT}/api/fleet`);
+    const fleet = () => fetch(`${suiteBase}/api/fleet`);
     const alive = async () => (await fleet()).ok;
 
     try {
@@ -102,7 +104,7 @@ test(
       await new Promise((r) => setTimeout(r, 4000));
       assert.ok(await alive(), "daemon alive through unknown events + flood");
       const floodTranscript = await (
-        await fetch(`http://127.0.0.1:${PORT}/api/bots/flood/transcript`)
+        await fetch(`${suiteBase}/api/bots/flood/transcript`)
       ).json();
       assert.ok(Array.isArray(floodTranscript.transcript), "transcript sane");
 
@@ -123,7 +125,7 @@ test(
       // JSON arrays even after the pathology zoo ran.
       for (const bot of BOTS) {
         const data = await (
-          await fetch(`http://127.0.0.1:${PORT}/api/bots/${bot}/transcript`)
+          await fetch(`${suiteBase}/api/bots/${bot}/transcript`)
         ).json();
         assert.ok(
           Array.isArray(data.transcript),

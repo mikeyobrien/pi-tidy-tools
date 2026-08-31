@@ -46,7 +46,10 @@ import { versionPayload } from "./contract.ts";
 export interface TranscriptEntry {
   id: string;
   role: "user" | "assistant" | "system";
-  source?: string;
+  /** Who produced this entry — replaces the old display-string `source`. */
+  origin: "operator" | "bot" | "routine" | "system";
+  /** Actor name for bot/routine origins (sending bot, routine name). */
+  originFrom?: string;
   text: string;
   ts: string;
   steps?: { name: string; duration?: number }[];
@@ -468,6 +471,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     appendTranscript(runtime, {
       id: randomUUID(),
       role: "system",
+      origin: "system",
       text: `${view.title} — ${value}${auto ? " (auto)" : ""}`,
       ts: new Date().toISOString(),
       uiResolved: { id: view.id, value, auto },
@@ -506,7 +510,8 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     const entry: TranscriptEntry = {
       id: randomUUID(),
       role: "user",
-      source: `⏰ Routine: ${routine.name}${manual ? " (manual)" : ""}`,
+      origin: "routine",
+      originFrom: routine.name,
       text: routine.prompt,
       ts: new Date().toISOString(),
     };
@@ -618,19 +623,24 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
                   .map((part: any) => String(part.text ?? ""))
                   .join("");
           if (raw.trim().length === 0) return null;
-          let source: string | undefined;
+          let origin: TranscriptEntry["origin"] =
+            role === "assistant" ? "bot" : "operator";
+          let originFrom: string | undefined =
+            role === "assistant" ? name : undefined;
           let body = raw;
           if (role === "user") {
             const completion = raw.match(/^\[completion from 🤖 ([^\]]+)\]\n?/);
             if (completion) {
-              source = `🤖 ${completion[1]} replied`;
+              origin = "bot";
+              originFrom = completion[1];
               body = raw.slice(completion[0].length);
             }
           }
           return {
             id: randomUUID(),
             role,
-            ...(source ? { source } : {}),
+            origin,
+            ...(originFrom ? { originFrom } : {}),
             text: role === "assistant" ? stripActionMarkers(body) : body,
             ts: new Date(Number(message.timestamp) || Date.now()).toISOString(),
           };
@@ -793,6 +803,8 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         const entry: TranscriptEntry = {
           id: randomUUID(),
           role: "assistant",
+          origin: "bot",
+          originFrom: botName,
           text,
           ts: new Date().toISOString(),
           ...(runtime.steps.length > 0
@@ -840,7 +852,8 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
               appendTranscript(source, {
                 id: randomUUID(),
                 role: "user",
-                source: `🤖 ${botName} (@${botName}) replied`,
+                origin: "bot",
+                originFrom: botName,
                 text: text,
                 ts: new Date().toISOString(),
               });
@@ -876,6 +889,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         appendTranscript(runtime, {
           id: randomUUID(),
           role: "system",
+          origin: "system",
           text: view.message ? `${view.title} — ${view.message}` : view.title,
           ts: new Date().toISOString(),
           ui: view,
@@ -915,6 +929,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       appendTranscript(runtime, {
         id: randomUUID(),
         role: "system",
+        origin: "system",
         text: "Turn interrupted by a restart — resend if it was mid-flight.",
         ts: new Date().toISOString(),
       });
@@ -1014,7 +1029,8 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     const entry: TranscriptEntry = {
       id: randomUUID(),
       role: "user",
-      source: `🤖 ${fromName} (@${fromName})`,
+      origin: "bot",
+      originFrom: fromName,
       text: message.trim(),
       ts: new Date().toISOString(),
     };
@@ -1159,31 +1175,10 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       message: async (name, text, images) => {
         const runtime = runtimes.get(name);
         if (!runtime) return { status: 404, body: { error: "unknown bot" } };
-        if (text.trim() === "/new") {
-          if (!runtime.session || !runtime.session.alive)
-            return { status: 503, body: { error: "runtime_offline" } };
-          if (runtime.session.streaming)
-            return { status: 409, body: { error: "turn_in_flight" } };
-          let note =
-            "Reset rerouted to compaction — fresh working context, same conversation.";
-          try {
-            await runtime.session.request({ type: "compact" });
-          } catch (error) {
-            note =
-              "Nothing to compact yet — context is below the threshold, so the session stays as-is.";
-          }
-          appendTranscript(runtime, {
-            id: randomUUID(),
-            role: "system",
-            text: note,
-            ts: new Date().toISOString(),
-          });
-          return { status: 200, body: { accepted: true, rerouted: "compact" } };
-        }
         const entry: TranscriptEntry = {
           id: randomUUID(),
           role: "user",
-          source: "You",
+          origin: "operator",
           text,
           ts: new Date().toISOString(),
         };
@@ -1202,6 +1197,30 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         await runtime.session.steer(text);
         touch(runtime);
         return { status: 200, body: { accepted: true } };
+      },
+      compact: async (name) => {
+        const runtime = runtimes.get(name);
+        if (!runtime) return { status: 404, body: { error: "unknown bot" } };
+        if (!runtime.session || !runtime.session.alive)
+          return { status: 503, body: { error: "runtime_offline" } };
+        if (runtime.session.streaming)
+          return { status: 409, body: { error: "turn_in_flight" } };
+        let note =
+          "Reset rerouted to compaction — fresh working context, same conversation.";
+        try {
+          await runtime.session.request({ type: "compact" });
+        } catch {
+          note =
+            "Nothing to compact yet — context is below the threshold, so the session stays as-is.";
+        }
+        appendTranscript(runtime, {
+          id: randomUUID(),
+          role: "system",
+          origin: "system",
+          text: note,
+          ts: new Date().toISOString(),
+        });
+        return { status: 200, body: { accepted: true, rerouted: "compact" } };
       },
       busSend: async (fromName, targetName, message, behavior) =>
         deliverHandoff(fromName, targetName, message, behavior),
@@ -1322,6 +1341,7 @@ interface ServerDeps {
       text: string,
       images?: { type: "image"; data: string; mimeType: string }[]
     ): Promise<{ status: number; body: unknown }>;
+    compact(name: string): Promise<{ status: number; body: unknown }>;
     steer(
       name: string,
       text: string
@@ -1507,6 +1527,11 @@ function buildHttpServer(deps: ServerDeps): Hono {
       body
     );
     return context.json(result.body, result.status as 200 | 400 | 404 | 503);
+  });
+
+  app.post("/api/bots/:name/compact", async (context) => {
+    const result = await deps.handlers.compact(context.req.param("name"));
+    return context.json(result.body, result.status as 200 | 404 | 409 | 503);
   });
 
   app.post("/api/bots/:name/steer", async (context) => {

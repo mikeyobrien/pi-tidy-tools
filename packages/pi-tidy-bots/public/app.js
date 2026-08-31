@@ -141,20 +141,17 @@ function renderRoster() {
 
 function transcriptEl(entry) {
   if (entry.ui) return uiRequestEl(entry);
-  if (entry.role === "user" && entry.source && entry.source.startsWith("🤖")) {
+  if (entry.role === "user" && entry.origin === "bot") {
     const wrap = el("div", "entry routing");
     const pill = el("div", "routing-pill");
     pill.appendChild(el("span", null, "→"));
-    pill.appendChild(el("span", "names", entry.source));
+    pill.appendChild(el("span", "names", `🤖 ${entry.originFrom ?? "bot"}`));
     pill.appendChild(el("span", null, entry.text));
     wrap.appendChild(pill);
     return wrap;
   }
   const wrap = el("div", `entry ${entry.role}`);
   const bubble = el("div", "bubble");
-  if (entry.role === "user" && entry.source && entry.source !== "You") {
-    bubble.appendChild(el("div", "source", entry.source));
-  }
   // Markdown boundary: md.js escapes before rendering, so innerHTML here cannot
   // execute model-supplied HTML. Source lines stay plain text.
   if (entry.role === "assistant" || entry.role === "user") {
@@ -721,7 +718,18 @@ composerInput.addEventListener("keydown", (event) => {
 document.getElementById("composer").addEventListener("submit", (event) => {
   event.preventDefault();
   const text = composerInput.value.trim();
-  if (!text || !state.selected) return;
+  if (!state.selected) return;
+  if (text === "/new") {
+    // Magic string rerouted to the typed compaction endpoint.
+    composerInput.value = "";
+    autoGrow();
+    api(`/api/bots/${state.selected}/compact`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }).catch(() => {});
+    return;
+  }
+  if (!text) return;
   composerInput.value = "";
   autoGrow();
   scrollBottom();

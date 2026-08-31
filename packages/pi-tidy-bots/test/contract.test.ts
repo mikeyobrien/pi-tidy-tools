@@ -17,6 +17,8 @@ test("transcript entry schema accepts a real-shaped entry and rejects junk", () 
     check.Check({
       id: "id-1",
       role: "assistant",
+      origin: "bot",
+      originFrom: "forge",
       text: "All green.",
       ts: new Date().toISOString(),
       steps: [{ name: "bash", duration: 12.5 }],
@@ -27,7 +29,7 @@ test("transcript entry schema accepts a real-shaped entry and rejects junk", () 
     check.Check({
       id: "id-2",
       role: "user",
-      source: "You",
+      origin: "operator",
       text: "hi",
       ts: new Date().toISOString(),
       delivering: false,

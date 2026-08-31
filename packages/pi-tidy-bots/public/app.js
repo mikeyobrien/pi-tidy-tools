@@ -146,7 +146,9 @@ function transcriptEl(entry) {
     const pill = el("div", "routing-pill");
     pill.appendChild(el("span", null, "→"));
     pill.appendChild(el("span", "names", `🤖 ${entry.originFrom ?? "bot"}`));
-    pill.appendChild(el("span", null, entry.text));
+    const pillText = el("span", "routing-text");
+    pillText.innerHTML = PiMd.renderInline(entry.text);
+    pill.appendChild(pillText);
     wrap.appendChild(pill);
     return wrap;
   }

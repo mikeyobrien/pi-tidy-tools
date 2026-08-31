@@ -50,3 +50,22 @@ test("raw img tags still cannot pass through as html", async () => {
   assert.ok(!out.includes("<img src="), "raw img must stay escaped");
   assert.match(out, /&lt;img/);
 });
+
+test("renderInline keeps pills inline: links yes, images no", async () => {
+  // @ts-expect-error browser-global script, intentionally untyped
+  await import("../public/md.js");
+  const { renderInline } = (globalThis as any).PiMd;
+  const out = renderInline(
+    "Fix **auth** now — see `docs/x.md` and [spec](https://example.com/s). ![pic](https://example.com/p.png)"
+  );
+  assert.match(out, /<strong>auth<\/strong>/);
+  assert.match(out, /<code>docs\/x\.md<\/code>/);
+  assert.match(
+    out,
+    /<a href="https:\/\/example\.com\/s" target="_blank" rel="noopener noreferrer">spec<\/a>/
+  );
+  assert.ok(!out.includes("<img"), "pills must not render images");
+  assert.ok(!out.includes("<ul>"), "no block elements in inline output");
+  // Raw html still escapes.
+  assert.ok(!renderInline("<b>x</b>").includes("<b>"));
+});

@@ -9,22 +9,32 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;");
   }
-  function inline(text) {
+  // Inline subset shared by bubbles and pills. Images are bubble-only —
+  // handoff pills get links at most.
+  function inlineCore(text, allowImages) {
     let out = escapeHtml(text);
     out = out.replace(/`([^`]+)`/g, "<code>$1</code>");
     out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
     out = out.replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>");
-    // Images before links (same ! prefix): https-only, escaped alt, no other
-    // attributes — escape-first already ran, so nothing raw can pass through.
-    out = out.replace(
-      /!\[([^\]]*)\]\((https:[^)\s]+)\)/g,
-      '<img src="$2" alt="$1" loading="lazy" />'
-    );
+    if (allowImages) {
+      // Images before links (same ! prefix): https-only, escaped alt, no other
+      // attributes — escape-first already ran, so nothing raw can pass through.
+      out = out.replace(
+        /!\[([^\]]*)\]\((https:[^)\s]+)\)/g,
+        '<img src="$2" alt="$1" loading="lazy" />'
+      );
+    }
     out = out.replace(
       /\[([^\]]+)\]\((https?:[^)\s]+)\)/g,
       '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
     );
     return out;
+  }
+  function inline(text) {
+    return inlineCore(text, true);
+  }
+  function renderInline(text) {
+    return inlineCore(String(text), false);
   }
   function render(text) {
     const lines = String(text).split("\n");
@@ -82,7 +92,7 @@
     flushCode();
     return html.join("\n");
   }
-  const PiMd = { render, escapeHtml };
+  const PiMd = { render, renderInline, escapeHtml };
   global.PiMd = PiMd;
   if (typeof module !== "undefined" && module.exports) module.exports = PiMd;
 })(typeof window !== "undefined" ? window : globalThis);

@@ -1131,6 +1131,16 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     appendTranscript(runtime, entry);
     const session = runtime.session;
     if (!session || !session.alive) throw new Error("runtime_offline");
+    // Issue 50: a streaming child queues the message behind its turn —
+    // never bounced as runtime_offline (that is reserved for dead sessions).
+    if (session.streaming && behavior === undefined) {
+      await session.followUp(text, images);
+      journalPending(runtime, entry, images);
+      runtime.queuedCount++;
+      emit({ type: "append", bot: runtime.config.name, entry });
+      emitRoster();
+      return;
+    }
     try {
       await session.prompt(text, behavior, images);
       entry.delivering = false;
@@ -1352,6 +1362,14 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
             journalPending(runtime, entry, images);
             emit({ type: "append", bot: name, entry });
             return { status: 202, body: { accepted: true, queued: true } };
+          }
+          if (reason === "turn_in_flight") {
+            // Issue 50: busy is never runtime_offline — reject distinctly and
+            // visibly (the entry is marked failed, not half-delivered).
+            entry.delivering = false;
+            entry.deliveryError = "turn_in_flight";
+            emit({ type: "append", bot: name, entry });
+            return { status: 409, body: { error: "turn_in_flight" } };
           }
           entry.delivering = false;
           entry.deliveryError = reason;

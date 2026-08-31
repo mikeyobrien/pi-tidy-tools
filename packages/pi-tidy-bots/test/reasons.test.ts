@@ -35,3 +35,14 @@ test("retry policy: only transient reasons retry", () => {
   assert.ok(!isRetryable("provider_quota_limit"));
   assert.ok(!isRetryable("delivery_failed"));
 });
+
+test("issue 50: a busy child is turn_in_flight, never runtime_offline", () => {
+  const busy =
+    'rpc command failed: {"success":false,"error":"Agent is already processing. Specify streamingBehavior (\'steer\' or \'followUp\') to queue the message."}';
+  const reason = classifyFailure(busy);
+  assert.equal(reason, "turn_in_flight");
+  assert.notEqual(reason, "runtime_offline", "busy is not dead");
+  // The handler contract: alive-but-busy queues (202), dead queues on spawn,
+  // and runtime_offline is reserved for sessions that are actually gone.
+  assert.equal(classifyFailure("rpc child is not running"), "runtime_offline");
+});

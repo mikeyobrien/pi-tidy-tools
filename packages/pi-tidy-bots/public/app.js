@@ -245,7 +245,7 @@ function transcriptEl(entry) {
         const body = el("span", "md-body");
         body.innerHTML = PiMd.render(visibleStreamText(group.text));
         bubble.appendChild(body);
-      } else {
+      } else if (state.toolOutput !== "off") {
         bubble.appendChild(renderPartGroup(group, false));
       }
     }
@@ -550,7 +550,7 @@ function renderSteps(steps) {
         step.reason ? `${step.name} — ${step.reason}` : step.name
       )
     );
-    if (step.label)
+    if (state.toolOutput === "full" && step.label)
       row.appendChild(el("span", "step-label", `· ${step.label}`));
     if (step.duration !== undefined)
       row.appendChild(el("span", "step-dur", `${step.duration} ms`));
@@ -633,7 +633,7 @@ function renderPartGroup(group, expanded) {
         tool.reason ? `${tool.tool} — ${tool.reason}` : tool.tool
       )
     );
-    if (tool.label)
+    if (state.toolOutput === "full" && tool.label)
       row.appendChild(el("span", "step-label", `· ${tool.label}`));
     if (tool.duration !== undefined)
       row.appendChild(el("span", "step-dur", `${tool.duration} ms`));
@@ -670,7 +670,7 @@ function bubbleParts(botName, turnId, parts) {
       const body = el("div", "md-body");
       body.innerHTML = PiMd.render(visibleStreamText(group.text));
       zone.appendChild(body);
-    } else {
+    } else if (state.toolOutput !== "off") {
       const expanded = group.tools.some((t) => t.status === "running");
       zone.appendChild(renderPartGroup(group, expanded));
     }

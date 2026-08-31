@@ -302,8 +302,15 @@ async function cmdStart(args: Args): Promise<void> {
   dir = resolve(args.positional[0] ?? ".");
   if (fleetName) {
     // Named start: reuse any previously recorded port unless --port overrides.
-    const record = resolveFleetRecord(registryPath(), fleetName);
-    if (record && portFlag === undefined) portFlag = record.port;
+    // An explicit path argument wins over the registry — the record may be
+    // stale for this dir (e.g. a previous temp fleet under the same name).
+    if (portFlag === undefined) {
+      const record =
+        args.positional[0] === undefined
+          ? resolveFleetRecord(registryPath(), fleetName)
+          : undefined;
+      if (record) portFlag = record.port;
+    }
   } else {
     const basename = dir.split("/").pop() || dir;
     registerFleet(registryPath(), {

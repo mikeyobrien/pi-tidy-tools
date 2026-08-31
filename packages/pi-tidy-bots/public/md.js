@@ -14,6 +14,12 @@
     out = out.replace(/`([^`]+)`/g, "<code>$1</code>");
     out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
     out = out.replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>");
+    // Images before links (same ! prefix): https-only, escaped alt, no other
+    // attributes — escape-first already ran, so nothing raw can pass through.
+    out = out.replace(
+      /!\[([^\]]*)\]\((https:[^)\s]+)\)/g,
+      '<img src="$2" alt="$1" loading="lazy" />'
+    );
     out = out.replace(
       /\[([^\]]+)\]\((https?:[^)\s]+)\)/g,
       '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'

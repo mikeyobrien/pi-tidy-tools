@@ -22,3 +22,31 @@ test("markdown escapes injected html and scripts", async () => {
   assert.ok(!out.includes("<script>"), "injected scripts must be escaped");
   assert.match(out, /&lt;img/);
 });
+
+test("markdown renders https images as lazy imgs sized to the bubble", async () => {
+  // @ts-expect-error browser-global script, intentionally untyped
+  await import("../public/md.js");
+  const { render } = (globalThis as any).PiMd;
+  const out = render("![GPU rack](https://example.com/rack.png)");
+  assert.match(
+    out,
+    /<img src="https:\/\/example\.com\/rack\.png" alt="GPU rack" loading="lazy" \/>/
+  );
+});
+
+test("non-https image markdown does not become an img tag", async () => {
+  // @ts-expect-error browser-global script, intentionally untyped
+  await import("../public/md.js");
+  const { render } = (globalThis as any).PiMd;
+  const out = render("![cat](http://example.com/cat.png)");
+  assert.ok(!out.includes("<img"), "http URLs must not render as images");
+});
+
+test("raw img tags still cannot pass through as html", async () => {
+  // @ts-expect-error browser-global script, intentionally untyped
+  await import("../public/md.js");
+  const { render } = (globalThis as any).PiMd;
+  const out = render('<img src="https://evil.example/x.png">');
+  assert.ok(!out.includes("<img src="), "raw img must stay escaped");
+  assert.match(out, /&lt;img/);
+});

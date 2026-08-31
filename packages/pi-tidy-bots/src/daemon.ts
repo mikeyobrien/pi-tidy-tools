@@ -50,6 +50,7 @@ import {
 import { createPendingStore, type PendingMessage } from "./pending.ts";
 import { TurnPartsAccumulator, type TurnPart } from "./turnparts.ts";
 import { versionPayload } from "./contract.ts";
+import { describePortHolder } from "./cli-core.ts";
 
 export interface TranscriptEntry {
   id: string;
@@ -1429,10 +1430,10 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
   httpServer.on("error", (error: Error) => {
     const message =
       (error as NodeJS.ErrnoException).code === "EADDRINUSE"
-        ? `port ${fleet.port} is already in use — stop the other listener or pass --port`
+        ? `port ${fleet.port} is already in use — ${describePortHolder(fleet.port) || "stop the other listener"}; or pass --port`
         : error.message;
     log(`fatal: ${message}`);
-    process.exit(1);
+    process.exit(3);
   });
   const wss = new WebSocketServer({ noServer: true });
   httpServer.on("upgrade", (request, socket, head) => {

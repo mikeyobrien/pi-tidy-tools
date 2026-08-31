@@ -213,3 +213,69 @@ export function closestFlag(
   }
   return best;
 }
+
+// ── Port helpers (issue 51) ────────────────────────────
+
+import { execFileSync } from "node:child_process";
+import { Socket } from "node:net";
+
+/** True while something accepts TCP connections on the port. */
+export function isPortHeld(port: number, host = "127.0.0.1"): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = new Socket();
+    const settle = (held: boolean) => {
+      socket.destroy();
+      resolve(held);
+    };
+    socket.setTimeout(500);
+    socket.once("connect", () => settle(true));
+    socket.once("error", () => settle(false));
+    socket.once("timeout", () => settle(false));
+    socket.connect(port, host);
+  });
+}
+
+/** Wait until the port is released (or the deadline passes). */
+export async function waitPortReleased(
+  port: number,
+  timeoutMs: number
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (!(await isPortHeld(port))) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
+/** Health check: GET <url> and accept any HTTP response as "serving". */
+export async function healthCheck(url: string): Promise<boolean> {
+  try {
+    const res = await fetch(url);
+    return res.status < 600;
+  } catch {
+    return false;
+  }
+}
+
+/** Issue 51: name the process holding a TCP port (best-effort, POSIX tools). */
+export function describePortHolder(
+  port: number,
+  run: (file: string, args: string[]) => string = (file, args) =>
+    execFileSync(file, args, { encoding: "utf8", timeout: 5_000 })
+): string {
+  try {
+    // Listener state only: client connections to the port (e.g. the console
+    // tab's sockets) must not be misattributed as the holder.
+    const pids = run("lsof", ["-ti", "-sTCP:LISTEN", "-i", `:${port}`])
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => /^\d+$/.test(line));
+    const pid = pids[0];
+    if (!pid) return "";
+    const command = run("ps", ["-p", pid, "-o", "command="]).trim();
+    return `held by pid ${pid}: ${command}`;
+  } catch {
+    return "";
+  }
+}

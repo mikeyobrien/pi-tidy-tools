@@ -47,6 +47,7 @@ import {
   mergeTranscriptHistory,
   paginateTranscript,
 } from "./transcripts.ts";
+import { createPendingStore, type PendingMessage } from "./pending.ts";
 import { versionPayload } from "./contract.ts";
 
 export interface TranscriptEntry {
@@ -309,6 +310,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
   const transcripts = createTranscriptStore(
     join(fleet.dir, ".fleet", "transcripts")
   );
+  const pendingStore = createPendingStore(join(fleet.dir, ".fleet", "pending"));
   let routineState: { routines?: Record<string, { enabled?: boolean }> } =
     stored;
   const persistStateFile = () =>
@@ -527,6 +529,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     const busy = runtime.session.streaming;
     if (busy) {
       // Queued behind the in-flight turn; turn_start decrements.
+      journalPending(runtime, entry, undefined);
       runtime.queuedCount++;
       emitRoster();
     }
@@ -686,6 +689,22 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       log(
         `[${name}] online (session ${hasSession ? "resumed" : "new"}, ${runtime.transcript.length} prior entries)`
       );
+      // Issue 34: replay journalled pending messages, exactly once, in order.
+      const pendingMsgs = pendingStore.load(name);
+      for (const message of pendingMsgs) {
+        const target = runtime.transcript.find(
+          (candidate) => candidate.id === message.id
+        );
+        try {
+          await session.prompt(message.text, undefined, message.images);
+          pendingStore.remove(name, message.id);
+          if (target) target.delivering = false;
+          log(`[${name}] replayed pending message (id ${message.id})`);
+        } catch {
+          // Keep it journalled; the next spawn retries.
+          log(`[${name}] pending replay deferred (id ${message.id})`);
+        }
+      }
     } catch (error) {
       log(
         `[${name}] booted but state probe failed: ${(error as Error).message}`
@@ -703,9 +722,17 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     switch (event.kind) {
       case "turn_start": {
         // A queued follow-up turn starts with turn_start, not agent_start —
-        // the oldest queued message is now streaming.
+        // the oldest queued message is now streaming: mark it delivered.
         if (runtime.queuedCount > 0) {
           runtime.queuedCount--;
+          const head = pendingStore.load(botName)[0];
+          if (head) {
+            pendingStore.remove(botName, head.id);
+            const delivered = runtime.transcript.find(
+              (candidate) => candidate.id === head.id
+            );
+            if (delivered) delivered.delivering = false;
+          }
           emitRoster();
         }
         return;
@@ -995,6 +1022,23 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     }, 1_000);
   };
 
+  /** Journal a queued follow-up so a restart can replay it (issue 34). */
+  const journalPending = (
+    runtime: BotRuntime,
+    entry: TranscriptEntry,
+    images?: { type: "image"; data: string; mimeType: string }[]
+  ): void => {
+    entry.delivering = true;
+    pendingStore.append(runtime.config.name, {
+      id: entry.id,
+      text: entry.text,
+      origin: entry.origin,
+      ...(entry.originFrom ? { originFrom: entry.originFrom } : {}),
+      ...(images ? { images } : {}),
+      ts: entry.ts,
+    });
+  };
+
   const deliver = async (
     runtime: BotRuntime,
     text: string,
@@ -1007,6 +1051,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     if (!session || !session.alive) throw new Error("runtime_offline");
     try {
       await session.prompt(text, behavior, images);
+      entry.delivering = false;
     } catch (error) {
       // Fresh-bot boot race: the agent can reject plain prompts while its first
       // turn is still settling. One followUp queues behind it; genuine failures
@@ -1017,7 +1062,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         classifyFailure(String(error)) === "turn_in_flight"
       ) {
         await session.followUp(text, images);
-        // Queued behind the in-flight turn; turn_start decrements.
+        // Queued behind the in-flight turn; turn_start decrements + pops the
+        // pending journal (issue 34).
+        journalPending(runtime, entry, images);
         runtime.queuedCount++;
         emitRoster();
         return;
@@ -1068,7 +1115,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         await runtime.session.steer(text);
         return;
       }
-      // Queued behind the in-flight turn; turn_start decrements.
+      // Queued behind the in-flight turn; turn_start decrements + pops the
+      // pending journal (issue 34).
+      journalPending(runtime, entry, undefined);
       runtime.queuedCount++;
       emitRoster();
       await runtime.session.prompt(text, behavior ?? "followUp");
@@ -1315,6 +1364,8 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     personaWatchers.delete(name);
     runtime.session?.stop();
     runtimes.delete(name);
+    // Issue 34: a removed bot's pending journal goes with the runtime.
+    pendingStore.drop(name);
   };
 
   const reconcileFleet = async (next: FleetConfig): Promise<void> => {

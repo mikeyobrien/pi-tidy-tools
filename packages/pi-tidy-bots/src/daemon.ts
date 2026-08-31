@@ -547,15 +547,19 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     touch(runtime);
     const botName = runtime.config.name;
     switch (event.kind) {
+      case "turn_start": {
+        // A queued follow-up turn starts with turn_start, not agent_start —
+        // the oldest queued message is now streaming.
+        if (runtime.queuedCount > 0) {
+          runtime.queuedCount--;
+          emitRoster();
+        }
+        return;
+      }
       case "agent_start": {
         runtime.turnId = randomUUID();
         runtime.turnText = "";
         runtime.steps = [];
-        if (runtime.queuedCount > 0) {
-          // A new turn starting means the oldest queued message is streaming.
-          runtime.queuedCount--;
-          emitRoster();
-        }
         emit({
           type: "bubble",
           bot: botName,
@@ -1143,7 +1147,11 @@ function buildHttpServer(deps: ServerDeps): Hono {
       return;
     }
     // Public assets carry no fleet data; browsers fetch them without the document's query token.
-    if (url.pathname === "/app.js" || url.pathname === "/style.css") {
+    if (
+      url.pathname === "/app.js" ||
+      url.pathname === "/style.css" ||
+      url.pathname === "/md.js"
+    ) {
       await next();
       return;
     }
@@ -1166,6 +1174,7 @@ function buildHttpServer(deps: ServerDeps): Hono {
   app.get("/", serveAsset("index.html", "text/html"));
   app.get("/console", serveAsset("index.html", "text/html"));
   app.get("/app.js", serveAsset("app.js", "text/javascript"));
+  app.get("/md.js", serveAsset("md.js", "text/javascript"));
   app.get("/style.css", serveAsset("style.css", "text/css"));
 
   app.get("/api/fleet", (context) => {

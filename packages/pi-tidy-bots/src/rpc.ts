@@ -18,6 +18,7 @@ export interface RpcSpawnOptions {
 
 export type RpcEvent =
   | { kind: "agent_start" }
+  | { kind: "turn_start" }
   | { kind: "agent_end" }
   | { kind: "agent_settled" }
   | { kind: "assistant_delta"; delta: string }
@@ -276,6 +277,11 @@ export class RpcSession {
         this.lastAssistant = "";
         this.liveAssistant = "";
         this.options.onEvent({ kind: "agent_start" });
+        return;
+      case "turn_start":
+        // Each turn inside the agent cycle — including queued follow-ups, which
+        // do NOT get a second agent_start.
+        this.options.onEvent({ kind: "turn_start" });
         return;
       case "agent_end":
         this.streaming = false;

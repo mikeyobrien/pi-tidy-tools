@@ -1,0 +1,16 @@
+# pi-tidy-bots test fixture fleet — Atlas (ops) + Forge (worker), per PRD naming.
+[fleet]
+port = 4317
+
+[[bot]]
+name = "atlas"
+title = "Infrastructure Operator"
+avatar = "🛰️"
+dir = "bots/atlas"
+routes = ["forge"]
+
+[[bot]]
+name = "forge"
+title = "Remediation Worker"
+avatar = "🔨"
+dir = "bots/forge"

@@ -17,6 +17,7 @@ const packages = [
   { name: "@mobrienv/pi-tidy-subagents", dir: "packages/pi-tidy-subagents" },
   { name: "@mobrienv/pi-tidy-memory", dir: "packages/pi-tidy-memory" },
   { name: "@mobrienv/pi-tidy-footer", dir: "packages/pi-tidy-footer" },
+  { name: "@mobrienv/pi-tidy-bots", dir: "packages/pi-tidy-bots" },
 ];
 
 function readmeRelativeDocs(packageDir) {

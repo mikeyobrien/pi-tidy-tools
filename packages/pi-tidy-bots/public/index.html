@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>pi-tidy-bots — fleet console</title>
+    <link rel="stylesheet" href="/style.css?v=9" />
+  </head>
+  <body>
+    <div id="conn-banner" hidden>Reconnecting to fleet…</div>
+    <div id="app">
+      <aside id="roster" aria-label="Bot roster">
+        <header>
+          <div class="brand">
+            <span class="brand-mark">π</span> pi-tidy-bots
+          </div>
+          <div class="brand-sub">FLEET CONSOLE</div>
+        </header>
+        <div class="roster-head">
+          <span>BOTS <span id="bot-count">0</span></span>
+        </div>
+        <ul id="bot-list"></ul>
+        <div id="presence-strip"></div>
+      </aside>
+      <main id="chat-pane">
+        <header id="chat-header">
+          <button id="header-avatar" class="avatar-btn" aria-label="Switch bot">
+            <span class="blob" id="header-avatar-blob"></span>
+          </button>
+          <div class="bot-identity">
+            <div class="bot-name" id="header-name">Chat</div>
+            <div class="bot-title" id="header-title"></div>
+          </div>
+          <span id="header-presence" class="presence-dot" hidden></span>
+          <button id="routines-btn" class="ghost-btn" aria-label="Routines">
+            ⏱
+          </button>
+          <button id="settings-btn" class="ghost-btn" aria-label="Settings">
+            ⚙
+          </button>
+        </header>
+        <div
+          id="transcript"
+          role="log"
+          aria-live="polite"
+          aria-relevant="additions text"
+        ></div>
+        <div id="routines-panel" hidden></div>
+        <div id="settings-panel" hidden></div>
+        <form id="composer">
+          <div class="composer-agent">
+            <span class="composer-agent-dot"></span>
+            <span id="composer-agent-name">Agent</span>
+          </div>
+          <textarea
+            id="composer-input"
+            rows="1"
+            enterkeyhint="send"
+            autocapitalize="sentences"
+            placeholder="Type a message…"
+            aria-label="Message the selected bot"
+          ></textarea>
+          <button id="send" type="submit" aria-label="Send">↑</button>
+        </form>
+      </main>
+    </div>
+    <script src="/md.js?v=9"></script>
+    <script src="/app.js?v=9"></script>
+  </body>
+</html>

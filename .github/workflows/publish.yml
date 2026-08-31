@@ -48,7 +48,7 @@ jobs:
           expected_version="${BASH_REMATCH[2]}"
 
           case "$slug" in
-            pi-tidy-tools|pi-tidy-subagents|pi-tidy-memory|pi-tidy-footer) ;;
+            pi-tidy-tools|pi-tidy-subagents|pi-tidy-memory|pi-tidy-footer|pi-tidy-bots) ;;
             *)
               echo "Package is not on the publish allowlist: $slug" >&2
               exit 1

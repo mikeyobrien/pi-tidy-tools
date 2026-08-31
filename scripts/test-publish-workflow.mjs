@@ -25,7 +25,7 @@ test("npm publish workflow uses a hardened tokenless OIDC boundary", async () =>
   assert.doesNotMatch(source, /NODE_AUTH_TOKEN|NPM_TOKEN/);
   assert.match(
     source,
-    /pi-tidy-tools\|pi-tidy-subagents\|pi-tidy-memory\|pi-tidy-footer/
+    /pi-tidy-tools\|pi-tidy-subagents\|pi-tidy-memory\|pi-tidy-footer\|pi-tidy-bots/
   );
   assert.doesNotMatch(source, /pi-tidy-tools\|pi-tidy-core/);
   assert.match(

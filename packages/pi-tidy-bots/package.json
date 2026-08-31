@@ -1,0 +1,59 @@
+{
+  "name": "@mobrienv/pi-tidy-bots",
+  "version": "0.1.0",
+  "description": "Fleet runtime for Pi operator bots: perpetual sessions, roster, handoffs, driveable from a web UI.",
+  "license": "MIT",
+  "author": "Mikey O'Brien <m@mobrienv.dev>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mikeyobrien/pi-tidy-tools.git",
+    "directory": "packages/pi-tidy-bots"
+  },
+  "homepage": "https://github.com/mikeyobrien/pi-tidy-tools/tree/main/packages/pi-tidy-bots#readme",
+  "bugs": "https://github.com/mikeyobrien/pi-tidy-tools/issues",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "bots",
+    "fleet",
+    "operator"
+  ],
+  "type": "module",
+  "bin": {
+    "pi-tidy-bots": "./bin/pi-tidy-bots.mjs"
+  },
+  "files": [
+    "bin/*.mjs",
+    "src/**/*.ts",
+    "vendor/**/*.ts",
+    "public/**",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "docs/*.md"
+  ],
+  "scripts": {
+    "pretest": "node ../../scripts/bundle-core.mjs .",
+    "prepack": "node ../../scripts/bundle-core.mjs .",
+    "test": "node --import tsx --test test/*.test.ts",
+    "check": "node ../../scripts/bundle-core.mjs . && tsc --noEmit",
+    "smoke": "PI_TIDY_BOTS_REAL_SMOKE=1 node --import tsx --test test/smoke.test.ts",
+    "test:coverage": "node ../../scripts/bundle-core.mjs . && c8 node --import tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.1",
+    "hono": "^4.6.16",
+    "smol-toml": "^1.3.1",
+    "typebox": "1.1.38",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "@types/ws": "^8.18.0",
+    "tsx": "^4.20.0",
+    "typescript": "5.6.3"
+  }
+}

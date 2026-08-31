@@ -18,10 +18,6 @@ const setText = (id, text) => {
   const node = $id(id);
   if (node) node.textContent = text;
 };
-const uid = () =>
-  globalThis.crypto && typeof crypto.randomUUID === "function"
-    ? crypto.randomUUID()
-    : `id-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 const blobColors = [
   "#2dd4bf",
@@ -136,15 +132,8 @@ function transcriptEl(entry) {
   if (entry.role === "user" && entry.source && entry.source !== "You") {
     bubble.appendChild(el("div", "source", entry.source));
   }
-  if (
-    entry.role === "assistant" &&
-    entry.text.trim().length === 0 &&
-    entry.actions?.length
-  ) {
-    bubble.appendChild(el("div", "source ghost-line", "Proposed actions:"));
-  }
   // Markdown boundary: md.js escapes before rendering, so innerHTML here cannot
-  // execute model-supplied HTML. Source/ghost/meta lines stay plain text.
+  // execute model-supplied HTML. Source lines stay plain text.
   if (entry.role === "assistant" || entry.role === "user") {
     const body = el("span", "md-body");
     body.innerHTML = PiMd.render(entry.text);
@@ -162,46 +151,7 @@ function transcriptEl(entry) {
     })
   );
   wrap.appendChild(meta);
-  // Pills live inside the bubble (below the text): .entry is a flex row, so a
-  // bar appended to wrap would sit beside the bubble instead of under it.
-  if (entry.role === "assistant" && entry.actions?.length) {
-    const bar = el("div", "action-bar");
-    entry.actions.forEach((action, index) => {
-      const button = el("button", index === 0 ? "primary" : "", action.label);
-      button.addEventListener("click", () =>
-        runAction(entry.bot ?? state.selected, action, bar)
-      );
-      bar.appendChild(button);
-    });
-    bubble.appendChild(bar);
-  }
   return wrap;
-}
-
-async function runAction(bot, action, bar) {
-  [...bar.querySelectorAll("button")].forEach(
-    (button) => (button.disabled = true)
-  );
-  const result = await api(`/api/bots/${bot}/action`, {
-    method: "POST",
-    body: JSON.stringify({ id: action.id, label: action.label }),
-  }).catch(() => null);
-  if (!result || result.accepted !== true) {
-    const reason = (result && result.reason) || "not delivered";
-    appendEntry(bot, {
-      id: uid(),
-      role: "system",
-      text: `Action "${action.label}" refused — ${reason}.`,
-      ts: new Date().toISOString(),
-    });
-    setTimeout(
-      () =>
-        [...bar.querySelectorAll("button")].forEach(
-          (button) => (button.disabled = false)
-        ),
-      1200
-    );
-  }
 }
 
 function renderTranscript(botName) {
@@ -294,7 +244,7 @@ function bubbleSteps(botName, turnId, steps) {
 
 function visibleStreamText(text) {
   // v1 limitation: marker stripping is line-based and can strip inside fenced
-  // code blocks — matches daemon-side parseActions line semantics.
+  // code blocks — matches daemon-side stripActionMarkers line semantics.emantics.
   return text
     .split("\n")
     .filter((line) => !/^\s*\[\[\s*action\s*:/i.test(line))

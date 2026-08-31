@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { checkRoute, loadFleetConfig, ConfigError } from "../src/config.ts";
 import {
-  parseActions,
-  parseAction,
-  actionPrompt,
+  stripActionMarkers,
   attributionPrefix,
   completionNotification,
 } from "../src/actions.ts";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const fixtureFleet = new URL("./fixtures/fleet/", import.meta.url).pathname;
 
@@ -23,6 +24,28 @@ test("loadFleetConfig parses the fixture fleet with defaults", () => {
 
 test("loadFleetConfig fails fast naming bot and field", () => {
   assert.throws(() => loadFleetConfig("/nonexistent-fleet"), /no bots\.toml/);
+});
+
+test("loadFleetConfig rejects a manifest still carrying an actions row", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ptb-actions-"));
+  try {
+    const botDir = join(dir, "atlas");
+    mkdirSync(botDir, { recursive: true });
+    writeFileSync(join(botDir, "AGENTS.md"), "# atlas\n");
+    writeFileSync(
+      join(dir, "bots.toml"),
+      `[[bot]]\nname = "atlas"\ndir = "atlas"\nactions = ["fix"]\n`
+    );
+    assert.throws(
+      () => loadFleetConfig(dir),
+      (error: unknown) =>
+        error instanceof ConfigError &&
+        error.message.includes("atlas") &&
+        error.message.includes("actions")
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("checkRoute enforces routing table with typed reasons", () => {
@@ -43,34 +66,21 @@ test("checkRoute enforces routing table with typed reasons", () => {
   });
 });
 
-test("parseActions strips trailing action markers into buttons", () => {
-  const parsed = parseActions(
-    "Not stable.\n\nGPU0 99% / 20GB\n[[action: Fix it]]\n[[action: Deep diagnostics]]\n"
-  );
-  assert.equal(parsed.text, "Not stable.\n\nGPU0 99% / 20GB");
-  assert.deepEqual(parsed.actions, [
-    { id: "fix it", label: "Fix it" },
-    { id: "deep diagnostics", label: "Deep diagnostics" },
-  ]);
-});
-
-test("action ids are stable and independent of display wording", () => {
-  assert.deepEqual(parseAction("fix | Fix it"), { id: "fix", label: "Fix it" });
-  assert.deepEqual(parseAction("Fix it"), { id: "fix it", label: "Fix it" });
-});
-
-test("parseActions keeps text without markers intact", () => {
-  assert.deepEqual(parseActions("All green."), {
-    text: "All green.",
-    actions: [],
-  });
-});
-
-test("action and notification formatting follow the wire contracts", () => {
+test("stripActionMarkers removes [[action:]] lines from transcript text", () => {
   assert.equal(
-    actionPrompt({ id: "fix", label: "Fix it" }),
-    'Operator triggered action "Fix it" (action: fix).'
+    stripActionMarkers(
+      "Not stable.\n\nGPU0 99% / 20GB\n[[action: Fix it]]\n[[action: Deep diagnostics]]\n"
+    ),
+    "Not stable.\n\nGPU0 99% / 20GB",
+    "markers stay invisible after the pill removal"
   );
+});
+
+test("stripActionMarkers keeps text without markers intact", () => {
+  assert.equal(stripActionMarkers("All green."), "All green.");
+});
+
+test("attribution and notification formatting follow the wire contracts", () => {
   assert.match(
     attributionPrefix("atlas"),
     /^Message from 🤖 atlas \(@atlas\):$/

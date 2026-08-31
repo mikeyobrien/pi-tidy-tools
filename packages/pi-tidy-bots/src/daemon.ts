@@ -28,11 +28,9 @@ import { RpcSession, type RpcEvent } from "./rpc.ts";
 import { isDue, minuteKey, parseCron } from "./cron.ts";
 import { createEventLog } from "./eventlog.ts";
 import {
-  actionPrompt,
   attributionPrefix,
   completionNotification,
-  parseActions,
-  type ActionRef,
+  stripActionMarkers,
 } from "./actions.ts";
 import { classifyFailure, isRetryable } from "./reasons.ts";
 
@@ -42,7 +40,6 @@ export interface TranscriptEntry {
   source?: string;
   text: string;
   ts: string;
-  actions?: ActionRef[];
   steps?: { name: string; duration?: number }[];
   delivering?: boolean;
 }
@@ -477,17 +474,12 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
               body = raw.slice(completion[0].length);
             }
           }
-          const parsed =
-            role === "assistant"
-              ? parseActions(body)
-              : { text: body, actions: [] as ActionRef[] };
           return {
             id: randomUUID(),
             role,
             ...(source ? { source } : {}),
-            text: parsed.text,
+            text: role === "assistant" ? stripActionMarkers(body) : body,
             ts: new Date(Number(message.timestamp) || Date.now()).toISOString(),
-            ...(parsed.actions.length > 0 ? { actions: parsed.actions } : {}),
           };
         })
         .filter((entry): entry is TranscriptEntry => entry !== null)
@@ -617,13 +609,12 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       case "agent_settled": {
         const turnId = runtime.turnId;
         runtime.turnId = null;
-        const parsed = parseActions(runtime.turnText);
+        const text = stripActionMarkers(runtime.turnText);
         const entry: TranscriptEntry = {
           id: randomUUID(),
           role: "assistant",
-          text: parsed.text,
+          text,
           ts: new Date().toISOString(),
-          ...(parsed.actions.length > 0 ? { actions: parsed.actions } : {}),
           ...(runtime.steps.length > 0
             ? {
                 steps: runtime.steps.map((step) => ({
@@ -640,15 +631,14 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
             bot: botName,
             turnId,
             phase: "final",
-            text: parsed.text,
-            actions: entry.actions,
+            text,
           });
         const pendingSources = runtime.pendingFrom;
         runtime.pendingFrom = [];
         for (const pendingFrom of pendingSources) {
           const source = runtimes.get(pendingFrom);
           if (!source?.session?.alive) continue;
-          const notification = completionNotification(botName, parsed.text);
+          const notification = completionNotification(botName, text);
           // Idle source: prompt (follow_up on an idle agent never flushes). Busy: queue.
           // Retry once — a transient failure gets exactly one second chance.
           const send = source.session.streaming
@@ -671,7 +661,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
                 id: randomUUID(),
                 role: "user",
                 source: `🤖 ${botName} (@${botName}) replied`,
-                text: parsed.text,
+                text: text,
                 ts: new Date().toISOString(),
               });
               touch(source);
@@ -934,38 +924,6 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           return { status: 503, body: { error: "runtime_offline" } };
         }
       },
-      action: async (name, actionId, label) => {
-        const runtime = runtimes.get(name);
-        if (!runtime) return { status: 404, body: { error: "unknown bot" } };
-        if (
-          runtime.config.actions &&
-          !runtime.config.actions.includes(actionId)
-        ) {
-          return {
-            status: 403,
-            body: { refused: label, reason: "action_forbidden" },
-          };
-        }
-        if (runtime.turnId) {
-          return {
-            status: 409,
-            body: { refused: label, reason: "turn_in_flight" },
-          };
-        }
-        const prompt = actionPrompt({ id: actionId, label: label ?? actionId });
-        try {
-          await deliver(runtime, prompt, {
-            id: randomUUID(),
-            role: "user",
-            source: "You",
-            text: prompt,
-            ts: new Date().toISOString(),
-          });
-          return { status: 200, body: { accepted: true } };
-        } catch {
-          return { status: 503, body: { error: "runtime_offline" } };
-        }
-      },
       steer: async (name, text) => {
         const runtime = runtimes.get(name);
         if (!runtime?.session || !runtime.session.alive)
@@ -1091,11 +1049,6 @@ interface ServerDeps {
     message(
       name: string,
       text: string
-    ): Promise<{ status: number; body: unknown }>;
-    action(
-      name: string,
-      actionId: string,
-      label?: string
     ): Promise<{ status: number; body: unknown }>;
     steer(
       name: string,
@@ -1240,24 +1193,6 @@ function buildHttpServer(deps: ServerDeps): Hono {
       body.text.trim()
     );
     return context.json(result.body, result.status as 200 | 404 | 503);
-  });
-
-  app.post("/api/bots/:name/action", async (context) => {
-    const body = (await context.req.json().catch(() => ({}))) as {
-      id?: string;
-      label?: string;
-    };
-    if (!body.id && !body.label)
-      return context.json({ error: "id or label required" }, 400);
-    const result = await deps.handlers.action(
-      context.req.param("name"),
-      String(body.id ?? body.label),
-      body.label
-    );
-    return context.json(
-      result.body,
-      result.status as 200 | 403 | 404 | 409 | 503
-    );
   });
 
   app.post("/api/bots/:name/steer", async (context) => {

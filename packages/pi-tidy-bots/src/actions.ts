@@ -1,48 +1,18 @@
-/** Parse trailing [[action: ...]] markers out of assistant text (grokbot-simple action bar). */
 /**
- * Two label forms keep display text free while capability ids stay stable:
- *   [[action: Fix it]]              → id "fix it"
- *   [[action: fix | Fix it]]        → id "fix", label "Fix it"
- * Scope allowlists in bots.toml match on id, never on display wording.
+ * Marker hygiene for [[action: ...]] lines. The action-pill feature is removed
+ * (operator decision: redundant with bot behavior), but bot personas still emit
+ * the markers — stripActionMarkers keeps them invisible in transcripts, deltas,
+ * and stored entries.
  */
-export interface ActionRef {
-  id: string;
-  label: string;
-}
-
-export interface ParsedActions {
-  text: string;
-  actions: ActionRef[];
-}
 
 const ACTION_LINE = /^\s*\[\[\s*action\s*:\s*(.+?)\s*\]\]\s*$/;
 
-export function parseAction(raw: string): ActionRef {
-  const pipe = raw.indexOf("|");
-  if (pipe === -1) return { id: raw.toLowerCase(), label: raw };
-  return {
-    id: raw.slice(0, pipe).trim().toLowerCase(),
-    label: raw.slice(pipe + 1).trim(),
-  };
-}
-
-export function parseActions(text: string): ParsedActions {
-  const actions: ActionRef[] = [];
+export function stripActionMarkers(text: string): string {
   const kept: string[] = [];
   for (const line of text.split("\n")) {
-    const match = line.match(ACTION_LINE);
-    if (match) {
-      actions.push(parseAction(match[1]));
-    } else {
-      kept.push(line);
-    }
+    if (!ACTION_LINE.test(line)) kept.push(line);
   }
-  return { text: kept.join("\n").trimEnd(), actions };
-}
-
-/** Build the follow-up prompt sent when the operator clicks an action button. */
-export function actionPrompt(action: ActionRef): string {
-  return `Operator triggered action "${action.label}" (action: ${action.id}).`;
+  return kept.join("\n").trimEnd();
 }
 
 export function attributionPrefix(fromName: string): string {

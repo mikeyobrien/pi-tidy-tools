@@ -408,36 +408,6 @@ body {
   color: var(--danger);
   font-size: 12px;
 }
-.ghost-line {
-  color: var(--muted);
-  font-style: italic;
-}
-
-/* ── Action bar ─────────────────────────────────────── */
-.action-bar {
-  display: flex;
-  gap: 8px;
-  margin-top: 10px;
-  flex-wrap: wrap;
-}
-.action-bar button {
-  border-radius: 999px;
-  padding: 8px 15px;
-  font-size: 13px;
-  cursor: pointer;
-  border: none;
-  background: var(--surface-2);
-  color: var(--text);
-}
-.action-bar button.primary {
-  background: var(--accent);
-  color: var(--accent-ink);
-  font-weight: 700;
-}
-.action-bar button:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
 
 /* ── Routing pill ───────────────────────────────────── */
 .entry.routing {

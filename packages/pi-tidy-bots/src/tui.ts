@@ -7,12 +7,7 @@ export interface ChatOptions {
   token?: string;
 }
 
-interface ActionRef {
-  id: string;
-  label: string;
-}
-
-/** Minimal TUI client: chat, actions, steer, bot switching — parity with the console core loop. */
+/** Minimal TUI client: chat, steer, bot switching — parity with the console core loop. */
 export function startChat(options: ChatOptions): void {
   const base = options.url.replace(/\/$/, "");
   const authSuffix = options.token ? `?token=${options.token}` : "";
@@ -33,8 +28,6 @@ export function startChat(options: ChatOptions): void {
     });
 
   let selected: string | null = null;
-  let pending: { from: string; number: number; action: ActionRef }[] = [];
-  let counter = 0;
 
   const socket = new WebSocket(
     `${base.replace(/^http/, "ws")}/api/ws${authSuffix}`
@@ -48,17 +41,6 @@ export function startChat(options: ChatOptions): void {
     }
     if (event.type === "append" && event.entry?.role === "assistant") {
       console.log(`\n[${event.bot}] ${event.entry.text}`);
-      const actions: ActionRef[] = event.entry.actions ?? [];
-      if (actions.length > 0) {
-        pending = actions.map((action) => ({
-          from: event.bot,
-          number: ++counter,
-          action,
-        }));
-        console.log(
-          `actions: ${pending.map((item) => `${item.number}) ${item.action.label}`).join("  ")}   (/a <n>)`
-        );
-      }
       process.stdout.write("you> ");
     } else if (event.type === "bubble" && event.phase === "working") {
       console.log(`[${event.bot}] …`);
@@ -117,25 +99,6 @@ export function startChat(options: ChatOptions): void {
           .finally(() => rl.prompt());
       }
       rl.prompt();
-      return;
-    }
-    if (/^\/?a\s+\d+/.test(text) || /^\d+$/.test(text)) {
-      const number = text.replace(/^\/?a\s+/, "").trim();
-      const match = pending.find(
-        (item) => String(item.number) === number && item.from === selected
-      );
-      if (!match) {
-        console.log(`no pending action ${number}`);
-        rl.prompt();
-        return;
-      }
-      void request(`/api/bots/${match.from}/action`, {
-        id: match.action.id,
-        label: match.action.label,
-      })
-        .then(() => console.log(`→ ${match.action.label} sent`))
-        .catch((error) => console.log(`action failed: ${error.message}`))
-        .finally(() => rl.prompt());
       return;
     }
     if (!selected) {

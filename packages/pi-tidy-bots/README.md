@@ -49,7 +49,7 @@ Invalid rows fail startup with an error naming the bot and field (no partial fle
 - **Session-ownership lock** — one daemon per fleet dir. A second `start` exits with a typed error naming the holder; a stale lock (dead owner) is taken over by heartbeat rules.
 - **Perpetual sessions** — one `pi --mode rpc` child per bot. Restarts and crash recovery resume the same session; a reset is a compaction, never a fork.
 - **`message_agent` bus** — fleet handoffs with attribution, fire-and-forget delivery, completion notifications, and typed failure codes (`unknown_target`, `route_forbidden`, `runtime_offline`). Multi-turn dialogue is a chain of these one-way messages.
-- **Web console** — roster with presence, status bubbles that edit in place (progress never spawns new bubbles), inline action bars from `[[action: Label]]` markers, routing pills for handoffs.
+- **Web console** — roster with presence, status bubbles that edit in place (progress never spawns new bubbles), markdown-rendered bubbles, routing pills for handoffs.
 
 ## Telegram
 
@@ -71,7 +71,7 @@ All fleet state lives under the fleet dir: `.fleet/lock.json`, `.fleet/sessions/
 ## Development
 
 ```bash
-npm test                # hermetic unit tests (config, routes, actions, lock)
+npm test                # hermetic unit tests (config, routes, cron, lock)
 npm run smoke           # gated: PI_TIDY_BOTS_REAL_SMOKE=1 boots real children
 npm run check           # typecheck
 ```

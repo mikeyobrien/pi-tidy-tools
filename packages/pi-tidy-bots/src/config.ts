@@ -15,7 +15,6 @@ export interface BotConfig {
   title?: string;
   avatar: string;
   routes?: string[];
-  actions?: string[];
   approve: boolean;
   routines: BotRoutine[];
 }
@@ -95,9 +94,13 @@ export function loadFleetConfig(
     const routes = Array.isArray(table.routes)
       ? table.routes.map((value) => String(value))
       : undefined;
-    const actions = Array.isArray(table.actions)
-      ? table.actions.map((value) => String(value))
-      : undefined;
+    // Action pills are removed (issue 15); a manifest still carrying the row is
+    // stale config — fail fast instead of silently ignoring it.
+    if (table.actions !== undefined) {
+      throw new ConfigError(
+        `${where} (${name}): "actions" is no longer supported — remove the row from bots.toml`
+      );
+    }
     const routines = Array.isArray(table.routines)
       ? table.routines.map(parseRoutine)
       : [];
@@ -108,7 +111,6 @@ export function loadFleetConfig(
       title: table.title === undefined ? undefined : String(table.title),
       avatar: table.avatar === undefined ? "🤖" : String(table.avatar),
       routes,
-      actions,
       approve: table.approve === undefined ? true : table.approve === true,
       routines,
     });

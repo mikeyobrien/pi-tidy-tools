@@ -16,6 +16,14 @@ import extension, {
 
 const execFileAsync = promisify(execFile);
 
+// Hermetic against the developer's real ~/.pi/agent/pi-tidy-tools.json: point the
+// config read at an absent temp path so defaults apply (icons on, mode default).
+process.env.PI_TIDY_TOOLS_CONFIG = join(
+  tmpdir(),
+  `pi-tidy-tools-tests-${process.pid}`,
+  "absent.json"
+);
+
 interface Registrations {
   events: string[];
   commands: Map<string, any>;
@@ -218,33 +226,40 @@ test("settled extension rows stay byte-stable across six ordinary editor renders
   try {
     const bash = harness.tools.get("bash");
     const theme = { bg: (_name: string, text: string) => text };
-    const rows = Array.from({ length: 24 }, (_, index) => bash.renderResult(
-      {
-        content: [{ type: "text", text: "done" }],
-        details: {
-          piTidyElapsedMs: 8_000,
-          // Old sessions may retain this retired metadata.
-          piTidyCompletedAt: now - index * 59_000,
+    const rows = Array.from({ length: 24 }, (_, index) =>
+      bash.renderResult(
+        {
+          content: [{ type: "text", text: "done" }],
+          details: {
+            piTidyElapsedMs: 8_000,
+            // Old sessions may retain this retired metadata.
+            piTidyCompletedAt: now - index * 59_000,
+          },
         },
-      },
-      { isPartial: false, expanded: false },
-      theme,
-      {
-        isPartial: false,
-        isError: false,
-        toolCallId: `restored-${index}`,
-        args: { command: "sleep 8", reasoning: `restore row ${index}` },
-      }
-    ));
+        { isPartial: false, expanded: false },
+        theme,
+        {
+          isPartial: false,
+          isError: false,
+          toolCallId: `restored-${index}`,
+          args: { command: "sleep 8", reasoning: `restore row ${index}` },
+        }
+      )
+    );
     for (const width of [120, 72]) {
-      const transcript = () => rows.flatMap((row) => row.render(width)).join("\n");
+      const transcript = () =>
+        rows.flatMap((row) => row.render(width)).join("\n");
       const baseline = transcript();
       assert.doesNotMatch(withoutAnsi(baseline), /\bago\b/);
       assert.match(withoutAnsi(baseline), /done in 8s/);
 
       for (let key = 0; key < 6; key++) {
         now += 61_000;
-        assert.equal(transcript(), baseline, `${width}-column ordinary key ${key + 1} changed settled transcript bytes`);
+        assert.equal(
+          transcript(),
+          baseline,
+          `${width}-column ordinary key ${key + 1} changed settled transcript bytes`
+        );
       }
     }
   } finally {
@@ -356,16 +371,15 @@ test("tool blocks support default reasoning and result layouts without completio
     details: { diff: "+new\n-old", piTidyCompletedAt: 1_000 },
   };
   const plain = (mode: "default" | "reasoning" | "result") =>
-    buildToolBlock("edit", args, result, { mode })
-      .map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+    buildToolBlock("edit", args, result, { mode }).map((line) =>
+      line.replace(/\x1b\[[0-9;]*m/g, "")
+    );
   const defaultBlock = plain("default");
   assert.deepEqual(defaultBlock, [
     "✏️ edit update the renderer",
     "  index.ts → +1/-1",
   ]);
-  assert.deepEqual(plain("reasoning"), [
-    "✏️ edit update the renderer → +1/-1",
-  ]);
+  assert.deepEqual(plain("reasoning"), ["✏️ edit update the renderer → +1/-1"]);
   const resultBlock = plain("result");
   assert.deepEqual(resultBlock, ["✏️ edit index.ts → +1/-1"]);
   assert.doesNotMatch(resultBlock[0], /\bago\b|update the renderer/);
@@ -383,7 +397,11 @@ test("icons-off blocks omit only decorative category icons in every layout and s
   ] as const) {
     for (const mode of ["default", "reasoning", "result"] as const) {
       for (const state of [{}, { isPartial: true }, { isError: true }]) {
-        const lines = buildToolBlock(name, args, result, { ...state, mode, icons: false }).map(withoutAnsi);
+        const lines = buildToolBlock(name, args, result, {
+          ...state,
+          mode,
+          icons: false,
+        }).map(withoutAnsi);
         assert.doesNotMatch(lines.join("\n"), /[📖✏️⚡]/);
         if (state.isPartial) assert.match(lines[0], /^· (read|edit|bash)/);
         else assert.match(lines[0], /^(read|edit|bash)/);
@@ -393,11 +411,18 @@ test("icons-off blocks omit only decorative category icons in every layout and s
     }
   }
   assert.deepEqual(
-    buildToolBlock("edit", { path: "a.ts", reasoning: "apply change" }, result, { icons: false }).map(withoutAnsi),
+    buildToolBlock(
+      "edit",
+      { path: "a.ts", reasoning: "apply change" },
+      result,
+      { icons: false }
+    ).map(withoutAnsi),
     ["edit apply change", "  a.ts → +1/-1"]
   );
   assert.deepEqual(
-    buildTurnDiffBlock([{ tool: "edit", path: "a.ts", diff: "+new" }], { icons: false }).map(withoutAnsi),
+    buildTurnDiffBlock([{ tool: "edit", path: "a.ts", diff: "+new" }], {
+      icons: false,
+    }).map(withoutAnsi),
     ["last turn diff (1 file)", "a.ts", "+new"]
   );
 });
@@ -631,8 +656,16 @@ test("disabled startup keeps only the tidy management command", async () => {
 
 test("scoped startup exposes native read and FFF-backed tidy grep/find without raw names", async () => {
   const registered: any[] = [];
-  const grepSchema = { type: "object", properties: { pattern: { type: "string" } }, required: ["pattern"] };
-  const findSchema = { type: "object", properties: { pattern: { type: "string" } }, required: ["pattern"] };
+  const grepSchema = {
+    type: "object",
+    properties: { pattern: { type: "string" } },
+    required: ["pattern"],
+  };
+  const findSchema = {
+    type: "object",
+    properties: { pattern: { type: "string" } },
+    required: ["pattern"],
+  };
   const rawRenderer = () => ({ render: () => ["raw"] });
   const scopedExtension = createTidyExtension({
     loadState: () => ({ enabled: true, source: "default" }),
@@ -640,32 +673,77 @@ test("scoped startup exposes native read and FFF-backed tidy grep/find without r
     createIntegration: () => ({
       async initialize() {
         return {
-          status: { state: "managed-compatible", owner: "tidy/native read + FFF-executed tidy grep/find", scopes: ["project"], journal: "committed", action: "raw hidden" },
+          status: {
+            state: "managed-compatible",
+            owner: "tidy/native read + FFF-executed tidy grep/find",
+            scopes: ["project"],
+            journal: "committed",
+            action: "raw hidden",
+          },
           skipTidyTools: new Set(["grep", "find"]),
           commit(decorate: (source: any) => any) {
-            registered.push(decorate({ name: "grep", label: "ffgrep", description: "FFF grep", parameters: grepSchema, execute() { return { content: [{ type: "text", text: "hit" }] }; }, renderCall: rawRenderer, renderResult: rawRenderer }));
-            registered.push(decorate({ name: "find", label: "fffind", description: "FFF find", parameters: findSchema, execute() { return { content: [{ type: "text", text: "file.ts" }] }; }, renderCall: rawRenderer, renderResult: rawRenderer }));
+            registered.push(
+              decorate({
+                name: "grep",
+                label: "ffgrep",
+                description: "FFF grep",
+                parameters: grepSchema,
+                execute() {
+                  return { content: [{ type: "text", text: "hit" }] };
+                },
+                renderCall: rawRenderer,
+                renderResult: rawRenderer,
+              })
+            );
+            registered.push(
+              decorate({
+                name: "find",
+                label: "fffind",
+                description: "FFF find",
+                parameters: findSchema,
+                execute() {
+                  return { content: [{ type: "text", text: "file.ts" }] };
+                },
+                renderCall: rawRenderer,
+                renderResult: rawRenderer,
+              })
+            );
           },
         } as any;
       },
-      async run() { throw new Error("unused"); },
+      async run() {
+        throw new Error("unused");
+      },
     }),
   });
   const tools: any[] = [];
   await scopedExtension({
-    on() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {},
-    registerTool(tool: any) { tools.push(tool); }, sendMessage() {},
+    on() {},
+    registerCommand() {},
+    registerShortcut() {},
+    registerMessageRenderer() {},
+    registerTool(tool: any) {
+      tools.push(tool);
+    },
+    sendMessage() {},
   } as any);
   tools.push(...registered);
   const names = tools.map((tool) => tool.name);
-  for (const name of ["read", "grep", "find"]) assert.equal(names.filter((value) => value === name).length, 1);
-  assert.equal(names.includes("ffgrep"), false); assert.equal(names.includes("fffind"), false);
+  for (const name of ["read", "grep", "find"])
+    assert.equal(names.filter((value) => value === name).length, 1);
+  assert.equal(names.includes("ffgrep"), false);
+  assert.equal(names.includes("fffind"), false);
   const read = tools.find((tool) => tool.name === "read");
-  const grep = tools.find((tool) => tool.name === "grep"); const find = tools.find((tool) => tool.name === "find");
-  assert.notEqual(read.parameters, grepSchema); assert.notEqual(read.parameters, findSchema);
-  assert.equal(grep.parameters.required[0], "reasoning"); assert.equal(find.parameters.required[0], "reasoning");
-  assert.equal(grep.renderShell, "self"); assert.equal(find.renderShell, "self");
-  assert.notEqual(grep.renderCall, rawRenderer); assert.notEqual(find.renderResult, rawRenderer);
+  const grep = tools.find((tool) => tool.name === "grep");
+  const find = tools.find((tool) => tool.name === "find");
+  assert.notEqual(read.parameters, grepSchema);
+  assert.notEqual(read.parameters, findSchema);
+  assert.equal(grep.parameters.required[0], "reasoning");
+  assert.equal(find.parameters.required[0], "reasoning");
+  assert.equal(grep.renderShell, "self");
+  assert.equal(find.renderShell, "self");
+  assert.notEqual(grep.renderCall, rawRenderer);
+  assert.notEqual(find.renderResult, rawRenderer);
 });
 
 test("enabled startup preserves every optional registration", async () => {
@@ -701,7 +779,10 @@ test("status reports an active environment override without reloading", async ()
       reloads++;
     },
   });
-  assert.match(notices[0], /off, mode default, icons on \(PI_TIDY_TOOLS override\)/);
+  assert.match(
+    notices[0],
+    /off, mode default, icons on \(PI_TIDY_TOOLS override\)/
+  );
   assert.equal(reloads, 0);
 });
 
@@ -712,18 +793,27 @@ test("icons commands persist independently from the enablement environment overr
     loadState: () => ({ enabled: false, source: "environment" }),
     loadMode: () => "result",
     loadIcons: () => false,
-    saveIcons: async (icons) => { saved.push(icons); },
+    saveIcons: async (icons) => {
+      saved.push(icons);
+    },
     createIntegration: absentIntegration,
   });
   await iconless({
-    on() {}, registerShortcut() {}, registerMessageRenderer() {}, registerTool() {},
-    registerCommand(name: string, options: any) { commands.set(name, options); },
+    on() {},
+    registerShortcut() {},
+    registerMessageRenderer() {},
+    registerTool() {},
+    registerCommand(name: string, options: any) {
+      commands.set(name, options);
+    },
   } as any);
   const notices: string[] = [];
   let reloads = 0;
   const context = {
     ui: { notify: (message: string) => notices.push(message) },
-    reload: async () => { reloads++; },
+    reload: async () => {
+      reloads++;
+    },
   };
   const tidy = commands.get("tidy");
   await tidy.handler("icons status", context);
@@ -737,8 +827,14 @@ test("icons commands persist independently from the enablement environment overr
   assert.match(notices[0], /icons are off/);
   assert.match(notices[1], /already off/);
   assert.match(notices[2], /icons set to on; reloading/);
-  assert.match(notices[3], /off, mode result, icons off \(PI_TIDY_TOOLS override\)/);
-  assert.match(notices[4], /off, mode result, icons off \(PI_TIDY_TOOLS override\)/);
+  assert.match(
+    notices[3],
+    /off, mode result, icons off \(PI_TIDY_TOOLS override\)/
+  );
+  assert.match(
+    notices[4],
+    /off, mode result, icons off \(PI_TIDY_TOOLS override\)/
+  );
   assert.match(notices[5], /icons on\|off\|status/);
 });
 
@@ -837,6 +933,7 @@ test("a successful state change persists and reloads exactly once", async () => 
 	`;
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: home };
   delete env.PI_TIDY_TOOLS;
+  delete env.PI_TIDY_TOOLS_CONFIG;
   try {
     const { stdout } = await execFileAsync(
       process.execPath,
@@ -972,35 +1069,67 @@ test("iconless registered renderers retain state, colors, backgrounds, and compa
   });
   await iconless({
     on: (name: string, handler: any) => events.set(name, handler),
-    registerCommand: (name: string, options: any) => commands.set(name, options),
-    registerShortcut() {}, registerMessageRenderer() {},
+    registerCommand: (name: string, options: any) =>
+      commands.set(name, options),
+    registerShortcut() {},
+    registerMessageRenderer() {},
     registerTool: (tool: any) => tools.set(tool.name, tool),
     sendMessage: (message: any) => messages.push(message),
   } as any);
   const backgrounds: string[] = [];
-  const theme = { bg: (name: string, text: string) => { backgrounds.push(name); return text; } };
+  const theme = {
+    bg: (name: string, text: string) => {
+      backgrounds.push(name);
+      return text;
+    },
+  };
   for (const [name, tool] of tools) {
-    const args = name === "bash" ? { command: "npm test", reasoning: "run checks" }
-      : name === "grep" || name === "find" ? { pattern: "needle", reasoning: "find matches" }
-      : { path: "a.ts", reasoning: "inspect source" };
+    const args =
+      name === "bash"
+        ? { command: "npm test", reasoning: "run checks" }
+        : name === "grep" || name === "find"
+          ? { pattern: "needle", reasoning: "find matches" }
+          : { path: "a.ts", reasoning: "inspect source" };
     for (const context of [{ isError: false }, { isError: true }]) {
-      const lines = renderedLines(tool.renderResult({ output: "one\ntwo" }, {}, theme, { args, ...context }), 28);
+      const lines = renderedLines(
+        tool.renderResult({ output: "one\ntwo" }, {}, theme, {
+          args,
+          ...context,
+        }),
+        28
+      );
       assert.doesNotMatch(lines.join("\n"), /[📖✏️⚡]/);
       assert.match(lines[0], new RegExp(`^${name}`));
       assert.ok(lines.every((line) => line.length <= 28));
     }
   }
-  const live = tools.get("bash").renderCall(
-    { command: "sleep 1", reasoning: "wait briefly" }, theme,
-    { isPartial: true, toolCallId: "live", invalidate() {} },
-  );
+  const live = tools
+    .get("bash")
+    .renderCall({ command: "sleep 1", reasoning: "wait briefly" }, theme, {
+      isPartial: true,
+      toolCallId: "live",
+      invalidate() {},
+    });
   assert.match(renderedLines(live, 28)[0], /^· bash/);
   assert.doesNotMatch(renderedLines(live, 28).join("\n"), /[📖✏️⚡]/);
-  await events.get("tool_execution_start")!({ toolName: "edit", toolCallId: "diff", args: { path: "a.ts" } });
-  await events.get("tool_execution_end")!({ toolName: "edit", toolCallId: "diff", isError: false, result: { details: { diff: "+new" } } });
+  await events.get("tool_execution_start")!({
+    toolName: "edit",
+    toolCallId: "diff",
+    args: { path: "a.ts" },
+  });
+  await events.get("tool_execution_end")!({
+    toolName: "edit",
+    toolCallId: "diff",
+    isError: false,
+    result: { details: { diff: "+new" } },
+  });
   await events.get("turn_end")!();
   await commands.get("diff").handler("", { ui: { notify() {} } });
-  assert.deepEqual(messages[0].details.rows.map(withoutAnsi), ["last turn diff (1 file)", "a.ts", "+new"]);
+  assert.deepEqual(messages[0].details.rows.map(withoutAnsi), [
+    "last turn diff (1 file)",
+    "a.ts",
+    "+new",
+  ]);
   assert.ok(backgrounds.includes("toolPendingBg"));
   assert.ok(backgrounds.includes("toolSuccessBg"));
   assert.ok(backgrounds.includes("toolErrorBg"));
@@ -1018,10 +1147,7 @@ test("registered result renderers tolerate absent optional inputs", async () => 
   const component = tools
     .get("read")
     .renderResult(undefined, undefined, theme, undefined);
-  assert.deepEqual(renderedLines(component), [
-    "📖 read",
-    "  → 1 lines",
-  ]);
+  assert.deepEqual(renderedLines(component), ["📖 read", "  → 1 lines"]);
   assert.ok(backgrounds.every((name) => name === "toolSuccessBg"));
 });
 
@@ -1284,6 +1410,7 @@ test("result mode keeps native schemas and management commands preserve state", 
 	`;
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: home };
   delete env.PI_TIDY_TOOLS;
+  delete env.PI_TIDY_TOOLS_CONFIG;
   try {
     const { stdout } = await execFileAsync(
       process.execPath,
@@ -1425,10 +1552,7 @@ test("buildToolBlock renders exact collapsed summaries across native shapes", ()
         output: "src/a.ts:10:x\nsrc/a.ts-11-context\n--\nsrc/b.ts:200:y",
       }
     ),
-    [
-      "📖 grep needle in src",
-      "  needle in src → 2 matches in 2 files",
-    ]
+    ["📖 grep needle in src", "  needle in src → 2 matches in 2 files"]
   );
   assert.deepEqual(
     plain(

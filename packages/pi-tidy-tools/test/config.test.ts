@@ -258,3 +258,26 @@ test("a failed atomic rename rejects and removes its temporary file", async () =
     }
   });
 });
+
+test("PI_TIDY_TOOLS_CONFIG redirects default-path reads and writes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-tidy-tools-env-"));
+  const redirected = join(root, "redirected.json");
+  const previous = process.env.PI_TIDY_TOOLS_CONFIG;
+  process.env.PI_TIDY_TOOLS_CONFIG = redirected;
+  try {
+    // Absent redirected path preserves defaults...
+    assert.equal(loadTidyIcons(), true);
+    assert.equal(loadTidyMode(), "default");
+    assert.equal(loadTidyState().enabled, true);
+    // ...and default-path writes land in the redirected file, not the user path.
+    await saveTidyIcons(false);
+    assert.deepEqual(JSON.parse(await readFile(redirected, "utf8")), {
+      icons: false,
+    });
+    assert.equal(loadTidyIcons(), false);
+  } finally {
+    if (previous === undefined) delete process.env.PI_TIDY_TOOLS_CONFIG;
+    else process.env.PI_TIDY_TOOLS_CONFIG = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});

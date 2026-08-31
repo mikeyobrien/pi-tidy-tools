@@ -72,21 +72,34 @@ export function createTranscriptStore(
 }
 
 /**
- * Boot merge (issue 20 item 7): journal first, then the child's hot history —
- * entries already persisted (same ts + role + text) are not duplicated.
+ * Boot merge (issue 20 item 7, fixed by verifier FAIL): journal first, then
+ * the child's hot history.
+ *
+ * Dedupe is a MULTISET on role+text — never on ts. The journal's ts is the
+ * daemon append time while the child's mapped ts differs by milliseconds, so
+ * a ts-aware key never matches and restarts duplicate history. Multiset
+ * counting keeps genuinely repeated messages (e.g. two "ok" acks) intact.
+ * The merged output is sorted by ts so chronology survives the merge.
  */
 export function mergeTranscriptHistory<
   T extends { ts: string; role: string; text: string },
 >(journaled: T[], incoming: T[]): T[] {
-  const seen = new Set(
-    journaled.map((e) => `${e.ts}\u0000${e.role}\u0000${e.text}`)
-  );
-  return [
-    ...journaled,
-    ...incoming.filter(
-      (e) => !seen.has(`${e.ts}\u0000${e.role}\u0000${e.text}`)
-    ),
-  ];
+  const persisted = new Map<string, number>();
+  for (const entry of journaled) {
+    const key = `${entry.role}\u0000${entry.text}`;
+    persisted.set(key, (persisted.get(key) ?? 0) + 1);
+  }
+  const merged = [...journaled];
+  for (const entry of incoming) {
+    const key = `${entry.role}\u0000${entry.text}`;
+    const remaining = persisted.get(key) ?? 0;
+    if (remaining > 0) {
+      persisted.set(key, remaining - 1); // already journalled — skip.
+    } else {
+      merged.push(entry);
+    }
+  }
+  return merged.sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
 }
 
 /**

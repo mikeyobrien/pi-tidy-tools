@@ -440,7 +440,6 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       },
     });
     runtime.session = session;
-    runtime.online = true;
     watchPersona(runtime);
     touch(runtime);
     emitRoster();
@@ -494,7 +493,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         .filter((entry): entry is TranscriptEntry => entry !== null)
         .slice(-50);
       const lastEntry = runtime.transcript.at(-1);
-      if (lastEntry && lastEntry.role === "user") {
+      // A trailing user message while the agent is still streaming is a turn in
+      // flight, not an interrupted one — resuming over it double-prompts.
+      if (lastEntry && lastEntry.role === "user" && !session.streaming) {
         journal({ bot: name, status: "resumed-interrupted-turn" });
         void session
           .prompt(
@@ -515,6 +516,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         `[${name}] booted but state probe failed: ${(error as Error).message}`
       );
     }
+    // Truthful presence: online only once the boot probe completes — a bot that
+    // is "online" but still booting invites prompts into a mid-boot agent.
+    runtime.online = session.alive;
     emitRoster();
   };
 
@@ -748,7 +752,22 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     appendTranscript(runtime, entry);
     const session = runtime.session;
     if (!session || !session.alive) throw new Error("runtime_offline");
-    await session.prompt(text, behavior);
+    try {
+      await session.prompt(text, behavior);
+    } catch (error) {
+      // Fresh-bot boot race: the agent can reject plain prompts while its first
+      // turn is still settling. One followUp queues behind it; genuine failures
+      // (offline, provider errors) still throw to the caller.
+      if (
+        behavior === undefined &&
+        session.alive &&
+        classifyFailure(String(error)) === "turn_in_flight"
+      ) {
+        await session.followUp(text);
+        return;
+      }
+      throw error;
+    }
   };
 
   const deliverHandoff = async (

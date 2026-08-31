@@ -28,6 +28,7 @@ const RULES: [Reason, string[]][] = [
     ["context", "too large", "overflow", "token limit", "maximum.*tokens"],
   ],
   ["runtime_offline", ["offline", "not running", "closed", "exited", "dead"]],
+  ["turn_in_flight", ["already processing"]],
 ];
 
 /** Failures where one retry can actually help. Everything else fails fast. */

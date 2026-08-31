@@ -26,6 +26,18 @@ test(
 
     try {
       const base = `http://127.0.0.1:${port}`;
+
+      // Race the boot window on purpose: the first message goes out the moment
+      // the fleet listens, before the fixture bots finish their boot probes.
+      // It must land once, cleanly — no "already processing" conflict and no
+      // misread interrupted-turn resume.
+      const accepted = await fetch(`${base}/api/bots/atlas/message`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "Say 'ready' and nothing else." }),
+      });
+      assert.equal(accepted.status, 200);
+
       const fleet = await fetch(`${base}/api/fleet`).then((r) => r.json());
       assert.equal(fleet.bots.length, 2);
       assert.deepEqual(fleet.bots.map((bot: any) => bot.name).sort(), [
@@ -41,14 +53,6 @@ test(
       });
       assert.equal(unauth.status, 401);
 
-      // Operator message accepted for delivery (real model call happens async).
-      const accepted = await fetch(`${base}/api/bots/atlas/message`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: "Say 'ready' and nothing else." }),
-      });
-      assert.equal(accepted.status, 200);
-
       // Wait briefly for the transcript to gain entries.
       await new Promise((resolve) => setTimeout(resolve, 8_000));
       const transcript = await fetch(`${base}/api/bots/atlas/transcript`).then(
@@ -62,5 +66,13 @@ test(
       await handle.stop();
     }
     assert.ok(lines.some((line) => line.includes("serving on")));
+    assert.ok(
+      !lines.some((line) => line.includes("already processing")),
+      "first message must not hit a mid-boot agent conflict"
+    );
+    assert.ok(
+      !lines.some((line) => line.includes("interrupted-turn resume failed")),
+      "an in-flight first message must not be misread as an interrupted turn"
+    );
   }
 );

@@ -20,6 +20,12 @@ test("classifies provider and delivery failures into typed reasons", () => {
     "context_overflow"
   );
   assert.equal(classifyFailure("rpc child is not running"), "runtime_offline");
+  assert.equal(
+    classifyFailure(
+      "rpc command failed: Agent is already processing. Specify streamingBehavior"
+    ),
+    "turn_in_flight"
+  );
   assert.equal(classifyFailure("mystery"), "delivery_failed");
 });
 

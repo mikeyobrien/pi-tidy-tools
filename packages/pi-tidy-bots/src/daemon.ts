@@ -160,6 +160,22 @@ export function runSchedulerTick<
   }
 }
 
+export type BusBehavior = "steer" | "followUp";
+
+/**
+ * Validate the optional /bus/send behavior field. Omitted = auto delivery;
+ * anything outside the two-value enum fails the request with a 400 naming
+ * the field.
+ */
+export function coerceBusBehavior(
+  value: unknown
+): { ok: true; behavior?: BusBehavior } | { ok: false } {
+  if (value === undefined) return { ok: true, behavior: undefined };
+  return value === "steer" || value === "followUp"
+    ? { ok: true, behavior: value }
+    : { ok: false };
+}
+
 export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
   const log = options.log ?? ((line: string) => console.log(line));
   const fleet: FleetConfig = loadFleetConfig(options.dir, {
@@ -763,7 +779,8 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
   const deliverHandoff = async (
     fromName: string,
     targetName: string,
-    message: string
+    message: string,
+    behavior?: "steer" | "followUp"
   ) => {
     const route = checkRoute(fromName, targetName, fleet.bots);
     if (!route.ok)
@@ -790,7 +807,17 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       if (!runtime.session || !runtime.session.alive)
         throw new Error("runtime_offline");
       const busy = runtime.session.streaming;
-      await runtime.session.prompt(text, busy ? "followUp" : undefined);
+      if (!busy) {
+        // Idle target: every behavior degrades to a normal message — steer is
+        // only meaningful mid-turn, and an idle-agent follow_up never flushes.
+        await runtime.session.prompt(text);
+        return;
+      }
+      if (behavior === "steer") {
+        await runtime.session.steer(text);
+        return;
+      }
+      await runtime.session.prompt(text, behavior ?? "followUp");
     };
 
     // Transient unavailability: one emergency respawn so the retry can actually help.
@@ -932,8 +959,8 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         touch(runtime);
         return { status: 200, body: { accepted: true } };
       },
-      busSend: async (fromName, targetName, message) =>
-        deliverHandoff(fromName, targetName, message),
+      busSend: async (fromName, targetName, message, behavior) =>
+        deliverHandoff(fromName, targetName, message, behavior),
     },
   });
 
@@ -1065,7 +1092,8 @@ interface ServerDeps {
     busSend(
       from: string,
       target: string,
-      message: string
+      message: string,
+      behavior?: "steer" | "followUp"
     ): Promise<{ status: number; body: unknown }>;
   };
 }
@@ -1212,14 +1240,27 @@ function buildHttpServer(deps: ServerDeps): Hono {
       from?: string;
       target?: string;
       message?: string;
+      behavior?: string;
     };
     if (!body.from || !body.target || !body.message) {
       return context.json({ delivered: false, reason: "missing_config" }, 400);
     }
+    const behavior = coerceBusBehavior(body.behavior);
+    if (!behavior.ok) {
+      return context.json(
+        {
+          delivered: false,
+          reason: "invalid_behavior",
+          error: 'behavior must be "steer" or "followUp"',
+        },
+        400
+      );
+    }
     const result = await deps.handlers.busSend(
       body.from,
       body.target,
-      body.message
+      body.message,
+      behavior.behavior
     );
     return context.json(result.body, result.status as 200 | 404 | 503);
   });

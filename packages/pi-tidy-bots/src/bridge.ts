@@ -41,10 +41,22 @@ export default function bridge(pi: any): void {
       message: Type.String({
         description: "Your composed message to the teammate",
       }),
+      behavior: Type.Optional(
+        Type.Union([Type.Literal("steer"), Type.Literal("followUp")], {
+          description:
+            'Delivery behavior. "followUp": new work or the next task — queues until the current turn finishes, never interrupts. Use this unless you must change course now. ' +
+            '"steer": redirect the CURRENT turn while it runs (corrections, priority changes, "stop because X") — only meaningful when the target is actively working; on an idle target it is delivered as a normal message. ' +
+            "Omit for automatic: followUp when the target is busy, normal message when idle.",
+        })
+      ),
     }),
     async execute(
       _toolCallId: string,
-      params: { target: string; message: string }
+      params: {
+        target: string;
+        message: string;
+        behavior?: "steer" | "followUp";
+      }
     ) {
       let response: Response;
       try {
@@ -58,6 +70,7 @@ export default function bridge(pi: any): void {
             from: selfName,
             target: params.target,
             message: params.message,
+            ...(params.behavior ? { behavior: params.behavior } : {}),
           }),
         });
       } catch (error) {

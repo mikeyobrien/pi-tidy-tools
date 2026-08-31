@@ -48,7 +48,7 @@ Invalid rows fail startup with an error naming the bot and field (no partial fle
 
 - **Session-ownership lock** — one daemon per fleet dir. A second `start` exits with a typed error naming the holder; a stale lock (dead owner) is taken over by heartbeat rules.
 - **Perpetual sessions** — one `pi --mode rpc` child per bot. Restarts and crash recovery resume the same session; a reset is a compaction, never a fork.
-- **`message_agent` bus** — fleet handoffs with attribution, fire-and-forget delivery, completion notifications, and typed failure codes (`unknown_target`, `route_forbidden`, `runtime_offline`). Multi-turn dialogue is a chain of these one-way messages.
+- **`message_agent` bus** — fleet handoffs with attribution, fire-and-forget delivery, completion notifications, and typed failure codes (`unknown_target`, `route_forbidden`, `runtime_offline`). Multi-turn dialogue is a chain of these one-way messages. Delivery behavior is caller-chosen via the optional `behavior` field on `message_agent` / `/bus/send`: `followUp` (default) queues new work behind the target's current turn and never interrupts — use it unless you must change course now; `steer` redirects the target's in-flight turn (corrections, priority changes, "stop because X") and is only meaningful while the target is actively working — on an idle target any behavior degrades to a normal message. Omitted behavior is automatic: followUp when busy, normal message when idle.
 - **Web console** — roster with presence, status bubbles that edit in place (progress never spawns new bubbles), markdown-rendered bubbles, routing pills for handoffs.
 
 ## Telegram

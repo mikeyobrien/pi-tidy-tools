@@ -4,13 +4,8 @@ import { join, resolve } from "node:path";
 import { networkInterfaces } from "node:os";
 import { startFleet } from "./daemon.ts";
 import { NAME_PATTERN } from "./config.ts";
-import {
-  buildPairingUrl,
-  ensureStoredToken,
-  pickLanIp,
-  resolvePairingTarget,
-  rotateStoredToken,
-} from "./pairing.ts";
+import { EXIT, formatError, resolveStartToken } from "./cli-core.ts";
+import { buildPairingUrl, pickLanIp, resolvePairingTarget } from "./pairing.ts";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
@@ -52,7 +47,7 @@ Usage:
 
 Start flags:
   --port <n>        Web UI port (default 4317, or [fleet] port in bots.toml)
-  --host <addr>     Bind address (default 127.0.0.1; use 0.0.0.0 for tailnet/LAN, token auth auto-enables)
+  --host <addr>     Bind address (default 127.0.0.1). Non-loopback binds (0.0.0.0 or a LAN IP) auto-enable token auth: a token is minted and stored in .fleet/token if none exists, and printed in the ready block.
   --token <token>   Opt-in access token for the web UI (off by default — secure via your network instead)
   --qr              Print a terminal QR pairing the phone console (LAN IP + token)
   --rotate-token    Regenerate the stored fleet token (.fleet/token) before starting
@@ -214,23 +209,27 @@ async function cmdStart(args: Args): Promise<void> {
   const wantsRotate = args.flags["rotate-token"] === true;
   const explicitToken =
     typeof args.flags.token === "string" ? args.flags.token : undefined;
+  const host =
+    typeof args.flags.host === "string" ? args.flags.host : "127.0.0.1";
 
-  // Token resolution: --rotate-token mints a fresh stored token; --token
-  // persists an explicit one; --qr without either generates + stores one so
-  // pairing always authenticates. Plain start stays as today.
-  let resolvedToken: string | undefined;
-  if (wantsRotate) {
-    resolvedToken = rotateStoredToken(dir);
-    console.log(`rotated fleet token: ${resolvedToken}`);
-  } else if (explicitToken || wantsQr) {
-    resolvedToken = ensureStoredToken(dir, explicitToken, wantsQr).token;
-  }
+  // Token resolution (issue 29 item 1): --rotate-token mints fresh; --token
+  // persists an explicit one; --qr generates for pairing; and a non-loopback
+  // bind ALWAYS carries a token (0.0.0.0 auto-enables auth).
+  const resolution = resolveStartToken({
+    fleetDir: dir,
+    host,
+    explicitToken,
+    wantsQr,
+    wantsRotate,
+  });
+  const resolvedToken = resolution.token;
+  if (resolution.rotated) console.log(`rotated fleet token: ${resolvedToken}`);
 
   const handle = await startFleet({
     dir,
     port:
       typeof args.flags.port === "string" ? Number(args.flags.port) : undefined,
-    host: typeof args.flags.host === "string" ? args.flags.host : undefined,
+    host,
     token: resolvedToken,
     toolOutput:
       typeof args.flags["tool-output"] === "string"
@@ -245,8 +244,6 @@ async function cmdStart(args: Args): Promise<void> {
   if (displayToken) console.log(`token: ${displayToken}`);
   if (wantsQr && displayToken) {
     const port = Number(new URL(handle.url).port);
-    const host =
-      typeof args.flags.host === "string" ? args.flags.host : "127.0.0.1";
     const lanIp = pickLanIp({ addresses: lanAddresses() });
     const target = resolvePairingTarget(host, lanIp);
     if (!target.ok) {

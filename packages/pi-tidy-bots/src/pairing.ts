@@ -29,6 +29,11 @@ export function buildPairingUrl(
 }
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+
+/** Loopback binds can never serve a phone/LAN client. */
+export function isLoopbackHost(host: string): boolean {
+  return LOOPBACK_HOSTS.has(host);
+}
 const UNSPECIFIED_HOSTS = new Set(["0.0.0.0", "::"]);
 
 /**

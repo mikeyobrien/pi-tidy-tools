@@ -73,3 +73,62 @@ test("token storage: explicit persists, stored is reused, rotate mints fresh", (
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("resolveStartToken auto-enables auth on non-loopback binds only", async () => {
+  const { resolveStartToken } = await import("../src/cli-core.ts");
+  const dir = mkdtempSync(join(tmpdir(), "ptb-starttoken-"));
+  try {
+    // 0.0.0.0 without --token: mints + stores (release blocker behavior).
+    const lan = resolveStartToken({
+      fleetDir: dir,
+      host: "0.0.0.0",
+      wantsQr: false,
+      wantsRotate: false,
+    });
+    assert.equal(typeof lan.token, "string");
+    assert.equal((lan.token as string).length > 0, true);
+    assert.equal(existsSync(join(dir, ".fleet", "token")), true);
+    // Second run reuses the stored token (stable across restarts).
+    const again = resolveStartToken({
+      fleetDir: dir,
+      host: "0.0.0.0",
+      wantsQr: false,
+      wantsRotate: false,
+    });
+    assert.equal(again.token, lan.token);
+    // Explicit --token wins even on loopback, but loopback stays opt-in by default.
+    const explicit = resolveStartToken({
+      fleetDir: dir,
+      host: "192.168.1.7",
+      explicitToken: "mine",
+      wantsQr: false,
+      wantsRotate: false,
+    });
+    assert.equal(explicit.token, "mine");
+    const loopback = resolveStartToken({
+      fleetDir: dir,
+      host: "127.0.0.1",
+      wantsQr: false,
+      wantsRotate: false,
+    });
+    assert.equal(loopback.token, undefined);
+    // --qr on loopback still generates (pairing needs auth).
+    const qrLoopback = resolveStartToken({
+      fleetDir: dir,
+      host: "127.0.0.1",
+      wantsQr: true,
+      wantsRotate: false,
+    });
+    assert.equal(typeof qrLoopback.token, "string");
+    // --rotate-token mints a fresh one regardless of bind.
+    const rotated = resolveStartToken({
+      fleetDir: dir,
+      host: "0.0.0.0",
+      wantsQr: false,
+      wantsRotate: true,
+    });
+    assert.notEqual(rotated.token, lan.token);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

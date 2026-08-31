@@ -143,7 +143,15 @@ function transcriptEl(entry) {
   ) {
     bubble.appendChild(el("div", "source ghost-line", "Proposed actions:"));
   }
-  bubble.appendChild(el("span", null, entry.text));
+  // Markdown boundary: md.js escapes before rendering, so innerHTML here cannot
+  // execute model-supplied HTML. Source/ghost/meta lines stay plain text.
+  if (entry.role === "assistant" || entry.role === "user") {
+    const body = el("span", "md-body");
+    body.innerHTML = PiMd.render(entry.text);
+    bubble.appendChild(body);
+  } else {
+    bubble.appendChild(el("span", null, entry.text));
+  }
   wrap.appendChild(bubble);
   const meta = el(
     "div",
@@ -285,6 +293,8 @@ function bubbleSteps(botName, turnId, steps) {
 }
 
 function visibleStreamText(text) {
+  // v1 limitation: marker stripping is line-based and can strip inside fenced
+  // code blocks — matches daemon-side parseActions line semantics.
   return text
     .split("\n")
     .filter((line) => !/^\s*\[\[\s*action\s*:/i.test(line))
@@ -302,7 +312,7 @@ function bubbleDelta(botName, turnId, text) {
     zone = el("div", "text-zone");
     record.bubble.appendChild(zone);
   }
-  zone.textContent = visibleStreamText(text);
+  zone.innerHTML = PiMd.render(visibleStreamText(text));
   const pane = document.getElementById("transcript");
   pane.scrollTop = pane.scrollHeight;
 }

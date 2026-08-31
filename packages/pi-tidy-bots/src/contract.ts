@@ -32,6 +32,8 @@ export const VersionResponseSchema = Type.Object({
   capabilities: Type.Array(Type.String()),
   commit: Type.Optional(Type.String()),
   commitFull: Type.Optional(Type.String()),
+  fleetName: Type.Optional(Type.String()),
+  fleetDir: Type.Optional(Type.String()),
 });
 
 export function versionPayload(): {

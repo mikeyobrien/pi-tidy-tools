@@ -43,7 +43,14 @@ test(
   { timeout: 45000 },
   async () => {
     // 1. Daemonized start: one JSON readiness line, pidfile written.
-    const start = runCli(["start", fleetDir, "--daemon", "--json"]);
+    const start = runCli([
+      "start",
+      fleetDir,
+      "--daemon",
+      "--fleet",
+      "test",
+      "--json",
+    ]);
     assert.equal(start.status, 0, `start stderr: ${start.stderr}`);
     const ready = JSON.parse(start.stdout.trim().split("\n").at(-1) ?? "{}");
     assert.equal(ready.port, PORT);
@@ -55,7 +62,8 @@ test(
     );
 
     // 2. Status reports pid, port, and per-bot state.
-    const status = runCli(["status", fleetDir, "--json"]);
+    // Named targeting: no path spelling (issue 42).
+    const status = runCli(["status", "--fleet", "test", "--json"]);
     assert.equal(status.status, 0, `status stderr: ${status.stderr}`);
     const state = JSON.parse(status.stdout.trim());
     assert.equal(state.pid, ready.pid);
@@ -66,7 +74,7 @@ test(
     );
 
     // 3. Stop: SIGTERM via pidfile, waits for release, exits 0.
-    const stop = runCli(["stop", fleetDir, "--json"]);
+    const stop = runCli(["stop", "--fleet", "test", "--json"]);
     assert.equal(stop.status, 0, `stop stderr: ${stop.stderr}`);
     assert.equal(JSON.parse(stop.stdout.trim()).stopped, true);
     assert.equal(

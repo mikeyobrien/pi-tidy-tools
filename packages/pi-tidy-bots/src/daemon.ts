@@ -120,6 +120,7 @@ interface BotRuntime {
 
 export interface FleetHandle {
   url: string;
+  port?: number;
   token?: string;
   fleetDir: string;
   stop(): Promise<void>;
@@ -127,6 +128,8 @@ export interface FleetHandle {
 
 export interface StartFleetOptions {
   dir: string;
+  /** Registry name (issue 42) surfaced in /api/version for fleet identity. */
+  fleetName?: string;
   port?: number;
   host?: string;
   token?: string;
@@ -1231,6 +1234,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
   let activeToolOutput = toolOutput;
   const server = buildHttpServer({
     fleet,
+    fleetName: options.fleetName,
     runtimes,
     routines,
     token,
@@ -1547,13 +1551,20 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
 
   return new Promise<FleetHandle>((resolvePromise) => {
     httpServer.addListener("listening", () => {
-      const url = `http://${fleet.host === "0.0.0.0" ? "127.0.0.1" : fleet.host}:${fleet.port}`;
+      // Port 0 = OS-assigned: report the bound port, not the request.
+      const address = httpServer.address();
+      const actualPort =
+        typeof address === "object" && address !== null
+          ? address.port
+          : fleet.port;
+      const url = `http://${fleet.host === "0.0.0.0" ? "127.0.0.1" : fleet.host}:${actualPort}`;
       log(
         `fleet ${fleet.dir} serving on ${url}${token ? " (token required)" : ""}`
       );
       for (const bot of fleet.bots) void spawnBot(bot.name);
       resolvePromise({
         url,
+        port: actualPort,
         token,
         fleetDir: fleet.dir,
         stop: async () => {
@@ -1590,6 +1601,7 @@ interface RoutineRuntimeView {
 
 interface ServerDeps {
   fleet: FleetConfig;
+  fleetName?: string;
   runtimes: Map<string, BotRuntime>;
   routines: RoutineRuntimeView[];
   onRoster: () => void;
@@ -1699,7 +1711,11 @@ function buildHttpServer(deps: ServerDeps): Hono {
   });
 
   app.get("/api/version", (context) => {
-    return context.json(versionPayload());
+    return context.json({
+      ...versionPayload(),
+      fleetName: deps.fleetName,
+      fleetDir: deps.fleet.dir,
+    });
   });
 
   app.get("/api/settings", (context) => {

@@ -1043,9 +1043,14 @@ async function loadConsoleFooter() {
   if (!footer) return;
   const data = await api("/api/version").catch(() => null);
   if (!data) return;
-  footer.textContent = data.commit
-    ? `fleet · ${data.version} · ${data.commit}`
-    : `fleet · ${data.version}`;
+  const identity = data.fleetName
+    ? `${data.fleetName} · `
+    : data.fleetDir
+      ? `${data.fleetDir} · `
+      : "";
+  const commit = data.commit ? ` · ${data.commit}` : "";
+  footer.textContent = `fleet · ${identity}${data.version}${commit}`;
+  if (data.fleetDir) footer.title = data.fleetDir;
   footer.hidden = false;
 }
 loadConsoleFooter();

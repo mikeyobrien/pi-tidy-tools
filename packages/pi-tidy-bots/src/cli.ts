@@ -3,6 +3,13 @@ import { mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { networkInterfaces } from "node:os";
 import { startFleet } from "./daemon.ts";
+import {
+  loadRegistry,
+  pruneRegistry,
+  registerFleet,
+  registryPath,
+  resolveFleetRecord,
+} from "./fleets.ts";
 import { DAEMON_REVISION } from "./revision.ts";
 import { loadFleetConfig, ConfigError, NAME_PATTERN } from "./config.ts";
 import {
@@ -16,6 +23,7 @@ import {
   pickStopPid,
   pidAlive,
   readDaemonPid,
+  readLockHolderPid,
   resolveStartToken,
   startReadinessPayload,
   versionJsonPayload,
@@ -46,11 +54,13 @@ const COMMAND_FLAGS: Record<string, string[]> = {
     "rotate-token",
     "tool-output",
     "daemon",
+    "fleet",
   ],
   add: ["dir", "title", "avatar"],
   chat: ["bot", "url", "token"],
-  status: [],
-  stop: [],
+  status: ["fleet"],
+  stop: ["fleet"],
+  fleets: ["prune"],
   id: [],
 };
 
@@ -101,6 +111,8 @@ Usage:
   pi-tidy-bots add <name> [--dir fleetDir] [--title t] [--avatar e]
                                           Scaffold a bot and append its manifest row
   pi-tidy-bots status [fleetDir]          Show daemon pid, port, per-bot state
+  pi-tidy-bots fleets [--prune]           List registered fleets and running state
+  pi-tidy-bots start --fleet <name>       Target a registered fleet by name
   pi-tidy-bots stop [fleetDir]            Gracefully stop the running fleet
 
 Start flags:
@@ -115,6 +127,8 @@ Start flags:
   --version         Print package version
   --json            Machine-readable output: init/start emit one JSON line; --version emits {name, version}
   --daemon          (start) Run detached; pid in .fleet/daemon.pid, log in .fleet/daemon.log
+  --fleet <name>    Target a registered fleet by name; start registers it (default name: dir basename)
+  --prune           (fleets) Drop entries whose directory no longer exists
 `);
   process.exit(1);
 }
@@ -278,7 +292,26 @@ function bestEffortPort(fleetDir: string): number {
 }
 
 async function cmdStart(args: Args): Promise<void> {
-  const dir = resolve(args.positional[0] ?? ".");
+  // Target resolution (issue 42): --fleet <name> resolves via the registry; a
+  // path argument keeps working and registers implicitly under its basename.
+  const fleetName =
+    typeof args.flags.fleet === "string" ? args.flags.fleet : undefined;
+  let dir: string;
+  let portFlag: number | undefined =
+    typeof args.flags.port === "string" ? Number(args.flags.port) : undefined;
+  dir = resolve(args.positional[0] ?? ".");
+  if (fleetName) {
+    // Named start: reuse any previously recorded port unless --port overrides.
+    const record = resolveFleetRecord(registryPath(), fleetName);
+    if (record && portFlag === undefined) portFlag = record.port;
+  } else {
+    const basename = dir.split("/").pop() || dir;
+    registerFleet(registryPath(), {
+      name: basename,
+      dir,
+      port: portFlag,
+    });
+  }
   const json = args.flags.json === true;
   const daemonize = args.flags.daemon === true;
 
@@ -300,9 +333,11 @@ async function cmdStart(args: Args): Promise<void> {
     });
     child.unref();
     const port =
-      typeof args.flags.port === "string"
-        ? Number(args.flags.port)
-        : bestEffortPort(dir);
+      fleetName && portFlag === 0
+        ? (resolveFleetRecord(registryPath(), fleetName)?.port ?? 0)
+        : portFlag !== undefined
+          ? portFlag
+          : bestEffortPort(dir);
     const host =
       typeof args.flags.host === "string" ? args.flags.host : "127.0.0.1";
     const url = `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${port}`;
@@ -359,10 +394,7 @@ async function cmdStart(args: Args): Promise<void> {
   try {
     handle = await startFleet({
       dir,
-      port:
-        typeof args.flags.port === "string"
-          ? Number(args.flags.port)
-          : undefined,
+      port: portFlag,
       host,
       token: resolvedToken,
       toolOutput:
@@ -371,6 +403,15 @@ async function cmdStart(args: Args): Promise<void> {
           : undefined,
       log: json ? (line) => console.error(line) : (line) => console.log(line),
     });
+    if (fleetName) {
+      // Child reports the OS-assigned port back into the registry (issue 42).
+      registerFleet(registryPath(), {
+        name: fleetName,
+        dir,
+        port: handle.port,
+        tokenFile: ".fleet/token",
+      });
+    }
   } catch (error) {
     if (error instanceof ConfigError) {
       // Manifest/lock failures keep their message (lock holder pid included)
@@ -449,9 +490,20 @@ function printVersion(json: boolean): void {
 }
 
 async function cmdStatus(args: Args, json: boolean): Promise<void> {
-  const dir = resolve(args.positional[0] ?? ".");
+  const fleetName =
+    typeof args.flags.fleet === "string" ? args.flags.fleet : undefined;
+  const record = fleetName
+    ? resolveFleetRecord(registryPath(), fleetName)
+    : undefined;
+  if (fleetName && !record) {
+    throw new CliError(`unknown fleet "${fleetName}"`, {
+      exitCode: EXIT.usage,
+      remedy: "pi-tidy-bots fleets",
+    });
+  }
+  const dir = record?.dir ?? resolve(args.positional[0] ?? ".");
   const pid = readDaemonPid(dir) ?? pickStopPid(dir)?.pid;
-  const port = bestEffortPort(dir);
+  const port = record?.port ?? bestEffortPort(dir);
   const url = `http://127.0.0.1:${port}`;
   const token = readStoredToken(dir);
   let bots: { name: string; online: boolean; queued: number }[] = [];
@@ -492,7 +544,18 @@ async function cmdStatus(args: Args, json: boolean): Promise<void> {
 }
 
 async function cmdStop(args: Args, json: boolean): Promise<void> {
-  const dir = resolve(args.positional[0] ?? ".");
+  const fleetName =
+    typeof args.flags.fleet === "string" ? args.flags.fleet : undefined;
+  const record = fleetName
+    ? resolveFleetRecord(registryPath(), fleetName)
+    : undefined;
+  if (fleetName && !record) {
+    throw new CliError(`unknown fleet "${fleetName}"`, {
+      exitCode: EXIT.usage,
+      remedy: "pi-tidy-bots fleets",
+    });
+  }
+  const dir = record?.dir ?? resolve(args.positional[0] ?? ".");
   const stop = pickStopPid(dir);
   if (!stop) {
     throw new CliError("fleet is not running", {
@@ -532,6 +595,39 @@ async function cmdStop(args: Args, json: boolean): Promise<void> {
   }
 }
 
+function cmdFleets(args: Args): never {
+  const json = args.flags.json === true;
+  const prune = args.flags.prune === true;
+  const registry = registryPath();
+  const records = loadRegistry(registry);
+  const dead = prune ? pruneRegistry(registry) : [];
+  const rows = records.map((entry) => {
+    const pid = readLockHolderPid(entry.dir);
+    const running = pid !== undefined && pidAlive(pid);
+    return { name: entry.name, dir: entry.dir, port: entry.port, running, pid };
+  });
+  if (json) {
+    console.log(
+      JSON.stringify({
+        fleets: rows,
+        pruned: prune ? dead.map((d: { name: string }) => d.name) : undefined,
+      })
+    );
+  } else {
+    for (const row of rows) {
+      console.log(
+        `${row.running ? "●" : "○"} ${row.name} — ${row.dir}${row.port ? ` :${row.port}` : ""} ${row.running ? `(pid ${row.pid})` : ""}`
+      );
+    }
+    if (rows.length === 0) console.log("no registered fleets");
+    if (prune && dead.length > 0)
+      console.log(
+        `pruned: ${dead.map((d: { name: string }) => d.name).join(", ")}`
+      );
+  }
+  process.exit(0);
+}
+
 async function cmdChat(args: Args): Promise<void> {
   const { startChat } = await import("./tui.ts");
   startChat({
@@ -566,6 +662,7 @@ async function main(): Promise<void> {
       await cmdStop(args, args.flags.json === true);
       return;
     }
+    if (command === "fleets") cmdFleets(args);
     if (command === "id") {
       console.log(randomUUID());
       process.exit(0);

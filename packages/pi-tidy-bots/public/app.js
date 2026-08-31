@@ -439,7 +439,6 @@ function bubbleWorking(botName, turnId, steps = []) {
   bubble.appendChild(working);
   bubble.appendChild(el("div", "text-zone"));
   if (steps.length > 0) bubble.appendChild(renderSteps(steps));
-  wrap.appendChild(blobAvatar(botName));
   wrap.appendChild(bubble);
   state.bubbles.set(`${botName}:${turnId}`, { wrap, bubble });
   // Record always; render only when selected. Keeps live turns visible when

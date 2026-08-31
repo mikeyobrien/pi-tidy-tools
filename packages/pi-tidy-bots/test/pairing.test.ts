@@ -185,3 +185,10 @@ test("classifyStartFailure and formatError follow the exit-code contract", async
   assert.equal(formatError(withFix), "error: unknown flag [fix: use --token]");
   assert.equal(formatError(new Error("plain")), "error: plain");
 });
+
+test("closestFlag suggests the nearest known flag", async () => {
+  const { closestFlag } = await import("../src/cli-core.ts");
+  assert.equal(closestFlag("tiken", ["token", "port", "host"]), "token");
+  assert.equal(closestFlag("jsonn", ["json", "token"]), "json");
+  assert.equal(closestFlag("zzzzz", ["token", "port"]), undefined);
+});

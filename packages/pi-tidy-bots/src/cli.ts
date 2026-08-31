@@ -5,6 +5,7 @@ import { networkInterfaces } from "node:os";
 import { startFleet } from "./daemon.ts";
 import { loadFleetConfig, ConfigError, NAME_PATTERN } from "./config.ts";
 import {
+  closestFlag,
   CliError,
   classifyStartFailure,
   daemonPidPath,
@@ -33,16 +34,51 @@ interface Args {
   flags: Record<string, string | boolean>;
 }
 
-function parseArgs(argv: string[]): Args {
+const SHARED_FLAGS = ["help", "json", "version"];
+const COMMAND_FLAGS: Record<string, string[]> = {
+  init: [],
+  start: [
+    "port",
+    "host",
+    "token",
+    "qr",
+    "rotate-token",
+    "tool-output",
+    "daemon",
+  ],
+  add: ["dir", "title", "avatar"],
+  chat: ["bot", "url", "token"],
+  status: [],
+  stop: [],
+  id: [],
+};
+
+function parseArgs(argv: string[], command?: string): Args {
   const positional: string[] = [];
   const flags: Record<string, string | boolean> = {};
+  const known = new Set([
+    ...SHARED_FLAGS,
+    ...(command ? (COMMAND_FLAGS[command] ?? []) : []),
+  ]);
+  const boolean = (key: string) =>
+    key === "qr" || key === "rotate-token" || key === "json";
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index] ?? "";
     if (arg.startsWith("--")) {
       const key = arg.slice(2);
+      // Issue 29 item 5: unknown flags are hard errors — silent no-ops are
+      // the worst failure class for unattended agents.
+      if (!known.has(key)) {
+        const suggestion = closestFlag(key, [...known]);
+        throw new CliError(
+          `unknown flag --${key} for ${command ?? "cli"}${
+            suggestion ? ` [did you mean --${suggestion}?]` : ""
+          }`,
+          { exitCode: EXIT.usage, remedy: `run pi-tidy-bots --help` }
+        );
+      }
       const next = argv[index + 1];
-      const boolean = key === "qr" || key === "rotate-token" || key === "json";
-      if (!boolean && next !== undefined && !next.startsWith("--")) {
+      if (!boolean(key) && next !== undefined && !next.startsWith("--")) {
         flags[key] = next;
         index++;
       } else {
@@ -503,9 +539,9 @@ async function cmdChat(args: Args): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
-  const command = args.positional.shift();
+  const [command, ...rest] = process.argv.slice(2);
   try {
+    const args = parseArgs(rest, command);
     if (args.flags.version !== undefined) {
       printVersion(args.flags.json === true);
       return;

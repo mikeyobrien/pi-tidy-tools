@@ -41,6 +41,11 @@ import {
   stripActionMarkers,
 } from "./actions.ts";
 import { classifyFailure, isRetryable } from "./reasons.ts";
+import {
+  createTranscriptStore,
+  mergeTranscriptHistory,
+  paginateTranscript,
+} from "./transcripts.ts";
 import { versionPayload } from "./contract.ts";
 
 export interface TranscriptEntry {
@@ -302,6 +307,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     stored = {};
   }
   const journalPath = join(fleet.dir, ".fleet", "routines.jsonl");
+  const transcripts = createTranscriptStore(
+    join(fleet.dir, ".fleet", "transcripts")
+  );
   let routineState: { routines?: Record<string, { enabled?: boolean }> } =
     stored;
   const persistStateFile = () =>
@@ -452,6 +460,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     runtime.transcript.push(entry);
     if (runtime.transcript.length > 500)
       runtime.transcript.splice(0, runtime.transcript.length - 500);
+    transcripts.append(runtime.config.name, entry);
     emit({ type: "append", bot: runtime.config.name, entry });
   };
 
@@ -606,7 +615,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       const history = Array.isArray(messages?.data?.messages)
         ? messages.data.messages
         : [];
-      runtime.transcript = history
+      const mapped = history
         .map((message): TranscriptEntry | null => {
           const role =
             message.role === "assistant"
@@ -645,8 +654,11 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
             ts: new Date(Number(message.timestamp) || Date.now()).toISOString(),
           };
         })
-        .filter((entry): entry is TranscriptEntry => entry !== null)
-        .slice(-50);
+        .filter((entry): entry is TranscriptEntry => entry !== null);
+      runtime.transcript = mergeTranscriptHistory(
+        transcripts.load(name) as TranscriptEntry[],
+        mapped
+      ).slice(-50);
       const lastEntry = runtime.transcript.at(-1);
       // A trailing user message while the agent is still streaming is a turn in
       // flight, not an interrupted one — resuming over it double-prompts.
@@ -1487,7 +1499,12 @@ function buildHttpServer(deps: ServerDeps): Hono {
   app.get("/api/bots/:name/transcript", (context) => {
     const runtime = deps.runtimes.get(context.req.param("name"));
     if (!runtime) return context.json({ error: "unknown bot" }, 404);
-    return context.json({ transcript: runtime.transcript });
+    const page = paginateTranscript(runtime.transcript, {
+      before: context.req.query("before"),
+      limit: context.req.query("limit"),
+    });
+    if (!page.ok) return context.json({ error: page.error }, 400);
+    return context.json({ transcript: page.entries });
   });
 
   app.post("/api/bots/:name/message", async (context) => {

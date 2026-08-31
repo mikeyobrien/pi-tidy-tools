@@ -114,6 +114,55 @@ export function routineBootWarnings(
   return warnings;
 }
 
+/**
+ * One scheduler tick. A routine that is due but cannot fire (bot session null
+ * or dead) is journaled as `skipped` [reason: bot_offline] and does not consume
+ * its minute key — the next tick within the same minute retries. Only a
+ * successful fire consumes the key and journals `fired`.
+ */
+export function runSchedulerTick<
+  R extends { bot: string; name: string; schedule: string; enabled: boolean },
+>(
+  now: Date,
+  deps: {
+    routines: R[];
+    firedKeys: Set<string>;
+    fireRoutine: (routine: R, manual: boolean) => boolean;
+    journal: (record: Record<string, unknown>) => void;
+  }
+): void {
+  const minute = minuteKey(now);
+  for (const routine of deps.routines) {
+    if (!routine.enabled) continue;
+    const key = `${routine.bot}:${routine.name}:${minute}`;
+    if (deps.firedKeys.has(key)) continue;
+    try {
+      if (!isDue(now, routine.schedule)) continue;
+    } catch {
+      continue;
+    }
+    if (!deps.fireRoutine(routine, false)) {
+      deps.journal({
+        key,
+        bot: routine.bot,
+        routine: routine.name,
+        status: "skipped",
+        reason: "bot_offline",
+        schedule: routine.schedule,
+      });
+      continue;
+    }
+    deps.firedKeys.add(key);
+    deps.journal({
+      key,
+      bot: routine.bot,
+      routine: routine.name,
+      status: "fired",
+      schedule: routine.schedule,
+    });
+  }
+}
+
 export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
   const log = options.log ?? ((line: string) => console.log(line));
   const fleet: FleetConfig = loadFleetConfig(options.dir, {
@@ -330,27 +379,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     return true;
   };
   const schedulerTimer = setInterval(() => {
-    const now = new Date();
-    const minute = minuteKey(now);
-    for (const routine of routines) {
-      if (!routine.enabled) continue;
-      const key = `${routine.bot}:${routine.name}:${minute}`;
-      if (firedKeys.has(key)) continue;
-      try {
-        if (!isDue(now, routine.schedule)) continue;
-      } catch {
-        continue;
-      }
-      firedKeys.add(key);
-      journal({
-        key,
-        bot: routine.bot,
-        routine: routine.name,
-        status: "fired",
-        schedule: routine.schedule,
-      });
-      fireRoutine(routine, false);
-    }
+    runSchedulerTick(new Date(), { routines, firedKeys, fireRoutine, journal });
   }, 15_000);
   schedulerTimer.unref?.();
 

@@ -24,7 +24,15 @@ import {
   type FleetConfig,
   type ToolOutputMode,
 } from "./config.ts";
-import { RpcSession, type RpcEvent } from "./rpc.ts";
+import {
+  RpcSession,
+  autoUiAnswer,
+  describeUiAnswer,
+  isFireAndForgetUiMethod,
+  isInteractiveUiMethod,
+  type RpcEvent,
+  type UiAnswer,
+} from "./rpc.ts";
 import { isDue, minuteKey, parseCron } from "./cron.ts";
 import { createEventLog } from "./eventlog.ts";
 import {
@@ -42,6 +50,18 @@ export interface TranscriptEntry {
   ts: string;
   steps?: { name: string; duration?: number }[];
   delivering?: boolean;
+  ui?: UiRequestView;
+  uiResolved?: { id: string; value: string; auto: boolean };
+}
+
+/** A pending interactive question from the bot's session (ask_user_question and friends). */
+export interface UiRequestView {
+  id: string;
+  method: string;
+  title: string;
+  options?: string[];
+  message?: string;
+  placeholder?: string;
 }
 
 interface BotRuntime {
@@ -59,6 +79,10 @@ interface BotRuntime {
   // routines). Follow-ups queued inside the child by extensions are invisible
   // to the daemon — acceptable; operator-visible cases are all daemon-issued.
   queuedCount: number;
+  pendingUi: Map<
+    string,
+    { view: UiRequestView; timer: ReturnType<typeof setTimeout> }
+  >;
   steps: {
     toolCallId: string;
     name: string;
@@ -277,6 +301,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       turnText: "",
       queuedCount: 0,
       steps: [],
+      pendingUi: new Map(),
     });
   }
 
@@ -352,6 +377,31 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       runtime.transcript.splice(0, runtime.transcript.length - 500);
     emit({ type: "append", bot: runtime.config.name, entry });
   };
+
+  /** Answer a pending UI question in the child and record the resolution. */
+  const resolveUi = (
+    runtime: BotRuntime,
+    view: UiRequestView,
+    answer: UiAnswer,
+    auto: boolean
+  ): void => {
+    try {
+      runtime.session?.respondUi(view.id, answer);
+    } catch {
+      // Child died before the answer landed; still record the resolution.
+    }
+    const value = describeUiAnswer(view.method, answer);
+    appendTranscript(runtime, {
+      id: randomUUID(),
+      role: "system",
+      text: `${view.title} — ${value}${auto ? " (auto)" : ""}`,
+      ts: new Date().toISOString(),
+      uiResolved: { id: view.id, value, auto },
+    });
+  };
+
+  /** How long a console question waits for the operator before auto-answering. */
+  const UI_AUTO_ANSWER_MS = 120_000;
 
   interface RoutineRuntime {
     bot: string;
@@ -707,6 +757,49 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         }
         return;
       }
+      case "ui_request": {
+        if (!event.id) return;
+        if (isFireAndForgetUiMethod(event.method)) return;
+        if (!isInteractiveUiMethod(event.method)) {
+          // Unknown method: defuse it immediately so a future interactive UI
+          // request can never wedge a turn. The child ignores unmatched
+          // responses, so a cancelled answer is safe for any method.
+          resolveUi(
+            runtime,
+            { id: event.id, method: event.method, title: event.title },
+            { cancel: true },
+            true
+          );
+          return;
+        }
+        if (runtime.pendingUi.has(event.id)) return;
+        const view: UiRequestView = {
+          id: event.id,
+          method: event.method,
+          title: event.title,
+          ...(event.options ? { options: event.options } : {}),
+          ...(event.message ? { message: event.message } : {}),
+          ...(event.placeholder ? { placeholder: event.placeholder } : {}),
+        };
+        appendTranscript(runtime, {
+          id: randomUUID(),
+          role: "system",
+          text: view.message ? `${view.title} — ${view.message}` : view.title,
+          ts: new Date().toISOString(),
+          ui: view,
+        });
+        const timer = setTimeout(() => {
+          if (!runtime.pendingUi.delete(view.id)) return;
+          resolveUi(
+            runtime,
+            view,
+            autoUiAnswer(view.method, view.options),
+            true
+          );
+        }, UI_AUTO_ANSWER_MS);
+        runtime.pendingUi.set(view.id, { view, timer });
+        return;
+      }
       default:
         return;
     }
@@ -722,6 +815,8 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     runtime.turnId = null;
     // Child death drops the queue.
     runtime.queuedCount = 0;
+    for (const { timer } of runtime.pendingUi.values()) clearTimeout(timer);
+    runtime.pendingUi.clear();
     const droppedSources = runtime.pendingFrom;
     runtime.pendingFrom = [];
     if (runtime.turnId) {
@@ -942,6 +1037,32 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           ? { status: 200, body: { accepted: true } }
           : { status: 503, body: { error: "runtime_offline" } };
       },
+      answerUi(name, uiId, body) {
+        const runtime = runtimes.get(name);
+        if (!runtime) return { status: 404, body: { error: "unknown bot" } };
+        const pending = runtime.pendingUi.get(uiId);
+        if (!pending)
+          return { status: 404, body: { error: "no such question" } };
+        if (!runtime.session || !runtime.session.alive)
+          return { status: 503, body: { error: "runtime_offline" } };
+        const answer: UiAnswer =
+          body.cancel === true
+            ? { cancel: true }
+            : body.confirmed !== undefined
+              ? { confirmed: body.confirmed === true }
+              : typeof body.value === "string"
+                ? { value: body.value }
+                : {};
+        if (Object.keys(answer).length === 0)
+          return {
+            status: 400,
+            body: { error: "value, confirmed, or cancel required" },
+          };
+        clearTimeout(pending.timer);
+        runtime.pendingUi.delete(uiId);
+        resolveUi(runtime, pending.view, answer, false);
+        return { status: 200, body: { accepted: true } };
+      },
       message: async (name, text) => {
         const runtime = runtimes.get(name);
         if (!runtime) return { status: 404, body: { error: "unknown bot" } };
@@ -1119,6 +1240,11 @@ interface ServerDeps {
       botName: string,
       routineName: string
     ): { status: number; body: unknown };
+    answerUi(
+      name: string,
+      uiId: string,
+      body: { value?: string; confirmed?: boolean; cancel?: boolean }
+    ): { status: number; body: unknown };
     busSend(
       from: string,
       target: string,
@@ -1257,6 +1383,20 @@ function buildHttpServer(deps: ServerDeps): Hono {
       body.text.trim()
     );
     return context.json(result.body, result.status as 200 | 404 | 503);
+  });
+
+  app.post("/api/bots/:name/ui/:uiId", async (context) => {
+    const body = (await context.req.json().catch(() => ({}))) as {
+      value?: string;
+      confirmed?: boolean;
+      cancel?: boolean;
+    };
+    const result = deps.handlers.answerUi(
+      context.req.param("name"),
+      context.req.param("uiId"),
+      body
+    );
+    return context.json(result.body, result.status as 200 | 400 | 404 | 503);
   });
 
   app.post("/api/bots/:name/steer", async (context) => {

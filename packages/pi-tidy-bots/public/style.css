@@ -647,3 +647,59 @@ body {
     animation: none;
   }
 }
+
+/* ── UI question cards (ask_user_question relay) ────── */
+.ui-card {
+  background: var(--surface-2);
+  border: 1px solid var(--border, #232a38);
+  border-radius: 12px;
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+}
+.ui-card.resolved {
+  opacity: 0.65;
+}
+.ui-card .ui-message {
+  color: var(--muted, #8a93a6);
+  font-size: 12px;
+}
+.ui-card .ui-answer {
+  font-size: 12px;
+  color: var(--accent, #2dd4bf);
+}
+.ui-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.ui-actions button {
+  border-radius: 999px;
+  padding: 8px 15px;
+  font-size: 13px;
+  cursor: pointer;
+  border: none;
+  background: var(--surface-2);
+  color: var(--text);
+}
+.ui-actions button.primary {
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 700;
+}
+.ui-actions button:disabled,
+.ui-actions input:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.ui-actions .ui-input {
+  flex: 1;
+  min-width: 120px;
+  background: var(--surface, #171c27);
+  border: 1px solid var(--border, #232a38);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font: inherit;
+}

@@ -27,7 +27,75 @@ export type RpcEvent =
   | { kind: "tool_output"; toolCallId: string; text: string }
   | { kind: "tool_end"; toolCallId: string }
   | { kind: "tool_result"; toolCallId: string; text: string; isError: boolean }
+  | {
+      kind: "ui_request";
+      id: string;
+      method: string;
+      title: string;
+      options?: string[];
+      message?: string;
+      placeholder?: string;
+    }
   | { kind: "event"; raw: Record<string, unknown> };
+
+/** Answer for an interactive extension UI request (select, confirm, input, editor). */
+export interface UiAnswer {
+  value?: string;
+  confirmed?: boolean;
+  cancel?: boolean;
+}
+
+const INTERACTIVE_UI_METHODS = new Set([
+  "select",
+  "confirm",
+  "input",
+  "editor",
+]);
+
+/** Interactive UI requests block the child until an extension_ui_response arrives. */
+export function isInteractiveUiMethod(method: string): boolean {
+  return INTERACTIVE_UI_METHODS.has(method);
+}
+
+const FIRE_AND_FORGET_UI_METHODS = new Set([
+  "notify",
+  "setStatus",
+  "setWidget",
+  "setTitle",
+  "set_editor_text",
+]);
+
+/** Known UI methods the child emits without waiting for an answer. */
+export function isFireAndForgetUiMethod(method: string): boolean {
+  return FIRE_AND_FORGET_UI_METHODS.has(method);
+}
+
+/** Wire frame answering a pending extension UI request. */
+export function uiResponseFrame(
+  id: string,
+  answer: UiAnswer
+): Record<string, unknown> {
+  if (answer.cancel === true)
+    return { type: "extension_ui_response", id, cancelled: true };
+  if (answer.confirmed !== undefined)
+    return { type: "extension_ui_response", id, confirmed: answer.confirmed };
+  return { type: "extension_ui_response", id, value: answer.value ?? "" };
+}
+
+/** Deterministic fallback so an unanswered question can never wedge a turn. */
+export function autoUiAnswer(method: string, options?: string[]): UiAnswer {
+  if (method === "select") return { value: options?.[0] ?? "" };
+  if (method === "confirm") return { confirmed: true };
+  if (method === "input") return { value: "" };
+  return { cancel: true };
+}
+
+/** Human-readable resolution for transcripts and the console. */
+export function describeUiAnswer(method: string, answer: UiAnswer): string {
+  if (answer.cancel === true) return "cancelled";
+  if (method === "confirm") return answer.confirmed ? "confirmed" : "declined";
+  return answer.value ?? "";
+}
 
 /** Pick the human-readable "why" from a tool call's arguments. */
 export function stepReason(args: unknown): string {
@@ -85,10 +153,10 @@ export class RpcSession {
   /** Assistant text of the most recently completed assistant message this turn. */
   lastAssistant = "";
 
-  private constructor(
-    private readonly options: RpcSpawnOptions,
-    process_: ChildProcess
-  ) {
+  private readonly options: RpcSpawnOptions;
+
+  private constructor(options: RpcSpawnOptions, process_: ChildProcess) {
+    this.options = options;
     this.process = process_;
     this.process.stdout?.setEncoding("utf8");
     this.process.stdout?.on("data", (chunk: string) => this.ingest(chunk));
@@ -233,6 +301,11 @@ export class RpcSession {
     }
   }
 
+  /** Answer a pending extension UI request; throws if the child is gone. */
+  respondUi(id: string, answer: UiAnswer): void {
+    this.send(uiResponseFrame(id, answer));
+  }
+
   private ingest(chunk: string): void {
     this.buffer += chunk;
     let index = this.buffer.indexOf("\n");
@@ -331,6 +404,31 @@ export class RpcSession {
           this.options.onEvent({
             kind: "assistant_delta",
             delta: update.delta,
+          });
+        }
+        return;
+      }
+      case "extension_ui_request": {
+        const method = String(parsed.method ?? "");
+        const id = typeof parsed.id === "string" ? parsed.id : "";
+        // Every id'd request crosses to the daemon: interactive methods become
+        // answerable cards, unknown methods get defused there, and known
+        // fire-and-forget methods are ignored without a response.
+        if (id) {
+          this.options.onEvent({
+            kind: "ui_request",
+            id,
+            method,
+            title: typeof parsed.title === "string" ? parsed.title : "",
+            options: Array.isArray(parsed.options)
+              ? parsed.options.map((option) => String(option))
+              : undefined,
+            message:
+              typeof parsed.message === "string" ? parsed.message : undefined,
+            placeholder:
+              typeof parsed.placeholder === "string"
+                ? parsed.placeholder
+                : undefined,
           });
         }
         return;

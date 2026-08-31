@@ -979,16 +979,40 @@ document.getElementById("composer-target").addEventListener("click", () => {
 });
 
 let pendingImage = null; // { mediaType, data } — base64, no dataURL prefix
+let pendingImageUrl = null; // object URL for the confirmation chip thumb
 
 function clearPendingImage() {
+  if (pendingImageUrl) URL.revokeObjectURL(pendingImageUrl);
+  pendingImageUrl = null;
   pendingImage = null;
   document.getElementById("composer-image").value = "";
   document.getElementById("composer-attach").classList.remove("has-image");
+  document.getElementById("composer-attachment").hidden = true;
 }
 
 document.getElementById("composer-attach").addEventListener("click", () => {
   document.getElementById("composer-image").click();
 });
+
+// Issue 45: visible confirmation — 40px thumb, name, size, ✕ to remove.
+function updateAttachmentChip(file) {
+  const chip = document.getElementById("composer-attachment");
+  const name = document.getElementById("composer-attach-name");
+  const size = document.getElementById("composer-attach-size");
+  const thumb = document.getElementById("composer-attach-thumb");
+  chip.hidden = !file;
+  if (!file) return;
+  if (pendingImageUrl) URL.revokeObjectURL(pendingImageUrl);
+  pendingImageUrl = URL.createObjectURL(file);
+  thumb.src = pendingImageUrl;
+  name.textContent = file.name;
+  name.title = file.name;
+  size.textContent = `${Math.max(1, Math.round(file.size / 1024))} KB`;
+}
+
+document
+  .getElementById("composer-attach-remove")
+  .addEventListener("click", () => clearPendingImage());
 
 document
   .getElementById("composer-image")
@@ -1005,6 +1029,8 @@ document
       }
       pendingImage = { mediaType: file.type || "image/png", data: base64 };
       document.getElementById("composer-attach").classList.add("has-image");
+      // Second pick replaces: revoke the old object URL, update the chip.
+      updateAttachmentChip(file);
     };
     reader.readAsDataURL(file);
   });

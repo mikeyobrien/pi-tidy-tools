@@ -863,6 +863,54 @@ body {
   font: inherit;
 }
 
+/* ── Composer attachment chip (issue 45) ────────────── */
+.composer-attachment {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px;
+}
+.composer-attachment img {
+  width: 40px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: 8px;
+  flex: none;
+}
+.composer-attach-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.composer-attach-meta span {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#composer-attach-name {
+  color: var(--text);
+}
+#composer-attach-remove {
+  all: unset;
+  cursor: pointer;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+#composer-attach-remove:hover {
+  color: var(--text);
+  background: var(--surface-2, #171c27);
+}
+
 /* ── Ordered turn parts (issue 37) ──────────────────── */
 .parts-zone {
   display: grid;

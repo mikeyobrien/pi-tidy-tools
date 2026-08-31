@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>pi-tidy-bots — fleet console</title>
-    <link rel="stylesheet" href="/style.css?v=23" />
+    <link rel="stylesheet" href="/style.css?v=24" />
   </head>
   <body>
     <div id="conn-banner" hidden>Reconnecting to fleet…</div>
@@ -61,6 +61,20 @@
               <span class="composer-target-caret" aria-hidden="true">▾</span>
             </button>
           </div>
+          <div id="composer-attachment" class="composer-attachment" hidden>
+            <img id="composer-attach-thumb" alt="" />
+            <div class="composer-attach-meta">
+              <span id="composer-attach-name"></span>
+              <span id="composer-attach-size"></span>
+            </div>
+            <button
+              type="button"
+              id="composer-attach-remove"
+              aria-label="Remove attachment"
+            >
+              ✕
+            </button>
+          </div>
           <div class="composer-bottom">
             <input type="file" id="composer-image" accept="image/*" hidden />
             <button
@@ -85,8 +99,8 @@
         <footer id="console-footer" hidden></footer>
       </main>
     </div>
-    <script src="/md.js?v=23"></script>
-    <script src="/parts.js?v=23"></script>
-    <script src="/app.js?v=23"></script>
+    <script src="/md.js?v=24"></script>
+    <script src="/parts.js?v=24"></script>
+    <script src="/app.js?v=24"></script>
   </body>
 </html>

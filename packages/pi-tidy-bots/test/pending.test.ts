@@ -62,3 +62,14 @@ test("pending journal round-trips images and provenance", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("claimClientMessageId: once per id, absent ids always claim", async () => {
+  const { claimClientMessageId } = await import("../src/daemon.ts");
+  const seen = new Set<string>();
+  assert.equal(claimClientMessageId(seen, undefined), true);
+  assert.equal(claimClientMessageId(seen, undefined), true);
+  assert.equal(claimClientMessageId(seen, "cm-1"), true);
+  assert.equal(claimClientMessageId(seen, "cm-1"), false, "duplicate rejected");
+  const other = new Set<string>();
+  assert.equal(claimClientMessageId(other, "cm-1"), true, "per-bot registry");
+});

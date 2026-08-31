@@ -650,6 +650,16 @@ body {
   display: block;
 }
 
+/* ── Delivery state ─────────────────────────────────── */
+.delivery-note {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 6px;
+}
+.delivery-note.failed {
+  color: var(--danger);
+}
+
 /* ── Queued + empty state ───────────────────────────── */
 .queue-badge {
   display: inline-flex;

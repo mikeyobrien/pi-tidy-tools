@@ -167,6 +167,7 @@ function transcriptEl(entry) {
     return wrap;
   }
   const wrap = el("div", `entry ${entry.role}`);
+  if (entry.id) wrap.dataset.entryId = entry.id;
   const bubble = el("div", "bubble");
   // Markdown boundary: md.js escapes before rendering, so innerHTML here cannot
   // execute model-supplied HTML. Source lines stay plain text.
@@ -187,6 +188,20 @@ function transcriptEl(entry) {
     })
   );
   wrap.appendChild(meta);
+  // Delivery state (issue 33): pending until the prompt lands; failures are
+  // visible with their reason — never a silent drop.
+  if (entry.role === "user") {
+    if (entry.deliveryError)
+      wrap
+        .querySelector(".bubble")
+        .appendChild(
+          el("div", "delivery-note failed", `failed — ${entry.deliveryError}`)
+        );
+    else if (entry.delivering)
+      wrap
+        .querySelector(".bubble")
+        .appendChild(el("div", "delivery-note", "queued…"));
+  }
   return wrap;
 }
 
@@ -384,8 +399,29 @@ function scrollBottomIfPinned() {
 
 function appendEntry(botName, entry) {
   const entries = state.transcripts.get(botName) ?? [];
-  if (entry.id && entries.some((candidate) => candidate.id === entry.id))
-    return; // render-dedupe
+  const existingIndex = entry.id
+    ? entries.findIndex((candidate) => candidate.id === entry.id)
+    : -1;
+  if (existingIndex !== -1) {
+    // Same id: delivery-state update (pending -> delivered/failed), not a dup.
+    entries[existingIndex] = { ...entries[existingIndex], ...entry };
+    state.transcripts.set(botName, entries);
+    if (botName === state.selected) {
+      const pane = document.getElementById("transcript");
+      const node = transcriptEl({
+        ...entries[existingIndex],
+        bot: botName,
+      });
+      const stale = pane.querySelector(
+        `[data-entry-id="${CSS.escape(entry.id)}"]`
+      );
+      if (stale) stale.replaceWith(node);
+    }
+    const bot = state.fleet.find((candidate) => candidate.name === botName);
+    if (bot) bot.latest = entry.text;
+    renderRoster();
+    return;
+  }
   entries.push(entry);
   state.transcripts.set(botName, entries);
   if (botName === state.selected) {

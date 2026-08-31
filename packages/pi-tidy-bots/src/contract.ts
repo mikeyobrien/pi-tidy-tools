@@ -60,6 +60,7 @@ export const TranscriptEntrySchema = Type.Object({
   text: Type.String(),
   ts: Type.String(),
   delivering: Type.Optional(Type.Boolean()),
+  deliveryError: Type.Optional(Type.String()),
   steps: Type.Optional(Type.Array(TranscriptStepSchema)),
 });
 

@@ -61,6 +61,8 @@ export interface TranscriptEntry {
   ts: string;
   steps?: { name: string; duration?: number }[];
   delivering?: boolean;
+  /** Set when delivery failed for good — rendered as a visible failure. */
+  deliveryError?: string;
   ui?: UiRequestView;
   uiResolved?: { id: string; value: string; auto: boolean };
 }
@@ -93,6 +95,8 @@ interface BotRuntime {
   // routines). Follow-ups queued inside the child by extensions are invisible
   // to the daemon — acceptable; operator-visible cases are all daemon-issued.
   queuedCount: number;
+  /** Claimed clientMessageIds (issue 33 idempotency). */
+  clientMessageIds: Set<string>;
   pendingUi: Map<
     string,
     { view: UiRequestView; timer: ReturnType<typeof setTimeout> }
@@ -203,6 +207,20 @@ export function runSchedulerTick<
 }
 
 export type BusBehavior = "steer" | "followUp";
+/**
+ * Idempotency guard (issue 33): a clientMessageId may be claimed once per
+ * bot. Unknown/absent ids always claim. Returns false on duplicate.
+ */
+export function claimClientMessageId(
+  seen: Set<string>,
+  clientMessageId?: string
+): boolean {
+  if (clientMessageId === undefined) return true;
+  if (seen.has(clientMessageId)) return false;
+  seen.add(clientMessageId);
+  return true;
+}
+
 /**
  * Delta throttle decision (issue 20 item 6): emit when nothing was sent yet,
  * when ≥300ms passed since the last emission, or when the cumulative text
@@ -385,6 +403,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     deltaSent: null,
     turnText: "",
     queuedCount: 0,
+    clientMessageIds: new Set<string>(),
     steps: [],
     pendingUi: new Map(),
   });
@@ -731,7 +750,10 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
             const delivered = runtime.transcript.find(
               (candidate) => candidate.id === head.id
             );
-            if (delivered) delivered.delivering = false;
+            if (delivered) {
+              delivered.delivering = false;
+              emit({ type: "append", bot: botName, entry: delivered });
+            }
           }
           emitRoster();
         }
@@ -1052,6 +1074,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     try {
       await session.prompt(text, behavior, images);
       entry.delivering = false;
+      emit({ type: "append", bot: runtime.config.name, entry });
     } catch (error) {
       // Fresh-bot boot race: the agent can reject plain prompts while its first
       // turn is still settling. One followUp queues behind it; genuine failures
@@ -1063,8 +1086,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       ) {
         await session.followUp(text, images);
         // Queued behind the in-flight turn; turn_start decrements + pops the
-        // pending journal (issue 34).
+        // pending journal (issue 34). Stays delivering until its turn streams.
         journalPending(runtime, entry, images);
+        emit({ type: "append", bot: runtime.config.name, entry });
         runtime.queuedCount++;
         emitRoster();
         return;
@@ -1241,22 +1265,37 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         resolveUi(runtime, pending.view, answer, false);
         return { status: 200, body: { accepted: true } };
       },
-      message: async (name, text, images) => {
+      message: async (name, text, images, clientMessageId) => {
         const runtime = runtimes.get(name);
         if (!runtime) return { status: 404, body: { error: "unknown bot" } };
+        if (clientMessageId !== undefined) {
+          if (!claimClientMessageId(runtime.clientMessageIds, clientMessageId))
+            return { status: 409, body: { error: "duplicate" } };
+        }
         const entry: TranscriptEntry = {
-          id: randomUUID(),
+          id: clientMessageId ?? randomUUID(),
           role: "user",
           origin: "operator",
+          delivering: true,
           text,
           ts: new Date().toISOString(),
         };
         try {
           await deliver(runtime, text, entry, undefined, images);
           return { status: 200, body: { accepted: true } };
-        } catch {
+        } catch (error) {
+          const reason = classifyFailure(String(error));
+          if (reason === "runtime_offline") {
+            // Issue 33 item 3: offline sends queue for delivery on next spawn
+            // instead of hard-failing — never a silent drop.
+            journalPending(runtime, entry, images);
+            emit({ type: "append", bot: name, entry });
+            return { status: 202, body: { accepted: true, queued: true } };
+          }
           entry.delivering = false;
-          return { status: 503, body: { error: "runtime_offline" } };
+          entry.deliveryError = reason;
+          emit({ type: "append", bot: name, entry });
+          return { status: 503, body: { error: reason } };
         }
       },
       steer: async (name, text) => {
@@ -1517,7 +1556,8 @@ interface ServerDeps {
     message(
       name: string,
       text: string,
-      images?: { type: "image"; data: string; mimeType: string }[]
+      images?: { type: "image"; data: string; mimeType: string }[],
+      clientMessageId?: string
     ): Promise<{ status: number; body: unknown }>;
     compact(name: string): Promise<{ status: number; body: unknown }>;
     steer(
@@ -1677,9 +1717,15 @@ function buildHttpServer(deps: ServerDeps): Hono {
     const body = (await context.req.json().catch(() => ({}))) as {
       text?: string;
       images?: unknown;
+      clientMessageId?: unknown;
     };
     if (!body.text || body.text.trim().length === 0)
       return context.json({ error: "text required" }, 400);
+    if (
+      body.clientMessageId !== undefined &&
+      typeof body.clientMessageId !== "string"
+    )
+      return context.json({ error: "clientMessageId must be a string" }, 400);
     const images = coerceMessageImages(body.images);
     if (!images.ok) {
       return context.json(
@@ -1693,9 +1739,13 @@ function buildHttpServer(deps: ServerDeps): Hono {
     const result = await deps.handlers.message(
       context.req.param("name"),
       body.text.trim(),
-      images.images
+      images.images,
+      body.clientMessageId
     );
-    return context.json(result.body, result.status as 200 | 404 | 503);
+    return context.json(
+      result.body,
+      result.status as 200 | 202 | 404 | 409 | 503
+    );
   });
 
   app.post("/api/bots/:name/ui/:uiId", async (context) => {

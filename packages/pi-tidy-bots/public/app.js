@@ -20,7 +20,7 @@ const setText = (id, text) => {
 };
 const uid = () =>
   globalThis.crypto && typeof crypto.randomUUID === "function"
-    ? uid()
+    ? crypto.randomUUID()
     : `id-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 const blobColors = [
@@ -154,11 +154,9 @@ function transcriptEl(entry) {
     })
   );
   wrap.appendChild(meta);
+  // Pills live inside the bubble (below the text): .entry is a flex row, so a
+  // bar appended to wrap would sit beside the bubble instead of under it.
   if (entry.role === "assistant" && entry.actions?.length) {
-    const column = el("div");
-    column.style.display = "flex";
-    column.style.flexDirection = "column";
-    column.style.gap = "8px";
     const bar = el("div", "action-bar");
     entry.actions.forEach((action, index) => {
       const button = el("button", index === 0 ? "primary" : "", action.label);
@@ -167,8 +165,7 @@ function transcriptEl(entry) {
       );
       bar.appendChild(button);
     });
-    column.appendChild(bar);
-    return column;
+    bubble.appendChild(bar);
   }
   return wrap;
 }

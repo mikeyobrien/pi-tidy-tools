@@ -622,6 +622,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       readdirSync(sessionDir).some((file) => file.endsWith(".jsonl"));
     const session = RpcSession.spawn({
       name,
+      piBin,
       cwd: runtime.config.dir,
       sessionDir,
       resume: hasSession,

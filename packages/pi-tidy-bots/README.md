@@ -76,6 +76,18 @@ npm run smoke           # gated: PI_TIDY_BOTS_REAL_SMOKE=1 boots real children
 npm run check           # typecheck
 ```
 
+### Diffing the running daemon
+
+`--version`, `GET /api/version`, and the console footer expose the git commit
+the daemon was started from (short + full; omitted when `.git` is unavailable,
+e.g. packed installs). To see what a running daemon is missing relative to a
+branch:
+
+```bash
+git log <commit>..bots/forge        # commits the daemon does not have yet
+git log <commit>..main              # same, against main
+```
+
 ## Status
 
 v0.1.0 preflight. Frozen spec: `.scratch/pi-tidy-bots/` (PRD, use cases + BDD, UX brief, approved mock). Landed: runtime core, bus, console core loop, hermetic demo fleet. Next: completion-reason hardening, release wiring, Telegram composition spikes.

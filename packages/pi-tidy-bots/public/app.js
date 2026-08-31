@@ -1020,6 +1020,20 @@ document.getElementById("header-avatar").addEventListener("click", () => {
   document.body.classList.toggle("drawer-open");
 });
 
+// Issue 39: the console answers "what am I working off" — footer shows the
+// running package version + daemon commit (unknown/omitted when no .git).
+async function loadConsoleFooter() {
+  const footer = document.getElementById("console-footer");
+  if (!footer) return;
+  const data = await api("/api/version").catch(() => null);
+  if (!data) return;
+  footer.textContent = data.commit
+    ? `fleet · ${data.version} · ${data.commit}`
+    : `fleet · ${data.version}`;
+  footer.hidden = false;
+}
+loadConsoleFooter();
+
 // Mobile Safari freezes sockets/timers in background tabs — resync on return.
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState !== "visible") return;

@@ -695,6 +695,14 @@ body {
   display: block;
 }
 
+/* ── Console footer (running commit) ────────────────── */
+#console-footer {
+  text-align: center;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 0 10px 6px;
+}
+
 /* ── Delivery state ─────────────────────────────────── */
 .delivery-note {
   color: var(--muted);

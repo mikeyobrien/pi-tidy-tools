@@ -5,6 +5,7 @@
  */
 import { Type } from "typebox";
 import { createRequire } from "node:module";
+import { DAEMON_REVISION } from "./revision.ts";
 
 const require = createRequire(import.meta.url);
 const pkg = require("../package.json") as { version: string };
@@ -29,13 +30,23 @@ export const CAPABILITIES = [
 export const VersionResponseSchema = Type.Object({
   version: Type.String(),
   capabilities: Type.Array(Type.String()),
+  commit: Type.Optional(Type.String()),
+  commitFull: Type.Optional(Type.String()),
 });
 
 export function versionPayload(): {
   version: string;
   capabilities: string[];
+  commit?: string;
+  commitFull?: string;
 } {
-  return { version: DAEMON_VERSION, capabilities: [...CAPABILITIES] };
+  return {
+    version: DAEMON_VERSION,
+    capabilities: [...CAPABILITIES],
+    ...(DAEMON_REVISION
+      ? { commit: DAEMON_REVISION.short, commitFull: DAEMON_REVISION.full }
+      : {}),
+  };
 }
 
 // ── Transcript entries ─────────────────────────────────

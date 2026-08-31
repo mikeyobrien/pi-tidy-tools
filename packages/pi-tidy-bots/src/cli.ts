@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { networkInterfaces } from "node:os";
 import { startFleet } from "./daemon.ts";
+import { DAEMON_REVISION } from "./revision.ts";
 import { loadFleetConfig, ConfigError, NAME_PATTERN } from "./config.ts";
 import {
   closestFlag,
@@ -434,11 +435,17 @@ function printVersion(json: boolean): void {
   const manifest = JSON.parse(
     readFileSync(new URL("../package.json", import.meta.url), "utf8")
   );
-  console.log(
-    json
-      ? JSON.stringify(versionJsonPayload(manifest.name, manifest.version))
-      : `${manifest.name} ${manifest.version}`
-  );
+  if (json) {
+    console.log(
+      JSON.stringify({
+        ...versionJsonPayload(manifest.name, manifest.version),
+        ...(DAEMON_REVISION ? { commit: DAEMON_REVISION.short } : {}),
+      })
+    );
+    return;
+  }
+  const suffix = DAEMON_REVISION ? ` (${DAEMON_REVISION.short})` : "";
+  console.log(`${manifest.name} ${manifest.version}${suffix}`);
 }
 
 async function cmdStatus(args: Args, json: boolean): Promise<void> {

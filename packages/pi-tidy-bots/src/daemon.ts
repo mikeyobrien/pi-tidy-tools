@@ -75,6 +75,9 @@ interface BotRuntime {
   restartTimes: number[];
   stopping: boolean;
   turnId: string | null;
+  // Delta throttle state (issue 20 item 6): last WS delta emission for the
+  // current turn — null until the first eligible emission.
+  deltaSent: { at: number; chars: number } | null;
   turnText: string;
   // Known limit: covers daemon-issued prompts only (routing, composer,
   // routines). Follow-ups queued inside the child by extensions are invisible
@@ -190,6 +193,20 @@ export function runSchedulerTick<
 }
 
 export type BusBehavior = "steer" | "followUp";
+/**
+ * Delta throttle decision (issue 20 item 6): emit when nothing was sent yet,
+ * when ≥300ms passed since the last emission, or when the cumulative text
+ * grew by ≥256 bytes — whichever comes first.
+ */
+export function deltaThrottleDue(
+  last: { at: number; chars: number } | null,
+  nextLength: number,
+  now: number
+): boolean {
+  if (!last) return true;
+  return now - last.at >= 300 || nextLength - last.chars >= 256;
+}
+
 /**
  * Validate the optional /bus/send behavior field. Omitted = auto delivery;
  * anything outside the two-value enum fails the request with a 400 naming
@@ -354,6 +371,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       restartTimes: [],
       stopping: false,
       turnId: null,
+      deltaSent: null,
       turnText: "",
       queuedCount: 0,
       steps: [],
@@ -666,6 +684,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         runtime.turnId = randomUUID();
         runtime.turnText = "";
         runtime.steps = [];
+        runtime.deltaSent = null;
         emit({
           type: "bubble",
           bot: botName,
@@ -730,20 +749,34 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       }
       case "assistant_delta": {
         runtime.turnText += event.delta;
-        emit({
-          type: "bubble",
-          bot: botName,
-          turnId: runtime.turnId,
-          phase: "delta",
-          // Server-side marker stripping: any WS client gets clean streaming
-          // text. A marker line still open mid-stream becomes visible only
-          // until its closing ]] arrives — the grammar is line-based.
-          text: stripActionMarkers(runtime.turnText),
-        });
+        const text = stripActionMarkers(runtime.turnText);
+        // Throttle: emit at most every ~300ms or ~256 bytes of growth. Frames
+        // are cumulative, so dropped frames lose nothing; the settle path
+        // always emits the final text.
+        const now = Date.now();
+        const last = runtime.deltaSent;
+        if (deltaThrottleDue(last, text.length, now)) {
+          runtime.deltaSent = { at: now, chars: text.length };
+          emit({
+            type: "bubble",
+            bot: botName,
+            turnId: runtime.turnId,
+            phase: "delta",
+            // Server-side marker stripping: any WS client gets clean streaming
+            // text. A marker line still open mid-stream becomes visible only
+            // until its closing ]] arrives — the grammar is line-based.
+            text,
+          });
+        }
         return;
       }
       case "assistant_message": {
         runtime.turnText = event.text;
+        // Message boundary: force an emit so paragraph completions land promptly.
+        runtime.deltaSent = {
+          at: Date.now(),
+          chars: stripActionMarkers(runtime.turnText).length,
+        };
         emit({
           type: "bubble",
           bot: botName,

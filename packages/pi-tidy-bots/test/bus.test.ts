@@ -100,3 +100,15 @@ test("writeWsAuthFailure completes the upgrade with an HTTP 401 frame", async ()
   assert.match(WS_AUTH_FAILURE_RESPONSE, /Connection: close/);
   assert.equal(destroyed, true, "socket is destroyed after the 401 frame");
 });
+
+test("delta throttle emits first frame, then only on 300ms or 256B growth", async () => {
+  const { deltaThrottleDue } = await import("../src/daemon.ts");
+  // First frame of a turn always emits.
+  assert.equal(deltaThrottleDue(null, 10, 1000), true);
+  // Below both thresholds: throttled.
+  assert.equal(deltaThrottleDue({ at: 1000, chars: 10 }, 20, 1100), false);
+  // 300ms elapsed: emits.
+  assert.equal(deltaThrottleDue({ at: 1000, chars: 10 }, 20, 1301), true);
+  // 256 bytes of growth: emits even with no time gap.
+  assert.equal(deltaThrottleDue({ at: 1000, chars: 10 }, 266, 1005), true);
+});

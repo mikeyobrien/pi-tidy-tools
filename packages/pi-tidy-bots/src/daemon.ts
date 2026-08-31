@@ -55,6 +55,10 @@ interface BotRuntime {
   stopping: boolean;
   turnId: string | null;
   turnText: string;
+  // Known limit: covers daemon-issued prompts only (routing, composer,
+  // routines). Follow-ups queued inside the child by extensions are invisible
+  // to the daemon — acceptable; operator-visible cases are all daemon-issued.
+  queuedCount: number;
   steps: {
     toolCallId: string;
     name: string;
@@ -271,6 +275,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       stopping: false,
       turnId: null,
       turnText: "",
+      queuedCount: 0,
       steps: [],
     });
   }
@@ -318,6 +323,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     online: runtime.online,
     active: Date.now() - Date.parse(runtime.lastActive) < ACTIVE_WINDOW_MS,
     lastActive: runtime.lastActive,
+    queued: runtime.queuedCount,
   });
 
   const emitRoster = (): void => {
@@ -381,6 +387,11 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       ts: new Date().toISOString(),
     };
     const busy = runtime.session.streaming;
+    if (busy) {
+      // Queued behind the in-flight turn; agent_start decrements.
+      runtime.queuedCount++;
+      emitRoster();
+    }
     appendTranscript(runtime, entry);
     void runtime.session
       .prompt(
@@ -430,6 +441,8 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
   const spawnBot = async (name: string): Promise<void> => {
     const runtime = runtimes.get(name);
     if (!runtime) return;
+    // A respawn drops any queue the dead child was holding.
+    runtime.queuedCount = 0;
     const sessionDir = join(fleet.dir, ".fleet", "sessions", name);
     mkdirSync(sessionDir, { recursive: true });
     const hasSession =
@@ -538,6 +551,11 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         runtime.turnId = randomUUID();
         runtime.turnText = "";
         runtime.steps = [];
+        if (runtime.queuedCount > 0) {
+          // A new turn starting means the oldest queued message is streaming.
+          runtime.queuedCount--;
+          emitRoster();
+        }
         emit({
           type: "bubble",
           bot: botName,
@@ -698,6 +716,8 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     runtime.online = false;
     runtime.session = null;
     runtime.turnId = null;
+    // Child death drops the queue.
+    runtime.queuedCount = 0;
     const droppedSources = runtime.pendingFrom;
     runtime.pendingFrom = [];
     if (runtime.turnId) {
@@ -770,6 +790,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         classifyFailure(String(error)) === "turn_in_flight"
       ) {
         await session.followUp(text);
+        // Queued behind the in-flight turn; agent_start decrements.
+        runtime.queuedCount++;
+        emitRoster();
         return;
       }
       throw error;
@@ -817,6 +840,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         await runtime.session.steer(text);
         return;
       }
+      // Queued behind the in-flight turn; agent_start decrements.
+      runtime.queuedCount++;
+      emitRoster();
       await runtime.session.prompt(text, behavior ?? "followUp");
     };
 
@@ -1150,6 +1176,7 @@ function buildHttpServer(deps: ServerDeps): Hono {
       online: runtime.online,
       active: Date.now() - Date.parse(runtime.lastActive) < ACTIVE_WINDOW_MS,
       lastActive: runtime.lastActive,
+      queued: runtime.queuedCount,
       latest: runtime.transcript.at(-1)?.text ?? "",
     }));
     return context.json({ dir: deps.fleet.dir, bots });

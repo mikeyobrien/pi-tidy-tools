@@ -67,6 +67,17 @@ function renderRoster() {
   const list = document.getElementById("bot-list");
   list.textContent = "";
   const strip = document.getElementById("presence-strip");
+  // Child death drops the turn and its queue — clear any live bubble records
+  // for offline bots so a respawn never shows a zombie "working…".
+  for (const bot of state.fleet) {
+    if (bot.online) continue;
+    for (const [key, record] of state.bubbles) {
+      if (key.startsWith(`${bot.name}:`)) {
+        record.wrap.remove();
+        state.bubbles.delete(key);
+      }
+    }
+  }
   for (const bot of state.fleet) {
     const row = el("li");
     if (bot.name === state.selected) {
@@ -102,6 +113,11 @@ function renderRoster() {
             })
       )
     );
+    if (bot.queued > 0) {
+      const badge = el("span", "queue-badge", String(bot.queued));
+      badge.setAttribute("aria-label", `${bot.queued} messages queued`);
+      open.appendChild(badge);
+    }
     open.setAttribute("aria-label", `Open ${bot.name}`);
     open.addEventListener("click", () => selectBot(bot.name));
     row.appendChild(open);
@@ -115,6 +131,7 @@ function renderRoster() {
     document.createTextNode(` ${active} active · ${idle} idle`)
   );
   document.getElementById("bot-count").textContent = String(state.fleet.length);
+  updateHeaderQueue();
 }
 
 function transcriptEl(entry) {
@@ -158,11 +175,60 @@ function renderTranscript(botName) {
   const pane = document.getElementById("transcript");
   pane.textContent = "";
   const entries = state.transcripts.get(botName) ?? [];
+  if (entries.length === 0) {
+    pane.appendChild(emptyStateNode(botName));
+    return;
+  }
   for (const entry of entries) {
     const node = transcriptEl({ ...entry, bot: botName });
     if (node) pane.appendChild(node);
   }
+  reattachLiveBubbles(botName);
   pane.scrollTop = pane.scrollHeight;
+}
+
+// Intentional empty state for a never-used bot: presence-neutral copy (the dot
+// already says online/offline), breathing blob reads "alive, waiting".
+function emptyStateNode(botName) {
+  const wrap = el("div", "empty-state");
+  const avatar = blobAvatar(botName, true);
+  avatar.setAttribute("aria-hidden", "true");
+  avatar.classList.add("breathe");
+  wrap.appendChild(avatar);
+  wrap.appendChild(el("div", "empty-title", "Awaiting first task"));
+  wrap.appendChild(
+    el(
+      "div",
+      "empty-sub",
+      "Send or route a message and the transcript will start here."
+    )
+  );
+  return wrap;
+}
+
+// Mid-turn visibility: bubble records are kept per bot regardless of selection
+// (bubbleWorking no longer bails), so re-attach any live working bubble when
+// the pane is (re)rendered — e.g. switching to a bot mid-turn.
+function reattachLiveBubbles(botName) {
+  const pane = document.getElementById("transcript");
+  for (const [key, record] of state.bubbles) {
+    if (key.startsWith(`${botName}:`)) pane.appendChild(record.wrap);
+  }
+}
+
+function updateHeaderQueue() {
+  const pill = $id("header-queue");
+  if (!pill) return;
+  const bot = state.fleet.find(
+    (candidate) => candidate.name === state.selected
+  );
+  const queued = bot?.queued ?? 0;
+  pill.hidden = !queued;
+  pill.textContent = "";
+  if (queued > 0) {
+    pill.appendChild(el("span", null, "queued · "));
+    pill.appendChild(el("span", "queue-count", String(queued)));
+  }
 }
 
 function scrollBottom() {
@@ -179,6 +245,7 @@ function appendEntry(botName, entry) {
   state.transcripts.set(botName, entries);
   if (botName === state.selected) {
     const pane = document.getElementById("transcript");
+    pane.querySelector(".empty-state")?.remove();
     const node = transcriptEl({ ...entry, bot: botName });
     if (node) pane.appendChild(node);
     scrollBottom();
@@ -216,7 +283,6 @@ function renderSteps(steps) {
 
 function bubbleWorking(botName, turnId, steps = []) {
   const pane = document.getElementById("transcript");
-  if (botName !== state.selected) return;
   const wrap = el("div", "entry assistant");
   wrap.dataset.turnId = turnId;
   const bubble = el("div", "bubble");
@@ -229,22 +295,26 @@ function bubbleWorking(botName, turnId, steps = []) {
   wrap.appendChild(blobAvatar(botName));
   wrap.appendChild(bubble);
   state.bubbles.set(`${botName}:${turnId}`, { wrap, bubble });
-  pane.appendChild(wrap);
-  pane.scrollTop = pane.scrollHeight;
+  // Record always; render only when selected. Keeps live turns visible when
+  // the operator switches to a bot mid-turn.
+  if (botName === state.selected) {
+    pane.appendChild(wrap);
+    pane.scrollTop = pane.scrollHeight;
+  }
 }
 
 function bubbleSteps(botName, turnId, steps) {
   const record = state.bubbles.get(`${botName}:${turnId}`);
-  if (!record || botName !== state.selected) return;
+  if (!record) return;
   const existing = record.bubble.querySelector(".steps");
   if (existing) existing.replaceWith(renderSteps(steps));
   else record.bubble.appendChild(renderSteps(steps));
-  pane_scrollBottom();
+  if (botName === state.selected) pane_scrollBottom();
 }
 
 function visibleStreamText(text) {
   // v1 limitation: marker stripping is line-based and can strip inside fenced
-  // code blocks — matches daemon-side stripActionMarkers line semantics.emantics.
+  // code blocks — matches daemon-side stripActionMarkers line semantics.
   return text
     .split("\n")
     .filter((line) => !/^\s*\[\[\s*action\s*:/i.test(line))
@@ -254,7 +324,7 @@ function visibleStreamText(text) {
 
 function bubbleDelta(botName, turnId, text) {
   const record = state.bubbles.get(`${botName}:${turnId}`);
-  if (!record || botName !== state.selected) return;
+  if (!record) return;
   const working = record.bubble.querySelector(".working");
   if (working) working.remove();
   let zone = record.bubble.querySelector(".text-zone");
@@ -263,8 +333,10 @@ function bubbleDelta(botName, turnId, text) {
     record.bubble.appendChild(zone);
   }
   zone.innerHTML = PiMd.render(visibleStreamText(text));
-  const pane = document.getElementById("transcript");
-  pane.scrollTop = pane.scrollHeight;
+  if (botName === state.selected) {
+    const pane = document.getElementById("transcript");
+    pane.scrollTop = pane.scrollHeight;
+  }
 }
 
 function bubbleFinal(botName, turnId) {
@@ -309,6 +381,7 @@ function selectBot(name) {
       .catch(() => state.transcripts.set(name, []));
   }
   renderTranscript(name);
+  updateHeaderQueue();
   renderRoster();
 }
 

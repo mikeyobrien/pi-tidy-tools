@@ -350,7 +350,21 @@ function scrollBottom() {
   const pane = document.getElementById("transcript");
   pane.scrollTop = pane.scrollHeight;
 }
-const pane_scrollBottom = scrollBottom;
+
+// Stick-to-bottom (issue 21): streaming events only autoscroll while the
+// operator is pinned to the bottom (within 48px). Scrolling up unpins until
+// they return; deliberate context switches (selectBot, renderTranscript,
+// visualViewport fit, composer focus) scroll unconditionally and re-pin.
+let transcriptPinned = true;
+document.getElementById("transcript").addEventListener("scroll", () => {
+  const pane = document.getElementById("transcript");
+  transcriptPinned =
+    pane.scrollHeight - pane.scrollTop - pane.clientHeight < 48;
+});
+
+function scrollBottomIfPinned() {
+  if (transcriptPinned) scrollBottom();
+}
 
 function appendEntry(botName, entry) {
   const entries = state.transcripts.get(botName) ?? [];
@@ -373,7 +387,7 @@ function appendEntry(botName, entry) {
       const node = transcriptEl({ ...entry, bot: botName });
       if (node) pane.appendChild(node);
     }
-    scrollBottom();
+    scrollBottomIfPinned();
   }
   const bot = state.fleet.find((candidate) => candidate.name === botName);
   if (bot) bot.latest = entry.text;
@@ -424,7 +438,7 @@ function bubbleWorking(botName, turnId, steps = []) {
   // the operator switches to a bot mid-turn.
   if (botName === state.selected) {
     pane.appendChild(wrap);
-    pane.scrollTop = pane.scrollHeight;
+    scrollBottomIfPinned();
   }
 }
 
@@ -434,7 +448,7 @@ function bubbleSteps(botName, turnId, steps) {
   const existing = record.bubble.querySelector(".steps");
   if (existing) existing.replaceWith(renderSteps(steps));
   else record.bubble.appendChild(renderSteps(steps));
-  if (botName === state.selected) pane_scrollBottom();
+  if (botName === state.selected) scrollBottomIfPinned();
 }
 
 function visibleStreamText(text) {
@@ -458,10 +472,7 @@ function bubbleDelta(botName, turnId, text) {
     record.bubble.appendChild(zone);
   }
   zone.innerHTML = PiMd.render(visibleStreamText(text));
-  if (botName === state.selected) {
-    const pane = document.getElementById("transcript");
-    pane.scrollTop = pane.scrollHeight;
-  }
+  if (botName === state.selected) scrollBottomIfPinned();
 }
 
 function bubbleFinal(botName, turnId) {
@@ -469,10 +480,7 @@ function bubbleFinal(botName, turnId) {
   if (!record) return;
   state.bubbles.delete(`${botName}:${turnId}`);
   record.wrap.remove();
-  if (botName === state.selected) {
-    const pane = document.getElementById("transcript");
-    pane.scrollTop = pane.scrollHeight;
-  }
+  if (botName === state.selected) scrollBottomIfPinned();
 }
 
 function selectBot(name) {

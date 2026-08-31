@@ -14,7 +14,7 @@ import {
 test("registry: upsert by name, resolve, and persistence across restarts", () => {
   const home = mkdtempSync(join(tmpdir(), "ptb-registry-"));
   try {
-    const path = registryPath(home);
+    const path = registryPath(join(home, "home"));
     assert.deepEqual(loadRegistry(path), [], "empty until first start");
 
     const dirA = join(home, "fleets", "a");

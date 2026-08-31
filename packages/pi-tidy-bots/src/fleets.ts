@@ -16,7 +16,11 @@ export interface FleetRecord {
 }
 
 export function registryPath(home = homedir()): string {
-  return join(home, ".pi", "pi-tidy", "fleets.json");
+  // Test/isolation override — mirrors PI_TIDY_BOTS_PI_BIN's env pattern.
+  return (
+    process.env.PI_TIDY_BOTS_REGISTRY ??
+    join(home, ".pi", "pi-tidy", "fleets.json")
+  );
 }
 
 export function loadRegistry(path: string = registryPath()): FleetRecord[] {

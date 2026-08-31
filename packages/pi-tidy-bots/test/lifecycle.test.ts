@@ -18,6 +18,7 @@ import { join } from "node:path";
 const PORT = 4694;
 const cliPath = new URL("../src/cli.ts", import.meta.url).pathname;
 const stubDir = mkdtempSync(join(tmpdir(), "ptb-lifecycle-"));
+process.env.PI_TIDY_BOTS_REGISTRY = join(stubDir, "fleets.json");
 const stub = join(stubDir, "stub-pi.sh");
 writeFileSync(stub, "#!/bin/sh\nexit 1\n");
 spawnSync("chmod", ["+x", stub]);
@@ -99,3 +100,83 @@ test("cleanup", () => {
   rmSync(stubDir, { recursive: true, force: true });
   rmSync(fleetDir, { recursive: true, force: true });
 });
+
+test(
+  "fresh registry + --port 0: readiness reports the OS-assigned port, no orphan",
+  { timeout: 45000 },
+  async () => {
+    const fresh = mkdtempSync(join(tmpdir(), "ptb-lifecycle-fresh-"));
+    mkdirSync(join(fresh, "bots", "alpha"), { recursive: true });
+    writeFileSync(join(fresh, "bots", "alpha", "AGENTS.md"), "# alpha\n");
+    writeFileSync(
+      join(fresh, "bots.toml"),
+      '[[bot]]\nname = "alpha"\ndir = "bots/alpha"\n'
+    );
+
+    // Fresh registry + --port 0 (issue 42 regression): the parent must re-read
+    // the registry until the child reports the OS-assigned port.
+    const start = runCli(["init", fresh, "--json"]);
+    const startFleet = runCli([
+      "start",
+      fresh,
+      "--daemon",
+      "--fleet",
+      "test",
+      "--port",
+      "0",
+      "--json",
+    ]);
+    assert.equal(startFleet.status, 0, `stderr: ${startFleet.stderr}`);
+    const ready = JSON.parse(
+      startFleet.stdout.trim().split("\n").at(-1) ?? "{}"
+    );
+    assert.ok(ready.port > 0, "readiness carries the real assigned port");
+    assert.equal(typeof ready.pid, "number");
+
+    // Registry survived and holds the assigned port.
+    const listing = runCli(["fleets", "--json"]);
+    const fleets = JSON.parse(listing.stdout.trim());
+    const entry = fleets.fleets.find(
+      (f: { name: string }) => f.name === "test"
+    );
+    assert.ok(entry, "fleet registered");
+    assert.equal(entry.port, ready.port);
+
+    // Named status is consistent with the readiness line.
+    const status = runCli(["status", "--fleet", "test", "--json"]);
+    assert.equal(status.status, 0);
+    const state = JSON.parse(status.stdout.trim());
+    assert.equal(state.port, ready.port);
+    assert.equal(state.pid, ready.pid);
+
+    // Graceful stop by name.
+    const stop = runCli(["stop", "--fleet", "test", "--json"]);
+    assert.equal(stop.status, 0);
+    rmSync(fresh, { recursive: true, force: true });
+  }
+);
+
+test(
+  "daemonize readiness timeout kills the child (no orphaned daemon)",
+  { timeout: 30000 },
+  async () => {
+    const broken = mkdtempSync(join(tmpdir(), "ptb-lifecycle-broken-"));
+    // Manifest the daemon will refuse: forces the child to exit fast.
+    writeFileSync(join(broken, "bots.toml"), "not toml {{{");
+    const env = {
+      PI_TIDY_BOTS_DAEMON_READY_MS: "1500",
+      PI_TIDY_BOTS_REGISTRY: join(stubDir, "fleets.json"),
+    };
+    const start = runCli(
+      ["start", broken, "--daemon", "--fleet", "broken", "--json"],
+      env
+    );
+    assert.equal(start.status, 4, "readiness timeout classifies as runtime");
+    assert.match(start.stderr, /did not become ready/);
+    // No orphaned daemon: status must report the fleet as not running.
+    const status = runCli(["status", broken, "--json"]);
+    assert.equal(status.status, 4);
+    assert.match(status.stderr ?? status.stdout, /fleet is not running/);
+    rmSync(broken, { recursive: true, force: true });
+  }
+);

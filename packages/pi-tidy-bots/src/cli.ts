@@ -301,9 +301,16 @@ async function cmdStart(args: Args): Promise<void> {
     typeof args.flags.port === "string" ? Number(args.flags.port) : undefined;
   dir = resolve(args.positional[0] ?? ".");
   if (fleetName) {
-    // Named start: reuse any previously recorded port unless --port overrides.
+    // Named start: reuse a previously recorded port unless --port overrides —
+    // but the manifest port always outranks the registry record.
     const record = resolveFleetRecord(registryPath(), fleetName);
-    if (record && portFlag === undefined) portFlag = record.port;
+    if (!record && args.positional[0] === undefined) {
+      throw new CliError(`unknown fleet "${fleetName}"`, {
+        exitCode: EXIT.usage,
+        remedy: "pi-tidy-bots fleets",
+      });
+    }
+    if (args.positional[0] !== undefined) dir = resolve(args.positional[0]);
   } else {
     const basename = dir.split("/").pop() || dir;
     registerFleet(registryPath(), {
@@ -332,42 +339,83 @@ async function cmdStart(args: Args): Promise<void> {
       env: { ...process.env, PI_TIDY_BOTS_DAEMON_CHILD: "1" },
     });
     child.unref();
-    const port =
-      fleetName && portFlag === 0
-        ? (resolveFleetRecord(registryPath(), fleetName)?.port ?? 0)
-        : portFlag !== undefined
-          ? portFlag
-          : bestEffortPort(dir);
     const host =
       typeof args.flags.host === "string" ? args.flags.host : "127.0.0.1";
-    const url = `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${port}`;
+    const displayHost = host === "0.0.0.0" ? "127.0.0.1" : host;
     const token = readStoredToken(dir);
-    const ready = await waitForReady(async () => {
-      try {
-        const res = await fetch(`${url}/api/fleet`, {
-          headers: token ? { authorization: `Bearer ${token}` } : {},
-        });
-        return res.status === 200 || res.status === 401;
-      } catch {
-        return false;
+    const readyMs = Number(process.env.PI_TIDY_BOTS_DAEMON_READY_MS ?? "15000");
+
+    // Issue 42 regression fix: with --port 0 the OS-assigned port is unknown
+    // until the child reports it into the registry — the readiness poll MUST
+    // re-read the registry every iteration instead of resolving once pre-boot.
+    let readyUrl = "";
+    let readyPort = 0;
+    let ready = false;
+    const expectedDir = resolve(dir);
+    const deadline = Date.now() + readyMs;
+    for (;;) {
+      // A dead child can never become ready — bail instead of burning the
+      // whole timeout window.
+      if (child.pid && !pidAlive(child.pid)) break;
+      const record = fleetName
+        ? resolveFleetRecord(registryPath(), fleetName)
+        : undefined;
+      const port =
+        record?.port ??
+        (portFlag !== undefined ? portFlag : bestEffortPort(dir));
+      if (port) {
+        const url = `http://${displayHost}:${port}`;
+        try {
+          // Identity check against /api/version: a DIFFERENT daemon on this
+          // port must never satisfy our readiness (issue 42 orphan repro).
+          const res = await fetch(`${url}/api/version`);
+          if (res.ok) {
+            const payload = (await res.json()) as { fleetDir?: string };
+            if (payload.fleetDir && resolve(payload.fleetDir) === expectedDir) {
+              readyUrl = url;
+              readyPort = port;
+              ready = true;
+              break;
+            }
+          }
+        } catch {
+          // Not serving yet — keep polling.
+        }
       }
-    }, 15000);
+      if (Date.now() >= deadline) break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
     if (!ready) {
+      // Never leave an orphaned daemon behind a failed readiness wait.
+      try {
+        if (child.pid) process.kill(child.pid, "SIGTERM");
+      } catch {
+        // Already gone.
+      }
+      const reaped = await waitForReady(
+        () => child.pid === undefined || !pidAlive(child.pid),
+        3000,
+        100
+      );
       throw new CliError(
-        `daemonized fleet did not become ready within 15s — log: ${logFile}`,
+        `daemonized fleet did not become ready within ${Math.round(readyMs / 1000)}s${
+          reaped ? "" : " (child kill signaled)"
+        } — log: ${logFile}`,
         { exitCode: EXIT.runtime, remedy: `inspect ${logFile}` }
       );
     }
     const pid = readDaemonPid(dir) ?? child.pid ?? 0;
     if (json) {
-      console.log(JSON.stringify(startReadinessPayload(url, port, pid, token)));
+      console.log(
+        JSON.stringify(startReadinessPayload(readyUrl, readyPort, pid, token))
+      );
     } else {
       console.log(
-        `daemon started: pid ${pid} · ${url}${token ? " (token required)" : ""}`
+        `daemon started: pid ${pid} · ${readyUrl}${token ? " (token required)" : ""}`
       );
       console.log(`log: ${logFile}`);
     }
-    process.exit(ready ? EXIT.ok : EXIT.runtime);
+    process.exit(EXIT.ok);
   }
 
   const wantsQr = args.flags.qr === true;

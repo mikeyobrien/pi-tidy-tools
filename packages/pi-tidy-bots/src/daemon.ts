@@ -232,6 +232,20 @@ export function coerceMessageImages(
   };
 }
 
+/**
+ * WS upgrade auth: `Authorization: Bearer <token>` or `?token=` — mirrors the
+ * HTTP authorized() check so native clients can authenticate like browsers.
+ */
+export function wsUpgradeAuthorized(
+  request: { headers: { authorization?: string | undefined } },
+  url: URL,
+  token: string | undefined
+): boolean {
+  if (!token) return true;
+  if (url.searchParams.get("token") === token) return true;
+  return (request.headers.authorization ?? "") === `Bearer ${token}`;
+}
+
 export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
   const log = options.log ?? ((line: string) => console.log(line));
   const fleet: FleetConfig = loadFleetConfig(options.dir, {
@@ -1171,7 +1185,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       socket.destroy();
       return;
     }
-    if (token && url.searchParams.get("token") !== token) {
+    if (!wsUpgradeAuthorized(request, url, token)) {
       socket.destroy();
       return;
     }

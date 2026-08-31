@@ -55,3 +55,31 @@ test("coerceMessageImages rejects multi, empty, and malformed payloads", () => {
   assert.equal(coerceMessageImages(["nope"]).ok, false);
   assert.equal(coerceMessageImages("image.png").ok, false);
 });
+
+test("wsUpgradeAuthorized accepts bearer header and query param", async () => {
+  const { wsUpgradeAuthorized } = await import("../src/daemon.ts");
+  const url = (q: string) => new URL(`http://x/api/ws${q}`);
+  const req = (auth?: string) => ({ headers: { authorization: auth } });
+  // No token configured: everything is allowed.
+  assert.equal(
+    wsUpgradeAuthorized(req(), url("?token=wrong"), undefined),
+    true
+  );
+  assert.equal(wsUpgradeAuthorized(req(), url(""), undefined), true);
+  // Query param (browser idiom).
+  assert.equal(
+    wsUpgradeAuthorized(req(), url("?token=sekret"), "sekret"),
+    true
+  );
+  assert.equal(wsUpgradeAuthorized(req(), url("?token=nope"), "sekret"), false);
+  // Bearer header (native client idiom).
+  assert.equal(
+    wsUpgradeAuthorized(req("Bearer sekret"), url(""), "sekret"),
+    true
+  );
+  assert.equal(
+    wsUpgradeAuthorized(req("Bearer nope"), url(""), "sekret"),
+    false
+  );
+  assert.equal(wsUpgradeAuthorized(req(), url(""), "sekret"), false);
+});

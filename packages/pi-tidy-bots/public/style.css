@@ -823,3 +823,36 @@ body {
   padding: 6px 8px;
   font: inherit;
 }
+
+/* ── Ordered turn parts (issue 37) ──────────────────── */
+.parts-zone {
+  display: grid;
+  gap: 8px;
+}
+.toolgroup {
+  margin-top: 4px;
+}
+.toolgroup-badge {
+  all: unset;
+  cursor: pointer;
+  display: block;
+  width: 100%;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 4px 2px;
+}
+.toolgroup-badge:hover {
+  color: var(--text);
+}
+.toolgroup-parts {
+  display: grid;
+  gap: 4px;
+}
+.toolgroup-parts .step {
+  padding-left: 10px;
+}
+.step-counts {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 6px;
+}

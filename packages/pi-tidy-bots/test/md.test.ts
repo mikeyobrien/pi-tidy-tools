@@ -69,3 +69,44 @@ test("renderInline keeps pills inline: links yes, images no", async () => {
   // Raw html still escapes.
   assert.ok(!renderInline("<b>x</b>").includes("<b>"));
 });
+
+test("parts helpers: grouping, badges — browser script contract", async () => {
+  // @ts-expect-error browser-global script, intentionally untyped
+  await import("../public/parts.js");
+  const { groupConsecutiveTools, summarizeToolGroup } = (globalThis as any)
+    .Parts;
+  const parts = [
+    { type: "text", text: "checking" },
+    { type: "tool", toolCallId: "1", tool: "bash", label: "ls", status: "ok" },
+    {
+      type: "tool",
+      toolCallId: "2",
+      tool: "edit",
+      label: "x.md",
+      status: "error",
+    },
+    { type: "text", text: "done" },
+    {
+      type: "tool",
+      toolCallId: "3",
+      tool: "bash",
+      label: "tail",
+      status: "running",
+    },
+  ];
+  const groups = groupConsecutiveTools(parts);
+  assert.equal(groups.length, 4);
+  assert.equal(groups[0].type, "text");
+  assert.equal(groups[1].type, "toolgroup");
+  if (groups[1].type === "toolgroup") {
+    assert.deepEqual(
+      groups[1].tools.map((t: { toolCallId: string }) => t.toolCallId),
+      ["1", "2"]
+    );
+    assert.equal(
+      summarizeToolGroup(groups[1].tools as { status: string }[]),
+      "2 tools · 1 ok · 1 err"
+    );
+  }
+  assert.equal(groups[3].type, "toolgroup");
+});

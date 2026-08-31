@@ -217,7 +217,19 @@ function transcriptEl(entry) {
   const bubble = el("div", "bubble");
   // Markdown boundary: md.js escapes before rendering, so innerHTML here cannot
   // execute model-supplied HTML. Source lines stay plain text.
-  if (entry.role === "assistant" || entry.role === "user") {
+  if (entry.parts) {
+    // Issue 37: settled turns carry ordered parts — render in order with
+    // collapsed tool groups (one-line badges, click to expand).
+    for (const group of Parts.groupConsecutiveTools(entry.parts)) {
+      if (group.type === "text") {
+        const body = el("span", "md-body");
+        body.innerHTML = PiMd.render(group.text);
+        bubble.appendChild(body);
+      } else {
+        bubble.appendChild(renderPartGroup(group, false));
+      }
+    }
+  } else if (entry.role === "assistant" || entry.role === "user") {
     const body = el("span", "md-body");
     body.innerHTML = PiMd.render(entry.text);
     bubble.appendChild(body);
@@ -494,6 +506,15 @@ function appendEntry(botName, entry) {
 
 function renderSteps(steps) {
   if (state.toolOutput === "off") return null;
+  if (state.toolOutput === "counts") {
+    // Disclosure tier between off and reasons: badge only, no args, no output.
+    const ok = steps.filter((s) => !s.error).length;
+    const err = steps.length - ok;
+    const bits = [`${steps.length} ${steps.length === 1 ? "tool" : "tools"}`];
+    if (ok > 0) bits.push(`${ok} ok`);
+    if (err > 0) bits.push(`${err} err`);
+    return el("div", "step-counts", bits.join(" · "));
+  }
   const list = el("div", "steps");
   for (const step of steps) {
     const row = el("div", "step");
@@ -578,6 +599,80 @@ function bubbleFinal(botName, turnId) {
   if (!record) return;
   state.bubbles.delete(`${botName}:${turnId}`);
   record.wrap.remove();
+  if (botName === state.selected) scrollBottomIfPinned();
+}
+
+// ── Ordered turn parts (issue 37, t3code model) ──────
+// A bubble's content is an ordered part list; consecutive tools collapse
+// under a count-badge block (one line per doctrine), text streams via PiMd.
+
+function partGroupSummary(tools) {
+  return Parts.summarizeToolGroup(tools);
+}
+
+function renderPartGroup(group, expanded) {
+  const block = el("div", "toolgroup");
+  const badge = el(
+    "button",
+    "toolgroup-badge",
+    `▸ ${partGroupSummary(group.tools)}`
+  );
+  badge.setAttribute("aria-expanded", String(expanded));
+  block.appendChild(badge);
+  const list = el("div", "toolgroup-parts");
+  list.hidden = !expanded;
+  for (const tool of group.tools) {
+    const row = el("div", "step");
+    row.appendChild(
+      el("span", "step-check", tool.status === "error" ? "✕" : "✓")
+    );
+    row.appendChild(
+      el(
+        "span",
+        "step-name",
+        tool.label ? `${tool.tool} — ${tool.label}` : tool.tool
+      )
+    );
+    if (tool.duration !== undefined)
+      row.appendChild(el("span", "step-dur", `${tool.duration} ms`));
+    if (state.toolOutput === "full" && tool.output) {
+      row.appendChild(el("pre", "step-output", tool.output.slice(0, 1200)));
+    }
+    if (tool.status === "error")
+      row.appendChild(el("div", "step-error", "✕ failed"));
+    list.appendChild(row);
+  }
+  block.appendChild(list);
+  badge.addEventListener("click", () => {
+    const on = !list.hidden;
+    list.hidden = !on;
+    badge.setAttribute("aria-expanded", String(on));
+    badge.textContent = `${on ? "▾" : "▸"} ${partGroupSummary(group.tools)}`;
+  });
+  return block;
+}
+
+function bubbleParts(botName, turnId, parts) {
+  const record = state.bubbles.get(`${botName}:${turnId}`);
+  if (!record) return;
+  const working = record.bubble.querySelector(".working");
+  if (working) working.remove();
+  let zone = record.bubble.querySelector(".parts-zone");
+  if (!zone) {
+    zone = el("div", "parts-zone");
+    record.bubble.appendChild(zone);
+  }
+  zone.textContent = "";
+  for (const group of Parts.groupConsecutiveTools(parts)) {
+    if (group.type === "text") {
+      const body = el("div", "md-body");
+      body.innerHTML = PiMd.render(visibleStreamText(group.text));
+      zone.appendChild(body);
+    } else {
+      const expanded = group.tools.some((t) => t.status === "running");
+      zone.appendChild(renderPartGroup(group, expanded));
+    }
+  }
   if (botName === state.selected) scrollBottomIfPinned();
 }
 
@@ -676,6 +771,8 @@ function connectSocket() {
       case "bubble":
         if (message.phase === "working")
           bubbleWorking(message.bot, message.turnId, message.steps ?? []);
+        if (message.phase === "parts")
+          bubbleParts(message.bot, message.turnId, message.parts ?? []);
         if (message.phase === "steps")
           bubbleSteps(message.bot, message.turnId, message.steps ?? []);
         if (message.phase === "delta")
@@ -718,7 +815,7 @@ if (settingsButton && settingsPanel) {
     if (settingsPanel.hidden) return;
     settingsPanel.textContent = "";
     settingsPanel.appendChild(el("div", "settings-title", "Tool output"));
-    for (const mode of ["off", "reasons", "full"]) {
+    for (const mode of ["off", "counts", "reasons", "full"]) {
       const option = el(
         "button",
         state.toolOutput === mode ? "primary" : "",

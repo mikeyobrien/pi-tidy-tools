@@ -23,6 +23,7 @@ export const CAPABILITIES = [
   "steer",
   "followUp",
   "ws-auth-bearer",
+  "turn-parts",
 ] as const;
 
 export const VersionResponseSchema = Type.Object({
@@ -95,6 +96,28 @@ export const AppendPayloadSchema = Type.Object({
   entry: TranscriptEntrySchema,
 });
 
+export const TextPartSchema = Type.Object({
+  type: Type.Literal("text"),
+  text: Type.String(),
+});
+
+export const ToolPartSchema = Type.Object({
+  type: Type.Literal("tool"),
+  toolCallId: Type.String(),
+  tool: Type.String(),
+  label: Type.Optional(Type.String()),
+  reason: Type.Optional(Type.String()),
+  status: Type.Union([
+    Type.Literal("running"),
+    Type.Literal("ok"),
+    Type.Literal("error"),
+  ]),
+  duration: Type.Optional(Type.Number()),
+  output: Type.Optional(Type.String()),
+});
+
+export const TurnPartSchema = Type.Union([TextPartSchema, ToolPartSchema]);
+
 export const BubblePayloadSchema = Type.Object({
   type: Type.Literal("bubble"),
   bot: Type.String(),
@@ -102,11 +125,13 @@ export const BubblePayloadSchema = Type.Object({
   phase: Type.Union([
     Type.Literal("working"),
     Type.Literal("steps"),
+    Type.Literal("parts"),
     Type.Literal("delta"),
     Type.Literal("final"),
   ]),
   text: Type.Optional(Type.String()),
   steps: Type.Optional(Type.Array(TranscriptStepSchema)),
+  parts: Type.Optional(Type.Array(TurnPartSchema)),
 });
 
 export const ConfigPayloadSchema = Type.Object({

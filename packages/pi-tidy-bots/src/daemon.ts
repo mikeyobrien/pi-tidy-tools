@@ -48,6 +48,7 @@ import {
   paginateTranscript,
 } from "./transcripts.ts";
 import { createPendingStore, type PendingMessage } from "./pending.ts";
+import { TurnPartsAccumulator, type TurnPart } from "./turnparts.ts";
 import { versionPayload } from "./contract.ts";
 
 export interface TranscriptEntry {
@@ -63,6 +64,8 @@ export interface TranscriptEntry {
   delivering?: boolean;
   /** Set when delivery failed for good — rendered as a visible failure. */
   deliveryError?: string;
+  /** Issue 37: ordered text/tool parts for the settled turn. */
+  parts?: TurnPart[];
   ui?: UiRequestView;
   uiResolved?: { id: string; value: string; auto: boolean };
 }
@@ -91,6 +94,8 @@ interface BotRuntime {
   // current turn — null until the first eligible emission.
   deltaSent: { at: number; chars: number } | null;
   turnText: string;
+  /** Issue 37: ordered text/tool parts for the in-flight turn. */
+  turnParts: TurnPartsAccumulator;
   // Known limit: covers daemon-issued prompts only (routing, composer,
   // routines). Follow-ups queued inside the child by extensions are invisible
   // to the daemon — acceptable; operator-visible cases are all daemon-issued.
@@ -403,6 +408,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     turnId: null,
     deltaSent: null,
     turnText: "",
+    turnParts: new TurnPartsAccumulator(),
     queuedCount: 0,
     clientMessageIds: new Set<string>(),
     steps: [],
@@ -766,6 +772,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         runtime.turnId = randomUUID();
         runtime.turnText = "";
         runtime.steps = [];
+        runtime.turnParts = new TurnPartsAccumulator();
         runtime.deltaSent = null;
         emit({
           type: "bubble",
@@ -777,12 +784,25 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         return;
       }
       case "tool_start": {
+        runtime.turnParts.startTool({
+          toolCallId: event.toolCallId,
+          tool: event.toolName,
+          label: event.label,
+          reason: event.reason,
+        });
         runtime.steps.push({
           toolCallId: event.toolCallId,
           name: event.toolName,
           reason: event.reason,
           ...(event.label ? { label: event.label } : {}),
           started: Date.now(),
+        });
+        emit({
+          type: "bubble",
+          bot: botName,
+          turnId: runtime.turnId,
+          phase: "parts",
+          parts: runtime.turnParts.snapshot(),
         });
         if (activeToolOutput !== "off") {
           emit({
@@ -796,6 +816,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         return;
       }
       case "tool_output": {
+        runtime.turnParts.updateToolOutput(event.toolCallId, event.text);
         const step = [...runtime.steps]
           .reverse()
           .find((candidate) => candidate.toolCallId === event.toolCallId);
@@ -815,6 +836,12 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         const step = [...runtime.steps]
           .reverse()
           .find((candidate) => candidate.toolCallId === event.toolCallId);
+        const duration = step ? Date.now() - step.started : undefined;
+        runtime.turnParts.settleTool(event.toolCallId, {
+          isError: event.isError,
+          duration,
+          output: event.text,
+        });
         if (step) {
           step.output = event.text.slice(0, 1200);
           step.error = event.isError;
@@ -832,6 +859,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       }
       case "assistant_delta": {
         runtime.turnText += event.delta;
+        runtime.turnParts.appendText(event.delta);
         const text = stripActionMarkers(runtime.turnText);
         // Throttle: emit at most every ~300ms or ~256 bytes of growth. Frames
         // are cumulative, so dropped frames lose nothing; the settle path
@@ -850,6 +878,13 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
             // until its closing ]] arrives — the grammar is line-based.
             text,
           });
+          emit({
+            type: "bubble",
+            bot: botName,
+            turnId: runtime.turnId,
+            phase: "parts",
+            parts: runtime.turnParts.snapshot(),
+          });
         }
         return;
       }
@@ -867,6 +902,13 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           phase: "delta",
           text: stripActionMarkers(runtime.turnText),
         });
+        emit({
+          type: "bubble",
+          bot: botName,
+          turnId: runtime.turnId,
+          phase: "parts",
+          parts: runtime.turnParts.snapshot(),
+        });
         return;
       }
       case "agent_settled": {
@@ -880,6 +922,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           originFrom: botName,
           text,
           ts: new Date().toISOString(),
+          parts: runtime.turnParts.snapshot(),
           ...(runtime.steps.length > 0
             ? {
                 steps: runtime.steps.map((step) => ({
@@ -1612,7 +1655,8 @@ function buildHttpServer(deps: ServerDeps): Hono {
     if (
       url.pathname === "/app.js" ||
       url.pathname === "/style.css" ||
-      url.pathname === "/md.js"
+      url.pathname === "/md.js" ||
+      url.pathname === "/parts.js"
     ) {
       await next();
       return;
@@ -1637,6 +1681,7 @@ function buildHttpServer(deps: ServerDeps): Hono {
   app.get("/console", serveAsset("index.html", "text/html"));
   app.get("/app.js", serveAsset("app.js", "text/javascript"));
   app.get("/md.js", serveAsset("md.js", "text/javascript"));
+  app.get("/parts.js", serveAsset("parts.js", "text/javascript"));
   app.get("/style.css", serveAsset("style.css", "text/css"));
 
   app.get("/api/fleet", (context) => {
@@ -1667,10 +1712,10 @@ function buildHttpServer(deps: ServerDeps): Hono {
     };
     if (
       !body.toolOutput ||
-      !["off", "reasons", "full"].includes(body.toolOutput)
+      !["off", "counts", "reasons", "full"].includes(body.toolOutput)
     ) {
       return context.json(
-        { error: "toolOutput must be off|reasons|full" },
+        { error: "toolOutput must be off|counts|reasons|full" },
         400
       );
     }

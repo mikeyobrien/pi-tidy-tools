@@ -31,8 +31,13 @@ export class ConfigError extends Error {}
 export const NAME_PATTERN = /^[a-z][a-z0-9-]{1,31}$/;
 const DEFAULT_PORT = 4317;
 
-export type ToolOutputMode = "off" | "reasons" | "full";
-const TOOL_OUTPUT_MODES: ToolOutputMode[] = ["off", "reasons", "full"];
+export type ToolOutputMode = "off" | "counts" | "reasons" | "full";
+const TOOL_OUTPUT_MODES: ToolOutputMode[] = [
+  "off",
+  "counts",
+  "reasons",
+  "full",
+];
 
 /** Normalize a tool-output preference; unknown values fall back to "reasons". */
 export function normalizeToolOutput(value: unknown): ToolOutputMode {

@@ -122,6 +122,7 @@ function renderRoster() {
 }
 
 function transcriptEl(entry) {
+  if (entry.ui) return uiRequestEl(entry);
   if (entry.role === "user" && entry.source && entry.source.startsWith("🤖")) {
     const wrap = el("div", "entry routing");
     const pill = el("div", "routing-pill");
@@ -168,6 +169,119 @@ function transcriptEl(entry) {
     bubble.appendChild(bar);
   }
   return wrap;
+}
+
+function resolvedUiFor(entry, botName) {
+  const entries = state.transcripts.get(botName) ?? [];
+  const hit = entries.find(
+    (candidate) =>
+      candidate.uiResolved && candidate.uiResolved.id === entry.ui.id
+  );
+  return hit ? hit.uiResolved : null;
+}
+
+function uiRequestEl(entry) {
+  const ui = entry.ui;
+  const resolved = resolvedUiFor(entry, entry.bot);
+  const wrap = el("div", "entry system");
+  const card = el("div", resolved ? "ui-card resolved" : "ui-card");
+  card.id = `ui-${ui.id}`;
+  card.appendChild(el("div", "source", `❓ ${ui.title}`));
+  if (ui.message) card.appendChild(el("div", "ui-message", ui.message));
+  if (resolved) {
+    card.appendChild(
+      el(
+        "div",
+        "ui-answer",
+        `Answered: ${resolved.value}${resolved.auto ? " (auto)" : ""}`
+      )
+    );
+  } else {
+    const actions = el("div", "ui-actions");
+    if (ui.method === "select" && ui.options?.length) {
+      ui.options.forEach((option) => {
+        const button = el("button", "primary", option);
+        button.addEventListener("click", () =>
+          answerUiCard(entry.bot, ui.id, { value: option }, actions)
+        );
+        actions.appendChild(button);
+      });
+    } else if (ui.method === "confirm") {
+      const yes = el("button", "primary", "Confirm");
+      yes.addEventListener("click", () =>
+        answerUiCard(entry.bot, ui.id, { confirmed: true }, actions)
+      );
+      const no = el("button", null, "Decline");
+      no.addEventListener("click", () =>
+        answerUiCard(entry.bot, ui.id, { confirmed: false }, actions)
+      );
+      actions.appendChild(yes);
+      actions.appendChild(no);
+    } else if (ui.method === "input") {
+      const input = el("input", "ui-input");
+      input.placeholder = ui.placeholder || "Type an answer";
+      const send = el("button", "primary", "Send");
+      const submit = () => {
+        const value = input.value.trim();
+        if (value) answerUiCard(entry.bot, ui.id, { value }, actions);
+      };
+      send.addEventListener("click", submit);
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") submit();
+      });
+      actions.appendChild(input);
+      actions.appendChild(send);
+    } else {
+      card.appendChild(
+        el(
+          "div",
+          "ui-message",
+          "Editor questions aren't supported in the console yet."
+        )
+      );
+      const cancel = el("button", null, "Cancel");
+      cancel.addEventListener("click", () =>
+        answerUiCard(entry.bot, ui.id, { cancel: true }, actions)
+      );
+      actions.appendChild(cancel);
+    }
+    card.appendChild(actions);
+  }
+  wrap.appendChild(card);
+  wrap.appendChild(
+    el(
+      "div",
+      "meta left",
+      new Date(entry.ts).toLocaleTimeString([], {
+        hour: "numeric",
+        minute: "2-digit",
+      })
+    )
+  );
+  return wrap;
+}
+
+async function answerUiCard(bot, uiId, body, actions) {
+  [...actions.querySelectorAll("button, input")].forEach(
+    (node) => (node.disabled = true)
+  );
+  const result = await api(`/api/bots/${bot}/ui/${uiId}`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  }).catch(() => null);
+  if (!result || result.accepted !== true) {
+    const reason =
+      (result && (result.error || result.reason)) || "not delivered";
+    appendEntry(bot, {
+      id: uid(),
+      role: "system",
+      text: `Answer refused — ${reason}.`,
+      ts: new Date().toISOString(),
+    });
+    [...actions.querySelectorAll("button, input")].forEach(
+      (node) => (node.disabled = false)
+    );
+  }
 }
 
 async function runAction(bot, action, bar) {
@@ -221,8 +335,18 @@ function appendEntry(botName, entry) {
   state.transcripts.set(botName, entries);
   if (botName === state.selected) {
     const pane = document.getElementById("transcript");
-    const node = transcriptEl({ ...entry, bot: botName });
-    if (node) pane.appendChild(node);
+    if (entry.uiResolved) {
+      // Re-render the originating question card in its resolved state.
+      const request = entries.find(
+        (candidate) => candidate.ui && candidate.ui.id === entry.uiResolved.id
+      );
+      const existing = document.getElementById(`ui-${entry.uiResolved.id}`);
+      if (request && existing)
+        existing.replaceWith(transcriptEl({ ...request, bot: botName }));
+    } else {
+      const node = transcriptEl({ ...entry, bot: botName });
+      if (node) pane.appendChild(node);
+    }
     scrollBottom();
   }
   const bot = state.fleet.find((candidate) => candidate.name === botName);

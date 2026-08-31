@@ -1,7 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { networkInterfaces } from "node:os";
 import { startFleet } from "./daemon.ts";
+import {
+  buildPairingUrl,
+  ensureStoredToken,
+  pickLanIp,
+  resolvePairingTarget,
+  rotateStoredToken,
+} from "./pairing.ts";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
@@ -18,7 +26,8 @@ function parseArgs(argv: string[]): Args {
     if (arg.startsWith("--")) {
       const key = arg.slice(2);
       const next = argv[index + 1];
-      if (next !== undefined && !next.startsWith("--")) {
+      const boolean = key === "qr" || key === "rotate-token";
+      if (!boolean && next !== undefined && !next.startsWith("--")) {
         flags[key] = next;
         index++;
       } else {
@@ -42,6 +51,8 @@ Start flags:
   --port <n>        Web UI port (default 4317, or [fleet] port in bots.toml)
   --host <addr>     Bind address (default 127.0.0.1; use 0.0.0.0 for tailnet/LAN, token auth auto-enables)
   --token <token>   Opt-in access token for the web UI (off by default — secure via your network instead)
+  --qr              Print a terminal QR pairing the phone console (LAN IP + token)
+  --rotate-token    Regenerate the stored fleet token (.fleet/token) before starting
   --tool-output <m> Tool output visibility in the console: off | reasons | full (default reasons)
   --bot <name>      Chat client: start with this bot selected
   --url <url>       Chat client: fleet daemon URL (default http://127.0.0.1:4317)
@@ -117,14 +128,45 @@ function cmdInit(fleetDirArg: string | undefined): never {
   process.exit(0);
 }
 
+function lanAddresses() {
+  const out: { address: string; family: string; internal: boolean }[] = [];
+  for (const addresses of Object.values(networkInterfaces())) {
+    for (const a of addresses ?? []) {
+      // Node reports family as either "IPv4" or 4 depending on version.
+      out.push({
+        address: a.address,
+        family: String(a.family),
+        internal: a.internal,
+      });
+    }
+  }
+  return out;
+}
+
 async function cmdStart(args: Args): Promise<void> {
   const dir = resolve(args.positional[0] ?? ".");
+  const wantsQr = args.flags.qr === true;
+  const wantsRotate = args.flags["rotate-token"] === true;
+  const explicitToken =
+    typeof args.flags.token === "string" ? args.flags.token : undefined;
+
+  // Token resolution: --rotate-token mints a fresh stored token; --token
+  // persists an explicit one; --qr without either generates + stores one so
+  // pairing always authenticates. Plain start stays as today.
+  let resolvedToken: string | undefined;
+  if (wantsRotate) {
+    resolvedToken = rotateStoredToken(dir);
+    console.log(`rotated fleet token: ${resolvedToken}`);
+  } else if (explicitToken || wantsQr) {
+    resolvedToken = ensureStoredToken(dir, explicitToken, wantsQr).token;
+  }
+
   const handle = await startFleet({
     dir,
     port:
       typeof args.flags.port === "string" ? Number(args.flags.port) : undefined,
     host: typeof args.flags.host === "string" ? args.flags.host : undefined,
-    token: typeof args.flags.token === "string" ? args.flags.token : undefined,
+    token: resolvedToken,
     toolOutput:
       typeof args.flags["tool-output"] === "string"
         ? (args.flags["tool-output"] as any)
@@ -136,6 +178,23 @@ async function cmdStart(args: Args): Promise<void> {
     `\npi-tidy-bots ready: ${handle.url}${displayToken ? `/?token=${displayToken}` : ""}`
   );
   if (displayToken) console.log(`token: ${displayToken}`);
+  if (wantsQr && displayToken) {
+    const port = Number(new URL(handle.url).port);
+    const host =
+      typeof args.flags.host === "string" ? args.flags.host : "127.0.0.1";
+    const lanIp = pickLanIp({ addresses: lanAddresses() });
+    const target = resolvePairingTarget(host, lanIp);
+    if (!target.ok) {
+      console.log(`qr: skipped — ${target.reason}`);
+    } else {
+      const url = buildPairingUrl(target.ip, port, displayToken);
+      const { renderUnicode } = await import("uqr");
+      console.log(
+        `\nscan to open the console on your phone:\n\n${renderUnicode(url)}`
+      );
+      console.log(url);
+    }
+  }
   console.log(
     "Ctrl-C stops the fleet. Sessions persist under .fleet/sessions/.\n"
   );

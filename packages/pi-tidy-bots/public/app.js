@@ -1,8 +1,14 @@
 /* pi-tidy-bots fleet console — no-build vanilla JS (rho stack pattern). */
 "use strict";
 
+const hashParams = new URLSearchParams(location.hash.slice(1));
 const state = {
-  token: new URLSearchParams(location.search).get("token") ?? "",
+  // Pairing URLs carry the token in the hash fragment (never sent to server);
+  // browser links keep using ?token=.
+  token:
+    hashParams.get("token") ??
+    new URLSearchParams(location.search).get("token") ??
+    "",
   bootId: localStorage.getItem("fleet-boot") ?? "",
   lastSeq: Number(localStorage.getItem("fleet-seq") ?? "0"),
   toolOutput: "reasons",

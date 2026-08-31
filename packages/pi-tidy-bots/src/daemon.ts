@@ -554,7 +554,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       role: "user",
       origin: "routine",
       originFrom: routine.name,
-      text: routine.prompt,
+      text: stripActionMarkers(routine.prompt),
       ts: new Date().toISOString(),
     };
     const busy = runtime.session.streaming;
@@ -693,7 +693,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
             role,
             origin,
             ...(originFrom ? { originFrom } : {}),
-            text: role === "assistant" ? stripActionMarkers(body) : body,
+            text: stripActionMarkers(body),
             ts: new Date(Number(message.timestamp) || Date.now()).toISOString(),
           };
         })
@@ -983,7 +983,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
                 role: "user",
                 origin: "bot",
                 originFrom: botName,
-                text: text,
+                text,
                 ts: new Date().toISOString(),
               });
               touch(source);
@@ -1182,7 +1182,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       role: "user",
       origin: "bot",
       originFrom: fromName,
-      text: message.trim(),
+      text: stripActionMarkers(message.trim()),
       ts: new Date().toISOString(),
     };
     const attempt = async (): Promise<void> => {
@@ -1338,7 +1338,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           role: "user",
           origin: "operator",
           delivering: true,
-          text,
+          text: stripActionMarkers(text),
           ts: new Date().toISOString(),
         };
         try {

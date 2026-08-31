@@ -153,6 +153,15 @@ function renderRoster() {
   updateComposerTargetDot();
 }
 
+// Issue 40: quiet pill timestamps refresh in place — tabular-nums + fixed
+// min-width keep the row from moving (scroll doctrine P12).
+function refreshRoutingTimestamps() {
+  document.querySelectorAll(".routing-ts[data-ts]").forEach((node) => {
+    node.textContent = `· ${Parts.relativeTime(node.dataset.ts)}`;
+  });
+}
+setInterval(refreshRoutingTimestamps, 60_000);
+
 function transcriptEl(entry) {
   if (entry.ui) return uiRequestEl(entry);
   if (entry.role === "user" && entry.origin === "bot") {
@@ -170,9 +179,16 @@ function transcriptEl(entry) {
     const pillText = el("span", "routing-text");
     pillText.innerHTML = PiMd.renderInline(entry.text);
     pill.appendChild(pillText);
+    const chip = el("span", "routing-ts", `· ${Parts.relativeTime(entry.ts)}`);
+    chip.title = Parts.absoluteTime(entry.ts);
+    chip.dataset.ts = entry.ts;
+    pill.appendChild(chip);
     card.appendChild(pill);
 
     const expanded = el("div", "routing-expanded");
+    expanded.appendChild(
+      el("div", "routing-expanded-ts", Parts.absoluteTime(entry.ts))
+    );
     const body = el("div", "routing-expanded-body md-body");
     body.innerHTML = PiMd.render(entry.text);
     expanded.appendChild(body);

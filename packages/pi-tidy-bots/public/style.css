@@ -417,6 +417,19 @@ body {
 .routing-pill .names {
   color: var(--text);
 }
+.routing-ts {
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  min-width: 5ch;
+  text-align: right;
+  margin-left: auto;
+  white-space: nowrap;
+}
+.routing-expanded-ts {
+  color: var(--muted);
+  font-size: 11px;
+}
 
 /* ── Routing pill expand (issue 35) ─────────────────── */
 .routing-card {

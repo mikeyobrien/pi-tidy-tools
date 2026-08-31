@@ -110,3 +110,30 @@ test("parts helpers: grouping, badges — browser script contract", async () => 
   }
   assert.equal(groups[3].type, "toolgroup");
 });
+
+test("relativeTime rounds now/Nm/Nh/Nd and goes absolute past 7d", async () => {
+  // @ts-expect-error browser-global script, intentionally untyped
+  await import("../public/parts.js");
+  const { relativeTime, absoluteTime } = (globalThis as any).Parts;
+  const now = Date.UTC(2026, 7, 31, 12, 0, 0);
+  const at = (minutes: number, seconds = 0) =>
+    new Date(now - (minutes * 60 + seconds) * 1000).toISOString();
+  assert.equal(relativeTime(at(0, 10), now), "now");
+  assert.equal(relativeTime(at(12), now), "12m");
+  assert.equal(relativeTime(at(90), now), "1h");
+  assert.equal(relativeTime(at(60 * 5), now), "5h");
+  assert.equal(relativeTime(at(60 * 30), now), "1d");
+  assert.equal(relativeTime(at(60 * 24 * 3), now), "3d");
+  // Past 7d: absolute locale date — assert against the same call the
+  // helper makes, keeping the test locale-independent.
+  const nineDaysAgo = at(60 * 24 * 9);
+  assert.equal(
+    relativeTime(nineDaysAgo, now),
+    new Date(nineDaysAgo).toLocaleDateString([], {
+      month: "short",
+      day: "numeric",
+    })
+  );
+  assert.equal(absoluteTime("not-a-date"), "");
+  assert.match(absoluteTime(at(5)), /\d/);
+});

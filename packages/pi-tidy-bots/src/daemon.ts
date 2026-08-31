@@ -246,6 +246,19 @@ export function wsUpgradeAuthorized(
   return (request.headers.authorization ?? "") === `Bearer ${token}`;
 }
 
+/** HTTP 401 frame completed onto a rejected WS upgrade socket. */
+export const WS_AUTH_FAILURE_RESPONSE =
+  "HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+
+/** Bad WS token: answer with HTTP 401 (so clients see auth failure, not a dead socket). */
+export function writeWsAuthFailure(socket: {
+  write: (chunk: string) => void;
+  destroy: () => void;
+}): void {
+  socket.write(WS_AUTH_FAILURE_RESPONSE);
+  socket.destroy();
+}
+
 export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
   const log = options.log ?? ((line: string) => console.log(line));
   const fleet: FleetConfig = loadFleetConfig(options.dir, {
@@ -1186,7 +1199,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       return;
     }
     if (!wsUpgradeAuthorized(request, url, token)) {
-      socket.destroy();
+      writeWsAuthFailure(socket);
       return;
     }
     wss.handleUpgrade(request, socket, head, (socket_) => {

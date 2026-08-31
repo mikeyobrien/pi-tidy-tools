@@ -83,3 +83,20 @@ test("wsUpgradeAuthorized accepts bearer header and query param", async () => {
   );
   assert.equal(wsUpgradeAuthorized(req(), url(""), "sekret"), false);
 });
+
+test("writeWsAuthFailure completes the upgrade with an HTTP 401 frame", async () => {
+  const { writeWsAuthFailure, WS_AUTH_FAILURE_RESPONSE } =
+    await import("../src/daemon.ts");
+  const written: string[] = [];
+  let destroyed = false;
+  writeWsAuthFailure({
+    write: (chunk) => written.push(chunk),
+    destroy: () => {
+      destroyed = true;
+    },
+  });
+  assert.deepEqual(written, [WS_AUTH_FAILURE_RESPONSE]);
+  assert.match(WS_AUTH_FAILURE_RESPONSE, /^HTTP\/1\.1 401 Unauthorized/);
+  assert.match(WS_AUTH_FAILURE_RESPONSE, /Connection: close/);
+  assert.equal(destroyed, true, "socket is destroyed after the 401 frame");
+});

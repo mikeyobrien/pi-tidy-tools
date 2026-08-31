@@ -99,3 +99,31 @@ test("summarizeToolGroup renders the natural-language badge", () => {
     "1 tool · 1 running"
   );
 });
+
+test("startTool is idempotent by toolCallId (replay dedupe)", () => {
+  const acc = new TurnPartsAccumulator();
+  acc.startTool({ toolCallId: "t9", tool: "bash", label: "first" });
+  acc.startTool({
+    toolCallId: "t9",
+    tool: "bash",
+    label: "second",
+    reason: "re-run",
+  });
+  assert.equal(acc.parts.length, 1, "no duplicate tool part");
+  const part = acc.parts[0];
+  if (part.type !== "tool") throw new Error("shape");
+  assert.equal(part.label, "second", "label updates in place");
+  assert.equal(part.reason, "re-run");
+});
+
+test("forceSettleRunning clears running claims at settle", () => {
+  const acc = new TurnPartsAccumulator();
+  acc.startTool({ toolCallId: "1", tool: "bash", label: "x" });
+  acc.startTool({ toolCallId: "2", tool: "edit", label: "y" });
+  acc.settleTool("1", { isError: false, duration: 3 });
+  acc.forceSettleRunning();
+  const states = acc
+    .snapshot()
+    .map((p) => (p.type === "tool" ? p.status : "text"));
+  assert.deepEqual(states, ["ok", "error"], "running clears at settle");
+});

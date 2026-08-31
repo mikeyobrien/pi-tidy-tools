@@ -322,6 +322,12 @@ body {
     transform: rotate(360deg);
   }
 }
+/* ── Issue 49: digest label accompanies the reason ──── */
+.step-label {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 /* ── Steps checklist card ───────────────────────────── */
 .steps {
   display: flex;

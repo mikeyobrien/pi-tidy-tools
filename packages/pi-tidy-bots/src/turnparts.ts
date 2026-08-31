@@ -40,7 +40,24 @@ export class TurnPartsAccumulator {
     label?: string;
     reason?: string;
   }): void {
+    // Idempotent by toolCallId (issue 29-item-4 mirror): replayed/re-delivered
+    // starts update the existing part instead of duplicating it.
+    const existing = this.findTool(part.toolCallId);
+    if (existing) {
+      existing.tool = part.tool;
+      if (part.label !== undefined) existing.label = part.label;
+      if (part.reason !== undefined) existing.reason = part.reason;
+      return;
+    }
     this.parts.push({ type: "tool", status: "running", ...part });
+  }
+
+  /** Issue 49: at settle, no tool may still claim "running". */
+  forceSettleRunning(): void {
+    for (const part of this.parts) {
+      if (part.type === "tool" && part.status === "running")
+        part.status = "error";
+    }
   }
 
   private findTool(toolCallId: string): ToolPart | undefined {

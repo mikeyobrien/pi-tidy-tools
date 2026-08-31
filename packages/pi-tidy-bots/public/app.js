@@ -536,14 +536,18 @@ function renderSteps(steps) {
     const row = el("div", "step");
     const check = el("span", "step-check", "✓");
     row.appendChild(check);
-    // Issue 36: compact digest (`name — label`) outranks the model's stated
-    // reason; the raw args payload never reaches the step row.
-    const stepName = step.label
-      ? `${step.name} — ${step.label}`
-      : step.reason
-        ? `${step.name} — ${step.reason}`
-        : step.name;
-    row.appendChild(el("span", "step-name", stepName));
+    // Issue 49: reason is primary; the digest label accompanies it as a
+    // secondary muted span — never one replacing the other. The raw args
+    // payload never reaches the step row.
+    row.appendChild(
+      el(
+        "span",
+        "step-name",
+        step.reason ? `${step.name} — ${step.reason}` : step.name
+      )
+    );
+    if (step.label)
+      row.appendChild(el("span", "step-label", `· ${step.label}`));
     if (step.duration !== undefined)
       row.appendChild(el("span", "step-dur", `${step.duration} ms`));
     if (state.toolOutput === "full" && step.output) {
@@ -574,15 +578,6 @@ function bubbleWorking(botName, turnId, steps = []) {
     pane.appendChild(wrap);
     scrollBottomIfPinned();
   }
-}
-
-function bubbleSteps(botName, turnId, steps) {
-  const record = state.bubbles.get(`${botName}:${turnId}`);
-  if (!record) return;
-  const existing = record.bubble.querySelector(".steps");
-  if (existing) existing.replaceWith(renderSteps(steps));
-  else record.bubble.appendChild(renderSteps(steps));
-  if (botName === state.selected) scrollBottomIfPinned();
 }
 
 function visibleStreamText(text) {
@@ -631,9 +626,11 @@ function renderPartGroup(group, expanded) {
       el(
         "span",
         "step-name",
-        tool.label ? `${tool.tool} — ${tool.label}` : tool.tool
+        tool.reason ? `${tool.tool} — ${tool.reason}` : tool.tool
       )
     );
+    if (tool.label)
+      row.appendChild(el("span", "step-label", `· ${tool.label}`));
     if (tool.duration !== undefined)
       row.appendChild(el("span", "step-dur", `${tool.duration} ms`));
     if (state.toolOutput === "full" && tool.output) {
@@ -775,9 +772,9 @@ function connectSocket() {
         if (message.phase === "parts")
           bubbleParts(message.bot, message.turnId, message.parts ?? []);
         // Issue 48: the compat `delta` phase is intentionally ignored —
-        // streaming text renders ONLY through the parts model.
-        if (message.phase === "steps")
-          bubbleSteps(message.bot, message.turnId, message.steps ?? []);
+        // streaming text renders ONLY through the parts model. Issue 49: the
+        // legacy flat `steps` checklist is retired for the same reason —
+        // tool steps render ONLY as parts-model tool-blocks.
         if (message.phase === "final") bubbleFinal(message.bot, message.turnId);
         break;
       default:

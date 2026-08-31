@@ -928,13 +928,14 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           ts: new Date().toISOString(),
           // Marker stripping applies to parts too: settled history never
           // carries [[action:]] lines in any surface.
-          parts: runtime.turnParts
-            .snapshot()
-            .map((part) =>
-              part.type === "text"
-                ? { ...part, text: stripActionMarkers(part.text) }
-                : part
-            ),
+          parts: runtime.turnParts.snapshot().map((part) => {
+            if (part.type === "text")
+              return { ...part, text: stripActionMarkers(part.text) };
+            // Issue 49: "running" clears at settle — a turn cannot end
+            // while a tool result is still owed.
+            if (part.status === "running") part.status = "error";
+            return part;
+          }),
           ...(runtime.steps.length > 0
             ? {
                 steps: runtime.steps.map((step) => ({

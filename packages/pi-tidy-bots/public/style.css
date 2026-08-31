@@ -607,6 +607,26 @@ body {
   body.drawer-open #roster {
     transform: none;
   }
+  /* Routing pills (handoffs + completion receipts) take the full row at phone
+     widths — the squeezed pill collapsed to one word per line and collided
+     with the neighboring bubble. Long briefs clamp to 3 lines. */
+  .entry.routing {
+    align-self: stretch;
+  }
+  .entry.routing .routing-pill {
+    flex: 1 1 100%;
+    min-width: 0;
+    align-items: flex-start;
+    border-radius: 14px;
+  }
+  .routing-pill > span:last-of-type {
+    flex: 1;
+    min-width: 0;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    overflow: hidden;
+  }
   #chat-header {
     padding: 10px 14px;
   }

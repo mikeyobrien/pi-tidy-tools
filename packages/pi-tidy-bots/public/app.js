@@ -186,12 +186,15 @@ function transcriptEl(entry) {
     card.appendChild(pill);
 
     const expanded = el("div", "routing-expanded");
-    expanded.appendChild(
+    // The 0fr collapse needs ONE grid child with min-height: 0 — multiple
+    // children would leave implicit auto rows visible (the 84px fold).
+    const inner = el("div", "routing-expanded-inner");
+    inner.appendChild(
       el("div", "routing-expanded-ts", Parts.absoluteTime(entry.ts))
     );
     const body = el("div", "routing-expanded-body md-body");
     body.innerHTML = PiMd.render(entry.text);
-    expanded.appendChild(body);
+    inner.appendChild(body);
     const from = entry.originFrom ?? "bot";
     const footer = el("div", "routing-expanded-footer");
     const open = el("button", null, `→ open ${from}'s transcript`);
@@ -203,7 +206,8 @@ function transcriptEl(entry) {
     const less = el("button", null, "▲ show less");
     footer.appendChild(open);
     footer.appendChild(less);
-    expanded.appendChild(footer);
+    inner.appendChild(footer);
+    expanded.appendChild(inner);
     card.appendChild(expanded);
 
     const setExpanded = (on) => {

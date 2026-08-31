@@ -450,6 +450,12 @@ body {
     grid-template-rows 0.18s ease,
     opacity 0.18s ease;
 }
+/* min-height: 0 is what lets the 0fr row actually collapse — without it the
+   grid item's auto minimum holds the fold open (~84px). */
+.routing-expanded > * {
+  min-height: 0;
+  overflow: hidden;
+}
 .routing-card.expanded .routing-expanded {
   grid-template-rows: 1fr;
   opacity: 1;

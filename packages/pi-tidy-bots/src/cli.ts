@@ -3,9 +3,10 @@ import { mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { networkInterfaces } from "node:os";
 import { startFleet } from "./daemon.ts";
-import { loadFleetConfig, NAME_PATTERN } from "./config.ts";
+import { loadFleetConfig, ConfigError, NAME_PATTERN } from "./config.ts";
 import {
   CliError,
+  classifyStartFailure,
   daemonPidPath,
   EXIT,
   formatError,
@@ -55,7 +56,7 @@ function parseArgs(argv: string[]): Args {
 }
 
 function usage(): never {
-  console.log(`pi-tidy-bots — fleet runtime for Pi operator bots
+  console.error(`pi-tidy-bots — fleet runtime for Pi operator bots
 
 Usage:
   pi-tidy-bots init <fleetDir>            Scaffold a demo fleet (Atlas ops + Forge worker)
@@ -317,18 +318,32 @@ async function cmdStart(args: Args): Promise<void> {
   const resolvedToken = resolution.token;
   if (resolution.rotated) console.log(`rotated fleet token: ${resolvedToken}`);
 
-  const handle = await startFleet({
-    dir,
-    port:
-      typeof args.flags.port === "string" ? Number(args.flags.port) : undefined,
-    host,
-    token: resolvedToken,
-    toolOutput:
-      typeof args.flags["tool-output"] === "string"
-        ? (args.flags["tool-output"] as any)
-        : undefined,
-    log: json ? (line) => console.error(line) : (line) => console.log(line),
-  });
+  let handle;
+  try {
+    handle = await startFleet({
+      dir,
+      port:
+        typeof args.flags.port === "string"
+          ? Number(args.flags.port)
+          : undefined,
+      host,
+      token: resolvedToken,
+      toolOutput:
+        typeof args.flags["tool-output"] === "string"
+          ? (args.flags["tool-output"] as any)
+          : undefined,
+      log: json ? (line) => console.error(line) : (line) => console.log(line),
+    });
+  } catch (error) {
+    if (error instanceof ConfigError) {
+      // Manifest/lock failures keep their message (lock holder pid included)
+      // but surface as one clean line with a classified exit code.
+      throw new CliError(error.message, {
+        exitCode: classifyStartFailure(error.message),
+      });
+    }
+    throw error;
+  }
   const displayToken = handle.token ?? "";
   if (process.env.PI_TIDY_BOTS_DAEMON_CHILD === "1") {
     writeFileSync(daemonPidPath(dir), String(process.pid));

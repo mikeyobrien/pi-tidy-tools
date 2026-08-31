@@ -160,3 +160,28 @@ test("json payloads: init, start readiness, version", async () => {
     version: "0.1.0",
   });
 });
+
+test("classifyStartFailure and formatError follow the exit-code contract", async () => {
+  const { classifyStartFailure, formatError, CliError } =
+    await import("../src/cli-core.ts");
+  // Issue 29 item 4 classes: 2 state conflict, 3 port/addr, 4 runtime/auth.
+  assert.equal(
+    classifyStartFailure(
+      "fleet lock held by pid 4242 (acquired …, heartbeat …)."
+    ),
+    2
+  );
+  assert.equal(
+    classifyStartFailure("port 4317 is already in use — EADDRINUSE"),
+    3
+  );
+  assert.equal(classifyStartFailure("no bots.toml in fleet dir /x"), 4);
+  // formatError: one clean line, remedy in brackets when present.
+  const err = new CliError("fleet lock held by pid 4242", {
+    exitCode: 2,
+  });
+  assert.equal(formatError(err), "error: fleet lock held by pid 4242");
+  const withFix = new CliError("unknown flag", { remedy: "use --token" });
+  assert.equal(formatError(withFix), "error: unknown flag [fix: use --token]");
+  assert.equal(formatError(new Error("plain")), "error: plain");
+});

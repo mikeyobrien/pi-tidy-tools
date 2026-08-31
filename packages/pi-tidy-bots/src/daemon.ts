@@ -25,7 +25,7 @@ import {
   type ToolOutputMode,
 } from "./config.ts";
 import { RpcSession, type RpcEvent } from "./rpc.ts";
-import { isDue, minuteKey } from "./cron.ts";
+import { isDue, minuteKey, parseCron } from "./cron.ts";
 import { createEventLog } from "./eventlog.ts";
 import {
   actionPrompt,
@@ -91,6 +91,77 @@ const MAX_RESTARTS_PER_WINDOW = 3;
 const RESTART_WINDOW_MS = 60_000;
 
 const PUBLIC_DIR = new URL("../public/", import.meta.url).pathname;
+
+/**
+ * Boot-time routine validation. A schedule parseCron rejects can never fire —
+ * every scheduler tick throws and the catch skips the row — so surface each
+ * one as a warning naming bot, routine, schedule, and reason. Fail-soft: the
+ * fleet still boots and valid routines keep firing.
+ */
+export function routineBootWarnings(
+  routines: { bot: string; name: string; schedule: string }[]
+): string[] {
+  const warnings: string[] = [];
+  for (const routine of routines) {
+    try {
+      parseCron(routine.schedule);
+    } catch {
+      warnings.push(
+        `routine "${routine.name}" for bot "${routine.bot}": schedule "${routine.schedule}" will never fire [reason: invalid cron]`
+      );
+    }
+  }
+  return warnings;
+}
+
+/**
+ * One scheduler tick. A routine that is due but cannot fire (bot session null
+ * or dead) is journaled as `skipped` [reason: bot_offline] and does not consume
+ * its minute key — the next tick within the same minute retries. Only a
+ * successful fire consumes the key and journals `fired`.
+ */
+export function runSchedulerTick<
+  R extends { bot: string; name: string; schedule: string; enabled: boolean },
+>(
+  now: Date,
+  deps: {
+    routines: R[];
+    firedKeys: Set<string>;
+    fireRoutine: (routine: R, manual: boolean) => boolean;
+    journal: (record: Record<string, unknown>) => void;
+  }
+): void {
+  const minute = minuteKey(now);
+  for (const routine of deps.routines) {
+    if (!routine.enabled) continue;
+    const key = `${routine.bot}:${routine.name}:${minute}`;
+    if (deps.firedKeys.has(key)) continue;
+    try {
+      if (!isDue(now, routine.schedule)) continue;
+    } catch {
+      continue;
+    }
+    if (!deps.fireRoutine(routine, false)) {
+      deps.journal({
+        key,
+        bot: routine.bot,
+        routine: routine.name,
+        status: "skipped",
+        reason: "bot_offline",
+        schedule: routine.schedule,
+      });
+      continue;
+    }
+    deps.firedKeys.add(key);
+    deps.journal({
+      key,
+      bot: routine.bot,
+      routine: routine.name,
+      status: "fired",
+      schedule: routine.schedule,
+    });
+  }
+}
 
 export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
   const log = options.log ?? ((line: string) => console.log(line));
@@ -283,6 +354,8 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       });
     }
   }
+  for (const warning of routineBootWarnings(routines)) log(warning);
+
   const firedKeys = new Set<string>();
   const fireRoutine = (routine: RoutineRuntime, manual: boolean): boolean => {
     const runtime = runtimes.get(routine.bot);
@@ -306,27 +379,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     return true;
   };
   const schedulerTimer = setInterval(() => {
-    const now = new Date();
-    const minute = minuteKey(now);
-    for (const routine of routines) {
-      if (!routine.enabled) continue;
-      const key = `${routine.bot}:${routine.name}:${minute}`;
-      if (firedKeys.has(key)) continue;
-      try {
-        if (!isDue(now, routine.schedule)) continue;
-      } catch {
-        continue;
-      }
-      firedKeys.add(key);
-      journal({
-        key,
-        bot: routine.bot,
-        routine: routine.name,
-        status: "fired",
-        schedule: routine.schedule,
-      });
-      fireRoutine(routine, false);
-    }
+    runSchedulerTick(new Date(), { routines, firedKeys, fireRoutine, journal });
   }, 15_000);
   schedulerTimer.unref?.();
 

@@ -107,6 +107,8 @@ interface BotRuntime {
   // routines). Follow-ups queued inside the child by extensions are invisible
   // to the daemon — acceptable; operator-visible cases are all daemon-issued.
   queuedCount: number;
+  /** Issue 82: rules text already delivered to this bot (next-turn pickup). */
+  rulesApplied: string | null;
   /** Claimed clientMessageIds (issue 33 idempotency). */
   clientMessageIds: Set<string>;
   /** Issue 43 item 2: compaction hysteresis bookkeeping. */
@@ -671,6 +673,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     turnText: "",
     turnParts: new TurnPartsAccumulator(),
     queuedCount: 0,
+    rulesApplied: null,
     clientMessageIds: new Set<string>(),
     turnsSinceCompact: 0,
     toolFailStreak: null,
@@ -867,7 +870,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     appendTranscript(runtime, entry);
     void runtime.session
       .prompt(
-        `[routine ${routine.name}] ${routine.prompt}`,
+        injectRules(runtime, `[routine ${routine.name}] ${routine.prompt}`),
         busy ? "followUp" : undefined
       )
       .catch(() => {});
@@ -997,16 +1000,6 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     runtime.queuedCount = 0;
     const sessionDir = join(fleet.dir, ".fleet", "sessions", name);
     mkdirSync(sessionDir, { recursive: true });
-    // Issue 82: fleet-wide rules ride the spawn as --append-system-prompt.
-    // Read at spawn time — edits apply on the NEXT spawn (respawn/restart);
-    // in-flight turns are never steered and AGENTS.md is never rewritten.
-    let fleetRules: string | undefined;
-    try {
-      const text = readFileSync(join(fleet.dir, ".fleet", "rules.md"), "utf8");
-      if (text.trim().length > 0) fleetRules = text;
-    } catch {
-      // No rules file — fleet unchanged.
-    }
     const hasSession =
       existsSync(sessionDir) &&
       readdirSync(sessionDir).some((file) => file.endsWith(".jsonl"));
@@ -1018,7 +1011,6 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       resume: hasSession,
       model: runtime.config.model,
       approve: runtime.config.approve,
-      ...(fleetRules ? { appendSystemPrompt: fleetRules } : {}),
       bridgePath,
       daemonUrl,
       childSecret,
@@ -1129,7 +1121,11 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           // Issue 74: a replayed message is queued until ITS turn starts
           // streaming — same accept-window semantics as a direct message.
           if (target) runtime.activeDeliveryId = target.id;
-          await session.prompt(message.text, undefined, message.images);
+          await session.prompt(
+            injectRules(runtime, message.text),
+            undefined,
+            message.images
+          );
           runtime.activeDeliveryId = null;
           pendingStore.remove(name, message.id);
           if (target) target.delivering = false;
@@ -1558,6 +1554,28 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     }, 1_000);
   };
 
+  /**
+   * Issue 82 (corrected): fleet rules apply on the NEXT delivered prompt or
+   * followUp per bot — not on a process respawn. The current rules text is
+   * read at delivery time; when it differs from what this bot last received,
+   * it rides that delivery as a one-time preamble (per rules version, so
+   * steady-state turns stay clean). In-flight turns are never steered, and
+   * AGENTS.md is never rewritten. Removing/emptying the rules file simply
+   * stops future injections.
+   */
+  const injectRules = (runtime: BotRuntime, text: string): string => {
+    let rules = "";
+    try {
+      rules = readFileSync(join(fleet.dir, ".fleet", "rules.md"), "utf8");
+    } catch {
+      // No rules file — nothing to inject.
+    }
+    const trimmed = rules.trim();
+    if (trimmed.length === 0 || runtime.rulesApplied === trimmed) return text;
+    runtime.rulesApplied = trimmed;
+    return `[fleet rules — effective this turn onward]\n${trimmed}\n[end fleet rules]\n\n${text}`;
+  };
+
   /** Journal a queued follow-up so a restart can replay it (issue 34). */
   const journalPending = (
     runtime: BotRuntime,
@@ -1588,7 +1606,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     // Issue 50: a streaming child queues the message behind its turn —
     // never bounced as runtime_offline (that is reserved for dead sessions).
     if (session.streaming && behavior === undefined) {
-      await session.followUp(text, images);
+      await session.followUp(injectRules(runtime, text), images);
       journalPending(runtime, entry, images);
       runtime.queuedCount++;
       emit({ type: "append", bot: runtime.config.name, entry });
@@ -1601,7 +1619,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       // finishes. The old await-then-clear kept the ACTIVE prompt labeled
       // "queued…" for the entire turn.
       runtime.activeDeliveryId = entry.id;
-      await session.prompt(text, behavior, images);
+      await session.prompt(injectRules(runtime, text), behavior, images);
       runtime.activeDeliveryId = null;
       entry.delivering = false;
       emit({ type: "append", bot: runtime.config.name, entry });
@@ -1615,7 +1633,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         session.alive &&
         classifyFailure(String(error)) === "turn_in_flight"
       ) {
-        await session.followUp(text, images);
+        await session.followUp(injectRules(runtime, text), images);
         // Queued behind the in-flight turn; turn_start decrements + pops the
         // pending journal (issue 34). Stays delivering until its turn streams.
         journalPending(runtime, entry, images);
@@ -1666,7 +1684,12 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         // Idle target: every behavior degrades to a normal message — steer is
         // only meaningful mid-turn, and an idle-agent follow_up never flushes.
         // Issue 75: images ride the prompt exactly like operator /message.
-        await runtime.session.prompt(text, undefined, images);
+        // Issue 82: rules ride the first delivery after a rules change.
+        await runtime.session.prompt(
+          injectRules(runtime, text),
+          undefined,
+          images
+        );
         return;
       }
       if (behavior === "steer") {
@@ -1678,7 +1701,11 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       journalPending(runtime, entry, images);
       runtime.queuedCount++;
       emitRoster();
-      await runtime.session.prompt(text, behavior ?? "followUp", images);
+      await runtime.session.prompt(
+        injectRules(runtime, text),
+        behavior ?? "followUp",
+        images
+      );
     };
 
     // Transient unavailability: one emergency respawn so the retry can actually help.
@@ -2322,8 +2349,9 @@ function buildHttpServer(deps: ServerDeps): Hono {
   });
 
   // Issue 82: fleet-wide rules — a single markdown file every bot receives
-  // as --append-system-prompt on its NEXT spawn. Missing/empty file is a
-  // normal state (text: "", never 404). Mason's drawer edits via PUT.
+  // on its NEXT delivered prompt/followUp (per rules version; no respawn
+  // needed, in-flight turns never steered). Missing/empty file is a normal
+  // state (text: "", never 404). Mason's drawer edits via PUT.
   app.get("/api/rules", (context) => {
     let text = "";
     try {

@@ -13,12 +13,6 @@ export interface RpcSpawnOptions {
   bridgePath: string;
   daemonUrl: string;
   childSecret: string;
-  /**
-   * Issue 82: fleet-wide rules — appended to the bot's system prompt at
-   * SPAWN time (next-spawn semantics; never rewrites AGENTS.md, never
-   * steers in-flight turns).
-   */
-  appendSystemPrompt?: string;
   onEvent: (event: RpcEvent) => void;
   onExit: (code: number | null, signal: string | null) => void;
   onLine?: (line: string) => void;
@@ -31,13 +25,7 @@ export interface RpcSpawnOptions {
 export function rpcSpawnArgs(
   options: Pick<
     RpcSpawnOptions,
-    | "name"
-    | "sessionDir"
-    | "resume"
-    | "model"
-    | "approve"
-    | "appendSystemPrompt"
-    | "bridgePath"
+    "name" | "sessionDir" | "resume" | "model" | "approve" | "bridgePath"
   >
 ): string[] {
   return [
@@ -50,9 +38,6 @@ export function rpcSpawnArgs(
     ...(options.resume ? ["--continue"] : []),
     ...(options.model ? ["--model", options.model] : []),
     ...(options.approve ? ["--approve"] : []),
-    ...(options.appendSystemPrompt
-      ? ["--append-system-prompt", options.appendSystemPrompt]
-      : []),
     "-e",
     options.bridgePath,
   ];

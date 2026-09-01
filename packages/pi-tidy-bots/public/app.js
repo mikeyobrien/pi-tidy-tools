@@ -83,6 +83,10 @@ function blobAvatar(name, large) {
 
 function renderRoster() {
   const list = document.getElementById("bot-list");
+  // Rebuilding the list resets its scrollTop (it is the scroll container) —
+  // snapshot and restore so periodic presence refreshes (issue 64) never
+  // yank the drawer while someone is reading it.
+  const savedScrollTop = list.scrollTop;
   list.textContent = "";
   const strip = document.getElementById("presence-strip");
   // Child death drops the turn and its queue — clear any live bubble records
@@ -148,6 +152,7 @@ function renderRoster() {
   strip.appendChild(
     document.createTextNode(` ${active} active · ${idle} idle`)
   );
+  list.scrollTop = savedScrollTop;
   document.getElementById("bot-count").textContent = String(state.fleet.length);
   updateHeaderQueue();
   updateComposerTargetDot();
@@ -896,6 +901,30 @@ if (routinesPanelNode && routinesButton) {
   });
 }
 
+// Issue 64: presence stays fresh between WS roster snapshots. The daemon
+// emits `roster` events at transitions only (boot, online flip, exit) while
+// `lastActive`/`active` are computed per request — so a low-frequency
+// /api/fleet poll keeps the drawer truthful. WS roster events keep working
+// unchanged; selection lives in state and scroll is preserved on re-render.
+const PRESENCE_REFRESH_MS = 25_000;
+let presenceFetchInFlight = false;
+async function refreshPresence() {
+  if (presenceFetchInFlight) return;
+  presenceFetchInFlight = true;
+  try {
+    const fleet = await api("/api/fleet");
+    if (Array.isArray(fleet.bots)) {
+      state.fleet = fleet.bots;
+      renderRoster();
+    }
+  } catch {
+    // Unreachable or unauthorized: keep the last snapshot — the reconnect
+    // banner already covers outages, and the next tick retries.
+  } finally {
+    presenceFetchInFlight = false;
+  }
+}
+
 async function boot() {
   try {
     const settings = await api("/api/settings").catch(() => ({}));
@@ -914,6 +943,9 @@ async function boot() {
   } finally {
     renderRoster();
     connectSocket();
+    setInterval(() => {
+      void refreshPresence();
+    }, PRESENCE_REFRESH_MS);
   }
 }
 

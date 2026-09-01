@@ -660,15 +660,10 @@ function startToolElapsedTicker(record, parts) {
   if (running.length === 0) return;
   const oldest = Math.min(...running.map((t) => t.started));
   record.elapsedTimer = setInterval(() => {
-    const elapsed = formatLiveElapsed(Date.now() - oldest);
-    for (const tool of running) {
-      const badge = record.bubble
-        .closest(".entry")
-        ?.querySelector?.(".toolgroup-badge");
-      if (badge) {
-        badge.textContent = `\u25b8 ${partGroupSummary(record.bubble.parts ?? running)} \u00b7 ${elapsed}`;
-      }
-    }
+    // Issue 59 (verifier reject fix): tick with the SAME reason-carrying
+    // format as the first paint — counts-only partGroupSummary dropped the
+    // running call's reason after the first second.
+    updateToolElapsedBadge(record, oldest, running);
   }, 1000);
   // Fire immediately so the first tick is instant.
   updateToolElapsedBadge(record, oldest, running);

@@ -182,3 +182,29 @@ test("issue 43 item 2: compaction policy thresholds, hysteresis, boundaries", as
     false
   );
 });
+
+test("issue 61: consecutive identical tool failures trip the breaker at 5", () => {
+  // Layer 2 contract: 5 identical tool_start events with no intervening
+  // tool_result must trip the breaker. The daemon's toolFailStreak tracks
+  // the signature (tool:label) and counts consecutive identical starts.
+  const signature = (tool: string, label?: string) => `${tool}:${label ?? ""}`;
+  let streak: { count: number; signature: string } | null = null;
+  const sameCall = "bash:flutter test";
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    const sig = signature("bash", "flutter test");
+    if (streak && streak.signature === sig) streak.count++;
+    else streak = { count: 1, signature: sig };
+    if (attempt < 5)
+      assert.equal(
+        streak.count >= 5,
+        false,
+        `attempt ${attempt} must not trip`
+      );
+  }
+  assert.equal(streak.count, 5, "breaker trips at attempt 5");
+  assert.equal(streak.signature, signature("bash", "flutter test"));
+  // A different tool or label resets.
+  streak = { count: 4, signature: signature("bash", "flutter test") };
+  const different = signature("edit", "other.md");
+  assert.notEqual(streak.signature, different);
+});

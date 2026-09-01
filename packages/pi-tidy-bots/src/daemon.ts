@@ -113,6 +113,8 @@ interface BotRuntime {
   /** Issue 43 item 2: compaction hysteresis bookkeeping. */
   lastCompactAt?: number;
   turnsSinceCompact: number;
+  /** Issue 61 layer 2: consecutive identical tool-call validation failures. */
+  toolFailStreak: { count: number; signature: string } | null;
   pendingUi: Map<
     string,
     { view: UiRequestView; timer: ReturnType<typeof setTimeout> }
@@ -600,6 +602,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     queuedCount: 0,
     clientMessageIds: new Set<string>(),
     turnsSinceCompact: 0,
+    toolFailStreak: null,
     steps: [],
     pendingUi: new Map(),
   });
@@ -1069,6 +1072,32 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         return;
       }
       case "tool_start": {
+        // Issue 61 layer 2: circuit breaker — 5 consecutive identical
+        // tool_start events means the harness keeps rejecting the same call.
+        const failSig = `${event.toolName}:${event.label ?? ""}`;
+        if (
+          runtime.toolFailStreak &&
+          runtime.toolFailStreak.signature === failSig
+        ) {
+          runtime.toolFailStreak.count++;
+        } else {
+          runtime.toolFailStreak = { count: 1, signature: failSig };
+        }
+        if (runtime.toolFailStreak.count >= 5) {
+          runtime.toolFailStreak = null;
+          runtime.session?.abort();
+          appendTranscript(runtime, {
+            id: randomUUID(),
+            role: "system",
+            origin: "system",
+            text: `Stopped: 5 identical tool failures \u2014 model/tool contract broken (${event.toolName}). Operator intervention required.`,
+            ts: new Date().toISOString(),
+          });
+          log(
+            `[${botName}] circuit breaker: 5 identical tool failures, turn aborted`
+          );
+          return;
+        }
         runtime.turnParts.startTool({
           toolCallId: event.toolCallId,
           tool: event.toolName,
@@ -1102,6 +1131,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         return;
       }
       case "tool_output": {
+        runtime.toolFailStreak = null;
         runtime.turnParts.updateToolOutput(event.toolCallId, event.text);
         const step = [...runtime.steps]
           .reverse()

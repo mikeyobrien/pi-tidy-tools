@@ -601,7 +601,7 @@ function renderPartGroup(group, expanded) {
     if (state.toolOutput === "full" && tool.output) {
       row.appendChild(el("pre", "step-output", tool.output.slice(0, 1200)));
     }
-    if (tool.status === "error")
+    if (tool.status === "error" || tool.running_failed)
       row.appendChild(el("div", "step-error", "\u2715 failed"));
     list.appendChild(row);
   }

@@ -720,6 +720,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
   const sockets = new Set<WebSocket>();
   const daemonUrl = `http://127.0.0.1:${fleet.port}`;
   const bridgePath = new URL("./bridge.ts", import.meta.url).pathname;
+  // Issue 85: every bot child gets the MCP wrap (and, through it, the
+  // bundled pi-mcp-adapter) — MCP support is a fleet hard dependency.
+  const mcpWrapPath = new URL("./mcp-wrap.ts", import.meta.url).pathname;
   const piBin = options.piBin ?? process.env.PI_TIDY_BOTS_PI_BIN ?? "pi";
 
   const bootId = randomUUID();
@@ -1068,6 +1071,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       approve: runtime.config.approve,
       ...(botPackages.length > 0 ? { trustProject: true } : {}),
       bridgePath,
+      extensions: [mcpWrapPath],
       daemonUrl,
       childSecret,
       onEvent: (event) => {

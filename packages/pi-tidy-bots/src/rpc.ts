@@ -15,6 +15,8 @@ export interface RpcSpawnOptions {
    * auto-approve). */
   trustProject?: boolean;
   bridgePath: string;
+  /** Issue 85: extra extensions loaded after bridge (MCP wrap etc.). */
+  extensions?: string[];
   daemonUrl: string;
   childSecret: string;
   onEvent: (event: RpcEvent) => void;
@@ -36,6 +38,7 @@ export function rpcSpawnArgs(
     | "approve"
     | "trustProject"
     | "bridgePath"
+    | "extensions"
   >
 ): string[] {
   return [
@@ -51,6 +54,7 @@ export function rpcSpawnArgs(
     ...(options.trustProject ? ["--approve"] : []),
     "-e",
     options.bridgePath,
+    ...(options.extensions ?? []).flatMap((extension) => ["-e", extension]),
   ];
 }
 

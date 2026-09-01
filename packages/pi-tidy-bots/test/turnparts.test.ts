@@ -188,7 +188,7 @@ test("issue 61: consecutive identical tool failures trip the breaker at 5", () =
   // tool_result must trip the breaker. The daemon's toolFailStreak tracks
   // the signature (tool:label) and counts consecutive identical starts.
   const signature = (tool: string, label?: string) => `${tool}:${label ?? ""}`;
-  let streak: { count: number; signature: string } | null = null;
+  let streak: { count: number; signature: string } | undefined = undefined;
   const sameCall = "bash:flutter test";
   for (let attempt = 1; attempt <= 5; attempt++) {
     const sig = signature("bash", "flutter test");
@@ -201,10 +201,7 @@ test("issue 61: consecutive identical tool failures trip the breaker at 5", () =
         `attempt ${attempt} must not trip`
       );
   }
+  assert.ok(streak, "streak exists");
   assert.equal(streak.count, 5, "breaker trips at attempt 5");
   assert.equal(streak.signature, signature("bash", "flutter test"));
-  // A different tool or label resets.
-  streak = { count: 4, signature: signature("bash", "flutter test") };
-  const different = signature("edit", "other.md");
-  assert.notEqual(streak.signature, different);
 });

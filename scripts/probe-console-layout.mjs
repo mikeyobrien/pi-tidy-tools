@@ -194,6 +194,15 @@ if (!chrome) {
   );
 }
 log(`chrome: ${chrome}`);
+// Watchdog: a hung headless session can never wedge the run past the
+// worst-case budget (fleet boot 60s + 3 viewports x 30s chrome + slack).
+const WATCHDOG_MS = 180_000;
+const watchdog = setTimeout(() => {
+  console.error(`probe: watchdog — exceeded ${WATCHDOG_MS / 1000}s, exiting`);
+  spawnSync("pkill", ["-9", "-f", "pathological-pi.mjs"]);
+  process.exit(3);
+}, WATCHDOG_MS);
+watchdog.unref();
 
 // ── Reverse proxy with measurement injection ──────────
 const measureScript = `
@@ -309,7 +318,11 @@ for (const viewport of VIEWPORTS) {
       "--timeout=9000",
       consoleUrl,
     ],
-    { maxBuffer: 64 * 1024 * 1024 }
+    {
+      maxBuffer: 64 * 1024 * 1024,
+      timeout: 30_000,
+      killSignal: "SIGKILL",
+    }
   );
   child.stdout.on("data", (chunk) => chunks.push(chunk));
   child.stderr.on("data", () => {});

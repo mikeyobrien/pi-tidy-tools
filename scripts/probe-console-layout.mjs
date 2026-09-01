@@ -207,6 +207,9 @@ watchdog.unref();
 // ── Reverse proxy with measurement injection ──────────
 const measureScript = `
 document.title = "PROBE:script-loaded";
+window.onerror = function (message) {
+  document.title = "PROBE-ERR:" + message;
+};
 (function () {
   function measure() {
     var violations = [];
@@ -236,8 +239,8 @@ document.title = "PROBE:script-loaded";
       violations: violations
     });
   }
-  if (document.readyState === "complete") setTimeout(measure, 6000);
-  else addEventListener("load", function () { setTimeout(measure, 6000); });
+  if (document.readyState === "complete") setTimeout(measure, 2500);
+  else addEventListener("load", function () { setTimeout(measure, 2500); });
 })();
 `;
 
@@ -315,7 +318,7 @@ for (const viewport of VIEWPORTS) {
       `--user-data-dir=${join(tmp, "chrome-profile-" + viewport.name)}`,
       `--window-size=${viewport.width},${viewport.height}`,
       "--dump-dom",
-      "--timeout=9000",
+      "--timeout=12000",
       consoleUrl,
     ],
     {
@@ -332,6 +335,15 @@ for (const viewport of VIEWPORTS) {
     status: exited,
   };
   const marker = (out.stdout ?? "").match(/<title>PROBE:([^<]*)<\/title>/);
+  if (marker) {
+    // dump-dom serializes the title with HTML entities — decode before parse.
+    marker[1] = marker[1]
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&amp;/g, "&");
+  }
   if (!marker) {
     log(
       `${viewport.name}: NO MEASUREMENT — dom head: ${(out.stdout ?? "").slice(0, 200)} | stderr: ${(out.stderr ?? "").slice(0, 200)}`
@@ -345,7 +357,10 @@ for (const viewport of VIEWPORTS) {
   let parsed;
   try {
     parsed = JSON.parse(marker[1]);
-  } catch {
+  } catch (error) {
+    log(
+      `${viewport.name}: unparseable measurement — raw: ${marker[1].slice(0, 300)} (${error.message})`
+    );
     results.push({ viewport: viewport.name, error: "unparseable measurement" });
     continue;
   }

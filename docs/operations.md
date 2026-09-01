@@ -1,5 +1,9 @@
 # Operations — pi-tidy-bots
 
+## Layout probe (issue 52)
+
+See the section below under Operations extras; the probe is the enforced check for chrome layout regressions.
+
 ## Scoping bots
 
 Fleet membership is orchestration, not scope (ADR 0002). A bot is a normal Pi
@@ -46,3 +50,21 @@ hostile children:
 Conformance rule of thumb: if the pathology zoo in
 `test/fixtures/extensions/` can take the daemon down, it's a daemon bug —
 fix the daemon, not the fixture.
+
+## Layout probe (issue 52)
+
+One command verifies the console against adversarial content at phone,
+tablet, and desktop widths:
+
+```bash
+npm run probe:layout                # current tree: exits 0 when nothing squeezes
+PROBE_BASELINE=1 npm run probe:layout   # serves d20af89-reverted styles; exit 1 proves the probe reproduces the squeeze
+```
+
+The probe boots a real daemon (port 0, stub children, seeded adversarial
+journal: long labels, long paths, code, wide tables), serves the console
+through a local reverse proxy with an injected measurement script, and drives
+headless Chrome per viewport. It fails when any text-bearing element is
+narrower than 40px while holding more than 20 characters. Requires Chrome
+(set `PROBE_CHROME` if not autodetected); `PROBE_KEEP=1` preserves the temp
+fleet for autopsy.

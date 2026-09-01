@@ -534,6 +534,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
   let stored: {
     console?: { toolOutput?: unknown };
     routines?: Record<string, { enabled?: boolean }>;
+    /** Issue 72: per-bot lastActivity ISO strings — restored over the boot-time
+     * default so restarts never show a bogus "now" for idle bots. */
+    lastActive?: Record<string, string>;
   } = {};
   try {
     if (existsSync(statePath))
@@ -611,7 +614,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     config,
     session: null,
     online: false,
-    lastActive: new Date().toISOString(),
+    // Issue 72: a restart must not reset activity to boot time — restore the
+    // persisted value; only a never-seen bot starts at "now".
+    lastActive: stored.lastActive?.[config.name] ?? new Date().toISOString(),
     transcript: [],
     pendingFrom: [],
     restartTimes: [],
@@ -678,6 +683,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     active: Date.now() - Date.parse(runtime.lastActive) < ACTIVE_WINDOW_MS,
     lastActive: runtime.lastActive,
     queued: runtime.queuedCount,
+    // Issue 69: REST /api/fleet carries the transcript preview; the WS roster
+    // shape must match or every roster broadcast erases client-side previews.
+    latest: runtime.transcript.at(-1)?.text ?? "",
   });
 
   const emitRoster = (): void => {
@@ -693,8 +701,27 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     });
   };
 
+  // Issue 72: persist lastActive debounced — touch() fires per RPC event
+  // (deltas included); writing the state file per event would be IO churn.
+  let lastActiveDirty = false;
+  let lastActiveFlush: NodeJS.Timeout | null = null;
+  const flushLastActive = (): void => {
+    if (lastActiveFlush) {
+      clearTimeout(lastActiveFlush);
+      lastActiveFlush = null;
+    }
+    if (!lastActiveDirty) return;
+    lastActiveDirty = false;
+    persistStateFile();
+  };
   const touch = (runtime: BotRuntime): void => {
     runtime.lastActive = new Date().toISOString();
+    stored.lastActive ??= {};
+    stored.lastActive[runtime.config.name] = runtime.lastActive;
+    lastActiveDirty = true;
+    if (lastActiveFlush) return;
+    lastActiveFlush = setTimeout(flushLastActive, 5_000);
+    lastActiveFlush.unref?.();
   };
 
   const appendTranscript = (
@@ -939,7 +966,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     });
     runtime.session = session;
     watchPersona(runtime);
-    touch(runtime);
+    // Issue 72: session spawn is NOT user activity — touching here reset every
+    // bot to "now" on each daemon boot, exactly the false first-load times
+    // this issue fixes. Real activity (RPC events, prompts) still touches.
     emitRoster();
     try {
       const state = await session.getState();
@@ -1949,6 +1978,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
             runtime.stopping = true;
             runtime.session?.stop();
           }
+          // Issue 72: flush any debounced lastActive writes before exit — a
+          // SIGTERM inside the 5s window must not lose activity state.
+          flushLastActive();
           lockResult.lock.release();
           for (const socket of sockets) socket.close();
           await new Promise<void>((resolveStop) =>

@@ -110,6 +110,9 @@ interface BotRuntime {
   queuedCount: number;
   /** Claimed clientMessageIds (issue 33 idempotency). */
   clientMessageIds: Set<string>;
+  /** Issue 43 item 2: compaction hysteresis bookkeeping. */
+  lastCompactAt?: number;
+  turnsSinceCompact: number;
   pendingUi: Map<
     string,
     { view: UiRequestView; timer: ReturnType<typeof setTimeout> }
@@ -279,6 +282,55 @@ export type BusBehavior = "steer" | "followUp";
  * Idempotency guard (issue 33): a clientMessageId may be claimed once per
  * bot. Unknown/absent ids always claim. Returns false on duplicate.
  */
+function journalCompaction(
+  fleetDir: string,
+  bot: string,
+  data: { tokensBefore?: number; forced?: boolean }
+): void {
+  try {
+    const dir = join(fleetDir, ".fleet");
+    mkdirSync(dir, { recursive: true });
+    appendFileSync(
+      join(dir, "compactions.jsonl"),
+      `${JSON.stringify({ bot, ts: new Date().toISOString(), ...data })}\n`
+    );
+  } catch {
+    // Best-effort, like every .fleet journal.
+  }
+}
+
+// ── Issue 43 item 2: auto-compaction policy ───────────
+export const COMPACT_TRIGGER = 0.6;
+export const COMPACT_CEILING = 0.75;
+export const COMPACT_SOFT_FLOOR = 0.45;
+export const COMPACT_HYSTERESIS_TURNS = 10;
+export const COMPACT_HYSTERESIS_MS = 30 * 60_000;
+
+export interface CompactPolicyInput {
+  fill?: number;
+  turnsSinceCompact: number;
+  lastCompactAt?: number;
+  /** Pending question cards or undelivered handoff completions block. */
+  hasPending: boolean;
+  force?: boolean;
+  idle?: boolean;
+  now: number;
+}
+
+export function shouldAutoCompact(input: CompactPolicyInput): boolean {
+  if (input.hasPending) return false;
+  if (input.fill === undefined) return false;
+  if (!input.force && input.lastCompactAt !== undefined) {
+    // Hysteresis: both windows must clear (whichever is longer).
+    const withinTurns = input.turnsSinceCompact < COMPACT_HYSTERESIS_TURNS;
+    const withinMs = input.now - input.lastCompactAt < COMPACT_HYSTERESIS_MS;
+    if (withinTurns || withinMs) return false;
+  }
+  if (input.force) return true;
+  const floor = input.idle ? COMPACT_SOFT_FLOOR : COMPACT_TRIGGER;
+  return input.fill >= floor;
+}
+
 /** Issue 43 item 1: fill = carried input tokens over the model window. */
 export function computeFill(
   inputTokens: number,
@@ -482,6 +534,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     turnParts: new TurnPartsAccumulator(),
     queuedCount: 0,
     clientMessageIds: new Set<string>(),
+    turnsSinceCompact: 0,
     steps: [],
     pendingUi: new Map(),
   });
@@ -677,6 +730,41 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       /* watcher is best-effort; /bots-reload stays available manually */
     }
   };
+
+  /** Issue 43 item 2: the compaction decision + flow. */
+  async function maybeCompact(
+    runtime: BotRuntime,
+    opts: { force?: boolean } = {}
+  ): Promise<boolean> {
+    const botName = runtime.config.name;
+    const go = shouldAutoCompact({
+      fill: runtime.fill,
+      turnsSinceCompact: runtime.turnsSinceCompact,
+      lastCompactAt: runtime.lastCompactAt,
+      hasPending: runtime.pendingUi.size > 0 || runtime.pendingFrom.length > 0,
+      force: opts.force,
+      idle: false,
+      now: Date.now(),
+    });
+    if (!go) return false;
+    const tokensBefore = runtime.inputTokens;
+    await runtime.session?.request({ type: "compact" });
+    runtime.lastCompactAt = Date.now();
+    runtime.turnsSinceCompact = 0;
+    runtime.fill = 0;
+    journalCompaction(fleet.dir, botName, {
+      tokensBefore,
+      forced: opts.force === true,
+    });
+    appendTranscript(runtime, {
+      id: randomUUID(),
+      role: "system",
+      origin: "system",
+      text: `Context managed (${Math.round((tokensBefore ?? 0) / 1000)}K tokens in)`,
+      ts: new Date().toISOString(),
+    });
+    return true;
+  }
 
   const spawnBot = async (name: string): Promise<void> => {
     const runtime = runtimes.get(name);
@@ -1073,6 +1161,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
               touch(source);
             });
         }
+        void maybeCompact(runtime, {}).catch(() => {});
         return;
       }
       case "ui_request": {

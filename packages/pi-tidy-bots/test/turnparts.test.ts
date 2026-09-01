@@ -127,3 +127,58 @@ test("forceSettleRunning clears running claims at settle", () => {
     .map((p) => (p.type === "tool" ? p.status : "text"));
   assert.deepEqual(states, ["ok", "error"], "running clears at settle");
 });
+
+test("issue 43 item 2: compaction policy thresholds, hysteresis, boundaries", async () => {
+  const mod = await import("../src/daemon.ts");
+  const { shouldAutoCompact } = mod;
+  const base = {
+    fill: 0.65,
+    turnsSinceCompact: 0,
+    hasPending: false,
+    idle: false,
+    now: 1_000_000,
+  };
+  // 60% trigger fires on a settled turn with clean boundary.
+  assert.equal(shouldAutoCompact(base), true);
+  // Below trigger: no.
+  assert.equal(shouldAutoCompact({ ...base, fill: 0.3 }), false);
+  // Pending cards/handoffs block even above trigger.
+  assert.equal(shouldAutoCompact({ ...base, hasPending: true }), false);
+  // Hysteresis: blocked while either window is open.
+  assert.equal(
+    shouldAutoCompact({
+      ...base,
+      lastCompactAt: 1_000_000 - 10,
+      turnsSinceCompact: 3,
+    }),
+    false,
+    "30min window open"
+  );
+  assert.equal(
+    shouldAutoCompact({
+      ...base,
+      lastCompactAt: 1_000_000 - 10,
+      turnsSinceCompact: 12,
+    }),
+    false,
+    "turn window open"
+  );
+  // Both windows cleared: fires again.
+  assert.equal(
+    shouldAutoCompact({
+      ...base,
+      lastCompactAt: 1_000_000 - 31 * 60_000,
+      turnsSinceCompact: 12,
+    }),
+    true
+  );
+  // Idle soft floor 45%: fills between 45% and 60% compact only in idle windows.
+  assert.equal(shouldAutoCompact({ ...base, fill: 0.5 }), false);
+  assert.equal(shouldAutoCompact({ ...base, fill: 0.5, idle: true }), true);
+  // Force bypasses threshold and hysteresis but not the pending boundary.
+  assert.equal(shouldAutoCompact({ ...base, fill: 0.1, force: true }), true);
+  assert.equal(
+    shouldAutoCompact({ ...base, hasPending: true, force: true }),
+    false
+  );
+});

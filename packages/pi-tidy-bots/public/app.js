@@ -550,6 +550,7 @@ function bubbleFinal(botName, turnId) {
   const record = state.bubbles.get(`${botName}:${turnId}`);
   if (!record) return;
   state.bubbles.delete(`${botName}:${turnId}`);
+  if (record.elapsedTimer) clearInterval(record.elapsedTimer);
   record.wrap.remove();
   if (botName === state.selected) scrollBottomIfPinned();
 }
@@ -567,7 +568,7 @@ function renderPartGroup(group, expanded) {
   const badge = el(
     "button",
     "toolgroup-badge",
-    `▸ ${partGroupSummary(group.tools)}`
+    `\u25b8 ${partGroupSummary(group.tools)}`
   );
   badge.setAttribute("aria-expanded", String(expanded));
   block.appendChild(badge);
@@ -575,25 +576,33 @@ function renderPartGroup(group, expanded) {
   list.hidden = !expanded;
   for (const tool of group.tools) {
     const row = el("div", "step");
+    const isRunning = tool.status === "running";
     row.appendChild(
-      el("span", "step-check", tool.status === "error" ? "✕" : "✓")
+      el(
+        "span",
+        "step-check",
+        isRunning ? "\u25cb" : tool.status === "error" ? "\u2715" : "\u2713"
+      )
     );
     row.appendChild(
       el(
         "span",
         "step-name",
-        tool.reason ? `${tool.tool} — ${tool.reason}` : tool.tool
+        tool.reason ? `${tool.tool} \u2014 ${tool.reason}` : tool.tool
       )
     );
     if (tool.label)
-      row.appendChild(el("span", "step-label", `· ${tool.label}`));
+      row.appendChild(el("span", "step-label", `\u00b7 ${tool.label}`));
     if (tool.duration !== undefined)
       row.appendChild(el("span", "step-dur", `${tool.duration} ms`));
+    if (isRunning && tool.started) {
+      row.appendChild(el("span", "step-dur tool-live", "\u25cb running\u2026"));
+    }
     if (state.toolOutput === "full" && tool.output) {
       row.appendChild(el("pre", "step-output", tool.output.slice(0, 1200)));
     }
     if (tool.status === "error")
-      row.appendChild(el("div", "step-error", "✕ failed"));
+      row.appendChild(el("div", "step-error", "\u2715 failed"));
     list.appendChild(row);
   }
   block.appendChild(list);
@@ -601,7 +610,7 @@ function renderPartGroup(group, expanded) {
     const on = !list.hidden;
     list.hidden = !on;
     badge.setAttribute("aria-expanded", String(on));
-    badge.textContent = `${on ? "▾" : "▸"} ${partGroupSummary(group.tools)}`;
+    badge.textContent = `${on ? "\u25be" : "\u25b8"} ${partGroupSummary(group.tools)}`;
   });
   return block;
 }
@@ -627,7 +636,56 @@ function bubbleParts(botName, turnId, parts) {
       zone.appendChild(renderPartGroup(group, expanded));
     }
   }
+  // Issue 59: while a tool is running, tick the group badge every second
+  // with the running call's reason + elapsed. Cleared on settle or removal.
+  startToolElapsedTicker(record, parts);
   if (botName === state.selected) scrollBottomIfPinned();
+}
+
+// Issue 59: 1s client-side cadence — ticks the badge with the running call's
+// reason + elapsed from the step's started timestamp. No server chatter.
+function startToolElapsedTicker(record, parts) {
+  if (record.elapsedTimer) {
+    clearInterval(record.elapsedTimer);
+    record.elapsedTimer = null;
+  }
+  const running = parts.filter(
+    (part) => part.type === "tool" && part.status === "running" && part.started
+  );
+  if (running.length === 0) return;
+  const oldest = Math.min(...running.map((t) => t.started));
+  record.elapsedTimer = setInterval(() => {
+    const elapsed = formatLiveElapsed(Date.now() - oldest);
+    for (const tool of running) {
+      const badge = record.bubble
+        .closest(".entry")
+        ?.querySelector?.(".toolgroup-badge");
+      if (badge) {
+        badge.textContent = `\u25b8 ${partGroupSummary(record.bubble.parts ?? running)} \u00b7 ${elapsed}`;
+      }
+    }
+  }, 1000);
+  // Fire immediately so the first tick is instant.
+  updateToolElapsedBadge(record, oldest, running);
+}
+
+function updateToolElapsedBadge(record, oldest, running) {
+  const elapsed = formatLiveElapsed(Date.now() - oldest);
+  const badge = record.bubble
+    ?.closest?.(".entry")
+    ?.querySelector?.(".toolgroup-badge");
+  if (badge) {
+    const name = running[0]?.reason || running[0]?.tool || "working";
+    badge.textContent = `\u25b8 ${running.length} running \u2014 ${name} \u00b7 ${elapsed}`;
+  }
+}
+
+function formatLiveElapsed(ms) {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${minutes}m ${String(secs).padStart(2, "0")}s`;
 }
 
 function selectBot(name) {

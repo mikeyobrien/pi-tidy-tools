@@ -1074,6 +1074,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           tool: event.toolName,
           label: event.label,
           reason: event.reason,
+          started: Date.now(),
         });
         runtime.steps.push({
           toolCallId: event.toolCallId,

@@ -16,6 +16,8 @@ export interface ToolPart {
   label?: string;
   reason?: string;
   status: "running" | "ok" | "error";
+  /** Wall-clock ms when the tool started (client-side elapsed tick source). */
+  started?: number;
   duration?: number;
   output?: string;
 }
@@ -39,6 +41,7 @@ export class TurnPartsAccumulator {
     tool: string;
     label?: string;
     reason?: string;
+    started?: number;
   }): void {
     // Idempotent by toolCallId (issue 29-item-4 mirror): replayed/re-delivered
     // starts update the existing part instead of duplicating it.

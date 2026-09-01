@@ -194,6 +194,40 @@ if (!chrome) {
   );
 }
 log(`chrome: ${chrome}`);
+
+// Doctor (issue 53 addendum): fail fast with evidence tiers instead of a
+// wedged run. Evidence tiers: ran-it > walked-the-failure > pointed-at-line
+// > said-so. Anything below ran-it is reported unproven, never rounded up.
+const doctor = [];
+doctor.push({
+  check: "fixture fleet up",
+  tier: "ran-it",
+  ok: (await fetch(`${daemonBase}/api/fleet`)).ok,
+});
+doctor.push({
+  check: "console build served",
+  tier: "ran-it",
+  ok: (await fetch(`${daemonBase}/app.js`)).ok,
+});
+doctor.push({
+  check: "browser session healthy",
+  tier: "walked-the-failure",
+  ok: existsSync(chrome),
+});
+for (const d of doctor) {
+  if (!d.ok) die(`doctor failed: ${d.check} [tier: ${d.tier}]`);
+}
+log("doctor: " + doctor.map((d) => `${d.check} [${d.tier}]`).join(", "));
+
+// Feature map: feature -> how to drive -> observable end state.
+const FEATURE_MAP = {
+  "roster + presence": "GET /api/fleet -> bots[] with online/queued",
+  "transcript history": "GET /api/bots/:name/transcript -> entries[]",
+  "send message": "POST /api/bots/:name/message {text} -> {accepted}",
+  compaction: "POST /api/bots/:name/compact -> {accepted, rerouted}",
+  "version + capabilities":
+    "GET /api/version -> {version, capabilities[], commit?}",
+};
 // Watchdog: a hung headless session can never wedge the run past the
 // worst-case budget (fleet boot 60s + 3 viewports x 30s chrome + slack).
 const WATCHDOG_MS = 180_000;

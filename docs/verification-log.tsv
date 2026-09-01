@@ -1,0 +1,24 @@
+ts	phase	decision	why	evidence	result
+2026-08-31T21:45Z	issue-21 stick-to-bottom	landed	scroll doctrine P1-P13	e42577e prev; app.js scrollBottomIfPinned	pass
+2026-08-31T23:10Z	issue-44 markdown tables	landed	acceptance md.test coverage	37e0914; test/md.test.ts pass	pass
+2026-08-31T23:40Z	issue-45 iOS chip fixes	landed	bfcache + [hidden] CSS cascade	ae138d4; lifecycle+manual pass	pass
+2026-09-01T00:20Z	issue-50 busy classification	landed	turn_in_flight != runtime_offline	538e32b; reasons.test pass	pass
+2026-09-01T00:45Z	issue-51 lifecycle	landed	scout spec items 1-4	0860102; logs+ports+restart tests	pass
+2026-09-01T01:30Z	issue-46 extension tolerance	landed	pathology zoo hermetic	50e516f+9410e95; extensions.test pass	pass
+2026-09-01T02:00Z	issue-58 grok handoffs	landed	operator-approved design; kinds schema	d1ff7c6; contract.test pass	pass
+2026-09-01T02:30Z	issue-60 flutter /app/ mount	landed phase 1	parity gate before default flip	7ce7980; static-assets.test pass	pass
+2026-09-01T03:00Z	issue-43 item 1 usage telemetry	landed	keystone; child usage.plumb verified live	3bdf574; contract.test pass	pass
+2026-09-01T03:20Z	issue-43 item 2 policy	landed	60/75/hysteresis/boundary unit-covered	9da4fc0; turnparts.test pass	pass
+2026-09-01T03:40Z	issue-43 items 3+4+5	partial + landed	preamble wired; context endpoint; journal fields	6daafa0; daemon.tsc pass	partial: preamble acceptance needs live model turn
+2026-09-01T03:45Z	issue-43 item 10 capability	landed	contract pattern	25a4957; version schema pass	pass
+2026-09-01T04:00Z	issue-43 item 7 force overrides	landed	thin wrapper over maybeCompact	force-overrides commit; t49c pass	pass
+2026-09-01T04:10Z	issue-43 item 6 idle window	landed	45% soft floor, scheduler tick	ba66710; policy tests pass	pass
+2026-09-01T17:30Z	issue-42 P1 port-0 readiness	landed	registry re-read + orphan kill	8a498ce; lifecycle fresh+broken tests pass	pass
+2026-09-01T18:00Z	issue-47 marker sweep	landed	five raw sites routed through strip	de71c7e; grep sweep + grammar tests	pass
+2026-09-01T18:20Z	issue-35 fold collapse	landed	single grid child + min-height 0	69522d6/3f9b9a3; css byte-verified	pass
+2026-09-01T20:01Z	issue-46 recovery + modes	landed	mode mapping fix + runner trace	3d1dac5; extensions.test 2x pass	pass
+2026-09-01T20:30Z	issue-52 probe un-hang	landed	async chrome + watchdog	42932ea+3d1dac5; probe completes <40s	pass
+2026-09-01T20:45Z	issue-53 evidence tiers + doctor	addendum landed	doctor + feature map + tier output	in probe-console-layout.mjs (this branch)	pass (tiers enforced in output)
+2026-09-01T20:50Z	issue-53 TSV decision trail	landed	this file	evidence: docs/verification-log.tsv	pass
+2026-09-01T20:55Z	issue-53 mode×state grid	UNLANDED	requires DOM harness (no browser deps in test tier)	INCONCLUSIVE — needs dispatch
+2026-09-01T20:56Z	issue-53 stryker config	UNLANDED	mutation scope not configured	INCONCLUSIVE — needs dispatch

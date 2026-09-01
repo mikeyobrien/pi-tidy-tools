@@ -1731,7 +1731,10 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     routines,
     token,
     childSecret,
-    toolOutput,
+    // Issue 80: a getter, not a snapshot — POST /api/settings must be
+    // readable back from GET without a daemon restart. The closed-over
+    // primitive froze at boot and silently reverted every client reload.
+    getToolOutput: () => activeToolOutput,
     log,
     onRoster: emitRoster,
     onToolOutput: (mode) => {
@@ -2137,7 +2140,7 @@ interface ServerDeps {
   onRoster: () => void;
   onToolOutput: (mode: ToolOutputMode) => void;
   persistToolOutput: (mode: ToolOutputMode) => void;
-  toolOutput: ToolOutputMode;
+  getToolOutput(): ToolOutputMode;
   token?: string;
   childSecret: string;
   log: (line: string) => void;
@@ -2287,7 +2290,7 @@ function buildHttpServer(deps: ServerDeps): Hono {
   });
 
   app.get("/api/settings", (context) => {
-    return context.json({ toolOutput: deps.toolOutput });
+    return context.json({ toolOutput: deps.getToolOutput() });
   });
 
   app.post("/api/settings", async (context) => {

@@ -475,16 +475,14 @@ export function coerceBusBehavior(
 /**
  * Validate optional composer images for POST /message: at most one, each with
  * string mediaType + base64 data. Forwarded to the child as pi ImageContent.
+ * Shared item validation with the bus handoff path (issue 75), which has NO
+ * cap — pixel-faithful dispatch forwards every image the sender attaches.
  */
-export function coerceMessageImages(
-  value: unknown
-):
-  | { ok: true; images?: { type: "image"; data: string; mimeType: string }[] }
-  | { ok: false } {
-  if (value === undefined) return { ok: true, images: undefined };
-  if (!Array.isArray(value) || value.length > 1) return { ok: false };
-  if (value.length === 0) return { ok: true, images: undefined };
-  const [image] = value as unknown[];
+export type ChildImages = { type: "image"; data: string; mimeType: string }[];
+
+const coerceImageItem = (
+  image: unknown
+): { mediaType: string; data: string } | null => {
   if (
     typeof image !== "object" ||
     image === null ||
@@ -493,12 +491,53 @@ export function coerceMessageImages(
     typeof (image as { data?: unknown }).data !== "string" ||
     (image as { data: string }).data.length === 0
   )
-    return { ok: false };
+    return null;
   const { mediaType, data } = image as { mediaType: string; data: string };
-  return {
-    ok: true,
-    images: [{ type: "image", data, mimeType: mediaType }],
-  };
+  return { mediaType, data };
+};
+
+const coerceImageArray = (
+  value: unknown,
+  max: number | undefined
+):
+  | { ok: true; images?: { type: "image"; data: string; mimeType: string }[] }
+  | { ok: false } => {
+  if (value === undefined) return { ok: true, images: undefined };
+  if (!Array.isArray(value)) return { ok: false };
+  if (max !== undefined && value.length > max) return { ok: false };
+  if (value.length === 0) return { ok: true, images: undefined };
+  const images: { type: "image"; data: string; mimeType: string }[] = [];
+  for (const item of value) {
+    const coerced = coerceImageItem(item);
+    if (!coerced) return { ok: false };
+    images.push({
+      type: "image",
+      data: coerced.data,
+      mimeType: coerced.mediaType,
+    });
+  }
+  return { ok: true, images };
+};
+
+export function coerceMessageImages(
+  value: unknown
+):
+  | { ok: true; images?: { type: "image"; data: string; mimeType: string }[] }
+  | { ok: false } {
+  return coerceImageArray(value, 1);
+}
+
+/**
+ * Issue 75: bus handoff images — same wire shape as the composer
+ * ({mediaType, data}), NO cap. Every image the sender attaches rides the
+ * handoff prompt; completion notifications stay text-only by construction.
+ */
+export function coerceHandoffImages(
+  value: unknown
+):
+  | { ok: true; images?: { type: "image"; data: string; mimeType: string }[] }
+  | { ok: false } {
+  return coerceImageArray(value, undefined);
 }
 
 /**
@@ -1551,7 +1590,8 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     fromName: string,
     targetName: string,
     message: string,
-    behavior?: "steer" | "followUp"
+    behavior?: "steer" | "followUp",
+    images?: { type: "image"; data: string; mimeType: string }[]
   ) => {
     const route = checkRoute(fromName, targetName, fleet.bots);
     if (!route.ok)
@@ -1583,7 +1623,8 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       if (!busy) {
         // Idle target: every behavior degrades to a normal message — steer is
         // only meaningful mid-turn, and an idle-agent follow_up never flushes.
-        await runtime.session.prompt(text);
+        // Issue 75: images ride the prompt exactly like operator /message.
+        await runtime.session.prompt(text, undefined, images);
         return;
       }
       if (behavior === "steer") {
@@ -1592,10 +1633,10 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       }
       // Queued behind the in-flight turn; turn_start decrements + pops the
       // pending journal (issue 34).
-      journalPending(runtime, entry, undefined);
+      journalPending(runtime, entry, images);
       runtime.queuedCount++;
       emitRoster();
-      await runtime.session.prompt(text, behavior ?? "followUp");
+      await runtime.session.prompt(text, behavior ?? "followUp", images);
     };
 
     // Transient unavailability: one emergency respawn so the retry can actually help.
@@ -1816,8 +1857,8 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         });
         return { status: 200, body: { accepted: true, stopped: true } };
       },
-      busSend: async (fromName, targetName, message, behavior) =>
-        deliverHandoff(fromName, targetName, message, behavior),
+      busSend: async (fromName, targetName, message, behavior, images) =>
+        deliverHandoff(fromName, targetName, message, behavior, images),
     },
   });
 
@@ -2080,7 +2121,8 @@ interface ServerDeps {
       from: string,
       target: string,
       message: string,
-      behavior?: "steer" | "followUp"
+      behavior?: "steer" | "followUp",
+      images?: { type: "image"; data: string; mimeType: string }[]
     ): Promise<{ status: number; body: unknown }>;
   };
 }
@@ -2338,11 +2380,24 @@ function buildHttpServer(deps: ServerDeps): Hono {
         400
       );
     }
+    // Issue 75: handoff images — composer wire shape, uncapped.
+    const images = coerceHandoffImages((body as { images?: unknown }).images);
+    if (!images.ok) {
+      return context.json(
+        {
+          delivered: false,
+          reason: "invalid_images",
+          error: "images must be {mediaType, data} objects",
+        },
+        400
+      );
+    }
     const result = await deps.handlers.busSend(
       body.from,
       body.target,
       body.message,
-      behavior.behavior
+      behavior.behavior,
+      images.images
     );
     return context.json(result.body, result.status as 200 | 404 | 503);
   });

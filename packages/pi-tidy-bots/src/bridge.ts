@@ -86,6 +86,22 @@ export default async function bridge(pi: any): Promise<void> {
       message: Type.String({
         description: "Your composed message to the teammate",
       }),
+      images: Type.Optional(
+        Type.Array(
+          Type.Object({
+            mediaType: Type.String({
+              description: "MIME type, e.g. image/png",
+            }),
+            data: Type.String({
+              description: "Base64 image bytes, no dataURL prefix",
+            }),
+          }),
+          {
+            description:
+              "Optional images to attach (issue 75): every image rides the handoff prompt — no cap. Use for pixel-faithful dispatch (screenshots, builds).",
+          }
+        )
+      ),
       behavior: Type.Optional(
         Type.Union([Type.Literal("steer"), Type.Literal("followUp")], {
           description:
@@ -100,6 +116,7 @@ export default async function bridge(pi: any): Promise<void> {
       params: {
         target: string;
         message: string;
+        images?: { mediaType: string; data: string }[];
         behavior?: "steer" | "followUp";
       }
     ) {
@@ -115,6 +132,9 @@ export default async function bridge(pi: any): Promise<void> {
             from: selfName,
             target: params.target,
             message: params.message,
+            ...(params.images && params.images.length > 0
+              ? { images: params.images }
+              : {}),
             ...(params.behavior ? { behavior: params.behavior } : {}),
           }),
         });

@@ -38,7 +38,38 @@ test("coerceMessageImages accepts one image and omission", () => {
     ]);
 });
 
+test("coerceHandoffImages forwards every image, no cap (issue 75)", async () => {
+  const { coerceHandoffImages } = await import("../src/daemon.ts");
+  const many = coerceHandoffImages([
+    { mediaType: "image/png", data: "aGk=" },
+    { mediaType: "image/jpeg", data: "eHg=" },
+    { mediaType: "image/webp", data: "eXo=" },
+  ]);
+  assert.equal(many.ok, true);
+  if (many.ok) {
+    assert.equal(many.images?.length, 3, "no cap of one");
+    assert.deepEqual(many.images?.[1], {
+      type: "image",
+      data: "eHg=",
+      mimeType: "image/jpeg",
+    });
+  }
+  assert.deepEqual(
+    coerceHandoffImages(undefined),
+    { ok: true, images: undefined },
+    "text-only handoff unchanged"
+  );
+  assert.equal(
+    coerceHandoffImages([{ mediaType: "image/png" }]).ok,
+    false,
+    "malformed item rejected"
+  );
+  assert.equal(coerceHandoffImages("nope").ok, false);
+});
+
 test("coerceMessageImages rejects multi, empty, and malformed payloads", () => {
+  // Composer path stays capped at one (UI contract); the bus path is
+  // covered by coerceHandoffImages above.
   assert.equal(
     coerceMessageImages([
       { mediaType: "image/png", data: "aGk=" },

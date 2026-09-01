@@ -42,6 +42,119 @@ interface Entry {
 }
 
 test(
+  "handoff images pass through uncapped (issue 75)",
+  { timeout: 45000 },
+  async () => {
+    const fleetDir = mkdtempSync(join(tmpdir(), "ptb-handoff-img-"));
+    const handles: Array<{ stop(): Promise<void> }> = [];
+    const tracePath = join(fleetDir, "stub-trace.jsonl");
+    try {
+      for (const bot of ["aa", "bb"]) {
+        mkdirSync(join(fleetDir, "bots", bot), { recursive: true });
+        writeFileSync(join(fleetDir, "bots", bot, "AGENTS.md"), `# ${bot}\n`);
+      }
+      writeFileSync(
+        join(fleetDir, "bots.toml"),
+        `[[bot]]\nname = "aa"\ndir = "bots/aa"\n[[bot]]\nname = "bb"\ndir = "bots/bb"\n`
+      );
+      const wrapper = join(fleetDir, "streaming-pi.sh");
+      writeFileSync(wrapper, `#!/bin/sh\nexec node ${runner}\n`);
+      spawnSync("chmod", ["+x", wrapper]);
+      process.env.PTB_STUB_TRACE = tracePath;
+
+      const { startFleet } = await import("../src/daemon.ts");
+      const handle = await startFleet({
+        dir: fleetDir,
+        port: 0,
+        host: "127.0.0.1",
+        piBin: wrapper,
+        log: () => {},
+      });
+      handles.push(handle);
+      const base = `http://127.0.0.1:${handle.port}`;
+      const fleet = async () =>
+        (await (await fetch(`${base}/api/fleet`)).json()) as {
+          bots: { name: string; online: boolean }[];
+        };
+      await waitFor(async () => (await fleet()).bots.every((b) => b.online));
+
+      // TWO images (the old cap-of-one would have dropped one) in the
+      // composer wire shape the bridge now forwards.
+      const images = [
+        {
+          mediaType: "image/png",
+          data: Buffer.from("png-bytes-1").toString("base64"),
+        },
+        {
+          mediaType: "image/png",
+          data: Buffer.from("png-bytes-2").toString("base64"),
+        },
+      ];
+      const bus = await fetch(`${base}/bus/send`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-fleet-child": handle.childSecret,
+        },
+        body: JSON.stringify({
+          from: "aa",
+          target: "bb",
+          message: "match these pixels",
+          images,
+        }),
+      });
+      const result = (await bus.json()) as { delivered?: boolean };
+      assert.equal(result.delivered, true, "image handoff delivered");
+
+      // The target's prompt carried BOTH images.
+      await waitFor(() => {
+        if (!existsSync(tracePath)) return false;
+        const records = readFileSync(tracePath, "utf8")
+          .split("\n")
+          .filter((line) => line.trim().length > 0)
+          .map(
+            (line) =>
+              JSON.parse(line) as {
+                name?: string;
+                kind?: string;
+                images?: number;
+              }
+          );
+        return records.some(
+          (record) =>
+            record.name === "bb" &&
+            record.kind === "prompt" &&
+            record.images === 2
+        );
+      });
+
+      // Malformed images are rejected at the route, not silently dropped.
+      const bad = await fetch(`${base}/bus/send`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-fleet-child": handle.childSecret,
+        },
+        body: JSON.stringify({
+          from: "aa",
+          target: "bb",
+          message: "bad images",
+          images: [{ mediaType: "image/png" }],
+        }),
+      });
+      assert.equal(bad.status, 400);
+      assert.equal(
+        ((await bad.json()) as { reason?: string }).reason,
+        "invalid_images"
+      );
+    } finally {
+      await Promise.all(handles.map((h) => h.stop().catch(() => {})));
+      rmSync(fleetDir, { recursive: true, force: true });
+    }
+  }
+);
+
+test(
   "handoff round-trip: no dispatcher prompt, completion + receipt entries",
   { timeout: 45000 },
   async () => {

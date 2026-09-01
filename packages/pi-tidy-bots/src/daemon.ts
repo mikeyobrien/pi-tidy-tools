@@ -116,6 +116,12 @@ interface BotRuntime {
   turnsSinceCompact: number;
   /** Issue 61 layer 2: consecutive identical tool-call validation failures. */
   toolFailStreak: { count: number; signature: string } | null;
+  /**
+   * Issue 74: the operator entry whose prompt we just handed to the child
+   * and whose delivering flag clears at agent_start (accepted = streaming,
+   * not queued). Null when no direct delivery is in the accept window.
+   */
+  activeDeliveryId: string | null;
   pendingUi: Map<
     string,
     { view: UiRequestView; timer: ReturnType<typeof setTimeout> }
@@ -629,6 +635,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     clientMessageIds: new Set<string>(),
     turnsSinceCompact: 0,
     toolFailStreak: null,
+    activeDeliveryId: null,
     steps: [],
     pendingUi: new Map(),
   });
@@ -1053,12 +1060,17 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           (candidate) => candidate.id === message.id
         );
         try {
+          // Issue 74: a replayed message is queued until ITS turn starts
+          // streaming — same accept-window semantics as a direct message.
+          if (target) runtime.activeDeliveryId = target.id;
           await session.prompt(message.text, undefined, message.images);
+          runtime.activeDeliveryId = null;
           pendingStore.remove(name, message.id);
           if (target) target.delivering = false;
           log(`[${name}] replayed pending message (id ${message.id})`);
         } catch {
           // Keep it journalled; the next spawn retries.
+          runtime.activeDeliveryId = null;
           log(`[${name}] pending replay deferred (id ${message.id})`);
         }
       }
@@ -1108,6 +1120,18 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         return;
       }
       case "agent_start": {
+        // Issue 74: the child ACCEPTED a prompt — that entry is streaming,
+        // not queued. delivering now means only "not yet accepted".
+        if (runtime.activeDeliveryId) {
+          const accepted = runtime.transcript.find(
+            (candidate) => candidate.id === runtime.activeDeliveryId
+          );
+          runtime.activeDeliveryId = null;
+          if (accepted?.delivering) {
+            accepted.delivering = false;
+            emit({ type: "append", bot: botName, entry: accepted });
+          }
+        }
         runtime.turnId = randomUUID();
         runtime.turnText = "";
         runtime.steps = [];
@@ -1507,10 +1531,17 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       return;
     }
     try {
+      // Issue 74: delivering means "not yet accepted by the child" — clear
+      // it at agent_start (via activeDeliveryId), not when the whole turn
+      // finishes. The old await-then-clear kept the ACTIVE prompt labeled
+      // "queued…" for the entire turn.
+      runtime.activeDeliveryId = entry.id;
       await session.prompt(text, behavior, images);
+      runtime.activeDeliveryId = null;
       entry.delivering = false;
       emit({ type: "append", bot: runtime.config.name, entry });
     } catch (error) {
+      runtime.activeDeliveryId = null;
       // Fresh-bot boot race: the agent can reject plain prompts while its first
       // turn is still settling. One followUp queues behind it; genuine failures
       // (offline, provider errors) still throw to the caller.

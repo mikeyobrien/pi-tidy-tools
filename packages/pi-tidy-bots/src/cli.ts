@@ -65,7 +65,8 @@ const COMMAND_FLAGS: Record<string, string[]> = {
   chat: ["bot", "url", "token"],
   status: ["fleet"],
   stop: ["fleet"],
-  fleets: ["prune"],
+  restart: ["fleet"],
+  fleets: ["prune", "json"],
   id: [],
 };
 

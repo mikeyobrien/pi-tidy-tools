@@ -1,0 +1,168 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { spawnSync } from "node:child_process";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  readFileSync,
+  existsSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+// Issue 58 (grok-style handoffs, daemon half): a settled teammate's report
+// lands on the dispatcher as a transcript fact (kind=completion) — the
+// dispatcher's session is NEVER prompted, so no ping-pong turn pollution. A
+// successful bus send leaves a structured receipt (kind=handoff-receipt) on
+// the sender; the receiver keeps the full brief (kind=handoff).
+
+const runner = new URL("./fixtures/rpc/streaming-pi.mjs", import.meta.url)
+  .pathname;
+
+async function waitFor(
+  probe: () => Promise<boolean> | boolean,
+  timeoutMs = 15000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await probe()) return;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error("waitFor: condition not met in time");
+}
+
+interface Entry {
+  role: string;
+  kind?: string;
+  originFrom?: string;
+  text: string;
+  receipt?: { name: string; avatar?: string; title?: string };
+}
+
+test(
+  "handoff round-trip: no dispatcher prompt, completion + receipt entries",
+  { timeout: 45000 },
+  async () => {
+    const fleetDir = mkdtempSync(join(tmpdir(), "ptb-handoffs-"));
+    const handles: Array<{ stop(): Promise<void> }> = [];
+    const tracePath = join(fleetDir, "stub-trace.jsonl");
+    try {
+      for (const bot of ["aa", "bb"]) {
+        mkdirSync(join(fleetDir, "bots", bot), { recursive: true });
+        writeFileSync(join(fleetDir, "bots", bot, "AGENTS.md"), `# ${bot}\n`);
+      }
+      writeFileSync(
+        join(fleetDir, "bots.toml"),
+        `[[bot]]\nname = "aa"\ntitle = "Sender"\navatar = "A"\ndir = "bots/aa"\n` +
+          `[[bot]]\nname = "bb"\ntitle = "Worker"\navatar = "B"\ndir = "bots/bb"\n`
+      );
+      const wrapper = join(fleetDir, "streaming-pi.sh");
+      writeFileSync(wrapper, `#!/bin/sh\nexec node ${runner}\n`);
+      spawnSync("chmod", ["+x", wrapper]);
+      // Stub children inherit this: every inbound request is traced.
+      process.env.PTB_STUB_TRACE = tracePath;
+
+      const { startFleet } = await import("../src/daemon.ts");
+      const handle = await startFleet({
+        dir: fleetDir,
+        port: 0,
+        host: "127.0.0.1",
+        piBin: wrapper,
+        log: () => {},
+      });
+      handles.push(handle);
+      const base = `http://127.0.0.1:${handle.port}`;
+
+      const fleet = async () =>
+        (await (await fetch(`${base}/api/fleet`)).json()) as {
+          bots: { name: string; online: boolean }[];
+        };
+      await waitFor(async () => (await fleet()).bots.every((b) => b.online));
+
+      const transcript = async (bot: string): Promise<Entry[]> =>
+        (
+          (await (
+            await fetch(`${base}/api/bots/${bot}/transcript`)
+          ).json()) as { transcript: Entry[] }
+        ).transcript;
+
+      // Bus handoff aa → bb (child secret is exposed for exactly this).
+      const bus = await fetch(`${base}/bus/send`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-fleet-child": handle.childSecret,
+        },
+        body: JSON.stringify({
+          from: "aa",
+          target: "bb",
+          message: "do the thing",
+        }),
+      });
+      assert.equal(
+        ((await bus.json()) as { delivered?: boolean }).delivered,
+        true,
+        "handoff delivered"
+      );
+
+      // Receiver keeps the full brief as kind=handoff.
+      await waitFor(async () =>
+        (await transcript("bb")).some(
+          (e) => e.kind === "handoff" && e.originFrom === "aa"
+        )
+      );
+
+      // Sender gets the structured receipt (bot config, not display strings).
+      await waitFor(async () =>
+        (await transcript("aa")).some((e) => e.kind === "handoff-receipt")
+      );
+      const receipt = (await transcript("aa")).find(
+        (e) => e.kind === "handoff-receipt"
+      );
+      assert.equal(receipt?.text, "Messaged bb");
+      assert.equal(receipt?.receipt?.name, "bb", "structured target name");
+      assert.equal(receipt?.receipt?.avatar, "B", "avatar from bot config");
+      assert.equal(receipt?.receipt?.title, "Worker", "title from bot config");
+
+      // bb's turn settles → the completion lands on aa as a transcript fact.
+      await waitFor(async () =>
+        (await transcript("aa")).some(
+          (e) => e.kind === "completion" && e.originFrom === "bb"
+        )
+      );
+
+      // THE point: aa's session was never prompted — no prompt/follow_up
+      // ever reached the sender child. The trace records every inbound
+      // request for every stub child in this fleet.
+      await new Promise((r) => setTimeout(r, 1500));
+      const trace = existsSync(tracePath)
+        ? readFileSync(tracePath, "utf8")
+            .split("\n")
+            .filter((line) => line.trim().length > 0)
+            .map((line) => JSON.parse(line))
+        : [];
+      const senderPrompts = trace.filter(
+        (record: { name?: string; kind?: string }) =>
+          record.name === "aa" &&
+          (record.kind === "prompt" || record.kind === "follow_up")
+      );
+      assert.equal(
+        senderPrompts.length,
+        0,
+        `dispatcher must not be prompted on completion — saw: ${JSON.stringify(senderPrompts)}`
+      );
+      assert.ok(
+        trace.some(
+          (record: { name?: string; kind?: string }) =>
+            record.name === "bb" && record.kind === "prompt"
+        ),
+        "the target did get the brief"
+      );
+    } finally {
+      await Promise.all(handles.map((h) => h.stop().catch(() => {})));
+      rmSync(fleetDir, { recursive: true, force: true });
+    }
+  }
+);

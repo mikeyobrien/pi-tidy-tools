@@ -8,6 +8,17 @@
 // Events fire on timers so tests can observe the mid-turn window where the
 // operator bubble must already read as delivering=false.
 import readline from "node:readline";
+import { appendFileSync } from "node:fs";
+
+// Issue 58 test seam: record every inbound request so tests can prove a
+// session was (or was NOT) prompted. Opt-in via PTB_STUB_TRACE.
+const trace = (kind, text) => {
+  if (process.env.PTB_STUB_TRACE)
+    appendFileSync(
+      process.env.PTB_STUB_TRACE,
+      JSON.stringify({ name: process.env.PI_TIDY_BOTS_NAME, kind, text }) + "\n"
+    );
+};
 
 const send = (frame) => process.stdout.write(JSON.stringify(frame) + "\n");
 const respond = (id, extra = {}) =>
@@ -32,6 +43,7 @@ rl.on("line", (line) => {
     return;
   }
   if (request.type === "prompt" || request.type === "follow_up") {
+    trace(request.type, String(request.message ?? ""));
     // Real pi acks follow_up immediately (it queues inside the child); the
     // turn streams afterwards. Only prompt resolves when its turn finishes.
     if (request.type === "follow_up") respond(request.id);

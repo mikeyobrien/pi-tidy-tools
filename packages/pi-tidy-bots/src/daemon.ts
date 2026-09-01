@@ -38,11 +38,7 @@ import {
 } from "./rpc.ts";
 import { isDue, minuteKey, parseCron } from "./cron.ts";
 import { createEventLog } from "./eventlog.ts";
-import {
-  attributionPrefix,
-  completionNotification,
-  stripActionMarkers,
-} from "./actions.ts";
+import { attributionPrefix, stripActionMarkers } from "./actions.ts";
 import { classifyFailure, isRetryable } from "./reasons.ts";
 import {
   createTranscriptStore,
@@ -63,6 +59,8 @@ export interface TranscriptEntry {
   originFrom?: string;
   /** Issue 58: structured handoff lifecycle kinds (console renders these). */
   kind?: "handoff" | "handoff-receipt" | "completion";
+  /** Issue 58: structured receipt target (bot config) — console never parses display strings. */
+  receipt?: { name: string; avatar?: string; title?: string };
   text: string;
   ts: string;
   steps?: { name: string; duration?: number }[];
@@ -142,6 +140,8 @@ export interface FleetHandle {
   url: string;
   port?: number;
   token?: string;
+  /** Per-boot child secret — authorizes /bus/send for fleet members (and tests). */
+  childSecret: string;
   fleetDir: string;
   stop(): Promise<void>;
 }
@@ -1345,37 +1345,21 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         runtime.pendingFrom = [];
         for (const pendingFrom of pendingSources) {
           const source = runtimes.get(pendingFrom);
-          if (!source?.session?.alive) continue;
-          const notification = completionNotification(botName, text);
-          // Idle source: prompt (follow_up on an idle agent never flushes). Busy: queue.
-          // Retry once — a transient failure gets exactly one second chance.
-          const send = source.session.streaming
-            ? source.session.followUp(notification)
-            : source.session.prompt(notification);
-          void send
-            .catch(() =>
-              source.session?.alive
-                ? source.session
-                    .prompt(notification)
-                    .catch(() =>
-                      log(
-                        `[${pendingFrom}] completion from ${botName} dropped [reason: runtime_offline]`
-                      )
-                    )
-                : undefined
-            )
-            .finally(() => {
-              appendTranscript(source, {
-                id: randomUUID(),
-                role: "assistant",
-                origin: "bot",
-                originFrom: botName,
-                kind: "completion",
-                text,
-                ts: new Date().toISOString(),
-              });
-              touch(source);
-            });
+          if (!source) continue;
+          // Issue 58 (grok-style): the completion is a transcript FACT on the
+          // dispatcher, not a prompt. Prompting the dispatcher started a turn
+          // on it (ping-pong pollution in the operator's chat); the report now
+          // renders as a "Message from X" entry the dispatcher never answers.
+          appendTranscript(source, {
+            id: randomUUID(),
+            role: "assistant",
+            origin: "bot",
+            originFrom: botName,
+            kind: "completion",
+            text,
+            ts: new Date().toISOString(),
+          });
+          touch(source);
         }
         void maybeCompact(runtime, {}).catch(() => {});
         return;
@@ -1644,6 +1628,25 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         );
         return { status: 503, body: { delivered: false, reason: retryReason } };
       }
+    }
+    // Issue 58: successful bus send leaves a centered receipt on the
+    // SENDER's transcript — structured from the target's bot config, never a
+    // display string to parse. The console renders "Messaged <avatar> <name>".
+    const sender = runtimes.get(fromName);
+    if (sender) {
+      appendTranscript(sender, {
+        id: randomUUID(),
+        role: "system",
+        origin: "system",
+        kind: "handoff-receipt",
+        text: `Messaged ${targetName}`,
+        receipt: {
+          name: targetName,
+          avatar: route.target.avatar,
+          title: route.target.title,
+        },
+        ts: new Date().toISOString(),
+      });
     }
     return { status: 200, body: { delivered: true } };
   };
@@ -1998,6 +2001,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         url,
         port: actualPort,
         token,
+        childSecret,
         fleetDir: fleet.dir,
         stop: async () => {
           manifestWatcher?.close();

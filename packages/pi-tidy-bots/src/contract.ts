@@ -80,6 +80,13 @@ export const TranscriptEntrySchema = Type.Object({
       Type.Literal("completion"),
     ])
   ),
+  receipt: Type.Optional(
+    Type.Object({
+      name: Type.String(),
+      avatar: Type.Optional(Type.String()),
+      title: Type.Optional(Type.String()),
+    })
+  ),
   text: Type.String(),
   ts: Type.String(),
   delivering: Type.Optional(Type.Boolean()),

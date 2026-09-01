@@ -936,6 +936,20 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       },
     });
     runtime.session = session;
+    if (runtime.config.thinking) {
+      // Per-bot thinking level (manifest `thinking` row): applied once the rpc
+      // channel is live; a refusal must never block the bot from booting.
+      try {
+        await session.request({
+          type: "set_thinking_level",
+          level: runtime.config.thinking,
+        });
+      } catch {
+        log(
+          `[${name}] thinking level not applied [level: ${runtime.config.thinking}]`
+        );
+      }
+    }
     watchPersona(runtime);
     touch(runtime);
     emitRoster();

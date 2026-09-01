@@ -248,3 +248,26 @@ test("bridge never touches the child working directory (ADR 0002)", async () => 
   assert.ok(!/cwd\s*[:=]/.test(source), "bridge must not set child cwd");
   assert.ok(!source.includes("process.chdir"), "bridge must not chdir");
 });
+
+test("thinking rows validate against pi's level set and reach the config", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ptb-thinking-"));
+  try {
+    const botDir = join(dir, "atlas");
+    mkdirSync(botDir, { recursive: true });
+    writeFileSync(join(botDir, "AGENTS.md"), "# atlas\n");
+    writeFileSync(
+      join(dir, "bots.toml"),
+      `[[bot]]\nname = "atlas"\ndir = "atlas"\nthinking = "max"\n`
+    );
+    const fleet = loadFleetConfig(dir);
+    assert.equal(fleet.bots[0].thinking, "max");
+
+    writeFileSync(
+      join(dir, "bots.toml"),
+      `[[bot]]\nname = "atlas"\ndir = "atlas"\nthinking = "yolo"\n`
+    );
+    assert.throws(() => loadFleetConfig(dir), /thinking "yolo" must be one of/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

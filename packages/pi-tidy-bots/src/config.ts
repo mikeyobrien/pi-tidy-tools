@@ -13,6 +13,7 @@ export interface BotConfig {
   name: string;
   dir: string;
   model?: string;
+  thinking?: string;
   title?: string;
   avatar: string;
   routes?: string[];
@@ -30,6 +31,17 @@ export interface FleetConfig {
 export class ConfigError extends Error {}
 
 export const NAME_PATTERN = /^[a-z][a-z0-9-]{1,31}$/;
+
+/** Valid per-bot thinking levels (mirrors pi's ThinkingLevel). */
+export const THINKING_LEVELS = new Set([
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+]);
 const DEFAULT_PORT = 4317;
 
 export type ToolOutputMode = "off" | "counts" | "reasons" | "full";
@@ -121,10 +133,20 @@ export function loadFleetConfig(
     const routines = Array.isArray(table.routines)
       ? table.routines.map(parseRoutine)
       : [];
+    const thinking =
+      table.thinking === undefined ? undefined : String(table.thinking);
+    if (thinking !== undefined && !THINKING_LEVELS.has(thinking)) {
+      throw new ConfigError(
+        `${where} (${name}): thinking "${thinking}" must be one of ${[
+          ...THINKING_LEVELS,
+        ].join(", ")}`
+      );
+    }
     bots.push({
       name,
       dir: botDir,
       model: table.model === undefined ? undefined : String(table.model),
+      thinking,
       title: table.title === undefined ? undefined : String(table.title),
       avatar: table.avatar === undefined ? "" : String(table.avatar),
       routes,

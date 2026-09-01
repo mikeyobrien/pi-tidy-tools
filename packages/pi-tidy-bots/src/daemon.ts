@@ -811,7 +811,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
   /** Issue 43 item 2: the compaction decision + flow. */
   async function maybeCompact(
     runtime: BotRuntime,
-    opts: { force?: boolean } = {}
+    opts: { force?: boolean; idle?: boolean } = {}
   ): Promise<boolean> {
     const botName = runtime.config.name;
     const go = shouldAutoCompact({
@@ -820,7 +820,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       lastCompactAt: runtime.lastCompactAt,
       hasPending: runtime.pendingUi.size > 0 || runtime.pendingFrom.length > 0,
       force: opts.force,
-      idle: false,
+      idle: opts.idle === true,
       now: Date.now(),
     });
     if (!go) return false;

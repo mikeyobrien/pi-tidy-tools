@@ -8,6 +8,8 @@
 // Events fire on timers so tests can observe the mid-turn window where the
 // operator bubble must already read as delivering=false.
 import readline from "node:readline";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { appendFileSync } from "node:fs";
 
 // Issue 58 test seam: record every inbound request so tests can prove a
@@ -55,7 +57,20 @@ rl.on("line", (line) => {
     );
     // Real pi acks follow_up immediately (it queues inside the child); the
     // turn streams afterwards. Only prompt resolves when its turn finishes.
-    if (request.type === "follow_up") respond(request.id);
+    // A prompt carrying streamingBehavior is a daemon-side queued handoff —
+    // it also streams LATER, behind the running turn.
+    const queued =
+      request.type === "follow_up" || request.streamingBehavior === "followUp";
+    // Queued deliveries (follow_up request, or a prompt carrying
+    // streamingBehavior) ack on ACCEPTANCE — the turn streams later. Plain
+    // prompts resolve when their turn finishes.
+    if (request.type === "follow_up" || request.streamingBehavior !== undefined)
+      respond(request.id);
+    // Deterministic queue tests: when PTB_STUB_HOLD_DIR is set, queued
+    // turns WAIT for <dir>/release before streaming — the daemon-side
+    // journal can be observed at leisure, then released to drain.
+    const hold = () =>
+      existsSync(join(process.env.PTB_STUB_HOLD_DIR ?? ".", "release"));
     const run = () => {
       send({ type: "turn_start" });
       send({ type: "agent_start" });
@@ -77,10 +92,20 @@ rl.on("line", (line) => {
         send({ type: "turn_end", message: { usage: { input: 10 } } });
         send({ type: "agent_end" });
         send({ type: "agent_settled" });
-        if (request.type === "prompt") respond(request.id);
+        if (request.type === "prompt" && !request.streamingBehavior)
+          respond(request.id);
       }, 700);
     };
-    setTimeout(run, request.type === "follow_up" ? 400 : 100);
+    if (queued && process.env.PTB_STUB_HOLD_DIR) {
+      const wait = setInterval(() => {
+        if (hold()) {
+          clearInterval(wait);
+          run();
+        }
+      }, 50);
+      return;
+    }
+    setTimeout(run, queued ? 1200 : 100);
     return;
   }
   if (request.id !== undefined) respond(request.id);

@@ -14,6 +14,8 @@ export interface PendingMessage {
   origin: "operator" | "bot" | "routine" | "system";
   originFrom?: string;
   images?: { type: "image"; data: string; mimeType: string }[];
+  /** Issue 76: surfaced on the roster queue item when a producer carries it. */
+  filename?: string;
   ts: string;
 }
 

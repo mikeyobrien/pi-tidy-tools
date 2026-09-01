@@ -720,19 +720,35 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       ...(step.error ? { error: true } : {}),
     }));
 
-  const presence = (runtime: BotRuntime) => ({
-    name: runtime.config.name,
-    title: runtime.config.title,
-    description: botDisclosure(runtime.config),
-    avatar: runtime.config.avatar,
-    online: runtime.online,
-    active: Date.now() - Date.parse(runtime.lastActive) < ACTIVE_WINDOW_MS,
-    lastActive: runtime.lastActive,
-    queued: runtime.queuedCount,
-    // Issue 69: REST /api/fleet carries the transcript preview; the WS roster
-    // shape must match or every roster broadcast erases client-side previews.
-    latest: runtime.transcript.at(-1)?.text ?? "",
-  });
+  // Issue 76: the queue is DATA, not a count — Grok-style. Derived from the
+  // pending journal so `queued` can never drift from the real item list.
+  // No base64 on the roster: images collapse to hasImage (+ optional
+  // filename when a producer ever carries one).
+  const queueItems = (name: string) =>
+    pendingStore.load(name).map((message) => ({
+      id: message.id,
+      text: message.text,
+      hasImage: (message.images?.length ?? 0) > 0,
+      ...(message.filename ? { filename: message.filename } : {}),
+    }));
+
+  const presence = (runtime: BotRuntime) => {
+    const queue = queueItems(runtime.config.name);
+    return {
+      name: runtime.config.name,
+      title: runtime.config.title,
+      description: botDisclosure(runtime.config),
+      avatar: runtime.config.avatar,
+      online: runtime.online,
+      active: Date.now() - Date.parse(runtime.lastActive) < ACTIVE_WINDOW_MS,
+      lastActive: runtime.lastActive,
+      queued: queue.length,
+      queue,
+      // Issue 69: REST /api/fleet carries the transcript preview; the WS roster
+      // shape must match or every roster broadcast erases client-side previews.
+      latest: runtime.transcript.at(-1)?.text ?? "",
+    };
+  };
 
   const emitRoster = (): void => {
     emit({
@@ -1802,6 +1818,8 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
             // instead of hard-failing — never a silent drop.
             journalPending(runtime, entry, images);
             emit({ type: "append", bot: name, entry });
+            // Issue 76: the queue grew — the roster carries the item list.
+            emitRoster();
             return { status: 202, body: { accepted: true, queued: true } };
           }
           if (reason === "turn_in_flight") {
@@ -1859,6 +1877,23 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       },
       busSend: async (fromName, targetName, message, behavior, images) =>
         deliverHandoff(fromName, targetName, message, behavior, images),
+      queue: (name: string) => queueItems(name),
+      // Issue 76: drop a journaled follow-up so it never replays. Live
+      // unqueue inside the child is best-effort — pi has no RPC to remove an
+      // in-memory followUp, so the child may still run it; the journal row
+      // (and the roster count) drop regardless.
+      unqueue: (name: string, id: string) => {
+        const runtime = runtimes.get(name);
+        if (!runtime) return { status: 404 };
+        const exists = pendingStore
+          .load(name)
+          .some((message) => message.id === id);
+        if (!exists) return { status: 404 };
+        pendingStore.remove(name, id);
+        if (runtime.queuedCount > 0) runtime.queuedCount--;
+        emitRoster();
+        return { status: 200 };
+      },
     },
   });
 
@@ -2100,6 +2135,10 @@ interface ServerDeps {
     ): Promise<{ status: number; body: unknown }>;
     compact(name: string): Promise<{ status: number; body: unknown }>;
     stop(name: string): Promise<{ status: number; body: unknown }>;
+    queue(
+      name: string
+    ): { id: string; text: string; hasImage: boolean; filename?: string }[];
+    unqueue(name: string, id: string): { status: 200 | 404 };
     steer(
       name: string,
       text: string
@@ -2194,17 +2233,21 @@ function buildHttpServer(deps: ServerDeps): Hono {
   app.get("/style.css", serveAsset("style.css", "text/css"));
 
   app.get("/api/fleet", (context) => {
-    const bots = [...deps.runtimes.values()].map((runtime) => ({
-      name: runtime.config.name,
-      title: runtime.config.title,
-      description: botDisclosure(runtime.config),
-      avatar: runtime.config.avatar,
-      online: runtime.online,
-      active: Date.now() - Date.parse(runtime.lastActive) < ACTIVE_WINDOW_MS,
-      lastActive: runtime.lastActive,
-      queued: runtime.queuedCount,
-      latest: runtime.transcript.at(-1)?.text ?? "",
-    }));
+    const bots = [...deps.runtimes.values()].map((runtime) => {
+      const queue = deps.handlers.queue(runtime.config.name);
+      return {
+        name: runtime.config.name,
+        title: runtime.config.title,
+        description: botDisclosure(runtime.config),
+        avatar: runtime.config.avatar,
+        online: runtime.online,
+        active: Date.now() - Date.parse(runtime.lastActive) < ACTIVE_WINDOW_MS,
+        lastActive: runtime.lastActive,
+        queued: queue.length,
+        queue,
+        latest: runtime.transcript.at(-1)?.text ?? "",
+      };
+    });
     return context.json({ dir: deps.fleet.dir, bots });
   });
 
@@ -2345,6 +2388,23 @@ function buildHttpServer(deps: ServerDeps): Hono {
   app.post("/api/bots/:name/stop", async (context) => {
     const result = await deps.handlers.stop(context.req.param("name"));
     return context.json(result.body, result.status as 200 | 404 | 503);
+  });
+
+  // Issue 76: the follow-up queue as data — items (no base64) + dismiss.
+  app.get("/api/bots/:name/queue", (context) => {
+    const name = context.req.param("name");
+    if (!deps.runtimes.has(name))
+      return context.json({ error: "unknown bot" }, 404);
+    return context.json({ queue: deps.handlers.queue(name) });
+  });
+
+  app.delete("/api/bots/:name/queue/:id", (context) => {
+    const result = deps.handlers.unqueue(
+      context.req.param("name"),
+      context.req.param("id")
+    );
+    if (result.status === 404) return context.json({ removed: false }, 404);
+    return context.json({ removed: true });
   });
 
   app.post("/api/bots/:name/steer", async (context) => {

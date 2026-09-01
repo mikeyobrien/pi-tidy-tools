@@ -103,6 +103,16 @@ export const RosterBotSchema = Type.Object({
   active: Type.Boolean(),
   lastActive: Type.String(),
   queued: Type.Number(),
+  queue: Type.Optional(
+    Type.Array(
+      Type.Object({
+        id: Type.String(),
+        text: Type.String(),
+        hasImage: Type.Boolean(),
+        filename: Type.Optional(Type.String()),
+      })
+    )
+  ),
 });
 
 export const RosterPayloadSchema = Type.Object({

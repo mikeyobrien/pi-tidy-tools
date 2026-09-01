@@ -67,6 +67,7 @@ export type RpcEvent =
   | { kind: "tool_output"; toolCallId: string; text: string }
   | { kind: "tool_end"; toolCallId: string }
   | { kind: "tool_result"; toolCallId: string; text: string; isError: boolean }
+  | { kind: "usage"; inputTokens?: number; model?: string }
   | {
       kind: "ui_request";
       id: string;
@@ -426,6 +427,18 @@ export class RpcSession {
             });
           }
         }
+        this.options.onEvent({ kind: "event", raw: parsed });
+        return;
+      }
+      case "turn_end": {
+        const message = (parsed.message ?? {}) as Record<string, unknown>;
+        const usage = (message.usage ?? {}) as Record<string, unknown>;
+        this.options.onEvent({
+          kind: "usage",
+          inputTokens:
+            typeof usage.input === "number" ? usage.input : undefined,
+          model: typeof message.model === "string" ? message.model : undefined,
+        });
         this.options.onEvent({ kind: "event", raw: parsed });
         return;
       }

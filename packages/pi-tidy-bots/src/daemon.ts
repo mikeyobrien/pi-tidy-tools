@@ -100,6 +100,10 @@ interface BotRuntime {
   turnText: string;
   /** Issue 37: ordered text/tool parts for the in-flight turn. */
   turnParts: TurnPartsAccumulator;
+  /** Issue 43 item 1: last observed usage + window (fill = input/window). */
+  inputTokens?: number;
+  contextWindow?: number;
+  fill?: number;
   // Known limit: covers daemon-issued prompts only (routing, composer,
   // routines). Follow-ups queued inside the child by extensions are invisible
   // to the daemon — acceptable; operator-visible cases are all daemon-issued.
@@ -275,6 +279,15 @@ export type BusBehavior = "steer" | "followUp";
  * Idempotency guard (issue 33): a clientMessageId may be claimed once per
  * bot. Unknown/absent ids always claim. Returns false on duplicate.
  */
+/** Issue 43 item 1: fill = carried input tokens over the model window. */
+export function computeFill(
+  inputTokens: number,
+  contextWindow: number
+): number | undefined {
+  if (contextWindow <= 0) return undefined;
+  return inputTokens / contextWindow;
+}
+
 export function claimClientMessageId(
   seen: Set<string>,
   clientMessageId?: string
@@ -706,7 +719,12 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     touch(runtime);
     emitRoster();
     try {
-      await session.getState();
+      const state = await session.getState();
+      const window =
+        (state as any)?.data?.model?.contextWindow ??
+        (state as any)?.data?.contextWindow;
+      if (typeof window === "number" && window > 0)
+        runtime.contextWindow = window;
       const messages = (await session.getMessages()) as {
         data?: { messages?: any[] };
       };
@@ -825,6 +843,16 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           }
           emitRoster();
         }
+        return;
+      }
+      case "usage": {
+        if (event.inputTokens !== undefined)
+          runtime.inputTokens = event.inputTokens;
+        if (runtime.contextWindow && runtime.inputTokens !== undefined)
+          runtime.fill = computeFill(
+            runtime.inputTokens,
+            runtime.contextWindow
+          );
         return;
       }
       case "agent_start": {

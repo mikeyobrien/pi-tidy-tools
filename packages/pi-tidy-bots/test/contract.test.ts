@@ -170,3 +170,11 @@ test("transcript entry schema accepts structured handoff kinds", () => {
     "unknown kinds rejected"
   );
 });
+
+test("computeFill derives the context fill fraction", async () => {
+  const { computeFill } = await import("../src/daemon.ts");
+  const fill = computeFill(614400, 1048576);
+  assert.equal(fill !== undefined && fill > 0.58, true);
+  assert.equal(computeFill(0, 1000), 0);
+  assert.equal(computeFill(5, 0), undefined);
+});

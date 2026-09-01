@@ -762,6 +762,18 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
   };
   const schedulerTimer = setInterval(() => {
     runSchedulerTick(new Date(), { routines, firedKeys, fireRoutine, journal });
+    // Issue 43 item 6: idle-window proactive compaction at the 45% soft
+    // floor — busy bots never surprise-compact mid-dialogue.
+    for (const runtime of runtimes.values()) {
+      if (
+        runtime.session?.alive &&
+        !runtime.session.streaming &&
+        runtime.pendingUi.size === 0 &&
+        runtime.pendingFrom.length === 0
+      ) {
+        void maybeCompact(runtime, { idle: true }).catch(() => {});
+      }
+    }
   }, 15_000);
   schedulerTimer.unref?.();
 
@@ -1640,6 +1652,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         touch(runtime);
         return { status: 200, body: { accepted: true } };
       },
+      // Issue 43 item 7: thin force-override of the same machinery.
       compact: async (name) => {
         const runtime = runtimes.get(name);
         if (!runtime) return { status: 404, body: { error: "unknown bot" } };
@@ -1647,22 +1660,11 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           return { status: 503, body: { error: "runtime_offline" } };
         if (runtime.session.streaming)
           return { status: 409, body: { error: "turn_in_flight" } };
-        let note =
-          "Reset rerouted to compaction — fresh working context, same conversation.";
-        try {
-          await runtime.session.request({ type: "compact" });
-        } catch {
-          note =
-            "Nothing to compact yet — context is below the threshold, so the session stays as-is.";
-        }
-        appendTranscript(runtime, {
-          id: randomUUID(),
-          role: "system",
-          origin: "system",
-          text: note,
-          ts: new Date().toISOString(),
-        });
-        return { status: 200, body: { accepted: true, rerouted: "compact" } };
+        const compacted = await maybeCompact(runtime, { force: true });
+        return {
+          status: 200,
+          body: { accepted: true, rerouted: "compact", compacted },
+        };
       },
       busSend: async (fromName, targetName, message, behavior) =>
         deliverHandoff(fromName, targetName, message, behavior),

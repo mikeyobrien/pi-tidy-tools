@@ -69,6 +69,14 @@ narrower than 40px while holding more than 20 characters. Requires Chrome
 (set `PROBE_CHROME` if not autodetected); `PROBE_KEEP=1` preserves the temp
 fleet for autopsy.
 
+## Manual context overrides (issue 43 item 7)
+
+`/new` (console) and `POST /api/bots/:name/compact` are thin force-overrides
+of the same auto-compaction machinery: they bypass the 60% threshold and
+hysteresis but keep the boundary discipline (no mid-turn compaction; 409
+`turn_in_flight` while streaming). The fleet-state preamble is injected on
+every compaction, forced or automatic.
+
 ## Flutter web mount (issue 60)
 
 The daemon serves the Flutter web build at `/app/` (token-gated like the

@@ -523,6 +523,21 @@ export function writeWsAuthFailure(socket: {
 
 export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
   const log = options.log ?? ((line: string) => console.log(line));
+  // Availability over purity: an always-on fleet daemon must outlive async
+  // bugs. Log loudly and keep serving — a dead daemon strands every bot.
+  process.on("unhandledRejection", (reason) => {
+    log(
+      `[daemon] unhandled rejection (suppressed): ${String(reason).slice(0, 300)}`
+    );
+  });
+  process.on("uncaughtException", (error) => {
+    log(
+      `[daemon] uncaught exception (suppressed): ${error?.stack ?? String(error)}`.slice(
+        0,
+        400
+      )
+    );
+  });
   const fleetOverrides = { port: options.port, host: options.host };
   let fleet: FleetConfig = loadFleetConfig(options.dir, fleetOverrides);
   const childSecret = randomUUID();
@@ -1448,7 +1463,10 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       return;
     }
     setTimeout(() => {
-      if (!runtime.stopping) void spawnBot(runtime.config.name);
+      if (!runtime.stopping)
+        void spawnBot(runtime.config.name).catch((error) =>
+          log(`[${name}] respawn failed: ${String(error).slice(0, 120)}`)
+        );
     }, 1_000);
   };
 
@@ -1730,7 +1748,19 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         const runtime = runtimes.get(name);
         if (!runtime?.session || !runtime.session.alive)
           return { status: 503, body: { error: "runtime_offline" } };
-        await runtime.session.steer(text);
+        try {
+          await runtime.session.steer(text);
+        } catch (error) {
+          // A slow child must degrade to an error response, never crash the
+          // daemon via an unhandled rpc timeout.
+          return {
+            status: 503,
+            body: {
+              error: "steer_failed",
+              detail: String(error).slice(0, 120),
+            },
+          };
+        }
         touch(runtime);
         return { status: 200, body: { accepted: true } };
       },
@@ -1755,7 +1785,17 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           return { status: 503, body: { error: "runtime_offline" } };
         if (!runtime.session.streaming)
           return { status: 200, body: { accepted: true, stopped: false } };
-        await runtime.session.abort();
+        try {
+          await runtime.session.abort();
+        } catch (error) {
+          return {
+            status: 503,
+            body: {
+              error: "abort_failed",
+              detail: String(error).slice(0, 120),
+            },
+          };
+        }
         appendTranscript(runtime, {
           id: randomUUID(),
           role: "system",
@@ -1851,7 +1891,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     for (const bot of diff.added) {
       runtimes.set(bot.name, makeRuntime(bot));
       log(`[fleet] bot "${bot.name}" added`);
-      void spawnBot(bot.name);
+      void spawnBot(bot.name).catch((error) =>
+        log(`[${bot.name}] spawn failed: ${String(error).slice(0, 120)}`)
+      );
     }
     for (const bot of diff.changed) {
       const runtime = runtimes.get(bot.name);
@@ -1866,7 +1908,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       log(
         `[fleet] bot "${bot.name}" reconfigured — respawning (session dir kept)`
       );
-      void spawnBot(bot.name);
+      void spawnBot(bot.name).catch((error) =>
+        log(`[${bot.name}] spawn failed: ${String(error).slice(0, 120)}`)
+      );
     }
     for (const bot of diff.untouched) {
       const runtime = runtimes.get(bot.name);
@@ -1945,7 +1989,12 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       log(
         `fleet ${fleet.dir} serving on ${url}${token ? " (token required)" : ""}`
       );
-      for (const bot of fleet.bots) void spawnBot(bot.name);
+      for (const bot of fleet.bots)
+        void spawnBot(bot.name).catch((error) =>
+          log(
+            `[${bot.name}] initial spawn failed: ${String(error).slice(0, 120)}`
+          )
+        );
       resolvePromise({
         url,
         port: actualPort,

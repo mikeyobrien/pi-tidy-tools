@@ -2473,6 +2473,39 @@ function buildHttpServer(deps: ServerDeps): Hono {
   });
 
   // Issue 76: the follow-up queue as data — items (no base64) + dismiss.
+  // Issue 83: per-bot instructions — the persona document, read/written as
+  // opaque text. Applies on the bot's next turn via the existing persona
+  // watcher (in-place reload when idle, queued when busy). The wire surface
+  // stays abstract: no file names, no paths — a missing document is simply
+  // empty text, never an error.
+  app.get("/api/bots/:name/instructions", (context) => {
+    const runtime = deps.runtimes.get(context.req.param("name"));
+    if (!runtime) return context.json({ error: "unknown bot" }, 404);
+    let text = "";
+    try {
+      text = readFileSync(join(runtime.config.dir, "AGENTS.md"), "utf8");
+    } catch {
+      // No instructions yet — empty text, not an error.
+    }
+    return context.json({ text });
+  });
+
+  app.put("/api/bots/:name/instructions", async (context) => {
+    const runtime = deps.runtimes.get(context.req.param("name"));
+    if (!runtime) return context.json({ error: "unknown bot" }, 404);
+    const body = (await context.req.json().catch(() => ({}))) as {
+      text?: unknown;
+    };
+    if (typeof body.text !== "string")
+      return context.json({ error: "text (string) required" }, 400);
+    try {
+      writeFileSync(join(runtime.config.dir, "AGENTS.md"), body.text);
+    } catch {
+      return context.json({ error: "instructions not writable" }, 500);
+    }
+    return context.json({ text: body.text });
+  });
+
   app.get("/api/bots/:name/queue", (context) => {
     const name = context.req.param("name");
     if (!deps.runtimes.has(name))

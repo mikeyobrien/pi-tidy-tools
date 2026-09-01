@@ -22,3 +22,8 @@ ts	phase	decision	why	evidence	result
 2026-09-01T20:50Z	issue-53 TSV decision trail	landed	this file	evidence: docs/verification-log.tsv	pass
 2026-09-01T20:55Z	issue-53 mode×state grid	UNLANDED	requires DOM harness (no browser deps in test tier)	INCONCLUSIVE — needs dispatch
 2026-09-01T20:56Z	issue-53 stryker config	UNLANDED	mutation scope not configured	INCONCLUSIVE — needs dispatch
+2026-09-01T02:05Z	issue-59 in-flight elapsed	landed	running badge + ticking timer, settings-matrix obeying	ac746e3; turnparts parts tests pass	pass
+2026-09-01T02:10Z	issue-61 breaker + visibility	landed	breaker@5 identical failures, red step rows	aaec30b+312a0df; turnparts.test pass	pass
+2026-09-01T02:15Z	issue-61 layer-1 REVERTED	landed	operator reversal: reasoning stays REQUIRED, metadata test unchanged	e32d39c; pi-tidy-tools==main	pass
+2026-09-01T02:40Z	issue-60 phase-1 /app/ mount	landed	base-href build synced; index fallback; public-asset bypass; live HTTP smoke	02dd9f9+7d78d48+f05c424; app-smoke 10/10	pass
+2026-09-01T03:00Z	main merge (2fb4351)	landed	stop endpoint, mode gates, HEIC thumb, stale-registry fix ported; conflicts resolved	a3232ea; gates green	pass

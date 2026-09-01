@@ -22,6 +22,7 @@ import {
   diffFleet,
   ConfigError,
   normalizeToolOutput,
+  botDisclosure,
   type BotConfig,
   type FleetConfig,
   type ToolOutputMode,
@@ -115,6 +116,12 @@ interface BotRuntime {
   turnsSinceCompact: number;
   /** Issue 61 layer 2: consecutive identical tool-call validation failures. */
   toolFailStreak: { count: number; signature: string } | null;
+  /**
+   * Issue 74: the operator entry whose prompt we just handed to the child
+   * and whose delivering flag clears at agent_start (accepted = streaming,
+   * not queued). Null when no direct delivery is in the accept window.
+   */
+  activeDeliveryId: string | null;
   pendingUi: Map<
     string,
     { view: UiRequestView; timer: ReturnType<typeof setTimeout> }
@@ -548,6 +555,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
   let stored: {
     console?: { toolOutput?: unknown };
     routines?: Record<string, { enabled?: boolean }>;
+    /** Issue 72: per-bot lastActivity ISO strings — restored over the boot-time
+     * default so restarts never show a bogus "now" for idle bots. */
+    lastActive?: Record<string, string>;
   } = {};
   try {
     if (existsSync(statePath))
@@ -625,7 +635,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     config,
     session: null,
     online: false,
-    lastActive: new Date().toISOString(),
+    // Issue 72: a restart must not reset activity to boot time — restore the
+    // persisted value; only a never-seen bot starts at "now".
+    lastActive: stored.lastActive?.[config.name] ?? new Date().toISOString(),
     transcript: [],
     pendingFrom: [],
     restartTimes: [],
@@ -638,6 +650,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     clientMessageIds: new Set<string>(),
     turnsSinceCompact: 0,
     toolFailStreak: null,
+    activeDeliveryId: null,
     steps: [],
     pendingUi: new Map(),
   });
@@ -686,11 +699,15 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
   const presence = (runtime: BotRuntime) => ({
     name: runtime.config.name,
     title: runtime.config.title,
+    description: botDisclosure(runtime.config),
     avatar: runtime.config.avatar,
     online: runtime.online,
     active: Date.now() - Date.parse(runtime.lastActive) < ACTIVE_WINDOW_MS,
     lastActive: runtime.lastActive,
     queued: runtime.queuedCount,
+    // Issue 69: REST /api/fleet carries the transcript preview; the WS roster
+    // shape must match or every roster broadcast erases client-side previews.
+    latest: runtime.transcript.at(-1)?.text ?? "",
   });
 
   const emitRoster = (): void => {
@@ -706,8 +723,27 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     });
   };
 
+  // Issue 72: persist lastActive debounced — touch() fires per RPC event
+  // (deltas included); writing the state file per event would be IO churn.
+  let lastActiveDirty = false;
+  let lastActiveFlush: NodeJS.Timeout | null = null;
+  const flushLastActive = (): void => {
+    if (lastActiveFlush) {
+      clearTimeout(lastActiveFlush);
+      lastActiveFlush = null;
+    }
+    if (!lastActiveDirty) return;
+    lastActiveDirty = false;
+    persistStateFile();
+  };
   const touch = (runtime: BotRuntime): void => {
     runtime.lastActive = new Date().toISOString();
+    stored.lastActive ??= {};
+    stored.lastActive[runtime.config.name] = runtime.lastActive;
+    lastActiveDirty = true;
+    if (lastActiveFlush) return;
+    lastActiveFlush = setTimeout(flushLastActive, 5_000);
+    lastActiveFlush.unref?.();
   };
 
   const appendTranscript = (
@@ -966,7 +1002,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       }
     }
     watchPersona(runtime);
-    touch(runtime);
+    // Issue 72: session spawn is NOT user activity — touching here reset every
+    // bot to "now" on each daemon boot, exactly the false first-load times
+    // this issue fixes. Real activity (RPC events, prompts) still touches.
     emitRoster();
     try {
       const state = await session.getState();
@@ -1051,12 +1089,17 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           (candidate) => candidate.id === message.id
         );
         try {
+          // Issue 74: a replayed message is queued until ITS turn starts
+          // streaming — same accept-window semantics as a direct message.
+          if (target) runtime.activeDeliveryId = target.id;
           await session.prompt(message.text, undefined, message.images);
+          runtime.activeDeliveryId = null;
           pendingStore.remove(name, message.id);
           if (target) target.delivering = false;
           log(`[${name}] replayed pending message (id ${message.id})`);
         } catch {
           // Keep it journalled; the next spawn retries.
+          runtime.activeDeliveryId = null;
           log(`[${name}] pending replay deferred (id ${message.id})`);
         }
       }
@@ -1106,6 +1149,18 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         return;
       }
       case "agent_start": {
+        // Issue 74: the child ACCEPTED a prompt — that entry is streaming,
+        // not queued. delivering now means only "not yet accepted".
+        if (runtime.activeDeliveryId) {
+          const accepted = runtime.transcript.find(
+            (candidate) => candidate.id === runtime.activeDeliveryId
+          );
+          runtime.activeDeliveryId = null;
+          if (accepted?.delivering) {
+            accepted.delivering = false;
+            emit({ type: "append", bot: botName, entry: accepted });
+          }
+        }
         runtime.turnId = randomUUID();
         runtime.turnText = "";
         runtime.steps = [];
@@ -1508,10 +1563,17 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       return;
     }
     try {
+      // Issue 74: delivering means "not yet accepted by the child" — clear
+      // it at agent_start (via activeDeliveryId), not when the whole turn
+      // finishes. The old await-then-clear kept the ACTIVE prompt labeled
+      // "queued…" for the entire turn.
+      runtime.activeDeliveryId = entry.id;
       await session.prompt(text, behavior, images);
+      runtime.activeDeliveryId = null;
       entry.delivering = false;
       emit({ type: "append", bot: runtime.config.name, entry });
     } catch (error) {
+      runtime.activeDeliveryId = null;
       // Fresh-bot boot race: the agent can reject plain prompts while its first
       // turn is still settling. One followUp queues behind it; genuine failures
       // (offline, provider errors) still throw to the caller.
@@ -2010,6 +2072,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
             runtime.stopping = true;
             runtime.session?.stop();
           }
+          // Issue 72: flush any debounced lastActive writes before exit — a
+          // SIGTERM inside the 5s window must not lose activity state.
+          flushLastActive();
           lockResult.lock.release();
           for (const socket of sockets) socket.close();
           await new Promise<void>((resolveStop) =>
@@ -2097,6 +2162,14 @@ function buildHttpServer(deps: ServerDeps): Hono {
       await next();
       return;
     }
+    // Issue 62: bots disclose peers by reading /api/fleet with their child
+    // secret (bridge.ts enumerates message_agent targets from the live
+    // roster). The secret is per-fleet and unguessable — allow it on any
+    // route, not just the bus.
+    if (context.req.header("x-fleet-child") === deps.childSecret) {
+      await next();
+      return;
+    }
     // Public assets carry no fleet data; browsers fetch them without the document's query token.
     if (isPublicAssetPath(url.pathname)) {
       await next();
@@ -2141,6 +2214,7 @@ function buildHttpServer(deps: ServerDeps): Hono {
     const bots = [...deps.runtimes.values()].map((runtime) => ({
       name: runtime.config.name,
       title: runtime.config.title,
+      description: botDisclosure(runtime.config),
       avatar: runtime.config.avatar,
       online: runtime.online,
       active: Date.now() - Date.parse(runtime.lastActive) < ACTIVE_WINDOW_MS,

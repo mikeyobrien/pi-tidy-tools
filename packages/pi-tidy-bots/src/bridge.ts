@@ -24,10 +24,49 @@ function deps(): BridgeDeps | null {
   return { daemonUrl, selfName, childSecret };
 }
 
-export default function bridge(pi: any): void {
+// Issue 62: bots are disclosed skills-style — name + description, where the
+// description IS the recommendation. The message_agent target parameter
+// enumerates every bot from the live runtime config (never hardcoded), so
+// roster changes propagate via /bots-reload and hot-reconcile respawns.
+//
+// Pure and exported for unit tests; the async wiring below fetches the roster
+// from the daemon before the tool is registered.
+export function composeTargetDescription(
+  bots: { name: string; title?: string; description?: string }[]
+): string {
+  const lines = bots.map(
+    (bot) => `- ${bot.name} — ${bot.description ?? bot.title ?? ""}`
+  );
+  return (
+    "Teammate bot name in this fleet (pick exactly one name):\n" +
+    lines.join("\n")
+  );
+}
+
+export default async function bridge(pi: any): Promise<void> {
   const environment = deps();
   if (!environment) return;
   const { daemonUrl, selfName, childSecret } = environment;
+
+  // Live roster enumeration: the child secret bypasses token auth (see
+  // daemon auth middleware), so a bot can read the fleet it belongs to.
+  let targetDescription = "Teammate bot name in this fleet (e.g. forge)";
+  try {
+    const response = await fetch(`${daemonUrl}/api/fleet`, {
+      headers: { "x-fleet-child": childSecret },
+    });
+    if (response.ok) {
+      const data = (await response.json()) as {
+        bots?: { name: string; title?: string; description?: string }[];
+      };
+      if (data.bots && data.bots.length > 0) {
+        targetDescription = composeTargetDescription(data.bots);
+      }
+    }
+  } catch {
+    // Daemon unreachable (boot race): register with the generic fallback;
+    // /bots-reload re-runs this extension and re-fetches.
+  }
 
   pi.registerTool({
     name: "message_agent",
@@ -43,7 +82,7 @@ export default function bridge(pi: any): void {
       "Use message_agent when a fix or task belongs to a teammate bot's domain; finish your turn after sending.",
     ],
     parameters: Type.Object({
-      target: Type.String({ description: "Teammate bot name (e.g. forge)" }),
+      target: Type.String({ description: targetDescription }),
       message: Type.String({
         description: "Your composed message to the teammate",
       }),

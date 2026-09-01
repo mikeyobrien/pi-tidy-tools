@@ -83,6 +83,10 @@ function blobAvatar(name, large) {
 
 function renderRoster() {
   const list = document.getElementById("bot-list");
+  // Rebuilding the list resets its scrollTop (it is the scroll container) —
+  // snapshot and restore so periodic presence refreshes (issue 64) never
+  // yank the drawer while someone is reading it.
+  const savedScrollTop = list.scrollTop;
   list.textContent = "";
   const strip = document.getElementById("presence-strip");
   // Child death drops the turn and its queue — clear any live bubble records
@@ -111,12 +115,12 @@ function renderRoster() {
     nameRow.appendChild(el("span", null, bot.name));
     nameRow.appendChild(el("span", bot.online ? "online-dot" : "offline-dot"));
     line.appendChild(nameRow);
+    // Issue 62: bots are disclosed skills-style — name + description (the
+    // daemon resolves the title fallback). The description IS the recommenda-
+    // tion; the preview line carries only live activity.
+    line.appendChild(el("div", "bot-desc", bot.description ?? ""));
     line.appendChild(
-      el(
-        "div",
-        "bot-preview",
-        bot.latest ? bot.latest.slice(0, 60) : (bot.title ?? "")
-      )
+      el("div", "bot-preview", bot.latest ? bot.latest.slice(0, 60) : "")
     );
     open.appendChild(line);
     open.appendChild(
@@ -148,6 +152,7 @@ function renderRoster() {
   strip.appendChild(
     document.createTextNode(` ${active} active · ${idle} idle`)
   );
+  list.scrollTop = savedScrollTop;
   document.getElementById("bot-count").textContent = String(state.fleet.length);
   updateHeaderQueue();
   updateComposerTargetDot();
@@ -655,15 +660,10 @@ function startToolElapsedTicker(record, parts) {
   if (running.length === 0) return;
   const oldest = Math.min(...running.map((t) => t.started));
   record.elapsedTimer = setInterval(() => {
-    const elapsed = formatLiveElapsed(Date.now() - oldest);
-    for (const tool of running) {
-      const badge = record.bubble
-        .closest(".entry")
-        ?.querySelector?.(".toolgroup-badge");
-      if (badge) {
-        badge.textContent = `\u25b8 ${partGroupSummary(record.bubble.parts ?? running)} \u00b7 ${elapsed}`;
-      }
-    }
+    // Issue 59 (verifier reject fix): tick with the SAME reason-carrying
+    // format as the first paint — counts-only partGroupSummary dropped the
+    // running call's reason after the first second.
+    updateToolElapsedBadge(record, oldest, running);
   }, 1000);
   // Fire immediately so the first tick is instant.
   updateToolElapsedBadge(record, oldest, running);
@@ -896,6 +896,30 @@ if (routinesPanelNode && routinesButton) {
   });
 }
 
+// Issue 64: presence stays fresh between WS roster snapshots. The daemon
+// emits `roster` events at transitions only (boot, online flip, exit) while
+// `lastActive`/`active` are computed per request — so a low-frequency
+// /api/fleet poll keeps the drawer truthful. WS roster events keep working
+// unchanged; selection lives in state and scroll is preserved on re-render.
+const PRESENCE_REFRESH_MS = 25_000;
+let presenceFetchInFlight = false;
+async function refreshPresence() {
+  if (presenceFetchInFlight) return;
+  presenceFetchInFlight = true;
+  try {
+    const fleet = await api("/api/fleet");
+    if (Array.isArray(fleet.bots)) {
+      state.fleet = fleet.bots;
+      renderRoster();
+    }
+  } catch {
+    // Unreachable or unauthorized: keep the last snapshot — the reconnect
+    // banner already covers outages, and the next tick retries.
+  } finally {
+    presenceFetchInFlight = false;
+  }
+}
+
 async function boot() {
   try {
     const settings = await api("/api/settings").catch(() => ({}));
@@ -914,6 +938,9 @@ async function boot() {
   } finally {
     renderRoster();
     connectSocket();
+    setInterval(() => {
+      void refreshPresence();
+    }, PRESENCE_REFRESH_MS);
   }
 }
 

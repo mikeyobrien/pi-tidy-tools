@@ -54,6 +54,7 @@ import {
   ensureStoredToken,
   isLoopbackHost,
   rotateStoredToken,
+  readStoredToken,
 } from "./pairing.ts";
 
 export interface StartTokenResolution {
@@ -81,6 +82,11 @@ export function resolveStartToken(opts: {
     return {
       token: ensureStoredToken(opts.fleetDir, opts.explicitToken).token,
     };
+  // Issue 51: a stored token is sticky — restarts must preserve it (console
+  // URLs survive `pi-tidy-bots restart`) instead of silently dropping auth
+  // on loopback boots.
+  const stored = readStoredToken(opts.fleetDir);
+  if (stored) return { token: stored };
   if (!isLoopbackHost(opts.host))
     return { token: ensureStoredToken(opts.fleetDir).token };
   if (opts.wantsQr)
@@ -258,7 +264,7 @@ export async function healthCheck(url: string): Promise<boolean> {
   }
 }
 
-/** Issue 51: name the process holding a TCP port (best-effort, POSIX tools). */
+/** Issue 51: name the process(es) holding a TCP port (best-effort, POSIX tools). */
 export function describePortHolder(
   port: number,
   run: (file: string, args: string[]) => string = (file, args) =>
@@ -266,15 +272,24 @@ export function describePortHolder(
 ): string {
   try {
     // Listener state only: client connections to the port (e.g. the console
-    // tab's sockets) must not be misattributed as the holder.
+    // tab's sockets) must not be misattributed as the holder. A port can have
+    // SEPARATE holders per address family (e.g. our daemon on 127.0.0.1 and a
+    // foreign listener on [::]) — name them all, not an arbitrary first.
+    const seen = new Set<string>();
     const pids = run("lsof", ["-ti", "-sTCP:LISTEN", "-i", `:${port}`])
       .split("\n")
       .map((line) => line.trim())
-      .filter((line) => /^\d+$/.test(line));
-    const pid = pids[0];
-    if (!pid) return "";
-    const command = run("ps", ["-p", pid, "-o", "command="]).trim();
-    return `held by pid ${pid}: ${command}`;
+      .filter((line) => /^\d+$/.test(line))
+      .slice(0, 3);
+    for (const pid of pids) {
+      try {
+        const command = run("ps", ["-p", pid, "-o", "command="]).trim();
+        seen.add(`pid ${pid}: ${command.slice(0, 120)}`);
+      } catch {
+        seen.add(`pid ${pid}`);
+      }
+    }
+    return seen.size > 0 ? `held by ${[...seen].join("; ")}` : "";
   } catch {
     return "";
   }

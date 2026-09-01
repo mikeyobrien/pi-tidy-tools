@@ -7,6 +7,7 @@ import {
   rmSync,
   writeFileSync,
   existsSync,
+  readFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -93,6 +94,76 @@ test(
     const stopAgain = runCli(["stop", fleetDir]);
     assert.equal(stopAgain.status, 1);
     assert.match(stopAgain.stderr, /fleet is not running/);
+  }
+);
+
+test(
+  "restart: sanctioned path preserves token, writes daemon.log, twice (issue 51)",
+  { timeout: 120000 },
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ptb-restart-"));
+    mkdirSync(join(dir, "bots", "alpha"), { recursive: true });
+    writeFileSync(join(dir, "bots", "alpha", "AGENTS.md"), "# alpha\n");
+    writeFileSync(
+      join(dir, "bots.toml"),
+      `[fleet]\nport = ${PORT}\n[[bot]]\nname = "alpha"\ndir = "bots/alpha"\n`
+    );
+
+    // 1. Boot with an explicit token (persisted to .fleet/token).
+    const start = runCli([
+      "start",
+      dir,
+      "--daemon",
+      "--fleet",
+      "rt",
+      "--json",
+      "--token",
+      "sekrit",
+    ]);
+    assert.equal(start.status, 0, `start stderr: ${start.stderr}`);
+    const ready = JSON.parse(start.stdout.trim().split("\n").at(-1) ?? "{}");
+    assert.equal(ready.port, PORT);
+
+    // 2. Bootstrap tee: daemon.log exists and is being written.
+    const logPath = join(dir, ".fleet", "logs", "daemon.log");
+    assert.equal(existsSync(logPath), true, "daemon.log written");
+
+    // 3. Sanctioned restart — returns (daemonize parent health-checks).
+    const restart = runCli(["restart", "--fleet", "rt", "--json"]);
+    assert.equal(restart.status, 0, `restart stderr: ${restart.stderr}`);
+    const first = JSON.parse(restart.stdout.trim().split("\n").at(-1) ?? "{}");
+    assert.equal(first.restarted, true);
+    assert.notEqual(
+      first.pid,
+      ready.pid,
+      "new daemon generation after restart"
+    );
+
+    // 4. Token preserved across the restart: same credential still opens the
+    //    console API and a wrong one is still rejected.
+    const ok = await fetch(`http://127.0.0.1:${PORT}/api/fleet?token=sekrit`);
+    assert.equal(ok.status, 200, "stored token survives restart");
+    const bad = await fetch(`http://127.0.0.1:${PORT}/api/fleet?token=wrong`);
+    assert.equal(bad.status, 401);
+
+    // 5. Restart AGAIN back-to-back — kills the durable-daemonize flake
+    //    (verifier flagged single-restart luck passing).
+    const restart2 = runCli(["restart", "--fleet", "rt", "--json"]);
+    assert.equal(restart2.status, 0, `restart2 stderr: ${restart2.stderr}`);
+    const second = JSON.parse(
+      restart2.stdout.trim().split("\n").at(-1) ?? "{}"
+    );
+    assert.equal(second.restarted, true);
+    assert.notEqual(second.pid, first.pid, "second new generation");
+
+    // 6. The log survived both restarts — appended, never truncated.
+    const log = readFileSync(logPath, "utf8");
+    assert.ok(log.length > 0, "log has content after two restarts");
+
+    // 7. Clean stop so no daemon leaks out of the suite.
+    const stop = runCli(["stop", "--fleet", "rt", "--json"]);
+    assert.equal(stop.status, 0, `stop stderr: ${stop.stderr}`);
+    rmSync(dir, { recursive: true, force: true });
   }
 );
 

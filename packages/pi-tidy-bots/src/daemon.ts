@@ -569,6 +569,22 @@ export function coerceHandoffImages(
  * WS upgrade auth: `Authorization: Bearer <token>` or `?token=` — mirrors the
  * HTTP authorized() check so native clients can authenticate like browsers.
  */
+/**
+ * Issue 103: Tailscale Serve identity. When the console is fronted by
+ * `tailscale serve` with tailnet user login, the proxy authenticates the
+ * tailnet user and injects Tailscale-User-* headers — a non-empty
+ * Tailscale-User-Login authenticates like the token (OpenClaw allowTailscale
+ * model). Trust basis: the daemon stays bound to loopback/tailnet and
+ * tailscale serve is the only ingress — it strips client-supplied
+ * Tailscale-User-* headers. Source 100.64.0.0/10 alone is NOT trusted.
+ */
+export function tailscaleUserLogin(request: {
+  headers: { get(name: string): string | null };
+}): string | null {
+  const read = request.headers.get("Tailscale-User-Login");
+  return typeof read === "string" && read.trim().length > 0 ? read : null;
+}
+
 export function wsUpgradeAuthorized(
   request: { headers: { authorization?: string | undefined } },
   url: URL,
@@ -576,7 +592,20 @@ export function wsUpgradeAuthorized(
 ): boolean {
   if (!token) return true;
   if (url.searchParams.get("token") === token) return true;
-  return (request.headers.authorization ?? "") === `Bearer ${token}`;
+  if ((request.headers.authorization ?? "") === `Bearer ${token}`) return true;
+  // Issue 103: Tailscale Serve identity headers authenticate the upgrade.
+  return (
+    tailscaleUserLogin({
+      headers: {
+        get: (name: string) =>
+          name === "Tailscale-User-Login"
+            ? (((request.headers as Record<string, unknown>)[
+                "tailscale-user-login"
+              ] as string | null) ?? null)
+            : null,
+      },
+    }) !== null
+  );
 }
 
 /** HTTP 401 frame completed onto a rejected WS upgrade socket. */
@@ -2324,7 +2353,9 @@ function buildHttpServer(deps: ServerDeps): Hono {
   const authorized = (url: URL, request: Request): boolean =>
     !deps.token ||
     url.searchParams.get("token") === deps.token ||
-    (request.headers.get("authorization") ?? "") === `Bearer ${deps.token}`;
+    (request.headers.get("authorization") ?? "") === `Bearer ${deps.token}` ||
+    // Issue 103: Tailscale Serve identity headers authenticate like the token.
+    tailscaleUserLogin(request) !== null;
 
   const tokenPage = `<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>pi-tidy-bots — access</title><style>body{margin:0;height:100vh;display:grid;place-items:center;background:#0b0e14;color:#e8ecf3;font:14px/1.5 -apple-system,'Inter',sans-serif}main{background:#12161f;border:1px solid #232a38;border-radius:14px;padding:28px;width:min(420px,90vw)}h1{font-size:16px;margin:0 0 6px}p{color:#8a93a6;margin:0 0 16px;font-size:13px}input{width:100%;background:#171c27;border:1px solid #232a38;color:#e8ecf3;border-radius:10px;padding:11px 12px;font:inherit;outline:none}input:focus{border-color:#2dd4bf}button{margin-top:10px;width:100%;border:none;border-radius:10px;padding:11px;background:#2dd4bf;color:#06251f;font-weight:700;cursor:pointer}</style></head><body><main><h1>Fleet console access</h1><p>Paste the fleet token (printed by <code>pi-tidy-bots start</code>, or in <code>.fleet/token</code>).</p><form onsubmit="location.href='/?token='+encodeURIComponent(this.t.value.trim());return false"><input name="t" placeholder="fleet token" autofocus /><button>Enter console</button></form></main></body></html>`;
 

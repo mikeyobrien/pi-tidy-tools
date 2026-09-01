@@ -38,6 +38,16 @@ test("hashed assets cache immutably, entry documents revalidate", () => {
   assert.equal(appAssetCacheControl("manifest.json"), "no-store");
   assert.equal(appAssetCacheControl("version.json"), "no-store");
   assert.equal(
+    appAssetCacheControl("/srv/app/public/app/index.html"),
+    "no-store",
+    "resolved mount paths keep the entry-document contract"
+  );
+  assert.equal(
+    appAssetCacheControl("/srv/app/public/app/main.abc12345.js"),
+    "public, max-age=31536000, immutable",
+    "hashed absolute paths stay immutable"
+  );
+  assert.equal(
     appAssetCacheControl("main.dart.js"),
     "public, max-age=300",
     "stable-named entry script must revalidate"

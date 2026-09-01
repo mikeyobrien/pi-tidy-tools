@@ -2066,7 +2066,7 @@ function buildHttpServer(deps: ServerDeps): Hono {
       return context.json({ error: "not found" }, 404);
     return context.body(readFileSync(asset), 200, {
       "content-type": appAssetMimeType(asset),
-      "cache-control": appAssetCacheControl(context.req.path),
+      "cache-control": appAssetCacheControl(asset),
     });
   });
   app.get("/app", (context) =>

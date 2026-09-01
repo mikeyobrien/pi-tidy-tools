@@ -22,6 +22,7 @@ import {
   diffFleet,
   ConfigError,
   normalizeToolOutput,
+  botDisclosure,
   type BotConfig,
   type FleetConfig,
   type ToolOutputMode,
@@ -671,6 +672,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
   const presence = (runtime: BotRuntime) => ({
     name: runtime.config.name,
     title: runtime.config.title,
+    description: botDisclosure(runtime.config),
     avatar: runtime.config.avatar,
     online: runtime.online,
     active: Date.now() - Date.parse(runtime.lastActive) < ACTIVE_WINDOW_MS,
@@ -2034,6 +2036,14 @@ function buildHttpServer(deps: ServerDeps): Hono {
       await next();
       return;
     }
+    // Issue 62: bots disclose peers by reading /api/fleet with their child
+    // secret (bridge.ts enumerates message_agent targets from the live
+    // roster). The secret is per-fleet and unguessable — allow it on any
+    // route, not just the bus.
+    if (context.req.header("x-fleet-child") === deps.childSecret) {
+      await next();
+      return;
+    }
     // Public assets carry no fleet data; browsers fetch them without the document's query token.
     if (isPublicAssetPath(url.pathname)) {
       await next();
@@ -2078,6 +2088,7 @@ function buildHttpServer(deps: ServerDeps): Hono {
     const bots = [...deps.runtimes.values()].map((runtime) => ({
       name: runtime.config.name,
       title: runtime.config.title,
+      description: botDisclosure(runtime.config),
       avatar: runtime.config.avatar,
       online: runtime.online,
       active: Date.now() - Date.parse(runtime.lastActive) < ACTIVE_WINDOW_MS,

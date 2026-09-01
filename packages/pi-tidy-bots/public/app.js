@@ -111,12 +111,12 @@ function renderRoster() {
     nameRow.appendChild(el("span", null, bot.name));
     nameRow.appendChild(el("span", bot.online ? "online-dot" : "offline-dot"));
     line.appendChild(nameRow);
+    // Issue 62: bots are disclosed skills-style — name + description (the
+    // daemon resolves the title fallback). The description IS the recommenda-
+    // tion; the preview line carries only live activity.
+    line.appendChild(el("div", "bot-desc", bot.description ?? ""));
     line.appendChild(
-      el(
-        "div",
-        "bot-preview",
-        bot.latest ? bot.latest.slice(0, 60) : (bot.title ?? "")
-      )
+      el("div", "bot-preview", bot.latest ? bot.latest.slice(0, 60) : "")
     );
     open.appendChild(line);
     open.appendChild(

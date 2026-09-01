@@ -5,7 +5,9 @@ import {
   diffFleet,
   loadFleetConfig,
   ConfigError,
+  botDisclosure,
 } from "../src/config.ts";
+import { scaffoldBot } from "../src/cli.ts";
 import {
   stripActionMarkers,
   attributionPrefix,
@@ -17,6 +19,7 @@ import {
   mkdirSync,
   writeFileSync,
   rmSync,
+  readFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -98,6 +101,66 @@ test("checkRoute enforces routing table with typed reasons", () => {
     ok: false,
     reason: "route_forbidden",
   });
+});
+
+test("loadFleetConfig parses optional description; botDisclosure falls back to title", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ptb-desc-"));
+  try {
+    const botDir = join(dir, "atlas");
+    mkdirSync(botDir, { recursive: true });
+    writeFileSync(join(botDir, "AGENTS.md"), "# atlas\n");
+    writeFileSync(
+      join(dir, "bots.toml"),
+      `[[bot]]\nname = "atlas"\ndir = "atlas"\ndescription = "Use when work needs routing."\n`
+    );
+    const withDesc = loadFleetConfig(dir).bots[0];
+    assert.equal(withDesc.description, "Use when work needs routing.");
+    assert.equal(botDisclosure(withDesc), withDesc.description);
+    // Missing description is NOT a config error; disclosure falls back to title.
+    writeFileSync(
+      join(dir, "bots.toml"),
+      `[[bot]]\nname = "atlas"\ndir = "atlas"\ntitle = "Triage lead"\n`
+    );
+    const noDesc = loadFleetConfig(dir).bots[0];
+    assert.equal(noDesc.description, undefined);
+    assert.equal(botDisclosure(noDesc), "Triage lead");
+    writeFileSync(
+      join(dir, "bots.toml"),
+      `[[bot]]\nname = "atlas"\ndir = "atlas"\n`
+    );
+    assert.equal(botDisclosure(loadFleetConfig(dir).bots[0]), "");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("scaffoldBot writes --description (escaped) and omits it when absent", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ptb-scaffold-desc-"));
+  try {
+    writeFileSync(join(dir, "bots.toml"), `port = 4317\n`);
+    scaffoldBot(dir, "forge", {
+      title: 'Fleet "Worker"',
+      description: 'Use for "code" work\\nnow',
+    });
+    const manifest = readFileSync(join(dir, "bots.toml"), "utf8");
+    assert.ok(
+      manifest.includes('description = "Use for \\"code\\" work\\\\nnow"'),
+      "row escapes quotes and backslashes: " + manifest
+    );
+    // Round-trips through the parser without loss.
+    const bots = loadFleetConfig(dir).bots;
+    assert.equal(bots.length, 1);
+    assert.equal(bots[0].title, 'Fleet "Worker"');
+    assert.equal(bots[0].description, 'Use for "code" work\\nnow');
+    // Absent description: row omits the key; parses with undefined.
+    scaffoldBot(dir, "scribe", { title: "Docs" });
+    const scribe = loadFleetConfig(dir).bots.find(
+      (bot) => bot.name === "scribe"
+    );
+    assert.equal(scribe?.description, undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("stripActionMarkers removes [[action:]] lines from transcript text", () => {

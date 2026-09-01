@@ -13,7 +13,10 @@ export interface BotConfig {
   name: string;
   dir: string;
   model?: string;
+  /** Role label (legacy identity), kept for back-compat disclosure. */
   title?: string;
+  /** Issue 62: recommendation-shaped disclosure, skills-style. Optional; falls back to title. */
+  description?: string;
   avatar: string;
   routes?: string[];
   approve: boolean;
@@ -28,6 +31,17 @@ export interface FleetConfig {
 }
 
 export class ConfigError extends Error {}
+
+/**
+ * Issue 62: disclosure text for a bot — description when present (it IS the
+ * recommendation, skills-style), otherwise the legacy title. Never a config
+ * error: missing description is valid, just less discoverable.
+ */
+export function botDisclosure(
+  bot: Pick<BotConfig, "description" | "title">
+): string {
+  return bot.description ?? bot.title ?? "";
+}
 
 export const NAME_PATTERN = /^[a-z][a-z0-9-]{1,31}$/;
 const DEFAULT_PORT = 4317;
@@ -126,6 +140,8 @@ export function loadFleetConfig(
       dir: botDir,
       model: table.model === undefined ? undefined : String(table.model),
       title: table.title === undefined ? undefined : String(table.title),
+      description:
+        table.description === undefined ? undefined : String(table.description),
       avatar: table.avatar === undefined ? "" : String(table.avatar),
       routes,
       approve: table.approve === undefined ? true : table.approve === true,

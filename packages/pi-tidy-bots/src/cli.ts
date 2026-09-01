@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { networkInterfaces } from "node:os";
 import { spawn } from "node:child_process";
 import { startFleet } from "./daemon.ts";
@@ -61,7 +62,7 @@ const COMMAND_FLAGS: Record<string, string[]> = {
     "daemon",
     "fleet",
   ],
-  add: ["dir", "title", "avatar"],
+  add: ["dir", "title", "avatar", "description"],
   chat: ["bot", "url", "token"],
   status: ["fleet"],
   stop: ["fleet"],
@@ -114,7 +115,7 @@ function usage(): never {
 Usage:
   pi-tidy-bots init <fleetDir>            Scaffold a demo fleet (Atlas ops + Forge worker)
   pi-tidy-bots start [fleetDir]           Start the fleet daemon and web UI
-  pi-tidy-bots add <name> [--dir fleetDir] [--title t] [--avatar e]
+  pi-tidy-bots add <name> [--dir fleetDir] [--title t] [--avatar e] [--description d]
                                           Scaffold a bot and append its manifest row
   pi-tidy-bots status [fleetDir]          Show daemon pid, port, per-bot state
   pi-tidy-bots fleets [--prune]           List registered fleets and running state
@@ -246,7 +247,7 @@ Terse: verdict first, at most two supporting facts. No filler.
 export function scaffoldBot(
   fleetDir: string,
   name: string,
-  options: { title?: string; avatar?: string } = {}
+  options: { title?: string; avatar?: string; description?: string } = {}
 ): void {
   if (!NAME_PATTERN.test(name)) {
     throw new Error(
@@ -261,10 +262,18 @@ export function scaffoldBot(
     throw new Error(`bot "${name}" already exists in bots.toml`);
   const title = options.title ?? "Fleet Bot";
   const avatar = options.avatar ?? "";
+  const description = options.description ?? "";
   const botDir = join(fleetDir, "bots", name);
   mkdirSync(botDir, { recursive: true });
   writeFileSync(join(botDir, "AGENTS.md"), starterPersona(name, title));
-  const row = `\n[[bot]]\nname = "${name}"\ntitle = "${title}"\navatar = "${avatar}"\ndir = "bots/${name}"\n`;
+  // TOML string escaping: manifest rows are byte fragments, not parsed and
+  // re-emitted — escape backslashes and quotes so values never break the file.
+  const tomlString = (value: string) =>
+    `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  const row =
+    `\n[[bot]]\nname = ${tomlString(name)}\ntitle = ${tomlString(title)}\navatar = ${tomlString(avatar)}` +
+    (description ? `\ndescription = ${tomlString(description)}` : "") +
+    `\ndir = "bots/${name}"\n`;
   writeFileSync(
     manifestPath,
     `${manifest.endsWith("\n") ? manifest : manifest + "\n"}${row}`
@@ -282,6 +291,10 @@ function cmdAdd(args: Args): never {
         typeof args.flags.title === "string" ? args.flags.title : undefined,
       avatar:
         typeof args.flags.avatar === "string" ? args.flags.avatar : undefined,
+      description:
+        typeof args.flags.description === "string"
+          ? args.flags.description
+          : undefined,
     });
   } catch (error) {
     console.error((error as Error).message);
@@ -789,7 +802,7 @@ async function cmdChat(args: Args): Promise<void> {
   await new Promise<void>(() => {});
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const [command, ...rest] = process.argv.slice(2);
   try {
     const args = parseArgs(rest, command);
@@ -830,4 +843,11 @@ async function main(): Promise<void> {
   }
 }
 
-await main();
+// Direct invocation (node cli.ts, `--import tsx cli.ts`, or the bin shim
+// spawning the entry) runs main here. Imported by tests (config.test.ts
+// pulls scaffoldBot) or by the bin shim (which calls main explicitly), the
+// module stays side-effect free.
+const invokedDirectly =
+  process.argv[1] !== undefined &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+if (invokedDirectly) await main();

@@ -8,7 +8,8 @@ const entry = new URL("../src/cli.ts", import.meta.url);
 const entryUrl = pathToFileURL(entry.pathname);
 
 try {
-  await import(entryUrl.href);
+  const module = await import(entryUrl.href);
+  await module.main();
 } catch (error) {
   const code = /** @type {any} */ (error)?.code;
   if (

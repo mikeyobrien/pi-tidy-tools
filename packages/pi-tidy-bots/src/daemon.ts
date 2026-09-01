@@ -1278,21 +1278,36 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         }
         return;
       }
-      case "tool_result": {
+      case "tool_end": {
+        // Issue 66: pi's tool_execution_end — THE settle event. Until this
+        // mapping existed every tool stayed "running" and the settle
+        // fallback flipped them all to error: every successful call rendered
+        // failed, durations never displayed, and the 61 breaker's output
+        // streak-reset never fired.
         const step = [...runtime.steps]
           .reverse()
           .find((candidate) => candidate.toolCallId === event.toolCallId);
-        const duration = step ? Date.now() - step.started : undefined;
+        const duration =
+          event.elapsedMs ?? (step ? Date.now() - step.started : undefined);
+        if (!event.isError) runtime.toolFailStreak = null;
         runtime.turnParts.settleTool(event.toolCallId, {
           isError: event.isError,
           duration,
-          output: event.text,
+          output: event.result,
         });
         if (step) {
-          step.output = event.text.slice(0, 1200);
+          step.output = event.result.slice(0, 1200);
           step.error = event.isError;
+          if (duration !== undefined) step.duration = duration;
         }
-        if (toolOutput === "full") {
+        emit({
+          type: "bubble",
+          bot: botName,
+          turnId: runtime.turnId,
+          phase: "parts",
+          parts: runtime.turnParts.snapshot(),
+        });
+        if (activeToolOutput === "full") {
           emit({
             type: "bubble",
             bot: botName,

@@ -65,8 +65,15 @@ export type RpcEvent =
       label?: string;
     }
   | { kind: "tool_output"; toolCallId: string; text: string }
-  | { kind: "tool_end"; toolCallId: string }
-  | { kind: "tool_result"; toolCallId: string; text: string; isError: boolean }
+  | {
+      /** Issue 66: the settle event — pi's tool_execution_end carries the
+       * result text, isError flag, and optional measured duration. */
+      kind: "tool_end";
+      toolCallId: string;
+      result: string;
+      isError: boolean;
+      elapsedMs?: number;
+    }
   | { kind: "usage"; inputTokens?: number; model?: string }
   | {
       kind: "ui_request";
@@ -172,6 +179,27 @@ const textOfMessage = (message: any): string => {
     .filter((part: any) => part?.type === "text")
     .map((part: any) => String(part.text ?? ""))
     .join("");
+};
+
+/**
+ * Issue 66: tool results arrive as a string, a content-part array, or an
+ * object with .text — normalize to display text without dropping output.
+ */
+const toolResultText = (result: unknown): string => {
+  if (typeof result === "string") return result;
+  if (Array.isArray(result)) {
+    return result
+      .filter(
+        (part: any) => part?.type === "text" || typeof part?.text === "string"
+      )
+      .map((part: any) => String(part.text ?? ""))
+      .join("");
+  }
+  if (result && typeof result === "object") {
+    const text = (result as { text?: unknown }).text;
+    if (typeof text === "string") return text;
+  }
+  return "";
 };
 
 /**
@@ -451,12 +479,32 @@ export class RpcSession {
           label: stepLabel(String(parsed.toolName ?? "tool"), parsed.args),
         });
         return;
-      case "tool_execution_end":
+      case "tool_execution_end": {
         this.options.onEvent({
           kind: "tool_end",
           toolCallId: String(parsed.toolCallId ?? ""),
+          result: toolResultText(parsed.result),
+          isError: parsed.isError === true,
+          elapsedMs:
+            typeof parsed.piTidyElapsedMs === "number"
+              ? parsed.piTidyElapsedMs
+              : undefined,
         });
         return;
+      }
+      case "tool_execution_update": {
+        // Partial result text while the tool runs — surfaces live output in
+        // full mode instead of starving it until settle (issue 66).
+        const partial = toolResultText(parsed.partialResult);
+        if (partial.length > 0) {
+          this.options.onEvent({
+            kind: "tool_output",
+            toolCallId: String(parsed.toolCallId ?? ""),
+            text: partial,
+          });
+        }
+        return;
+      }
       case "message_update": {
         const update = (parsed.assistantMessageEvent ?? {}) as Record<
           string,

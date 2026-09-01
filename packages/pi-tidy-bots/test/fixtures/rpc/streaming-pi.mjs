@@ -80,8 +80,24 @@ rl.on("line", (line) => {
         toolName: "bash",
         args: { command: "sleep 5" },
       });
+      // Issue 66: partial output mid-run, then a settle frame carrying the
+      // result text, isError flag, and measured duration — exactly the real
+      // harness contract the daemon must map.
       setTimeout(() => {
-        send({ type: "tool_execution_end", toolCallId: "t1" });
+        send({
+          type: "tool_execution_update",
+          toolCallId: "t1",
+          partialResult: "still sleeping...\n",
+        });
+      }, 350);
+      setTimeout(() => {
+        send({
+          type: "tool_execution_end",
+          toolCallId: "t1",
+          result: "slept fine",
+          isError: false,
+          piTidyElapsedMs: 650,
+        });
         send({
           type: "message_end",
           message: {

@@ -584,6 +584,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     /** Issue 72: per-bot lastActivity ISO strings — restored over the boot-time
      * default so restarts never show a bogus "now" for idle bots. */
     lastActive?: Record<string, string>;
+    /** Issue 88: per-bot model overrides — applied at spawn ("" = manifest
+     * default). Persisted here, never by rewriting the manifest. */
+    models?: Record<string, string>;
   } = {};
   try {
     if (existsSync(statePath))
@@ -683,6 +686,12 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
   });
   for (const config of fleet.bots) {
     runtimes.set(config.name, makeRuntime(config));
+  }
+  // Issue 88: persisted model overrides win over the manifest at boot too —
+  // GET and spawn must agree on the effective model.
+  for (const [name, model] of Object.entries(stored.models ?? {})) {
+    const runtime = runtimes.get(name);
+    if (runtime && model) runtime.config = { ...runtime.config, model };
   }
 
   const sockets = new Set<WebSocket>();
@@ -1009,7 +1018,8 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       cwd: runtime.config.dir,
       sessionDir,
       resume: hasSession,
-      model: runtime.config.model,
+      // Issue 88: state-stored override wins; "" clears back to the manifest.
+      model: stored.models?.[name] || runtime.config.model,
       approve: runtime.config.approve,
       bridgePath,
       daemonUrl,
@@ -1938,6 +1948,30 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       // unqueue inside the child is best-effort — pi has no RPC to remove an
       // in-memory followUp, so the child may still run it; the journal row
       // (and the roster count) drop regardless.
+      // Issue 88: per-bot model — persist in the state store, update the
+      // live config copy, and respawn ONLY this bot (--model is spawn-time).
+      // Mirrors the reconcile changed-bot path: session dir kept, queue and
+      // transcript preserved, in-flight turn aborted and replayed via the
+      // pending journal. Empty string clears back to the manifest default.
+      setModel: (name: string, model: string) => {
+        const runtime = runtimes.get(name);
+        if (!runtime) return { status: 404 };
+        if (model.length === 0) delete stored.models?.[name];
+        else (stored.models ??= {})[name] = model;
+        persistStateFile();
+        runtime.config = { ...runtime.config, model: model || undefined };
+        runtime.stopping = true;
+        personaWatchers.get(name)?.close();
+        personaWatchers.delete(name);
+        runtime.session?.stop();
+        runtime.stopping = false;
+        runtime.restartTimes = [];
+        log(
+          `[${name}] model set to "${model || "(manifest default)"}" — respawning`
+        );
+        void spawnBot(name);
+        return { status: 200 };
+      },
       unqueue: (name: string, id: string) => {
         const runtime = runtimes.get(name);
         if (!runtime) return { status: 404 };
@@ -2195,6 +2229,7 @@ interface ServerDeps {
       name: string
     ): { id: string; text: string; hasImage: boolean; filename?: string }[];
     unqueue(name: string, id: string): { status: 200 | 404 };
+    setModel(name: string, model: string): { status: 200 | 404 };
     steer(
       name: string,
       text: string
@@ -2478,6 +2513,31 @@ function buildHttpServer(deps: ServerDeps): Hono {
   // watcher (in-place reload when idle, queued when busy). The wire surface
   // stays abstract: no file names, no paths — a missing document is simply
   // empty text, never an error.
+  // Issue 88: per-bot model — GET the effective model, PUT to change it.
+  // Persisted in the fleet state store (survives restarts); applied by
+  // respawning ONLY that bot (--model is spawn-time). The wire surface never
+  // names the manifest.
+  app.get("/api/bots/:name/model", (context) => {
+    const runtime = deps.runtimes.get(context.req.param("name"));
+    if (!runtime) return context.json({ error: "unknown bot" }, 404);
+    return context.json({ model: runtime.config.model ?? "" });
+  });
+
+  app.put("/api/bots/:name/model", async (context) => {
+    const body = (await context.req.json().catch(() => ({}))) as {
+      model?: unknown;
+    };
+    if (typeof body.model !== "string")
+      return context.json({ error: "model (string) required" }, 400);
+    const result = deps.handlers.setModel(
+      context.req.param("name"),
+      body.model
+    );
+    if (result.status === 404)
+      return context.json({ error: "unknown bot" }, 404);
+    return context.json({ model: body.model });
+  });
+
   app.get("/api/bots/:name/instructions", (context) => {
     const runtime = deps.runtimes.get(context.req.param("name"));
     if (!runtime) return context.json({ error: "unknown bot" }, 404);

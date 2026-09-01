@@ -40,6 +40,7 @@ rl.on("line", (line) => {
     return;
   }
   if (request.type === "get_state") {
+    trace("get_state", "");
     respond(request.id, {
       result: { contextWindow: 128000, streaming: false },
     });

@@ -153,88 +153,40 @@ function renderRoster() {
   updateComposerTargetDot();
 }
 
-// Issue 40: quiet pill timestamps refresh in place — tabular-nums + fixed
-// min-width keep the row from moving (scroll doctrine P12).
-function refreshRoutingTimestamps() {
-  document.querySelectorAll(".routing-ts[data-ts]").forEach((node) => {
-    node.textContent = `· ${Parts.relativeTime(node.dataset.ts)}`;
-  });
-}
-setInterval(refreshRoutingTimestamps, 60_000);
-
 function transcriptEl(entry) {
   if (entry.ui) return uiRequestEl(entry);
-  if (entry.role === "user" && entry.origin === "bot") {
-    // Issue 35: click the clamped pill to expand it in place into a bordered
-    // card (full markdown + follow-the-delegation link). Expansion is
-    // ephemeral view state and never auto-scrolls (scroll doctrine): it only
-    // nudges the pane when the pill's top edge sits above the viewport.
-    const wrap = el("div", "entry routing");
-    const card = el("div", "routing-card");
-    card.setAttribute("role", "button");
-    card.setAttribute("aria-expanded", "false");
-    const pill = el("div", "routing-pill");
-    pill.appendChild(el("span", null, "→"));
-    pill.appendChild(el("span", "names", `${entry.originFrom ?? "bot"}`));
-    const pillText = el("span", "routing-text");
-    pillText.innerHTML = PiMd.renderInline(entry.text);
-    pill.appendChild(pillText);
-    const chip = el("span", "routing-ts", `· ${Parts.relativeTime(entry.ts)}`);
-    chip.title = Parts.absoluteTime(entry.ts);
-    chip.dataset.ts = entry.ts;
-    pill.appendChild(chip);
-    card.appendChild(pill);
-
-    const expanded = el("div", "routing-expanded");
-    // The 0fr collapse needs ONE grid child with min-height: 0 — multiple
-    // children would leave implicit auto rows visible (the 84px fold).
-    const inner = el("div", "routing-expanded-inner");
-    inner.appendChild(
-      el("div", "routing-expanded-ts", Parts.absoluteTime(entry.ts))
+  // Issue 58: structured handoff kinds — no routing pills, no expand state.
+  if (entry.kind === "handoff-receipt") {
+    const wrap = el("div", "entry microline");
+    wrap.appendChild(el("span", null, entry.text));
+    return wrap;
+  }
+  if (entry.kind === "completion") {
+    const wrap = el("div", "entry completion");
+    wrap.appendChild(
+      el(
+        "div",
+        "completion-divider",
+        `Message from ${entry.originFrom ?? "bot"}`
+      )
     );
-    const body = el("div", "routing-expanded-body md-body");
+    const bubble = el("div", "bubble");
+    bubble.appendChild(
+      el("div", "source", `from ${entry.originFrom ?? "bot"}`)
+    );
+    const body = el("span", "md-body");
     body.innerHTML = PiMd.render(entry.text);
-    inner.appendChild(body);
-    const from = entry.originFrom ?? "bot";
-    const footer = el("div", "routing-expanded-footer");
-    const open = el("button", null, `→ open ${from}'s transcript`);
-    open.addEventListener("click", (event) => {
-      event.stopPropagation();
-      if (state.fleet.some((candidate) => candidate.name === from))
-        selectBot(from);
-    });
-    const less = el("button", null, "▲ show less");
-    footer.appendChild(open);
-    footer.appendChild(less);
-    inner.appendChild(footer);
-    expanded.appendChild(inner);
-    card.appendChild(expanded);
-
-    const setExpanded = (on) => {
-      card.classList.toggle("expanded", on);
-      card.setAttribute("aria-expanded", String(on));
-      // Keep the pill's top edge visible when expanding near the viewport top.
-      if (on) {
-        const pane = document.getElementById("transcript");
-        const top = card.getBoundingClientRect().top;
-        const paneTop = pane.getBoundingClientRect().top;
-        if (top < paneTop + 4) pane.scrollTop += top - paneTop - 8;
-      }
-    };
-    card.addEventListener("click", (event) => {
-      if (event.target.closest("button")) return;
-      setExpanded(!card.classList.contains("expanded"));
-    });
-    less.addEventListener("click", (event) => {
-      event.stopPropagation();
-      setExpanded(false);
-    });
-    wrap.appendChild(card);
+    bubble.appendChild(body);
+    wrap.appendChild(bubble);
     return wrap;
   }
   const wrap = el("div", `entry ${entry.role}`);
   if (entry.id) wrap.dataset.entryId = entry.id;
   const bubble = el("div", "bubble");
+  // Bot-origin user messages (handoff briefs, receipts) are attributed.
+  if (entry.role === "user" && entry.origin === "bot" && entry.originFrom) {
+    bubble.appendChild(el("div", "source", `from ${entry.originFrom}`));
+  }
   // Markdown boundary: md.js escapes before rendering, so innerHTML here cannot
   // execute model-supplied HTML. Source lines stay plain text.
   if (entry.parts) {

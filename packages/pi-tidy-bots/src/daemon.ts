@@ -59,6 +59,8 @@ export interface TranscriptEntry {
   origin: "operator" | "bot" | "routine" | "system";
   /** Actor name for bot/routine origins (sending bot, routine name). */
   originFrom?: string;
+  /** Issue 58: structured handoff lifecycle kinds (console renders these). */
+  kind?: "handoff" | "handoff-receipt" | "completion";
   text: string;
   ts: string;
   steps?: { name: string; duration?: number }[];
@@ -981,9 +983,10 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
             .finally(() => {
               appendTranscript(source, {
                 id: randomUUID(),
-                role: "user",
+                role: "assistant",
                 origin: "bot",
                 originFrom: botName,
+                kind: "completion",
                 text,
                 ts: new Date().toISOString(),
               });
@@ -1193,6 +1196,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       role: "user",
       origin: "bot",
       originFrom: fromName,
+      kind: "handoff",
       text: stripActionMarkers(message.trim()),
       ts: new Date().toISOString(),
     };

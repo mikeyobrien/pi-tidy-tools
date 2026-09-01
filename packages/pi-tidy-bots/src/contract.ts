@@ -72,6 +72,13 @@ export const TranscriptEntrySchema = Type.Object({
     Type.Literal("system"),
   ]),
   originFrom: Type.Optional(Type.String()),
+  kind: Type.Optional(
+    Type.Union([
+      Type.Literal("handoff"),
+      Type.Literal("handoff-receipt"),
+      Type.Literal("completion"),
+    ])
+  ),
   text: Type.String(),
   ts: Type.String(),
   delivering: Type.Optional(Type.Boolean()),

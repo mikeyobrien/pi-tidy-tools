@@ -82,3 +82,91 @@ test("version payload carries the package version and capabilities", () => {
   assert.ok(payload.capabilities.includes("images"));
   assert.ok(payload.capabilities.includes("ws-auth-bearer"));
 });
+
+test("transcript entry schema accepts structured handoff kinds", () => {
+  const check = compile(TranscriptEntrySchema);
+  assert.equal(
+    check.Check({
+      id: "id-58",
+      role: "assistant",
+      origin: "bot",
+      originFrom: "forge",
+      kind: "completion",
+      text: "Done.",
+      ts: new Date().toISOString(),
+    }),
+    true
+  );
+  assert.equal(
+    check.Check({
+      id: "id-59",
+      role: "system",
+      origin: "system",
+      kind: "handoff-receipt",
+      text: "Messaged forge",
+      ts: new Date().toISOString(),
+    }),
+    true
+  );
+  assert.equal(
+    check.Check({
+      id: "id-60",
+      role: "user",
+      origin: "bot",
+      originFrom: "atlas",
+      kind: "handoff",
+      text: "the brief",
+      ts: new Date().toISOString(),
+    }),
+    true
+  );
+  assert.equal(
+    check.Check({ id: "x", kind: "superpower", text: "", ts: "" }),
+    false,
+    "unknown kinds rejected"
+  );
+});
+
+test("transcript entry schema accepts structured handoff kinds", () => {
+  const check = compile(TranscriptEntrySchema);
+  assert.equal(
+    check.Check({
+      id: "id-58",
+      role: "assistant",
+      origin: "bot",
+      originFrom: "forge",
+      kind: "completion",
+      text: "Done.",
+      ts: new Date().toISOString(),
+    }),
+    true
+  );
+  assert.equal(
+    check.Check({
+      id: "id-59",
+      role: "system",
+      origin: "system",
+      kind: "handoff-receipt",
+      text: "Messaged forge",
+      ts: new Date().toISOString(),
+    }),
+    true
+  );
+  assert.equal(
+    check.Check({
+      id: "id-60",
+      role: "user",
+      origin: "bot",
+      originFrom: "atlas",
+      kind: "handoff",
+      text: "the brief",
+      ts: new Date().toISOString(),
+    }),
+    true
+  );
+  assert.equal(
+    check.Check({ id: "x", kind: "superpower", text: "", ts: "" }),
+    false,
+    "unknown kinds rejected"
+  );
+});

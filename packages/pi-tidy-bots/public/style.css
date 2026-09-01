@@ -402,90 +402,38 @@ body {
   font-size: 12px;
 }
 
-/* ── Routing pill ───────────────────────────────────── */
-.entry.routing {
-  align-self: flex-start;
+/* ── Handoff microline + completion divider (issue 58) ─ */
+.entry.microline {
+  align-self: center;
+  color: var(--muted);
+  font-size: 12px;
+  justify-content: center;
+  max-width: none;
 }
-.routing-pill {
-  display: inline-flex;
-  gap: 8px;
+.entry.completion {
+  align-self: stretch;
+  flex-direction: column;
+  gap: 6px;
+  max-width: none;
+}
+.completion-divider {
   align-items: center;
   color: var(--muted);
-  background: var(--surface);
-  border-radius: 999px;
-  padding: 7px 13px;
-  font-size: 12px;
-}
-.routing-pill .names {
-  color: var(--text);
-}
-.routing-ts {
-  color: var(--muted);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  min-width: 5ch;
-  text-align: right;
-  margin-left: auto;
-  white-space: nowrap;
-}
-.routing-expanded-ts {
-  color: var(--muted);
-  font-size: 11px;
-}
-
-/* ── Routing pill expand (issue 35) ─────────────────── */
-.routing-card {
-  cursor: pointer;
-  min-width: 0;
-}
-.routing-card.expanded .routing-pill {
-  display: none;
-}
-.routing-expanded {
-  display: grid;
-  grid-template-rows: 0fr;
-  opacity: 0;
-  overflow: hidden;
-  transition:
-    grid-template-rows 0.18s ease,
-    opacity 0.18s ease;
-}
-/* min-height: 0 is what lets the 0fr row actually collapse — without it the
-   grid item's auto minimum holds the fold open (~84px). */
-.routing-expanded > * {
-  min-height: 0;
-  overflow: hidden;
-}
-.routing-card.expanded .routing-expanded {
-  grid-template-rows: 1fr;
-  opacity: 1;
-}
-.routing-expanded-body {
-  background: var(--surface);
-  border: 1px solid var(--border, #232a38);
-  border-radius: 12px;
-  padding: 10px 12px;
-  font-size: 13px;
-  overflow-wrap: anywhere;
-}
-.routing-expanded-footer {
   display: flex;
-  gap: 12px;
-  align-items: center;
-  margin-top: 8px;
-}
-.routing-expanded-footer button {
-  all: unset;
-  cursor: pointer;
-  color: var(--accent);
   font-size: 12px;
+  gap: 10px;
+  justify-content: center;
+  max-width: none;
 }
-.routing-expanded-footer button:hover {
-  text-decoration: underline;
+.completion-divider::before,
+.completion-divider::after {
+  border-top: 1px solid var(--border, #232a38);
+  content: "";
+  flex: 1;
 }
 
 /* ── Composer card ──────────────────────────────────── */
-#composer {
+──────────────────────────────────── */ #composer {
   margin: 0 clamp(12px, 1.6vw, 22px);
   margin-bottom: max(clamp(10px, 1.6vw, 16px), env(safe-area-inset-bottom));
   background: var(--surface);
@@ -667,23 +615,6 @@ body {
   /* Routing pills (handoffs + completion receipts) take the full row at phone
      widths — the squeezed pill collapsed to one word per line and collided
      with the neighboring bubble. Long briefs clamp to 3 lines. */
-  .entry.routing {
-    align-self: stretch;
-  }
-  .entry.routing .routing-pill {
-    flex: 1 1 100%;
-    min-width: 0;
-    align-items: flex-start;
-    border-radius: 14px;
-  }
-  .routing-pill > span:last-of-type {
-    flex: 1;
-    min-width: 0;
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 3;
-    overflow: hidden;
-  }
   #chat-header {
     padding: 10px 14px;
   }

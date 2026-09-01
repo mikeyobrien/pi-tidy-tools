@@ -7,7 +7,7 @@ import {
   ConfigError,
   botDisclosure,
 } from "../src/config.ts";
-import { scaffoldBot } from "../src/cli.ts";
+import { scaffoldBot, restartSpawnArgs } from "../src/cli.ts";
 import {
   stripActionMarkers,
   attributionPrefix,
@@ -333,4 +333,14 @@ test("thinking rows validate against pi's level set and reach the config", () =>
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("restartSpawnArgs replays a persisted host and omits it when absent", () => {
+  const dir = "/tmp/fleet-x";
+  const plain = restartSpawnArgs(dir, 4317);
+  assert.ok(!plain.includes("--host"), "no host flag when absent");
+  assert.equal(plain[plain.indexOf("--port") + 1], "4317");
+  const withHost = restartSpawnArgs(dir, 4317, undefined, "0.0.0.0");
+  assert.ok(withHost.includes("--host"));
+  assert.equal(withHost[withHost.indexOf("--host") + 1], "0.0.0.0");
 });

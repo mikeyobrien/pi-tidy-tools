@@ -323,6 +323,28 @@ function bestEffortPort(fleetDir: string): number {
   }
 }
 
+/** Persist the daemon bind host into .fleet/state.json so restarts replay it. */
+function persistDaemonHost(fleetDir: string, host: string): void {
+  try {
+    const statePath = join(fleetDir, ".fleet", "state.json");
+    let state: Record<string, unknown> = {};
+    try {
+      state = JSON.parse(readFileSync(statePath, "utf8")) as Record<
+        string,
+        unknown
+      >;
+    } catch {
+      // First boot: no state yet.
+    }
+    if (state.host === host) return;
+    state.host = host;
+    mkdirSync(join(fleetDir, ".fleet"), { recursive: true });
+    writeFileSync(statePath, JSON.stringify(state, null, 2));
+  } catch {
+    // Best-effort: host persistence must never block a start.
+  }
+}
+
 async function cmdStart(args: Args): Promise<void> {
   // Target resolution (issue 42): --fleet <name> resolves via the registry; a
   // path argument keeps working and registers implicitly under its basename.
@@ -357,6 +379,11 @@ async function cmdStart(args: Args): Promise<void> {
   }
   const json = args.flags.json === true;
   const daemonize = args.flags.daemon === true;
+  // Issue 51 follow-up: remember an explicit bind host so sanctioned restarts
+  // replay it instead of silently rebinding to 127.0.0.1.
+  if (typeof args.flags.host === "string" && args.flags.host !== "127.0.0.1") {
+    persistDaemonHost(dir, args.flags.host);
+  }
   // Issue 51: tee daemon output to .fleet/logs/daemon.log (size-capped).
   const logWriter = createRotatingLogWriter(
     join(dir, ".fleet", "logs"),
@@ -757,6 +784,19 @@ async function cmdRestart(args: Args, json: boolean): Promise<void> {
   // 2. Wait for the port to release before booting the replacement.
   const port = bestEffortPort(dir);
   await waitPortReleased(port, 10_000);
+  // Replay a persisted non-loopback bind host (issue 51): a sanctioned
+  // restart must not silently rebind the fleet to 127.0.0.1.
+  let host: string | undefined;
+  try {
+    const state = JSON.parse(
+      readFileSync(join(dir, ".fleet", "state.json"), "utf8")
+    ) as { host?: string };
+    if (typeof state.host === "string" && state.host !== "127.0.0.1") {
+      host = state.host;
+    }
+  } catch {
+    // No state file: default binding applies.
+  }
   // 3. Boot daemonized; the daemonize parent health-checks /api/fleet (with
   //    the preserved .fleet/token) before reporting ready. Spawned via the
   //    package bin (issue 51): native stripping first, tsx fallback resolved
@@ -767,7 +807,7 @@ async function cmdRestart(args: Args, json: boolean): Promise<void> {
   //    flake).
   const child = spawn(
     process.execPath,
-    restartSpawnArgs(dir, port, fleetName),
+    restartSpawnArgs(dir, port, fleetName, host),
     {
       stdio: "inherit",
     }
@@ -817,7 +857,8 @@ export function daemonRespawnArgs(argv: string[]): string[] {
 export function restartSpawnArgs(
   dir: string,
   port: number,
-  fleetName?: string
+  fleetName?: string,
+  host?: string
 ): string[] {
   return [
     binEntry(),
@@ -827,6 +868,7 @@ export function restartSpawnArgs(
     "--json",
     "--port",
     String(port),
+    ...(host ? ["--host", host] : []),
     ...(fleetName ? ["--fleet", fleetName] : []),
   ];
 }

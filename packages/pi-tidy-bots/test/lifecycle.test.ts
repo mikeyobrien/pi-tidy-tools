@@ -16,7 +16,9 @@ import { join } from "node:path";
 // daemonized start (detached child, pidfile), status over HTTP, and a
 // graceful stop — all against a temp fleet with a stub pi binary.
 
-const PORT = 4694;
+// Dynamic port: a hardcoded fixture port eventually collides with real
+// services on the machine (Ollama took 4694 out from under us once).
+const PORT = 40000 + Math.floor(Math.random() * 20000);
 const cliPath = new URL("../src/cli.ts", import.meta.url).pathname;
 const stubDir = mkdtempSync(join(tmpdir(), "ptb-lifecycle-"));
 process.env.PI_TIDY_BOTS_REGISTRY = join(stubDir, "fleets.json");

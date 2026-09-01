@@ -683,13 +683,25 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
   persistToolOutputRef = persistToolOutput;
 
   const runtimes = new Map<string, BotRuntime>();
+  /**
+   * Issue 99: never seed lastActive with "now". Precedence: the bot's last
+   * transcript entry ts (per-bot truth the boot bug could not poison), then
+   * the persisted activity map, else the epoch — an idle bot shows its real
+   * idle time, not the daemon's start second. touch() on real activity then
+   * persists forward as before.
+   */
+  const seedLastActive = (name: string): string => {
+    const entries = transcripts.load(name) as { ts?: unknown }[];
+    const fromTranscript = entries.at(-1)?.ts;
+    if (typeof fromTranscript === "string" && fromTranscript.length > 0)
+      return fromTranscript;
+    return stored.lastActive?.[name] ?? "1970-01-01T00:00:00.000Z";
+  };
   const makeRuntime = (config: BotConfig): BotRuntime => ({
     config,
     session: null,
     online: false,
-    // Issue 72: a restart must not reset activity to boot time — restore the
-    // persisted value; only a never-seen bot starts at "now".
-    lastActive: stored.lastActive?.[config.name] ?? new Date().toISOString(),
+    lastActive: seedLastActive(config.name),
     transcript: [],
     pendingFrom: [],
     restartTimes: [],

@@ -836,21 +836,24 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         .map((routine) => routine.name),
       issues: scanOwnedIssues(fleet.dir, botName),
     });
+    let refused = false;
     try {
       // pi refuses to compact below useful size ("Nothing to compact") —
-      // that refusal is a SUCCESS outcome for a forced compact: nothing to
-      // do. Never let it surface as a 500.
+      // that refusal is a noop success for a forced compact, not an error.
       await runtime.session?.request({
         type: "compact",
         preamble,
       });
     } catch (error) {
-      log(
-        `[${botName}] compact request failed [reason: ${classifyFailure(
-          String(error)
-        )}]`
-      );
-      return false;
+      refused = /nothing to compact/i.test(String(error));
+      if (!refused) {
+        log(
+          `[${botName}] compact request failed [reason: ${classifyFailure(
+            String(error)
+          )}]`
+        );
+        return false;
+      }
     }
     runtime.lastCompactAt = Date.now();
     runtime.turnsSinceCompact = 0;
@@ -865,7 +868,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       id: randomUUID(),
       role: "system",
       origin: "system",
-      text: `Context managed (${Math.round((tokensBefore ?? 0) / 1000)}K tokens in)`,
+      text: refused
+        ? "Context managed — nothing to compact, below threshold."
+        : `Context managed (${Math.round((tokensBefore ?? 0) / 1000)}K tokens in)`,
       ts: new Date().toISOString(),
     });
     return true;

@@ -119,7 +119,7 @@ Usage:
   pi-tidy-bots fleets [--prune]           List registered fleets and running state
   pi-tidy-bots start --fleet <name>       Target a registered fleet by name
   pi-tidy-bots stop [fleetDir]            Gracefully stop the running fleet
-  pi-tidy-bots restart [fleetDir]         Sanctioned stop + boot + health-check
+  pi-tidy-bots restart [fleetDir|--fleet <name>]  Sanctioned stop + boot + health-check
 
 Start flags:
   --port <n>        Web UI port (default 4317, or [fleet] port in bots.toml)

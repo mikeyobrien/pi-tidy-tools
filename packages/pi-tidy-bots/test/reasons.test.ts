@@ -36,6 +36,16 @@ test("retry policy: only transient reasons retry", () => {
   assert.ok(!isRetryable("delivery_failed"));
 });
 
+test("issue 49 follow-up: compact refusal on a small session is not a fatal", () => {
+  // A forced compact on a small session: pi refuses; the daemon must treat
+  // the refusal as a noop success, never a 500.
+  assert.equal(
+    classifyFailure("Nothing to compact (session too small)"),
+    "delivery_failed",
+    "the refusal is a clean noop, not offline/port/usage"
+  );
+});
+
 test("issue 50: a busy child is turn_in_flight, never runtime_offline", () => {
   const busy =
     'rpc command failed: {"success":false,"error":"Agent is already processing. Specify streamingBehavior (\'steer\' or \'followUp\') to queue the message."}';

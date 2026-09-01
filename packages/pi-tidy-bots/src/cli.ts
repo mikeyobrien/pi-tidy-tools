@@ -418,6 +418,18 @@ async function cmdStart(args: Args): Promise<void> {
         3000,
         100
       );
+      if (!reaped && child.pid !== undefined) {
+        try {
+          process.kill(child.pid, "SIGKILL");
+        } catch {
+          // Already gone.
+        }
+        await waitForReady(
+          () => child.pid === undefined || !pidAlive(child.pid),
+          2000,
+          100
+        );
+      }
       throw new CliError(
         `daemonized fleet did not become ready within ${Math.round(readyMs / 1000)}s${
           reaped ? "" : " (child kill signaled)"

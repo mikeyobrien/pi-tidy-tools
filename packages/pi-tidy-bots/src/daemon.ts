@@ -836,10 +836,22 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         .map((routine) => routine.name),
       issues: scanOwnedIssues(fleet.dir, botName),
     });
-    await runtime.session?.request({
-      type: "compact",
-      preamble,
-    });
+    try {
+      // pi refuses to compact below useful size ("Nothing to compact") —
+      // that refusal is a SUCCESS outcome for a forced compact: nothing to
+      // do. Never let it surface as a 500.
+      await runtime.session?.request({
+        type: "compact",
+        preamble,
+      });
+    } catch (error) {
+      log(
+        `[${botName}] compact request failed [reason: ${classifyFailure(
+          String(error)
+        )}]`
+      );
+      return false;
+    }
     runtime.lastCompactAt = Date.now();
     runtime.turnsSinceCompact = 0;
     runtime.fill = 0;

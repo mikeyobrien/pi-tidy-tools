@@ -809,6 +809,10 @@ body {
   gap: 8px;
   padding: 4px 2px;
 }
+/* Author display rules defeat the UA [hidden] default — restate it. */
+.composer-attachment[hidden] {
+  display: none;
+}
 .composer-attachment img {
   width: 40px;
   height: 40px;

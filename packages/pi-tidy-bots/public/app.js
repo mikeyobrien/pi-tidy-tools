@@ -923,34 +923,70 @@ function clearPendingImage() {
   if (pendingImageUrl) URL.revokeObjectURL(pendingImageUrl);
   pendingImageUrl = null;
   pendingImage = null;
-  document.getElementById("composer-image").value = "";
-  document.getElementById("composer-attach").classList.remove("has-image");
-  document.getElementById("composer-attachment").hidden = true;
+  resetAttachmentInput();
+  document.getElementById("composer-attach")?.classList.remove("has-image");
+  document.getElementById("composer-attachment")?.remove();
+}
+
+// Safari bfcache restores form state on back/forward navigation — reset the
+// attachment input + chip when the page is re-shown from the cache.
+addEventListener("pageshow", (event) => {
+  resetAttachmentInput();
+  if (event.persisted) clearPendingImage();
+});
+resetAttachmentInput();
+
+// Issue 45: visible confirmation — 40px thumb, name, size, ✕ to remove.
+// The thumb <img> only ever gets a src with a pending file (an empty-src img
+// renders as a broken box on iOS).
+function updateAttachmentChip(file) {
+  if (!file) {
+    clearPendingImage();
+    return;
+  }
+  const composer = document.getElementById("composer");
+  let chip = document.getElementById("composer-attachment");
+  if (!chip) {
+    // Removed on the previous clear: rebuild the chip node in place.
+    chip = el("div", "composer-attachment");
+    chip.id = "composer-attachment";
+    chip.hidden = true;
+    const thumb = el("img", "composer-attach-thumb");
+    chip.appendChild(thumb);
+    const meta = el("div", "composer-attach-meta");
+    meta.appendChild(el("span", "composer-attach-name"));
+    meta.appendChild(el("span", "composer-attach-size"));
+    chip.appendChild(meta);
+    const remove = el("button", "composer-attach-remove", "✕");
+    remove.type = "button";
+    chip.appendChild(remove);
+    bindAttachmentChip(chip);
+    const bottom = composer.querySelector(".composer-bottom");
+    composer.insertBefore(chip, bottom);
+  }
+  if (pendingImageUrl) URL.revokeObjectURL(pendingImageUrl);
+  pendingImageUrl = URL.createObjectURL(file);
+  chip.querySelector(".composer-attach-thumb").src = pendingImageUrl;
+  const name = chip.querySelector(".composer-attach-name");
+  name.textContent = file.name;
+  name.title = file.name;
+  chip.querySelector(".composer-attach-size").textContent = `${Math.max(
+    1,
+    Math.round(file.size / 1024)
+  )} KB`;
+  chip.hidden = false;
+  document.getElementById("composer-attach").classList.add("has-image");
+}
+
+function bindAttachmentChip(chip) {
+  chip
+    .querySelector(".composer-attach-remove")
+    .addEventListener("click", () => clearPendingImage());
 }
 
 document.getElementById("composer-attach").addEventListener("click", () => {
   document.getElementById("composer-image").click();
 });
-
-// Issue 45: visible confirmation — 40px thumb, name, size, ✕ to remove.
-function updateAttachmentChip(file) {
-  const chip = document.getElementById("composer-attachment");
-  const name = document.getElementById("composer-attach-name");
-  const size = document.getElementById("composer-attach-size");
-  const thumb = document.getElementById("composer-attach-thumb");
-  chip.hidden = !file;
-  if (!file) return;
-  if (pendingImageUrl) URL.revokeObjectURL(pendingImageUrl);
-  pendingImageUrl = URL.createObjectURL(file);
-  thumb.src = pendingImageUrl;
-  name.textContent = file.name;
-  name.title = file.name;
-  size.textContent = `${Math.max(1, Math.round(file.size / 1024))} KB`;
-}
-
-document
-  .getElementById("composer-attach-remove")
-  .addEventListener("click", () => clearPendingImage());
 
 document
   .getElementById("composer-image")

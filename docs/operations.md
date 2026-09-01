@@ -68,3 +68,10 @@ headless Chrome per viewport. It fails when any text-bearing element is
 narrower than 40px while holding more than 20 characters. Requires Chrome
 (set `PROBE_CHROME` if not autodetected); `PROBE_KEEP=1` preserves the temp
 fleet for autopsy.
+
+## Flutter web mount (issue 60)
+
+The daemon serves the Flutter web build at `/app/` (token-gated like the
+console). Sync a build with `node scripts/sync-flutter-web.mjs <build/web>`
+and commit `packages/pi-tidy-bots/public/app/`. Entry documents revalidate;
+hashed assets are immutable. Phase 2 default flip is parity-gated.

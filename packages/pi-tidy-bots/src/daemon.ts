@@ -4,6 +4,7 @@ import {
   appendFileSync,
   chmodSync,
   existsSync,
+  statSync,
   readdirSync,
   readFileSync,
   writeFileSync,
@@ -146,6 +147,57 @@ const MAX_RESTARTS_PER_WINDOW = 3;
 const RESTART_WINDOW_MS = 60_000;
 
 const PUBLIC_DIR = new URL("../public/", import.meta.url).pathname;
+const APP_DIR = join(PUBLIC_DIR, "app");
+
+// Issue 60: /app/ mounts the Flutter web build (synced via
+// scripts/sync-flutter-web.mjs). Hashed assets cache immutably; entry
+// documents revalidate. Traversal outside the mount is refused.
+const APP_MIME: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".svg": "image/svg+xml",
+  ".wasm": "application/wasm",
+  ".ttf": "font/ttf",
+  ".otf": "font/otf",
+  ".map": "application/json",
+  ".txt": "text/plain; charset=utf-8",
+};
+
+export function appAssetMimeType(path: string): string {
+  const dot = path.lastIndexOf(".");
+  return dot === -1
+    ? "application/octet-stream"
+    : (APP_MIME[path.slice(dot)] ?? "application/octet-stream");
+}
+
+const HASHED_ASSET = /(?:[\\/.\-]|^)[0-9a-f_-]{8,}\./i;
+
+export function isHashedAsset(path: string): boolean {
+  return HASHED_ASSET.test(path);
+}
+
+export function appAssetCacheControl(path: string): string {
+  if (path.endsWith(".html") || path.endsWith(".json")) return "no-store";
+  return isHashedAsset(path)
+    ? "public, max-age=31536000, immutable"
+    : "public, max-age=300";
+}
+
+export function safeAppAssetPath(
+  urlPath: string,
+  root: string = APP_DIR
+): string | undefined {
+  const relative = urlPath.replace(/^\/app\/?/, "");
+  const resolved = join(root, relative);
+  if (!resolved.startsWith(root)) return undefined;
+  return resolved;
+}
 
 /**
  * Boot-time routine validation. A schedule parseCron rejects can never fire —
@@ -1727,6 +1779,16 @@ function buildHttpServer(deps: ServerDeps): Hono {
   app.get("/app.js", serveAsset("app.js", "text/javascript"));
   app.get("/md.js", serveAsset("md.js", "text/javascript"));
   app.get("/parts.js", serveAsset("parts.js", "text/javascript"));
+  app.get("/app/*", (context) => {
+    const asset = safeAppAssetPath(context.req.path);
+    if (!asset || !existsSync(asset) || !statSync(asset).isFile())
+      return context.json({ error: "not found" }, 404);
+    return context.body(readFileSync(asset), 200, {
+      "content-type": appAssetMimeType(asset),
+      "cache-control": appAssetCacheControl(context.req.path),
+    });
+  });
+  app.get("/app", (context) => context.redirect("/app/"));
   app.get("/style.css", serveAsset("style.css", "text/css"));
 
   app.get("/api/fleet", (context) => {

@@ -1,3 +1,4 @@
 # Generated copies (scripts/bundle-core.mjs) must stay byte-identical to
 # packages/pi-tidy-core/index.ts, so keep prettier away from them.
 vendor/
+packages/pi-tidy-bots/public/app/

@@ -76,6 +76,21 @@ npm run smoke           # gated: PI_TIDY_BOTS_REAL_SMOKE=1 boots real children
 npm run check           # typecheck
 ```
 
+### Flutter web client (`/app/`)
+
+The daemon serves a Flutter web build side-by-side with the console at
+`/app/` (same auth token model). Deploy a build with the sync script — the
+files are committed byte-identical, so consumers never need the Flutter SDK:
+
+```bash
+node scripts/sync-flutter-web.mjs /path/to/flutter/build/web
+git commit -am "chore(pi-tidy-bots): sync flutter web build"
+```
+
+Entry documents (`index.html`, `*.json`) revalidate; hashed assets cache
+immutably. Phase 2 (making `/app/` the default surface) is parity-gated —
+the vanilla console at `/` remains the primary UI.
+
 ### Diffing the running daemon
 
 `--version`, `GET /api/version`, and the console footer expose the git commit

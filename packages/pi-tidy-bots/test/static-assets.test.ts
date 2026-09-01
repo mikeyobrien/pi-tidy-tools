@@ -5,6 +5,7 @@ import {
   appAssetCacheControl,
   appAssetMimeType,
   isHashedAsset,
+  isPublicAssetPath,
   safeAppAssetPath,
 } from "../src/daemon.ts";
 
@@ -19,6 +20,7 @@ test("app asset mime map covers the flutter web build", () => {
     appAssetMimeType("canvaskit/canvaskit.wasm"),
     "application/wasm"
   );
+  assert.equal(appAssetMimeType("assets/fonts/icon.woff2"), "font/woff2");
   assert.equal(appAssetMimeType("no-extension"), "application/octet-stream");
 });
 
@@ -49,7 +51,39 @@ test("safeAppAssetPath mounts under the root and refuses traversal", () => {
     safeAppAssetPath("/app/main.dart.js", root),
     join(root, "main.dart.js")
   );
-  assert.equal(safeAppAssetPath("/app/", root), join(root));
+  assert.equal(
+    safeAppAssetPath("/app/", root),
+    join(root, "index.html"),
+    "directory mount serves the entry document"
+  );
+  assert.equal(
+    safeAppAssetPath("/app", root),
+    join(root, "index.html"),
+    "bare mount serves the entry document"
+  );
   assert.equal(safeAppAssetPath("/app/../secrets.txt", root), undefined);
-  assert.equal(safeAppAssetPath("/app", root), join(root));
+});
+
+test("isPublicAssetPath bypasses auth for asset trees only", () => {
+  for (const pub of [
+    "/app",
+    "/app/",
+    "/app/index.html",
+    "/app/main.dart.js",
+    "/app/assets/NotoSans.woff2",
+    "/app.js",
+    "/md.js",
+    "/parts.js",
+    "/style.css",
+  ])
+    assert.equal(isPublicAssetPath(pub), true, `${pub} must bypass`);
+  for (const gated of [
+    "/",
+    "/console",
+    "/api/fleet",
+    "/api/ws",
+    "/bus/send",
+    "/appetizer",
+  ])
+    assert.equal(isPublicAssetPath(gated), false, `${gated} must stay gated`);
 });

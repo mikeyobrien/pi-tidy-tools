@@ -174,6 +174,8 @@ const APP_MIME: Record<string, string> = {
   ".wasm": "application/wasm",
   ".ttf": "font/ttf",
   ".otf": "font/otf",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
   ".map": "application/json",
   ".txt": "text/plain; charset=utf-8",
 };
@@ -203,9 +205,27 @@ export function safeAppAssetPath(
   root: string = APP_DIR
 ): string | undefined {
   const relative = urlPath.replace(/^\/app\/?/, "");
-  const resolved = join(root, relative);
+  // Directory mount points serve the entry document, matching `app.get("/")`
+  // behavior for the vanilla console. Files under /app/ pass through.
+  const resolved = join(root, relative || "index.html");
   if (!resolved.startsWith(root)) return undefined;
   return resolved;
+}
+
+/**
+ * Public-asset bypass (issue 60): the /app/ tree and the vanilla console's
+ * no-store assets carry no fleet data, so subresources load without the
+ * document's ?token=. Everything else (/, /api/*, /bus/send) stays gated.
+ */
+export function isPublicAssetPath(pathname: string): boolean {
+  return (
+    pathname === "/app.js" ||
+    pathname === "/style.css" ||
+    pathname === "/md.js" ||
+    pathname === "/parts.js" ||
+    pathname === "/app" ||
+    pathname.startsWith("/app/")
+  );
 }
 
 /**
@@ -1997,12 +2017,7 @@ function buildHttpServer(deps: ServerDeps): Hono {
       return;
     }
     // Public assets carry no fleet data; browsers fetch them without the document's query token.
-    if (
-      url.pathname === "/app.js" ||
-      url.pathname === "/style.css" ||
-      url.pathname === "/md.js" ||
-      url.pathname === "/parts.js"
-    ) {
+    if (isPublicAssetPath(url.pathname)) {
       await next();
       return;
     }
@@ -2036,7 +2051,9 @@ function buildHttpServer(deps: ServerDeps): Hono {
       "cache-control": appAssetCacheControl(context.req.path),
     });
   });
-  app.get("/app", (context) => context.redirect("/app/"));
+  app.get("/app", (context) =>
+    context.redirect(`/app/${new URL(context.req.url).search}`)
+  );
   app.get("/style.css", serveAsset("style.css", "text/css"));
 
   app.get("/api/fleet", (context) => {

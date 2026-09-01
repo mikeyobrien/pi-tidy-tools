@@ -318,7 +318,8 @@ test("reasoning is the first schema field so it streams before large arguments",
     "path",
     "content",
   ]);
-  assert.deepEqual(schema.required, ["reasoning", "path", "content"]);
+  // Issue 61 layer 1: reasoning is optional — not in required.
+  assert.deepEqual(schema.required, ["path", "content"]);
 });
 
 test("running tools show compact human-readable elapsed time", () => {
@@ -738,8 +739,16 @@ test("scoped startup exposes native read and FFF-backed tidy grep/find without r
   const find = tools.find((tool) => tool.name === "find");
   assert.notEqual(read.parameters, grepSchema);
   assert.notEqual(read.parameters, findSchema);
-  assert.equal(grep.parameters.required[0], "reasoning");
-  assert.equal(find.parameters.required[0], "reasoning");
+  assert.ok(grep.parameters.properties.reasoning, "reasoning in properties");
+  assert.ok(
+    !grep.parameters.required?.includes("reasoning"),
+    "reasoning optional"
+  );
+  assert.ok(find.parameters.properties.reasoning, "reasoning in properties");
+  assert.ok(
+    !find.parameters.required?.includes("reasoning"),
+    "reasoning optional"
+  );
   assert.equal(grep.renderShell, "self");
   assert.equal(find.renderShell, "self");
   assert.notEqual(grep.renderCall, rawRenderer);
@@ -1514,7 +1523,7 @@ test("withReasoning clones schemas and prepends its exact required contract", ()
       },
       path: { type: "string" },
     },
-    required: ["reasoning", "path"],
+    required: ["path"],
   });
   assert.deepEqual(parameters.properties, { path: { type: "string" } });
   assert.deepEqual(withReasoning(undefined), {
@@ -1726,7 +1735,15 @@ test("registered APIs expose exact completions and reason-first tool metadata", 
     assert.deepEqual(tool.promptGuidelines, [
       `Always pass a \"reasoning\" phrase to ${name}: state the GOAL/intent, not the file or command (those are shown already).`,
     ]);
+    assert.ok(tool.parameters.properties.reasoning, "reasoning in properties");
+    assert.ok(
+      !tool.parameters.required?.includes("reasoning"),
+      "reasoning optional"
+    );
     assert.equal(Object.keys(tool.parameters.properties)[0], "reasoning");
-    assert.equal(tool.parameters.required[0], "reasoning");
+    assert.ok(
+      !tool.parameters.required?.includes("reasoning"),
+      "reasoning optional"
+    );
   }
 });

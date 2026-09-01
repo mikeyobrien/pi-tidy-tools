@@ -13,9 +13,49 @@ export interface RpcSpawnOptions {
   bridgePath: string;
   daemonUrl: string;
   childSecret: string;
+  /**
+   * Issue 82: fleet-wide rules — appended to the bot's system prompt at
+   * SPAWN time (next-spawn semantics; never rewrites AGENTS.md, never
+   * steers in-flight turns).
+   */
+  appendSystemPrompt?: string;
   onEvent: (event: RpcEvent) => void;
   onExit: (code: number | null, signal: string | null) => void;
   onLine?: (line: string) => void;
+}
+
+/**
+ * Pure argv builder for the rpc child — exported for unit tests (issue 82:
+ * rules ride --append-system-prompt only when present).
+ */
+export function rpcSpawnArgs(
+  options: Pick<
+    RpcSpawnOptions,
+    | "name"
+    | "sessionDir"
+    | "resume"
+    | "model"
+    | "approve"
+    | "appendSystemPrompt"
+    | "bridgePath"
+  >
+): string[] {
+  return [
+    "--mode",
+    "rpc",
+    "--name",
+    options.name,
+    "--session-dir",
+    options.sessionDir,
+    ...(options.resume ? ["--continue"] : []),
+    ...(options.model ? ["--model", options.model] : []),
+    ...(options.approve ? ["--approve"] : []),
+    ...(options.appendSystemPrompt
+      ? ["--append-system-prompt", options.appendSystemPrompt]
+      : []),
+    "-e",
+    options.bridgePath,
+  ];
 }
 
 /** Compact, non-sensitive args digest for a tool step row (issue 36). */
@@ -264,19 +304,7 @@ export class RpcSession {
   }
 
   static spawn(options: RpcSpawnOptions): RpcSession {
-    const args = [
-      "--mode",
-      "rpc",
-      "--name",
-      options.name,
-      "--session-dir",
-      options.sessionDir,
-      ...(options.resume ? ["--continue"] : []),
-      ...(options.model ? ["--model", options.model] : []),
-      ...(options.approve ? ["--approve"] : []),
-      "-e",
-      options.bridgePath,
-    ];
+    const args = rpcSpawnArgs(options);
     const child = spawn(options.piBin ?? "pi", args, {
       cwd: options.cwd,
       env: {

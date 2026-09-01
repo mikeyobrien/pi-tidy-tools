@@ -997,6 +997,16 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     runtime.queuedCount = 0;
     const sessionDir = join(fleet.dir, ".fleet", "sessions", name);
     mkdirSync(sessionDir, { recursive: true });
+    // Issue 82: fleet-wide rules ride the spawn as --append-system-prompt.
+    // Read at spawn time — edits apply on the NEXT spawn (respawn/restart);
+    // in-flight turns are never steered and AGENTS.md is never rewritten.
+    let fleetRules: string | undefined;
+    try {
+      const text = readFileSync(join(fleet.dir, ".fleet", "rules.md"), "utf8");
+      if (text.trim().length > 0) fleetRules = text;
+    } catch {
+      // No rules file — fleet unchanged.
+    }
     const hasSession =
       existsSync(sessionDir) &&
       readdirSync(sessionDir).some((file) => file.endsWith(".jsonl"));
@@ -1008,6 +1018,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       resume: hasSession,
       model: runtime.config.model,
       approve: runtime.config.approve,
+      ...(fleetRules ? { appendSystemPrompt: fleetRules } : {}),
       bridgePath,
       daemonUrl,
       childSecret,
@@ -2308,6 +2319,31 @@ function buildHttpServer(deps: ServerDeps): Hono {
     }
     deps.onToolOutput(body.toolOutput as ToolOutputMode);
     return context.json({ toolOutput: body.toolOutput });
+  });
+
+  // Issue 82: fleet-wide rules — a single markdown file every bot receives
+  // as --append-system-prompt on its NEXT spawn. Missing/empty file is a
+  // normal state (text: "", never 404). Mason's drawer edits via PUT.
+  app.get("/api/rules", (context) => {
+    let text = "";
+    try {
+      text = readFileSync(join(deps.fleet.dir, ".fleet", "rules.md"), "utf8");
+    } catch {
+      // No rules yet.
+    }
+    return context.json({ text });
+  });
+
+  app.put("/api/rules", async (context) => {
+    const body = (await context.req.json().catch(() => ({}))) as {
+      text?: unknown;
+    };
+    if (typeof body.text !== "string")
+      return context.json({ error: "text (string) required" }, 400);
+    const rulesPath = join(deps.fleet.dir, ".fleet", "rules.md");
+    mkdirSync(join(deps.fleet.dir, ".fleet"), { recursive: true });
+    writeFileSync(rulesPath, body.text);
+    return context.json({ text: body.text });
   });
 
   app.get("/api/routines", (context) => {

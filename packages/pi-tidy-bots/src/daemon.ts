@@ -285,7 +285,12 @@ export type BusBehavior = "steer" | "followUp";
 function journalCompaction(
   fleetDir: string,
   bot: string,
-  data: { tokensBefore?: number; forced?: boolean }
+  data: {
+    tokensBefore?: number;
+    fill?: number;
+    trigger: "threshold" | "idle" | "force";
+    preambleChars?: number;
+  }
 ): void {
   try {
     const dir = join(fleetDir, ".fleet");
@@ -329,6 +334,66 @@ export function shouldAutoCompact(input: CompactPolicyInput): boolean {
   if (input.force) return true;
   const floor = input.idle ? COMPACT_SOFT_FLOOR : COMPACT_TRIGGER;
   return input.fill >= floor;
+}
+
+/**
+ * Issue 43 item 3: the fleet-state preamble — authoritative re-injection
+ * composed from daemon ground truth at compaction time (the Codex-drift fix).
+ */
+export function composeFleetPreamble(parts: {
+  handoffs: string[];
+  cards: { id: string; title: string }[];
+  routines: string[];
+  issues: string[];
+}): string {
+  const lines: string[] = [
+    "FLEET STATE (authoritative daemon re-injection after compaction):",
+  ];
+  if (parts.handoffs.length)
+    lines.push(
+      `Open handoffs (awaiting your completion notification): ${parts.handoffs.join(", ")}`
+    );
+  if (parts.cards.length)
+    lines.push(
+      `Pending question cards: ${parts.cards.map((c) => c.title).join("; ")}`
+    );
+  if (parts.routines.length)
+    lines.push(`Routines you own: ${parts.routines.join("; ")}`);
+  if (parts.issues.length)
+    lines.push(`Owned issues (open): ${parts.issues.join("; ")}`);
+  if (lines.length === 1) lines.push("No open fleet threads.");
+  return lines.join("\n");
+}
+
+/** Best-effort owned-issue scan over the fleet dir's .scratch tree. */
+export function scanOwnedIssues(fleetDir: string, bot: string): string[] {
+  try {
+    const root = join(fleetDir, ".scratch");
+    if (!existsSync(root)) return [];
+    const found: string[] = [];
+    const walk = (dir: string, depth: number): void => {
+      if (depth > 3) return;
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(path, depth + 1);
+        } else if (entry.name.endsWith(".md")) {
+          const content = readFileSync(path, "utf8");
+          if (
+            content.toLowerCase().includes(bot) &&
+            /status:\s*(ready-for-agent|in-progress|blocked|needs-info)/i.test(
+              content
+            )
+          )
+            found.push(path.slice(root.length + 1));
+        }
+      }
+    };
+    walk(root, 0);
+    return found;
+  } catch {
+    return [];
+  }
 }
 
 /** Issue 43 item 1: fill = carried input tokens over the model window. */
@@ -748,13 +813,29 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     });
     if (!go) return false;
     const tokensBefore = runtime.inputTokens;
-    await runtime.session?.request({ type: "compact" });
+    const preamble = composeFleetPreamble({
+      handoffs: runtime.pendingFrom,
+      cards: [...runtime.pendingUi.values()].map((pending) => ({
+        id: pending.view.id,
+        title: pending.view.title,
+      })),
+      routines: routines
+        .filter((routine) => routine.bot === botName)
+        .map((routine) => routine.name),
+      issues: scanOwnedIssues(fleet.dir, botName),
+    });
+    await runtime.session?.request({
+      type: "compact",
+      preamble,
+    });
     runtime.lastCompactAt = Date.now();
     runtime.turnsSinceCompact = 0;
     runtime.fill = 0;
     journalCompaction(fleet.dir, botName, {
       tokensBefore,
-      forced: opts.force === true,
+      fill: runtime.fill,
+      trigger: opts.force ? "force" : "threshold",
+      preambleChars: preamble.length,
     });
     appendTranscript(runtime, {
       id: randomUUID(),
@@ -1920,6 +2001,18 @@ function buildHttpServer(deps: ServerDeps): Hono {
       latest: runtime.transcript.at(-1)?.text ?? "",
     }));
     return context.json({ dir: deps.fleet.dir, bots });
+  });
+
+  app.get("/api/bots/:name/context", (context) => {
+    const runtime = deps.runtimes.get(context.req.param("name"));
+    if (!runtime) return context.json({ error: "unknown bot" }, 404);
+    return context.json({
+      fill: runtime.fill ?? null,
+      inputTokens: runtime.inputTokens ?? null,
+      contextWindow: runtime.contextWindow ?? null,
+      lastCompactAt: runtime.lastCompactAt ?? null,
+      turnsSinceCompact: runtime.turnsSinceCompact,
+    });
   });
 
   app.get("/api/version", (context) => {

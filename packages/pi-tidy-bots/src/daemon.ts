@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import {
   appendFileSync,
   chmodSync,
@@ -194,6 +195,28 @@ export function appAssetMimeType(path: string): string {
   return dot === -1
     ? "application/octet-stream"
     : (APP_MIME[path.slice(dot)] ?? "application/octet-stream");
+}
+
+/**
+ * Issue 92: is `pkg` already listed in the bot dir's project-local settings?
+ * pi stores packages as "npm:..."/"git:..." strings or {source} objects.
+ */
+export function botPackageInstalled(botDir: string, pkg: string): boolean {
+  try {
+    const settings = JSON.parse(
+      readFileSync(join(botDir, ".pi", "settings.json"), "utf8")
+    ) as { packages?: unknown };
+    if (!Array.isArray(settings.packages)) return false;
+    return settings.packages.some((entry) =>
+      typeof entry === "string"
+        ? entry === pkg
+        : !!entry &&
+          typeof entry === "object" &&
+          (entry as { source?: unknown }).source === pkg
+    );
+  } catch {
+    return false;
+  }
 }
 
 const HASHED_ASSET = /(?:[\\/.\-]|^)[0-9a-f_-]{8,}\./i;
@@ -1007,6 +1030,28 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     if (!runtime) return;
     // A respawn drops any queue the dead child was holding.
     runtime.queuedCount = 0;
+    // Issue 92: bot-scoped pi packages. `pi install -l` writes the package
+    // into the FLEET-OWNED bot dir's .pi/settings.json (project-local); the
+    // spawn then runs with project trust (--approve) so those settings and
+    // extensions actually load. pi's --approve is project-file trust, NOT
+    // tool auto-approve — bots with approve=false stay non-auto-approved.
+    const botPackages = runtime.config.packages ?? [];
+    if (botPackages.length > 0) {
+      for (const pkg of botPackages) {
+        if (botPackageInstalled(runtime.config.dir, pkg)) continue;
+        log(`[${name}] installing package ${pkg} (project-local)`);
+        const result = spawnSync(piBin, ["install", "-l", pkg], {
+          cwd: runtime.config.dir,
+          encoding: "utf8",
+          timeout: 120_000,
+        });
+        if (result.status !== 0) {
+          log(
+            `[${name}] package install failed for ${pkg} (exit ${result.status}) — pi retries on trusted load`
+          );
+        }
+      }
+    }
     const sessionDir = join(fleet.dir, ".fleet", "sessions", name);
     mkdirSync(sessionDir, { recursive: true });
     const hasSession =
@@ -1021,6 +1066,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       // Issue 88: state-stored override wins; "" clears back to the manifest.
       model: stored.models?.[name] || runtime.config.model,
       approve: runtime.config.approve,
+      ...(botPackages.length > 0 ? { trustProject: true } : {}),
       bridgePath,
       daemonUrl,
       childSecret,

@@ -10,6 +10,10 @@ export interface RpcSpawnOptions {
   resume: boolean;
   model?: string;
   approve: boolean;
+  /** Issue 92: trust the fleet-owned bot dir's project-local settings so
+   * bot-scoped packages load (pi's --approve = project trust, not tool
+   * auto-approve). */
+  trustProject?: boolean;
   bridgePath: string;
   daemonUrl: string;
   childSecret: string;
@@ -25,7 +29,13 @@ export interface RpcSpawnOptions {
 export function rpcSpawnArgs(
   options: Pick<
     RpcSpawnOptions,
-    "name" | "sessionDir" | "resume" | "model" | "approve" | "bridgePath"
+    | "name"
+    | "sessionDir"
+    | "resume"
+    | "model"
+    | "approve"
+    | "trustProject"
+    | "bridgePath"
   >
 ): string[] {
   return [
@@ -38,6 +48,7 @@ export function rpcSpawnArgs(
     ...(options.resume ? ["--continue"] : []),
     ...(options.model ? ["--model", options.model] : []),
     ...(options.approve ? ["--approve"] : []),
+    ...(options.trustProject ? ["--approve"] : []),
     "-e",
     options.bridgePath,
   ];

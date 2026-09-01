@@ -312,16 +312,20 @@ async function cmdStart(args: Args): Promise<void> {
     typeof args.flags.port === "string" ? Number(args.flags.port) : undefined;
   dir = resolve(args.positional[0] ?? ".");
   if (fleetName) {
-    // Named start: reuse a previously recorded port unless --port overrides —
-    // but the manifest port always outranks the registry record.
-    const record = resolveFleetRecord(registryPath(), fleetName);
+    // Named start: reuse a previously recorded port unless --port overrides.
+    // An explicit path argument is authoritative — the record may be stale
+    // for this dir (e.g. a previous temp fleet under the same name).
+    const record =
+      args.positional[0] === undefined
+        ? resolveFleetRecord(registryPath(), fleetName)
+        : undefined;
     if (!record && args.positional[0] === undefined) {
       throw new CliError(`unknown fleet "${fleetName}"`, {
         exitCode: EXIT.usage,
         remedy: "pi-tidy-bots fleets",
       });
     }
-    if (args.positional[0] !== undefined) dir = resolve(args.positional[0]);
+    if (portFlag === undefined && record) portFlag = record.port;
   } else {
     const basename = dir.split("/").pop() || dir;
     registerFleet(registryPath(), {

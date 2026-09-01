@@ -197,7 +197,7 @@ function transcriptEl(entry) {
         const body = el("span", "md-body");
         body.innerHTML = PiMd.render(visibleStreamText(group.text));
         bubble.appendChild(body);
-      } else {
+      } else if (state.toolOutput !== "off") {
         bubble.appendChild(renderPartGroup(group, false));
       }
     }
@@ -502,7 +502,7 @@ function renderSteps(steps) {
         step.reason ? `${step.name} — ${step.reason}` : step.name
       )
     );
-    if (step.label)
+    if (state.toolOutput === "full" && step.label)
       row.appendChild(el("span", "step-label", `· ${step.label}`));
     if (step.duration !== undefined)
       row.appendChild(el("span", "step-dur", `${step.duration} ms`));
@@ -591,8 +591,8 @@ function renderPartGroup(group, expanded) {
         tool.reason ? `${tool.tool} \u2014 ${tool.reason}` : tool.tool
       )
     );
-    if (tool.label)
-      row.appendChild(el("span", "step-label", `\u00b7 ${tool.label}`));
+    if (state.toolOutput === "full" && tool.label)
+      row.appendChild(el("span", "step-label", `· ${tool.label}`));
     if (tool.duration !== undefined)
       row.appendChild(el("span", "step-dur", `${tool.duration} ms`));
     if (isRunning && tool.started) {
@@ -631,7 +631,7 @@ function bubbleParts(botName, turnId, parts) {
       const body = el("div", "md-body");
       body.innerHTML = PiMd.render(visibleStreamText(group.text));
       zone.appendChild(body);
-    } else {
+    } else if (state.toolOutput !== "off") {
       const expanded = group.tools.some((t) => t.status === "running");
       zone.appendChild(renderPartGroup(group, expanded));
     }
@@ -947,6 +947,16 @@ document.getElementById("composer").addEventListener("submit", (event) => {
     }).catch(() => {});
     return;
   }
+  if (text === "/stop") {
+    // Magic string rerouted to the typed abort endpoint.
+    composerInput.value = "";
+    autoGrow();
+    api(`/api/bots/${state.selected}/stop`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }).catch(() => {});
+    return;
+  }
   if (!text) return;
   composerInput.value = "";
   autoGrow();
@@ -1024,7 +1034,15 @@ function updateAttachmentChip(file) {
   }
   if (pendingImageUrl) URL.revokeObjectURL(pendingImageUrl);
   pendingImageUrl = URL.createObjectURL(file);
-  chip.querySelector(".composer-attach-thumb").src = pendingImageUrl;
+  const thumbEl = chip.querySelector(".composer-attach-thumb");
+  // Unrenderable images (e.g. iOS HEIC) must not show an empty box.
+  thumbEl.onerror = () => {
+    thumbEl.hidden = true;
+  };
+  thumbEl.onload = () => {
+    thumbEl.hidden = false;
+  };
+  thumbEl.src = pendingImageUrl;
   const name = chip.querySelector(".composer-attach-name");
   name.textContent = file.name;
   name.title = file.name;
@@ -1035,17 +1053,6 @@ function updateAttachmentChip(file) {
   chip.hidden = false;
   document.getElementById("composer-attach").classList.add("has-image");
 }
-
-function bindAttachmentChip(chip) {
-  chip
-    .querySelector(".composer-attach-remove")
-    .addEventListener("click", () => clearPendingImage());
-}
-
-document.getElementById("composer-attach").addEventListener("click", () => {
-  document.getElementById("composer-image").click();
-});
-
 document
   .getElementById("composer-image")
   .addEventListener("change", (event) => {

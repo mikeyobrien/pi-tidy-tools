@@ -326,6 +326,13 @@ body {
 .step-label {
   color: var(--muted);
   font-size: 11px;
+  /* Secondary snippet: truncates instead of starving the step name. */
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ── Steps checklist card ───────────────────────────── */
@@ -378,6 +385,9 @@ body {
 }
 .step-name {
   flex: 1;
+  /* Without this the name's automatic minimum collapses to one character
+     when the label is long (overflow-wrap: anywhere inherits in). */
+  min-width: 0;
 }
 .step-dur {
   color: var(--muted);

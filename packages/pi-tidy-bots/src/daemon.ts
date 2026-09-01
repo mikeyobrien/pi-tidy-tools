@@ -1391,6 +1391,23 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         });
         return { status: 200, body: { accepted: true, rerouted: "compact" } };
       },
+      stop: async (name) => {
+        const runtime = runtimes.get(name);
+        if (!runtime) return { status: 404, body: { error: "unknown bot" } };
+        if (!runtime.session || !runtime.session.alive)
+          return { status: 503, body: { error: "runtime_offline" } };
+        if (!runtime.session.streaming)
+          return { status: 200, body: { accepted: true, stopped: false } };
+        await runtime.session.abort();
+        appendTranscript(runtime, {
+          id: randomUUID(),
+          role: "system",
+          origin: "system",
+          text: "Turn stopped by the operator.",
+          ts: new Date().toISOString(),
+        });
+        return { status: 200, body: { accepted: true, stopped: true } };
+      },
       busSend: async (fromName, targetName, message, behavior) =>
         deliverHandoff(fromName, targetName, message, behavior),
     },
@@ -1629,6 +1646,7 @@ interface ServerDeps {
       clientMessageId?: string
     ): Promise<{ status: number; body: unknown }>;
     compact(name: string): Promise<{ status: number; body: unknown }>;
+    stop(name: string): Promise<{ status: number; body: unknown }>;
     steer(
       name: string,
       text: string
@@ -1840,6 +1858,11 @@ function buildHttpServer(deps: ServerDeps): Hono {
   app.post("/api/bots/:name/compact", async (context) => {
     const result = await deps.handlers.compact(context.req.param("name"));
     return context.json(result.body, result.status as 200 | 404 | 409 | 503);
+  });
+
+  app.post("/api/bots/:name/stop", async (context) => {
+    const result = await deps.handlers.stop(context.req.param("name"));
+    return context.json(result.body, result.status as 200 | 404 | 503);
   });
 
   app.post("/api/bots/:name/steer", async (context) => {

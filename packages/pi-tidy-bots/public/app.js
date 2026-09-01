@@ -937,6 +937,16 @@ document.getElementById("composer").addEventListener("submit", (event) => {
     }).catch(() => {});
     return;
   }
+  if (text === "/stop") {
+    // Magic string rerouted to the typed abort endpoint.
+    composerInput.value = "";
+    autoGrow();
+    api(`/api/bots/${state.selected}/stop`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }).catch(() => {});
+    return;
+  }
   if (!text) return;
   composerInput.value = "";
   autoGrow();

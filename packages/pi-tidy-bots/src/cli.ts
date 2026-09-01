@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  writeFileSync,
+  existsSync,
+  rmSync,
+  openSync,
+  closeSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { networkInterfaces } from "node:os";
@@ -34,6 +41,7 @@ import {
   healthCheck,
   isPortHeld,
   waitPortReleased,
+  describePortHolder,
 } from "./cli-core.ts";
 import {
   buildPairingUrl,
@@ -359,19 +367,23 @@ async function cmdStart(args: Args): Promise<void> {
   // (minus --daemon/--json), wait until it serves, print readiness, exit.
   if (daemonize && process.env.PI_TIDY_BOTS_DAEMON_CHILD !== "1") {
     const { spawn } = await import("node:child_process");
-    const childArgs = process.argv
-      .slice(1)
-      .filter((arg) => arg !== "--daemon" && arg !== "--json");
-    const logFile = join(dir, ".fleet", "daemon.log");
-    mkdirSync(join(dir, ".fleet"), { recursive: true });
-    const log = writeFileSync(logFile, "");
-    void log;
+    const childArgs = daemonRespawnArgs(process.argv);
+    const logsDir = join(dir, ".fleet", "logs");
+    mkdirSync(logsDir, { recursive: true });
+    const logFile = join(logsDir, "daemon.log");
+    // Issue 51: bootstrap-level capture — the child's stdout/stderr ARE the
+    // log file (append, never truncated). A crash before main() runs (module
+    // resolution, node option parsing) still lands in .fleet/logs/daemon.log;
+    // a replacement daemon is never silent. The parent's fd can close right
+    // after spawn: the child keeps its own copy for its whole life.
+    const logFd = openSync(logFile, "a");
     const child = spawn(process.execPath, childArgs, {
       detached: true,
-      stdio: "ignore",
+      stdio: ["ignore", logFd, logFd],
       env: { ...process.env, PI_TIDY_BOTS_DAEMON_CHILD: "1" },
     });
     child.unref();
+    closeSync(logFd);
     const host =
       typeof args.flags.host === "string" ? args.flags.host : "127.0.0.1";
     const displayHost = host === "0.0.0.0" ? "127.0.0.1" : host;
@@ -393,6 +405,14 @@ async function cmdStart(args: Args): Promise<void> {
       const record = fleetName
         ? resolveFleetRecord(registryPath(), fleetName)
         : undefined;
+      // Re-read the stored token every iteration: the child persists it
+      // during boot, and both probes below need it on a token-protected
+      // fleet (issue 51: /api/version without the credential 401s and the
+      // parent would kill a perfectly healthy child at timeout).
+      const probeToken = readStoredToken(dir);
+      const probeHeaders: Record<string, string> = probeToken
+        ? { authorization: `Bearer ${probeToken}` }
+        : {};
       const port =
         record?.port ??
         (portFlag !== undefined ? portFlag : bestEffortPort(dir));
@@ -401,13 +421,15 @@ async function cmdStart(args: Args): Promise<void> {
         try {
           // Identity check against /api/version: a DIFFERENT daemon on this
           // port must never satisfy our readiness (issue 42 orphan repro).
-          const res = await fetch(`${url}/api/version`);
+          const res = await fetch(`${url}/api/version`, {
+            headers: probeHeaders,
+          });
           if (res.ok) {
             const payload = (await res.json()) as { fleetDir?: string };
             if (payload.fleetDir && resolve(payload.fleetDir) === expectedDir) {
               // Issue 51: health-check the actual fleet API before ready.
               const health = await fetch(`${url}/api/fleet`, {
-                headers: token ? { authorization: `Bearer ${token}` } : {},
+                headers: probeHeaders,
               });
               if (health.ok) {
                 readyUrl = url;
@@ -504,6 +526,9 @@ async function cmdStart(args: Args): Promise<void> {
       // pristine (daemon chatter on stderr) while the file always gets it.
       log: (line) => {
         logWriter.write(line);
+        // Daemonized child: stdout/stderr already ARE the log file (fd
+        // wiring above) — printing again would duplicate every line.
+        if (process.env.PI_TIDY_BOTS_DAEMON_CHILD === "1") return;
         if (json) console.error(line);
         else console.log(line);
       },
@@ -524,6 +549,20 @@ async function cmdStart(args: Args): Promise<void> {
       throw new CliError(error.message, {
         exitCode: classifyStartFailure(error.message),
       });
+    }
+    // Issue 51: a bare EADDRINUSE fatal is unautopsiable — name the holder.
+    const message = (error as Error).message ?? String(error);
+    if (/eaddrinuse|address already in use/i.test(message)) {
+      const port = portFlag ?? bestEffortPort(dir);
+      const holder = describePortHolder(port);
+      throw new CliError(
+        `port ${port} is already in use${holder ? ` — ${holder}` : ""}`,
+        {
+          exitCode: EXIT.port,
+          remedy:
+            "stop the holder (pi-tidy-bots stop / restart) or pass --port",
+        }
+      );
     }
     throw error;
   }
@@ -719,22 +758,18 @@ async function cmdRestart(args: Args, json: boolean): Promise<void> {
   const port = bestEffortPort(dir);
   await waitPortReleased(port, 10_000);
   // 3. Boot daemonized; the daemonize parent health-checks /api/fleet (with
-  //    the preserved .fleet/token) before reporting ready.
-  const childArgs = [
-    "start",
-    dir,
-    "--daemon",
-    "--json",
-    "--port",
-    String(port),
-    ...(fleetName ? ["--fleet", fleetName] : []),
-  ];
+  //    the preserved .fleet/token) before reporting ready. Spawned via the
+  //    package bin (issue 51): native stripping first, tsx fallback resolved
+  //    from the package — boots from any cwd, including a bot's working dir.
+  //    PI_TIDY_BOTS_DAEMON_CHILD must NOT be set here: the spawned start is
+  //    the daemonize PARENT — marking it as the child would skip detachment
+  //    and hang restart for the daemon's whole life (the durable-daemonize
+  //    flake).
   const child = spawn(
     process.execPath,
-    ["--import", "tsx", cliEntry(), ...childArgs],
+    restartSpawnArgs(dir, port, fleetName),
     {
       stdio: "inherit",
-      env: { ...process.env, PI_TIDY_BOTS_DAEMON_CHILD: "1" },
     }
   );
   const exited = await new Promise<number>((resolve) => {
@@ -754,6 +789,46 @@ async function cmdRestart(args: Args, json: boolean): Promise<void> {
 
 function cliEntry(): string {
   return fileURLToPath(import.meta.url);
+}
+
+/**
+ * The package bin shim — the cwd-independent way to run this CLI. It prefers
+ * Node's native type stripping (engines: >=22.19) and falls back to tsx via
+ * require.resolve from the package itself, so it boots from ANY cwd.
+ */
+export function binEntry(): string {
+  return fileURLToPath(new URL("../bin/pi-tidy-bots.mjs", import.meta.url));
+}
+
+/**
+ * Issue 51: respawn argv for the daemonized child — the same invocation
+ * minus --daemon/--json, entry forced to the package bin. Never emits
+ * `--import tsx` (that resolved tsx from the *caller's* cwd and killed
+ * replacement daemons before main() could land — incident 2026-09-01 09:10).
+ */
+export function daemonRespawnArgs(argv: string[]): string[] {
+  return [
+    binEntry(),
+    ...argv.slice(2).filter((arg) => arg !== "--daemon" && arg !== "--json"),
+  ];
+}
+
+/** Issue 51: argv for `restart`'s daemonized boot of the replacement. */
+export function restartSpawnArgs(
+  dir: string,
+  port: number,
+  fleetName?: string
+): string[] {
+  return [
+    binEntry(),
+    "start",
+    dir,
+    "--daemon",
+    "--json",
+    "--port",
+    String(port),
+    ...(fleetName ? ["--fleet", fleetName] : []),
+  ];
 }
 
 function cmdFleets(args: Args): never {

@@ -105,13 +105,28 @@ test("resolveStartToken auto-enables auth on non-loopback binds only", async () 
       wantsRotate: false,
     });
     assert.equal(explicit.token, "mine");
+    // Issue 51: loopback reuses the STORED token — tokens survive restarts
+    // instead of silently dropping auth on loopback boots.
     const loopback = resolveStartToken({
       fleetDir: dir,
       host: "127.0.0.1",
       wantsQr: false,
       wantsRotate: false,
     });
-    assert.equal(loopback.token, undefined);
+    assert.equal(loopback.token, "mine", "stored token is sticky");
+    // Opt-in-by-default still holds for a dir that never stored one.
+    const fresh = mkdtempSync(join(tmpdir(), "ptb-starttoken-fresh-"));
+    try {
+      const loopbackFresh = resolveStartToken({
+        fleetDir: fresh,
+        host: "127.0.0.1",
+        wantsQr: false,
+        wantsRotate: false,
+      });
+      assert.equal(loopbackFresh.token, undefined, "fresh loopback stays open");
+    } finally {
+      rmSync(fresh, { recursive: true, force: true });
+    }
     // --qr on loopback still generates (pairing needs auth).
     const qrLoopback = resolveStartToken({
       fleetDir: dir,

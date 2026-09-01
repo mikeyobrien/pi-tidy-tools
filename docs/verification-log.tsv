@@ -27,3 +27,4 @@ ts	phase	decision	why	evidence	result
 2026-09-01T02:15Z	issue-61 layer-1 REVERTED	landed	operator reversal: reasoning stays REQUIRED, metadata test unchanged	e32d39c; pi-tidy-tools==main	pass
 2026-09-01T02:40Z	issue-60 phase-1 /app/ mount	landed	base-href build synced; index fallback; public-asset bypass; live HTTP smoke	02dd9f9+7d78d48+f05c424; app-smoke 10/10	pass
 2026-09-01T03:00Z	main merge (2fb4351)	landed	stop endpoint, mode gates, HEIC thumb, stale-registry fix ported; conflicts resolved	a3232ea; gates green	pass
+2026-09-01T18:10Z	issue-51 boot path	landed	bin-based spawns (no --import tsx); bootstrap fd tee; sticky token; holder naming; restart parent env fix	diff below; scratch rehearsal 3 gens pid 28775/28925/29023 token 200/401 log 3x serving	pass

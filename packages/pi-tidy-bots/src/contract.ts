@@ -80,6 +80,13 @@ export const TranscriptEntrySchema = Type.Object({
       Type.Literal("completion"),
     ])
   ),
+  receipt: Type.Optional(
+    Type.Object({
+      name: Type.String(),
+      avatar: Type.Optional(Type.String()),
+      title: Type.Optional(Type.String()),
+    })
+  ),
   text: Type.String(),
   ts: Type.String(),
   delivering: Type.Optional(Type.Boolean()),
@@ -96,6 +103,16 @@ export const RosterBotSchema = Type.Object({
   active: Type.Boolean(),
   lastActive: Type.String(),
   queued: Type.Number(),
+  queue: Type.Optional(
+    Type.Array(
+      Type.Object({
+        id: Type.String(),
+        text: Type.String(),
+        hasImage: Type.Boolean(),
+        filename: Type.Optional(Type.String()),
+      })
+    )
+  ),
 });
 
 export const RosterPayloadSchema = Type.Object({

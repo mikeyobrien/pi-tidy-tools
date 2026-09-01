@@ -10,12 +10,52 @@ export interface RpcSpawnOptions {
   resume: boolean;
   model?: string;
   approve: boolean;
+  /** Issue 92: trust the fleet-owned bot dir's project-local settings so
+   * bot-scoped packages load (pi's --approve = project trust, not tool
+   * auto-approve). */
+  trustProject?: boolean;
   bridgePath: string;
+  /** Issue 85: extra extensions loaded after bridge (MCP wrap etc.). */
+  extensions?: string[];
   daemonUrl: string;
   childSecret: string;
   onEvent: (event: RpcEvent) => void;
   onExit: (code: number | null, signal: string | null) => void;
   onLine?: (line: string) => void;
+}
+
+/**
+ * Pure argv builder for the rpc child — exported for unit tests (issue 82:
+ * rules ride --append-system-prompt only when present).
+ */
+export function rpcSpawnArgs(
+  options: Pick<
+    RpcSpawnOptions,
+    | "name"
+    | "sessionDir"
+    | "resume"
+    | "model"
+    | "approve"
+    | "trustProject"
+    | "bridgePath"
+    | "extensions"
+  >
+): string[] {
+  return [
+    "--mode",
+    "rpc",
+    "--name",
+    options.name,
+    "--session-dir",
+    options.sessionDir,
+    ...(options.resume ? ["--continue"] : []),
+    ...(options.model ? ["--model", options.model] : []),
+    ...(options.approve ? ["--approve"] : []),
+    ...(options.trustProject ? ["--approve"] : []),
+    "-e",
+    options.bridgePath,
+    ...(options.extensions ?? []).flatMap((extension) => ["-e", extension]),
+  ];
 }
 
 /** Compact, non-sensitive args digest for a tool step row (issue 36). */
@@ -65,8 +105,15 @@ export type RpcEvent =
       label?: string;
     }
   | { kind: "tool_output"; toolCallId: string; text: string }
-  | { kind: "tool_end"; toolCallId: string }
-  | { kind: "tool_result"; toolCallId: string; text: string; isError: boolean }
+  | {
+      /** Issue 66: the settle event — pi's tool_execution_end carries the
+       * result text, isError flag, and optional measured duration. */
+      kind: "tool_end";
+      toolCallId: string;
+      result: string;
+      isError: boolean;
+      elapsedMs?: number;
+    }
   | { kind: "usage"; inputTokens?: number; model?: string }
   | {
       kind: "ui_request";
@@ -175,6 +222,27 @@ const textOfMessage = (message: any): string => {
 };
 
 /**
+ * Issue 66: tool results arrive as a string, a content-part array, or an
+ * object with .text — normalize to display text without dropping output.
+ */
+const toolResultText = (result: unknown): string => {
+  if (typeof result === "string") return result;
+  if (Array.isArray(result)) {
+    return result
+      .filter(
+        (part: any) => part?.type === "text" || typeof part?.text === "string"
+      )
+      .map((part: any) => String(part.text ?? ""))
+      .join("");
+  }
+  if (result && typeof result === "object") {
+    const text = (result as { text?: unknown }).text;
+    if (typeof text === "string") return text;
+  }
+  return "";
+};
+
+/**
  * One perpetual `pi --mode rpc` child. Strict LF JSONL framing (no readline —
  * pi's rpc protocol forbids readers that split on U+2028/U+2029).
  */
@@ -236,19 +304,7 @@ export class RpcSession {
   }
 
   static spawn(options: RpcSpawnOptions): RpcSession {
-    const args = [
-      "--mode",
-      "rpc",
-      "--name",
-      options.name,
-      "--session-dir",
-      options.sessionDir,
-      ...(options.resume ? ["--continue"] : []),
-      ...(options.model ? ["--model", options.model] : []),
-      ...(options.approve ? ["--approve"] : []),
-      "-e",
-      options.bridgePath,
-    ];
+    const args = rpcSpawnArgs(options);
     const child = spawn(options.piBin ?? "pi", args, {
       cwd: options.cwd,
       env: {
@@ -451,12 +507,32 @@ export class RpcSession {
           label: stepLabel(String(parsed.toolName ?? "tool"), parsed.args),
         });
         return;
-      case "tool_execution_end":
+      case "tool_execution_end": {
         this.options.onEvent({
           kind: "tool_end",
           toolCallId: String(parsed.toolCallId ?? ""),
+          result: toolResultText(parsed.result),
+          isError: parsed.isError === true,
+          elapsedMs:
+            typeof parsed.piTidyElapsedMs === "number"
+              ? parsed.piTidyElapsedMs
+              : undefined,
         });
         return;
+      }
+      case "tool_execution_update": {
+        // Partial result text while the tool runs — surfaces live output in
+        // full mode instead of starving it until settle (issue 66).
+        const partial = toolResultText(parsed.partialResult);
+        if (partial.length > 0) {
+          this.options.onEvent({
+            kind: "tool_output",
+            toolCallId: String(parsed.toolCallId ?? ""),
+            text: partial,
+          });
+        }
+        return;
+      }
       case "message_update": {
         const update = (parsed.assistantMessageEvent ?? {}) as Record<
           string,

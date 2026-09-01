@@ -575,6 +575,15 @@ function renderPartGroup(group, expanded) {
     "toolgroup-badge",
     `\u25b8 ${partGroupSummary(group.tools)}`
   );
+  // Issue 81: counts is the badge-only disclosure tier — the summary IS the
+  // counts line ("N tools · ok · err · running"); no part rows, no expand.
+  // The running-timer badge (issue 59) still targets this element.
+  if (state.toolOutput === "counts") {
+    badge.setAttribute("aria-expanded", "false");
+    badge.setAttribute("aria-label", "tool counts only (counts mode)");
+    block.appendChild(badge);
+    return block;
+  }
   badge.setAttribute("aria-expanded", String(expanded));
   block.appendChild(badge);
   const list = el("div", "toolgroup-parts");

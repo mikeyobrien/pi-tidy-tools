@@ -20,6 +20,9 @@ export interface BotConfig {
   description?: string;
   avatar: string;
   routes?: string[];
+  /** Issue 92: bot-scoped pi packages — installed project-local and loaded
+   * via project trust at spawn. Omitted/invalid = current behavior. */
+  packages?: string[];
   approve: boolean;
   routines: BotRoutine[];
 }
@@ -137,6 +140,9 @@ export function loadFleetConfig(
     const routes = Array.isArray(table.routes)
       ? table.routes.map((value) => String(value))
       : undefined;
+    const packages = Array.isArray(table.packages)
+      ? table.packages.map((value) => String(value))
+      : undefined;
     // Action pills are removed (issue 15); a manifest still carrying the row is
     // stale config — fail fast instead of silently ignoring it.
     if (table.actions !== undefined) {
@@ -166,6 +172,7 @@ export function loadFleetConfig(
         table.description === undefined ? undefined : String(table.description),
       avatar: table.avatar === undefined ? "" : String(table.avatar),
       routes,
+      packages,
       approve: table.approve === undefined ? true : table.approve === true,
       routines,
     });

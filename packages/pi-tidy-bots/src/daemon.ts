@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import {
   appendFileSync,
   chmodSync,
@@ -38,11 +39,7 @@ import {
 } from "./rpc.ts";
 import { isDue, minuteKey, parseCron } from "./cron.ts";
 import { createEventLog } from "./eventlog.ts";
-import {
-  attributionPrefix,
-  completionNotification,
-  stripActionMarkers,
-} from "./actions.ts";
+import { attributionPrefix, stripActionMarkers } from "./actions.ts";
 import { classifyFailure, isRetryable } from "./reasons.ts";
 import {
   createTranscriptStore,
@@ -63,6 +60,8 @@ export interface TranscriptEntry {
   originFrom?: string;
   /** Issue 58: structured handoff lifecycle kinds (console renders these). */
   kind?: "handoff" | "handoff-receipt" | "completion";
+  /** Issue 58: structured receipt target (bot config) — console never parses display strings. */
+  receipt?: { name: string; avatar?: string; title?: string };
   text: string;
   ts: string;
   steps?: { name: string; duration?: number }[];
@@ -109,6 +108,8 @@ interface BotRuntime {
   // routines). Follow-ups queued inside the child by extensions are invisible
   // to the daemon — acceptable; operator-visible cases are all daemon-issued.
   queuedCount: number;
+  /** Issue 82: rules text already delivered to this bot (next-turn pickup). */
+  rulesApplied: string | null;
   /** Claimed clientMessageIds (issue 33 idempotency). */
   clientMessageIds: Set<string>;
   /** Issue 43 item 2: compaction hysteresis bookkeeping. */
@@ -142,6 +143,8 @@ export interface FleetHandle {
   url: string;
   port?: number;
   token?: string;
+  /** Per-boot child secret — authorizes /bus/send for fleet members (and tests). */
+  childSecret: string;
   fleetDir: string;
   stop(): Promise<void>;
 }
@@ -192,6 +195,28 @@ export function appAssetMimeType(path: string): string {
   return dot === -1
     ? "application/octet-stream"
     : (APP_MIME[path.slice(dot)] ?? "application/octet-stream");
+}
+
+/**
+ * Issue 92: is `pkg` already listed in the bot dir's project-local settings?
+ * pi stores packages as "npm:..."/"git:..." strings or {source} objects.
+ */
+export function botPackageInstalled(botDir: string, pkg: string): boolean {
+  try {
+    const settings = JSON.parse(
+      readFileSync(join(botDir, ".pi", "settings.json"), "utf8")
+    ) as { packages?: unknown };
+    if (!Array.isArray(settings.packages)) return false;
+    return settings.packages.some((entry) =>
+      typeof entry === "string"
+        ? entry === pkg
+        : !!entry &&
+          typeof entry === "object" &&
+          (entry as { source?: unknown }).source === pkg
+    );
+  } catch {
+    return false;
+  }
 }
 
 const HASHED_ASSET = /(?:[\\/.\-]|^)[0-9a-f_-]{8,}\./i;
@@ -475,16 +500,14 @@ export function coerceBusBehavior(
 /**
  * Validate optional composer images for POST /message: at most one, each with
  * string mediaType + base64 data. Forwarded to the child as pi ImageContent.
+ * Shared item validation with the bus handoff path (issue 75), which has NO
+ * cap — pixel-faithful dispatch forwards every image the sender attaches.
  */
-export function coerceMessageImages(
-  value: unknown
-):
-  | { ok: true; images?: { type: "image"; data: string; mimeType: string }[] }
-  | { ok: false } {
-  if (value === undefined) return { ok: true, images: undefined };
-  if (!Array.isArray(value) || value.length > 1) return { ok: false };
-  if (value.length === 0) return { ok: true, images: undefined };
-  const [image] = value as unknown[];
+export type ChildImages = { type: "image"; data: string; mimeType: string }[];
+
+const coerceImageItem = (
+  image: unknown
+): { mediaType: string; data: string } | null => {
   if (
     typeof image !== "object" ||
     image === null ||
@@ -493,18 +516,75 @@ export function coerceMessageImages(
     typeof (image as { data?: unknown }).data !== "string" ||
     (image as { data: string }).data.length === 0
   )
-    return { ok: false };
+    return null;
   const { mediaType, data } = image as { mediaType: string; data: string };
-  return {
-    ok: true,
-    images: [{ type: "image", data, mimeType: mediaType }],
-  };
+  return { mediaType, data };
+};
+
+const coerceImageArray = (
+  value: unknown,
+  max: number | undefined
+):
+  | { ok: true; images?: { type: "image"; data: string; mimeType: string }[] }
+  | { ok: false } => {
+  if (value === undefined) return { ok: true, images: undefined };
+  if (!Array.isArray(value)) return { ok: false };
+  if (max !== undefined && value.length > max) return { ok: false };
+  if (value.length === 0) return { ok: true, images: undefined };
+  const images: { type: "image"; data: string; mimeType: string }[] = [];
+  for (const item of value) {
+    const coerced = coerceImageItem(item);
+    if (!coerced) return { ok: false };
+    images.push({
+      type: "image",
+      data: coerced.data,
+      mimeType: coerced.mediaType,
+    });
+  }
+  return { ok: true, images };
+};
+
+export function coerceMessageImages(
+  value: unknown
+):
+  | { ok: true; images?: { type: "image"; data: string; mimeType: string }[] }
+  | { ok: false } {
+  return coerceImageArray(value, 1);
+}
+
+/**
+ * Issue 75: bus handoff images — same wire shape as the composer
+ * ({mediaType, data}), NO cap. Every image the sender attaches rides the
+ * handoff prompt; completion notifications stay text-only by construction.
+ */
+export function coerceHandoffImages(
+  value: unknown
+):
+  | { ok: true; images?: { type: "image"; data: string; mimeType: string }[] }
+  | { ok: false } {
+  return coerceImageArray(value, undefined);
 }
 
 /**
  * WS upgrade auth: `Authorization: Bearer <token>` or `?token=` — mirrors the
  * HTTP authorized() check so native clients can authenticate like browsers.
  */
+/**
+ * Issue 103: Tailscale Serve identity. When the console is fronted by
+ * `tailscale serve` with tailnet user login, the proxy authenticates the
+ * tailnet user and injects Tailscale-User-* headers — a non-empty
+ * Tailscale-User-Login authenticates like the token (OpenClaw allowTailscale
+ * model). Trust basis: the daemon stays bound to loopback/tailnet and
+ * tailscale serve is the only ingress — it strips client-supplied
+ * Tailscale-User-* headers. Source 100.64.0.0/10 alone is NOT trusted.
+ */
+export function tailscaleUserLogin(request: {
+  headers: { get(name: string): string | null };
+}): string | null {
+  const read = request.headers.get("Tailscale-User-Login");
+  return typeof read === "string" && read.trim().length > 0 ? read : null;
+}
+
 export function wsUpgradeAuthorized(
   request: { headers: { authorization?: string | undefined } },
   url: URL,
@@ -512,7 +592,20 @@ export function wsUpgradeAuthorized(
 ): boolean {
   if (!token) return true;
   if (url.searchParams.get("token") === token) return true;
-  return (request.headers.authorization ?? "") === `Bearer ${token}`;
+  if ((request.headers.authorization ?? "") === `Bearer ${token}`) return true;
+  // Issue 103: Tailscale Serve identity headers authenticate the upgrade.
+  return (
+    tailscaleUserLogin({
+      headers: {
+        get: (name: string) =>
+          name === "Tailscale-User-Login"
+            ? (((request.headers as Record<string, unknown>)[
+                "tailscale-user-login"
+              ] as string | null) ?? null)
+            : null,
+      },
+    }) !== null
+  );
 }
 
 /** HTTP 401 frame completed onto a rejected WS upgrade socket. */
@@ -558,6 +651,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     /** Issue 72: per-bot lastActivity ISO strings — restored over the boot-time
      * default so restarts never show a bogus "now" for idle bots. */
     lastActive?: Record<string, string>;
+    /** Issue 88: per-bot model overrides — applied at spawn ("" = manifest
+     * default). Persisted here, never by rewriting the manifest. */
+    models?: Record<string, string>;
   } = {};
   try {
     if (existsSync(statePath))
@@ -631,13 +727,25 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
   persistToolOutputRef = persistToolOutput;
 
   const runtimes = new Map<string, BotRuntime>();
+  /**
+   * Issue 99: never seed lastActive with "now". Precedence: the bot's last
+   * transcript entry ts (per-bot truth the boot bug could not poison), then
+   * the persisted activity map, else the epoch — an idle bot shows its real
+   * idle time, not the daemon's start second. touch() on real activity then
+   * persists forward as before.
+   */
+  const seedLastActive = (name: string): string => {
+    const entries = transcripts.load(name) as { ts?: unknown }[];
+    const fromTranscript = entries.at(-1)?.ts;
+    if (typeof fromTranscript === "string" && fromTranscript.length > 0)
+      return fromTranscript;
+    return stored.lastActive?.[name] ?? "1970-01-01T00:00:00.000Z";
+  };
   const makeRuntime = (config: BotConfig): BotRuntime => ({
     config,
     session: null,
     online: false,
-    // Issue 72: a restart must not reset activity to boot time — restore the
-    // persisted value; only a never-seen bot starts at "now".
-    lastActive: stored.lastActive?.[config.name] ?? new Date().toISOString(),
+    lastActive: seedLastActive(config.name),
     transcript: [],
     pendingFrom: [],
     restartTimes: [],
@@ -647,6 +755,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     turnText: "",
     turnParts: new TurnPartsAccumulator(),
     queuedCount: 0,
+    rulesApplied: null,
     clientMessageIds: new Set<string>(),
     turnsSinceCompact: 0,
     toolFailStreak: null,
@@ -657,10 +766,19 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
   for (const config of fleet.bots) {
     runtimes.set(config.name, makeRuntime(config));
   }
+  // Issue 88: persisted model overrides win over the manifest at boot too —
+  // GET and spawn must agree on the effective model.
+  for (const [name, model] of Object.entries(stored.models ?? {})) {
+    const runtime = runtimes.get(name);
+    if (runtime && model) runtime.config = { ...runtime.config, model };
+  }
 
   const sockets = new Set<WebSocket>();
   const daemonUrl = `http://127.0.0.1:${fleet.port}`;
   const bridgePath = new URL("./bridge.ts", import.meta.url).pathname;
+  // Issue 85: every bot child gets the MCP wrap (and, through it, the
+  // bundled pi-mcp-adapter) — MCP support is a fleet hard dependency.
+  const mcpWrapPath = new URL("./mcp-wrap.ts", import.meta.url).pathname;
   const piBin = options.piBin ?? process.env.PI_TIDY_BOTS_PI_BIN ?? "pi";
 
   const bootId = randomUUID();
@@ -696,19 +814,35 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       ...(step.error ? { error: true } : {}),
     }));
 
-  const presence = (runtime: BotRuntime) => ({
-    name: runtime.config.name,
-    title: runtime.config.title,
-    description: botDisclosure(runtime.config),
-    avatar: runtime.config.avatar,
-    online: runtime.online,
-    active: Date.now() - Date.parse(runtime.lastActive) < ACTIVE_WINDOW_MS,
-    lastActive: runtime.lastActive,
-    queued: runtime.queuedCount,
-    // Issue 69: REST /api/fleet carries the transcript preview; the WS roster
-    // shape must match or every roster broadcast erases client-side previews.
-    latest: runtime.transcript.at(-1)?.text ?? "",
-  });
+  // Issue 76: the queue is DATA, not a count — Grok-style. Derived from the
+  // pending journal so `queued` can never drift from the real item list.
+  // No base64 on the roster: images collapse to hasImage (+ optional
+  // filename when a producer ever carries one).
+  const queueItems = (name: string) =>
+    pendingStore.load(name).map((message) => ({
+      id: message.id,
+      text: message.text,
+      hasImage: (message.images?.length ?? 0) > 0,
+      ...(message.filename ? { filename: message.filename } : {}),
+    }));
+
+  const presence = (runtime: BotRuntime) => {
+    const queue = queueItems(runtime.config.name);
+    return {
+      name: runtime.config.name,
+      title: runtime.config.title,
+      description: botDisclosure(runtime.config),
+      avatar: runtime.config.avatar,
+      online: runtime.online,
+      active: Date.now() - Date.parse(runtime.lastActive) < ACTIVE_WINDOW_MS,
+      lastActive: runtime.lastActive,
+      queued: queue.length,
+      queue,
+      // Issue 69: REST /api/fleet carries the transcript preview; the WS roster
+      // shape must match or every roster broadcast erases client-side previews.
+      latest: runtime.transcript.at(-1)?.text ?? "",
+    };
+  };
 
   const emitRoster = (): void => {
     emit({
@@ -827,7 +961,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     appendTranscript(runtime, entry);
     void runtime.session
       .prompt(
-        `[routine ${routine.name}] ${routine.prompt}`,
+        injectRules(runtime, `[routine ${routine.name}] ${routine.prompt}`),
         busy ? "followUp" : undefined
       )
       .catch(() => {});
@@ -955,6 +1089,28 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     if (!runtime) return;
     // A respawn drops any queue the dead child was holding.
     runtime.queuedCount = 0;
+    // Issue 92: bot-scoped pi packages. `pi install -l` writes the package
+    // into the FLEET-OWNED bot dir's .pi/settings.json (project-local); the
+    // spawn then runs with project trust (--approve) so those settings and
+    // extensions actually load. pi's --approve is project-file trust, NOT
+    // tool auto-approve — bots with approve=false stay non-auto-approved.
+    const botPackages = runtime.config.packages ?? [];
+    if (botPackages.length > 0) {
+      for (const pkg of botPackages) {
+        if (botPackageInstalled(runtime.config.dir, pkg)) continue;
+        log(`[${name}] installing package ${pkg} (project-local)`);
+        const result = spawnSync(piBin, ["install", "-l", pkg], {
+          cwd: runtime.config.dir,
+          encoding: "utf8",
+          timeout: 120_000,
+        });
+        if (result.status !== 0) {
+          log(
+            `[${name}] package install failed for ${pkg} (exit ${result.status}) — pi retries on trusted load`
+          );
+        }
+      }
+    }
     const sessionDir = join(fleet.dir, ".fleet", "sessions", name);
     mkdirSync(sessionDir, { recursive: true });
     const hasSession =
@@ -966,9 +1122,12 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       cwd: runtime.config.dir,
       sessionDir,
       resume: hasSession,
-      model: runtime.config.model,
+      // Issue 88: state-stored override wins; "" clears back to the manifest.
+      model: stored.models?.[name] || runtime.config.model,
       approve: runtime.config.approve,
+      ...(botPackages.length > 0 ? { trustProject: true } : {}),
       bridgePath,
+      extensions: [mcpWrapPath],
       daemonUrl,
       childSecret,
       onEvent: (event) => {
@@ -1092,7 +1251,11 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           // Issue 74: a replayed message is queued until ITS turn starts
           // streaming — same accept-window semantics as a direct message.
           if (target) runtime.activeDeliveryId = target.id;
-          await session.prompt(message.text, undefined, message.images);
+          await session.prompt(
+            injectRules(runtime, message.text),
+            undefined,
+            message.images
+          );
           runtime.activeDeliveryId = null;
           pendingStore.remove(name, message.id);
           if (target) target.delivering = false;
@@ -1252,21 +1415,36 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         }
         return;
       }
-      case "tool_result": {
+      case "tool_end": {
+        // Issue 66: pi's tool_execution_end — THE settle event. Until this
+        // mapping existed every tool stayed "running" and the settle
+        // fallback flipped them all to error: every successful call rendered
+        // failed, durations never displayed, and the 61 breaker's output
+        // streak-reset never fired.
         const step = [...runtime.steps]
           .reverse()
           .find((candidate) => candidate.toolCallId === event.toolCallId);
-        const duration = step ? Date.now() - step.started : undefined;
+        const duration =
+          event.elapsedMs ?? (step ? Date.now() - step.started : undefined);
+        if (!event.isError) runtime.toolFailStreak = null;
         runtime.turnParts.settleTool(event.toolCallId, {
           isError: event.isError,
           duration,
-          output: event.text,
+          output: event.result,
         });
         if (step) {
-          step.output = event.text.slice(0, 1200);
+          step.output = event.result.slice(0, 1200);
           step.error = event.isError;
+          if (duration !== undefined) step.duration = duration;
         }
-        if (toolOutput === "full") {
+        emit({
+          type: "bubble",
+          bot: botName,
+          turnId: runtime.turnId,
+          phase: "parts",
+          parts: runtime.turnParts.snapshot(),
+        });
+        if (activeToolOutput === "full") {
           emit({
             type: "bubble",
             bot: botName,
@@ -1374,37 +1552,21 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         runtime.pendingFrom = [];
         for (const pendingFrom of pendingSources) {
           const source = runtimes.get(pendingFrom);
-          if (!source?.session?.alive) continue;
-          const notification = completionNotification(botName, text);
-          // Idle source: prompt (follow_up on an idle agent never flushes). Busy: queue.
-          // Retry once — a transient failure gets exactly one second chance.
-          const send = source.session.streaming
-            ? source.session.followUp(notification)
-            : source.session.prompt(notification);
-          void send
-            .catch(() =>
-              source.session?.alive
-                ? source.session
-                    .prompt(notification)
-                    .catch(() =>
-                      log(
-                        `[${pendingFrom}] completion from ${botName} dropped [reason: runtime_offline]`
-                      )
-                    )
-                : undefined
-            )
-            .finally(() => {
-              appendTranscript(source, {
-                id: randomUUID(),
-                role: "assistant",
-                origin: "bot",
-                originFrom: botName,
-                kind: "completion",
-                text,
-                ts: new Date().toISOString(),
-              });
-              touch(source);
-            });
+          if (!source) continue;
+          // Issue 58 (grok-style): the completion is a transcript FACT on the
+          // dispatcher, not a prompt. Prompting the dispatcher started a turn
+          // on it (ping-pong pollution in the operator's chat); the report now
+          // renders as a "Message from X" entry the dispatcher never answers.
+          appendTranscript(source, {
+            id: randomUUID(),
+            role: "assistant",
+            origin: "bot",
+            originFrom: botName,
+            kind: "completion",
+            text,
+            ts: new Date().toISOString(),
+          });
+          touch(source);
         }
         void maybeCompact(runtime, {}).catch(() => {});
         return;
@@ -1525,6 +1687,28 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     }, 1_000);
   };
 
+  /**
+   * Issue 82 (corrected): fleet rules apply on the NEXT delivered prompt or
+   * followUp per bot — not on a process respawn. The current rules text is
+   * read at delivery time; when it differs from what this bot last received,
+   * it rides that delivery as a one-time preamble (per rules version, so
+   * steady-state turns stay clean). In-flight turns are never steered, and
+   * AGENTS.md is never rewritten. Removing/emptying the rules file simply
+   * stops future injections.
+   */
+  const injectRules = (runtime: BotRuntime, text: string): string => {
+    let rules = "";
+    try {
+      rules = readFileSync(join(fleet.dir, ".fleet", "rules.md"), "utf8");
+    } catch {
+      // No rules file — nothing to inject.
+    }
+    const trimmed = rules.trim();
+    if (trimmed.length === 0 || runtime.rulesApplied === trimmed) return text;
+    runtime.rulesApplied = trimmed;
+    return `[fleet rules — effective this turn onward]\n${trimmed}\n[end fleet rules]\n\n${text}`;
+  };
+
   /** Journal a queued follow-up so a restart can replay it (issue 34). */
   const journalPending = (
     runtime: BotRuntime,
@@ -1555,7 +1739,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     // Issue 50: a streaming child queues the message behind its turn —
     // never bounced as runtime_offline (that is reserved for dead sessions).
     if (session.streaming && behavior === undefined) {
-      await session.followUp(text, images);
+      await session.followUp(injectRules(runtime, text), images);
       journalPending(runtime, entry, images);
       runtime.queuedCount++;
       emit({ type: "append", bot: runtime.config.name, entry });
@@ -1568,7 +1752,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       // finishes. The old await-then-clear kept the ACTIVE prompt labeled
       // "queued…" for the entire turn.
       runtime.activeDeliveryId = entry.id;
-      await session.prompt(text, behavior, images);
+      await session.prompt(injectRules(runtime, text), behavior, images);
       runtime.activeDeliveryId = null;
       entry.delivering = false;
       emit({ type: "append", bot: runtime.config.name, entry });
@@ -1582,7 +1766,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         session.alive &&
         classifyFailure(String(error)) === "turn_in_flight"
       ) {
-        await session.followUp(text, images);
+        await session.followUp(injectRules(runtime, text), images);
         // Queued behind the in-flight turn; turn_start decrements + pops the
         // pending journal (issue 34). Stays delivering until its turn streams.
         journalPending(runtime, entry, images);
@@ -1599,7 +1783,8 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     fromName: string,
     targetName: string,
     message: string,
-    behavior?: "steer" | "followUp"
+    behavior?: "steer" | "followUp",
+    images?: { type: "image"; data: string; mimeType: string }[]
   ) => {
     const route = checkRoute(fromName, targetName, fleet.bots);
     if (!route.ok)
@@ -1631,7 +1816,13 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       if (!busy) {
         // Idle target: every behavior degrades to a normal message — steer is
         // only meaningful mid-turn, and an idle-agent follow_up never flushes.
-        await runtime.session.prompt(text);
+        // Issue 75: images ride the prompt exactly like operator /message.
+        // Issue 82: rules ride the first delivery after a rules change.
+        await runtime.session.prompt(
+          injectRules(runtime, text),
+          undefined,
+          images
+        );
         return;
       }
       if (behavior === "steer") {
@@ -1640,10 +1831,14 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       }
       // Queued behind the in-flight turn; turn_start decrements + pops the
       // pending journal (issue 34).
-      journalPending(runtime, entry, undefined);
+      journalPending(runtime, entry, images);
       runtime.queuedCount++;
       emitRoster();
-      await runtime.session.prompt(text, behavior ?? "followUp");
+      await runtime.session.prompt(
+        injectRules(runtime, text),
+        behavior ?? "followUp",
+        images
+      );
     };
 
     // Transient unavailability: one emergency respawn so the retry can actually help.
@@ -1677,6 +1872,25 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         return { status: 503, body: { delivered: false, reason: retryReason } };
       }
     }
+    // Issue 58: successful bus send leaves a centered receipt on the
+    // SENDER's transcript — structured from the target's bot config, never a
+    // display string to parse. The console renders "Messaged <avatar> <name>".
+    const sender = runtimes.get(fromName);
+    if (sender) {
+      appendTranscript(sender, {
+        id: randomUUID(),
+        role: "system",
+        origin: "system",
+        kind: "handoff-receipt",
+        text: `Messaged ${targetName}`,
+        receipt: {
+          name: targetName,
+          avatar: route.target.avatar,
+          title: route.target.title,
+        },
+        ts: new Date().toISOString(),
+      });
+    }
     return { status: 200, body: { delivered: true } };
   };
 
@@ -1688,7 +1902,10 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     routines,
     token,
     childSecret,
-    toolOutput,
+    // Issue 80: a getter, not a snapshot — POST /api/settings must be
+    // readable back from GET without a daemon restart. The closed-over
+    // primitive froze at boot and silently reverted every client reload.
+    getToolOutput: () => activeToolOutput,
     log,
     onRoster: emitRoster,
     onToolOutput: (mode) => {
@@ -1790,6 +2007,8 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
             // instead of hard-failing — never a silent drop.
             journalPending(runtime, entry, images);
             emit({ type: "append", bot: name, entry });
+            // Issue 76: the queue grew — the roster carries the item list.
+            emitRoster();
             return { status: 202, body: { accepted: true, queued: true } };
           }
           if (reason === "turn_in_flight") {
@@ -1867,8 +2086,49 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         });
         return { status: 200, body: { accepted: true, stopped: true } };
       },
-      busSend: async (fromName, targetName, message, behavior) =>
-        deliverHandoff(fromName, targetName, message, behavior),
+      busSend: async (fromName, targetName, message, behavior, images) =>
+        deliverHandoff(fromName, targetName, message, behavior, images),
+      queue: (name: string) => queueItems(name),
+      // Issue 76: drop a journaled follow-up so it never replays. Live
+      // unqueue inside the child is best-effort — pi has no RPC to remove an
+      // in-memory followUp, so the child may still run it; the journal row
+      // (and the roster count) drop regardless.
+      // Issue 88: per-bot model — persist in the state store, update the
+      // live config copy, and respawn ONLY this bot (--model is spawn-time).
+      // Mirrors the reconcile changed-bot path: session dir kept, queue and
+      // transcript preserved, in-flight turn aborted and replayed via the
+      // pending journal. Empty string clears back to the manifest default.
+      setModel: (name: string, model: string) => {
+        const runtime = runtimes.get(name);
+        if (!runtime) return { status: 404 };
+        if (model.length === 0) delete stored.models?.[name];
+        else (stored.models ??= {})[name] = model;
+        persistStateFile();
+        runtime.config = { ...runtime.config, model: model || undefined };
+        runtime.stopping = true;
+        personaWatchers.get(name)?.close();
+        personaWatchers.delete(name);
+        runtime.session?.stop();
+        runtime.stopping = false;
+        runtime.restartTimes = [];
+        log(
+          `[${name}] model set to "${model || "(manifest default)"}" — respawning`
+        );
+        void spawnBot(name);
+        return { status: 200 };
+      },
+      unqueue: (name: string, id: string) => {
+        const runtime = runtimes.get(name);
+        if (!runtime) return { status: 404 };
+        const exists = pendingStore
+          .load(name)
+          .some((message) => message.id === id);
+        if (!exists) return { status: 404 };
+        pendingStore.remove(name, id);
+        if (runtime.queuedCount > 0) runtime.queuedCount--;
+        emitRoster();
+        return { status: 200 };
+      },
     },
   });
 
@@ -2061,6 +2321,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         url,
         port: actualPort,
         token,
+        childSecret,
         fleetDir: fleet.dir,
         stop: async () => {
           manifestWatcher?.close();
@@ -2105,7 +2366,7 @@ interface ServerDeps {
   onRoster: () => void;
   onToolOutput: (mode: ToolOutputMode) => void;
   persistToolOutput: (mode: ToolOutputMode) => void;
-  toolOutput: ToolOutputMode;
+  getToolOutput(): ToolOutputMode;
   token?: string;
   childSecret: string;
   log: (line: string) => void;
@@ -2118,6 +2379,11 @@ interface ServerDeps {
     ): Promise<{ status: number; body: unknown }>;
     compact(name: string): Promise<{ status: number; body: unknown }>;
     stop(name: string): Promise<{ status: number; body: unknown }>;
+    queue(
+      name: string
+    ): { id: string; text: string; hasImage: boolean; filename?: string }[];
+    unqueue(name: string, id: string): { status: 200 | 404 };
+    setModel(name: string, model: string): { status: 200 | 404 };
     steer(
       name: string,
       text: string
@@ -2139,7 +2405,8 @@ interface ServerDeps {
       from: string,
       target: string,
       message: string,
-      behavior?: "steer" | "followUp"
+      behavior?: "steer" | "followUp",
+      images?: { type: "image"; data: string; mimeType: string }[]
     ): Promise<{ status: number; body: unknown }>;
   };
 }
@@ -2149,7 +2416,9 @@ function buildHttpServer(deps: ServerDeps): Hono {
   const authorized = (url: URL, request: Request): boolean =>
     !deps.token ||
     url.searchParams.get("token") === deps.token ||
-    (request.headers.get("authorization") ?? "") === `Bearer ${deps.token}`;
+    (request.headers.get("authorization") ?? "") === `Bearer ${deps.token}` ||
+    // Issue 103: Tailscale Serve identity headers authenticate like the token.
+    tailscaleUserLogin(request) !== null;
 
   const tokenPage = `<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>pi-tidy-bots — access</title><style>body{margin:0;height:100vh;display:grid;place-items:center;background:#0b0e14;color:#e8ecf3;font:14px/1.5 -apple-system,'Inter',sans-serif}main{background:#12161f;border:1px solid #232a38;border-radius:14px;padding:28px;width:min(420px,90vw)}h1{font-size:16px;margin:0 0 6px}p{color:#8a93a6;margin:0 0 16px;font-size:13px}input{width:100%;background:#171c27;border:1px solid #232a38;color:#e8ecf3;border-radius:10px;padding:11px 12px;font:inherit;outline:none}input:focus{border-color:#2dd4bf}button{margin-top:10px;width:100%;border:none;border-radius:10px;padding:11px;background:#2dd4bf;color:#06251f;font-weight:700;cursor:pointer}</style></head><body><main><h1>Fleet console access</h1><p>Paste the fleet token (printed by <code>pi-tidy-bots start</code>, or in <code>.fleet/token</code>).</p><form onsubmit="location.href='/?token='+encodeURIComponent(this.t.value.trim());return false"><input name="t" placeholder="fleet token" autofocus /><button>Enter console</button></form></main></body></html>`;
 
@@ -2211,17 +2480,21 @@ function buildHttpServer(deps: ServerDeps): Hono {
   app.get("/style.css", serveAsset("style.css", "text/css"));
 
   app.get("/api/fleet", (context) => {
-    const bots = [...deps.runtimes.values()].map((runtime) => ({
-      name: runtime.config.name,
-      title: runtime.config.title,
-      description: botDisclosure(runtime.config),
-      avatar: runtime.config.avatar,
-      online: runtime.online,
-      active: Date.now() - Date.parse(runtime.lastActive) < ACTIVE_WINDOW_MS,
-      lastActive: runtime.lastActive,
-      queued: runtime.queuedCount,
-      latest: runtime.transcript.at(-1)?.text ?? "",
-    }));
+    const bots = [...deps.runtimes.values()].map((runtime) => {
+      const queue = deps.handlers.queue(runtime.config.name);
+      return {
+        name: runtime.config.name,
+        title: runtime.config.title,
+        description: botDisclosure(runtime.config),
+        avatar: runtime.config.avatar,
+        online: runtime.online,
+        active: Date.now() - Date.parse(runtime.lastActive) < ACTIVE_WINDOW_MS,
+        lastActive: runtime.lastActive,
+        queued: queue.length,
+        queue,
+        latest: runtime.transcript.at(-1)?.text ?? "",
+      };
+    });
     return context.json({ dir: deps.fleet.dir, bots });
   });
 
@@ -2246,7 +2519,7 @@ function buildHttpServer(deps: ServerDeps): Hono {
   });
 
   app.get("/api/settings", (context) => {
-    return context.json({ toolOutput: deps.toolOutput });
+    return context.json({ toolOutput: deps.getToolOutput() });
   });
 
   app.post("/api/settings", async (context) => {
@@ -2264,6 +2537,32 @@ function buildHttpServer(deps: ServerDeps): Hono {
     }
     deps.onToolOutput(body.toolOutput as ToolOutputMode);
     return context.json({ toolOutput: body.toolOutput });
+  });
+
+  // Issue 82: fleet-wide rules — a single markdown file every bot receives
+  // on its NEXT delivered prompt/followUp (per rules version; no respawn
+  // needed, in-flight turns never steered). Missing/empty file is a normal
+  // state (text: "", never 404). Mason's drawer edits via PUT.
+  app.get("/api/rules", (context) => {
+    let text = "";
+    try {
+      text = readFileSync(join(deps.fleet.dir, ".fleet", "rules.md"), "utf8");
+    } catch {
+      // No rules yet.
+    }
+    return context.json({ text });
+  });
+
+  app.put("/api/rules", async (context) => {
+    const body = (await context.req.json().catch(() => ({}))) as {
+      text?: unknown;
+    };
+    if (typeof body.text !== "string")
+      return context.json({ error: "text (string) required" }, 400);
+    const rulesPath = join(deps.fleet.dir, ".fleet", "rules.md");
+    mkdirSync(join(deps.fleet.dir, ".fleet"), { recursive: true });
+    writeFileSync(rulesPath, body.text);
+    return context.json({ text: body.text });
   });
 
   app.get("/api/routines", (context) => {
@@ -2364,6 +2663,81 @@ function buildHttpServer(deps: ServerDeps): Hono {
     return context.json(result.body, result.status as 200 | 404 | 503);
   });
 
+  // Issue 76: the follow-up queue as data — items (no base64) + dismiss.
+  // Issue 83: per-bot instructions — the persona document, read/written as
+  // opaque text. Applies on the bot's next turn via the existing persona
+  // watcher (in-place reload when idle, queued when busy). The wire surface
+  // stays abstract: no file names, no paths — a missing document is simply
+  // empty text, never an error.
+  // Issue 88: per-bot model — GET the effective model, PUT to change it.
+  // Persisted in the fleet state store (survives restarts); applied by
+  // respawning ONLY that bot (--model is spawn-time). The wire surface never
+  // names the manifest.
+  app.get("/api/bots/:name/model", (context) => {
+    const runtime = deps.runtimes.get(context.req.param("name"));
+    if (!runtime) return context.json({ error: "unknown bot" }, 404);
+    return context.json({ model: runtime.config.model ?? "" });
+  });
+
+  app.put("/api/bots/:name/model", async (context) => {
+    const body = (await context.req.json().catch(() => ({}))) as {
+      model?: unknown;
+    };
+    if (typeof body.model !== "string")
+      return context.json({ error: "model (string) required" }, 400);
+    const result = deps.handlers.setModel(
+      context.req.param("name"),
+      body.model
+    );
+    if (result.status === 404)
+      return context.json({ error: "unknown bot" }, 404);
+    return context.json({ model: body.model });
+  });
+
+  app.get("/api/bots/:name/instructions", (context) => {
+    const runtime = deps.runtimes.get(context.req.param("name"));
+    if (!runtime) return context.json({ error: "unknown bot" }, 404);
+    let text = "";
+    try {
+      text = readFileSync(join(runtime.config.dir, "AGENTS.md"), "utf8");
+    } catch {
+      // No instructions yet — empty text, not an error.
+    }
+    return context.json({ text });
+  });
+
+  app.put("/api/bots/:name/instructions", async (context) => {
+    const runtime = deps.runtimes.get(context.req.param("name"));
+    if (!runtime) return context.json({ error: "unknown bot" }, 404);
+    const body = (await context.req.json().catch(() => ({}))) as {
+      text?: unknown;
+    };
+    if (typeof body.text !== "string")
+      return context.json({ error: "text (string) required" }, 400);
+    try {
+      writeFileSync(join(runtime.config.dir, "AGENTS.md"), body.text);
+    } catch {
+      return context.json({ error: "instructions not writable" }, 500);
+    }
+    return context.json({ text: body.text });
+  });
+
+  app.get("/api/bots/:name/queue", (context) => {
+    const name = context.req.param("name");
+    if (!deps.runtimes.has(name))
+      return context.json({ error: "unknown bot" }, 404);
+    return context.json({ queue: deps.handlers.queue(name) });
+  });
+
+  app.delete("/api/bots/:name/queue/:id", (context) => {
+    const result = deps.handlers.unqueue(
+      context.req.param("name"),
+      context.req.param("id")
+    );
+    if (result.status === 404) return context.json({ removed: false }, 404);
+    return context.json({ removed: true });
+  });
+
   app.post("/api/bots/:name/steer", async (context) => {
     const body = (await context.req.json().catch(() => ({}))) as {
       text?: string;
@@ -2397,11 +2771,24 @@ function buildHttpServer(deps: ServerDeps): Hono {
         400
       );
     }
+    // Issue 75: handoff images — composer wire shape, uncapped.
+    const images = coerceHandoffImages((body as { images?: unknown }).images);
+    if (!images.ok) {
+      return context.json(
+        {
+          delivered: false,
+          reason: "invalid_images",
+          error: "images must be {mediaType, data} objects",
+        },
+        400
+      );
+    }
     const result = await deps.handlers.busSend(
       body.from,
       body.target,
       body.message,
-      behavior.behavior
+      behavior.behavior,
+      images.images
     );
     return context.json(result.body, result.status as 200 | 404 | 503);
   });

@@ -44,13 +44,31 @@ test(
     writeFileSync(join(fleetDir, "bots", "bb", "AGENTS.md"), "# bb\n");
     writeFileSync(
       join(fleetDir, "bots.toml"),
-      `[[bot]]\nname = "aa"\ndir = "bots/aa"\n[[bot]]\nname = "bb"\ndir = "bots/bb"\n`
+      `[[bot]]\nname = "aa"\ndir = "bots/aa"\n[[bot]]\nname = "bb"\ndir = "bots/bb"\n[[bot]]\nname = "cc"\ndir = "bots/cc"\n`
     );
     // Pre-seed persisted activity: aa was active 2 days ago; bb never seen.
+    // cc has BOTH a transcript entry (older truth) and a poisoned stored
+    // value — the transcript must win (issue 99: the stored map can carry
+    // boot-time poison from the old bug; per-bot transcripts cannot).
     mkdirSync(join(fleetDir, ".fleet"), { recursive: true });
     writeFileSync(
       join(fleetDir, ".fleet", "state.json"),
-      JSON.stringify({ lastActive: { aa: OLD_ACTIVE } })
+      JSON.stringify({
+        lastActive: { aa: OLD_ACTIVE, cc: "2026-09-01T23:07:32.000Z" },
+      })
+    );
+    mkdirSync(join(fleetDir, ".fleet", "transcripts"), { recursive: true });
+    mkdirSync(join(fleetDir, "bots", "cc"), { recursive: true });
+    writeFileSync(join(fleetDir, "bots", "cc", "AGENTS.md"), "# cc\n");
+    writeFileSync(
+      join(fleetDir, ".fleet", "transcripts", "cc.jsonl"),
+      JSON.stringify({
+        id: "seed",
+        role: "assistant",
+        origin: "bot",
+        text: "old turn",
+        ts: OLD_ACTIVE,
+      }) + "\n"
     );
 
     // Sleeping stub pi: bots go offline, but the roster still serves.
@@ -91,7 +109,19 @@ test(
         true,
         "unseen bot defaults to boot time"
       );
-      assert.equal(bb.active, true, "fresh boot window counts as active");
+      assert.equal(
+        bb.lastActive,
+        "1970-01-01T00:00:00.000Z",
+        "never-seen bot seeds from the epoch, never boot time (issue 99)"
+      );
+      assert.equal(bb.active, false, "no activity — idle, not active");
+      const cc = rest.bots.find((b) => b.name === "cc");
+      assert.ok(cc, "cc listed");
+      assert.equal(
+        cc.lastActive,
+        OLD_ACTIVE,
+        "transcript ts wins over poisoned stored value (issue 99)"
+      );
       assert.equal(typeof aa.latest, "string", "REST carries latest");
 
       // Issue 69: the WS roster snapshot must match the REST shape.

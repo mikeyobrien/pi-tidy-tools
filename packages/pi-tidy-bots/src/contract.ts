@@ -26,6 +26,7 @@ export const CAPABILITIES = [
   "ws-auth-bearer",
   "turn-parts",
   "compaction",
+  "model-swap-hardening",
 ] as const;
 
 export const VersionResponseSchema = Type.Object({

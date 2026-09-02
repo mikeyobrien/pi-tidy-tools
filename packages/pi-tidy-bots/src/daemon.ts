@@ -8,6 +8,7 @@ import {
   statSync,
   readdirSync,
   readFileSync,
+  renameSync,
   writeFileSync,
   mkdirSync,
   watch,
@@ -119,6 +120,19 @@ interface BotRuntime {
   /** Issue 43 item 2: compaction hysteresis bookkeeping. */
   lastCompactAt?: number;
   turnsSinceCompact: number;
+  /**
+   * Issue 43 amendment: force-compaction scheduled for the next settled
+   * boundary — set when a window (re)learn shows fill ≥ 60% (model switch,
+   * respawn, daemon restart over a big session).
+   */
+  forceCompactNext?: boolean;
+  /**
+   * Issue 43 amendment: the session model currently active INSIDE the child
+   * ("provider/id") — differs from config during fallback summarization and
+   * after rpc set_model; used to restore the session model after a fallback
+   * compact.
+   */
+  activeModelId?: string;
   /** Issue 61 layer 2: consecutive identical tool-call validation failures. */
   toolFailStreak: { count: number; signature: string } | null;
   /**
@@ -348,6 +362,12 @@ function journalCompaction(
     fill?: number;
     trigger: "threshold" | "idle" | "force";
     preambleChars?: number;
+    /** Issue 43 amendment: failures are journaled, never silent. */
+    success?: boolean;
+    error?: string;
+    escalated?: "session-reset";
+    /** Fallback summarizer used when the context exceeded the window. */
+    summarizer?: string;
   }
 ): void {
   try {
@@ -461,6 +481,18 @@ export function computeFill(
 ): number | undefined {
   if (contextWindow <= 0) return undefined;
   return inputTokens / contextWindow;
+}
+
+/** Issue 43 amendment default: flash/spark-class fallback summarizer. */
+export const DEFAULT_COMPACT_FALLBACK_MODEL = "spark/glm-5.3-flash";
+
+/** Split "provider/modelId" for rpc set_model; null when unparseable. */
+export function splitModelId(
+  id: string
+): { provider: string; modelId: string } | null {
+  const slash = id.indexOf("/");
+  if (slash <= 0 || slash === id.length - 1) return null;
+  return { provider: id.slice(0, slash), modelId: id.slice(slash + 1) };
 }
 
 export function claimClientMessageId(
@@ -1057,12 +1089,98 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     }
   };
 
-  /** Issue 43 item 2: the compaction decision + flow. */
+  /**
+   * Issue 43 amendment: compaction failure may never be silent. Journal it,
+   * surface a system transcript entry, and when the context exceeds the
+   * model's window escalate to a session RESET with the fleet-state preamble
+   * re-injected — the preamble is the recovery path; summaries are optional.
+   */
+  const escalateCompactionFailure = async (
+    runtime: BotRuntime,
+    trigger: "threshold" | "idle" | "force",
+    reason: string,
+    // Over-window judged against the SESSION model's window, captured
+    // BEFORE any fallback switch — the fallback's own (larger) window must
+    // never mask the session being over its limit.
+    overWindow: boolean
+  ): Promise<void> => {
+    const botName = runtime.config.name;
+    journalCompaction(fleet.dir, botName, {
+      tokensBefore: runtime.inputTokens,
+      fill: runtime.fill,
+      trigger,
+      success: false,
+      error: reason,
+      ...(overWindow ? { escalated: "session-reset" } : {}),
+    });
+    appendTranscript(runtime, {
+      id: randomUUID(),
+      role: "system",
+      origin: "system",
+      text: overWindow
+        ? `Context management FAILED (${reason}) — escalating to session reset with fleet-state re-injection.`
+        : `Context management FAILED (${reason}) — retrying at the next settled boundary.`,
+      ts: new Date().toISOString(),
+    });
+    if (!overWindow) return;
+    const preamble = composeFleetPreamble({
+      handoffs: runtime.pendingFrom,
+      cards: [...runtime.pendingUi.values()].map((pending) => ({
+        id: pending.view.id,
+        title: pending.view.title,
+      })),
+      routines: routines
+        .filter((routine) => routine.bot === botName)
+        .map((routine) => routine.name),
+      issues: scanOwnedIssues(fleet.dir, botName),
+    });
+    runtime.stopping = true;
+    runtime.session?.stop();
+    // Evidence kept: the oversized session moves aside, never deleted.
+    try {
+      const sessionDir = join(fleet.dir, ".fleet", "sessions", botName);
+      if (existsSync(sessionDir))
+        renameSync(
+          sessionDir,
+          `${sessionDir}.pre-reset-${Date.now()}`
+        );
+    } catch {
+      /* best-effort */
+    }
+    runtime.inputTokens = undefined;
+    runtime.fill = undefined;
+    runtime.turnsSinceCompact = 0;
+    runtime.lastCompactAt = Date.now();
+    runtime.stopping = false;
+    await spawnBot(botName);
+    if (runtime.session) {
+      try {
+        await runtime.session.request({
+          type: "prompt",
+          message:
+            `${preamble}\n\n(session reset after a failed context compaction — ` +
+            "the fleet state above is authoritative ground truth; resume owned work)",
+        });
+      } catch {
+        log(`[${botName}] preamble re-injection deferred — queued paths still deliver`);
+      }
+    }
+    log(
+      `[${botName}] session reset after failed compaction — fleet state re-injected`
+    );
+  };
+
+  /** Issue 43 item 2: the compaction decision + flow (amendment-hardened). */
   async function maybeCompact(
     runtime: BotRuntime,
     opts: { force?: boolean; idle?: boolean } = {}
   ): Promise<boolean> {
     const botName = runtime.config.name;
+    const trigger: "threshold" | "idle" | "force" = opts.force
+      ? "force"
+      : opts.idle === true
+        ? "idle"
+        : "threshold";
     const go = shouldAutoCompact({
       fill: runtime.fill,
       turnsSinceCompact: runtime.turnsSinceCompact,
@@ -1085,6 +1203,56 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         .map((routine) => routine.name),
       issues: scanOwnedIssues(fleet.dir, botName),
     });
+    // Amendment req 1: never summarize on a model whose window the context
+    // exceeds — route the summarization to the fallback and back.
+    const fallbackModel =
+      fleet.compactFallbackModel ?? DEFAULT_COMPACT_FALLBACK_MODEL;
+    const overWindow =
+      runtime.inputTokens !== undefined &&
+      runtime.contextWindow !== undefined &&
+      runtime.inputTokens > runtime.contextWindow;
+    const sessionOverWindow = overWindow;
+    const fallback = overWindow ? splitModelId(fallbackModel) : null;
+    const sessionModelId =
+      runtime.activeModelId ?? runtime.config.model ?? undefined;
+    if (overWindow && !fallback) {
+      log(
+        `[${botName}] context over window and fallback "${fallbackModel}" is not provider/id — escalating`
+      );
+      await escalateCompactionFailure(
+          runtime,
+          trigger,
+          "invalid_fallback_model",
+          sessionOverWindow
+        );
+      return false;
+    }
+    if (fallback) {
+      try {
+        const switched = await runtime.session?.request({
+          type: "set_model",
+          provider: fallback.provider,
+          modelId: fallback.modelId,
+        });
+        runtime.activeModelId = fallbackModel;
+        const learned =
+          (switched as any)?.data?.model?.contextWindow ??
+          (switched as any)?.data?.contextWindow;
+        if (typeof learned === "number" && learned > 0)
+          runtime.contextWindow = learned;
+        log(
+          `[${botName}] context ${runtime.inputTokens} > window ${runtime.contextWindow} — summarizing on fallback ${fallbackModel}`
+        );
+      } catch (error) {
+        await escalateCompactionFailure(
+          runtime,
+          trigger,
+          `fallback_switch_failed:${classifyFailure(String(error))}`,
+          sessionOverWindow
+        );
+        return false;
+      }
+    }
     let refused = false;
     try {
       // pi refuses to compact below useful size ("Nothing to compact") —
@@ -1096,12 +1264,50 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     } catch (error) {
       refused = /nothing to compact/i.test(String(error));
       if (!refused) {
+        const reason = classifyFailure(String(error));
+        log(`[${botName}] compact request failed [reason: ${reason}]`);
+        if (fallback && sessionModelId) {
+          // Restore the session model before escalating — the reset/next
+          // attempt must run on the configured model, not the summarizer.
+          try {
+            const back = splitModelId(sessionModelId);
+            if (back)
+              await runtime.session?.request({
+                type: "set_model",
+                provider: back.provider,
+                modelId: back.modelId,
+              });
+            runtime.activeModelId = sessionModelId;
+          } catch {
+            /* escalation proceeds regardless */
+          }
+        }
+        await escalateCompactionFailure(
+          runtime,
+          trigger,
+          reason,
+          sessionOverWindow
+        );
+        return false;
+      }
+    }
+    // Restore the session model after a successful fallback summary too.
+    if (fallback && sessionModelId && sessionModelId !== fallbackModel) {
+      try {
+        const back = splitModelId(sessionModelId);
+        if (back)
+          await runtime.session?.request({
+            type: "set_model",
+            provider: back.provider,
+            modelId: back.modelId,
+          });
+        runtime.activeModelId = sessionModelId;
+      } catch (error) {
         log(
-          `[${botName}] compact request failed [reason: ${classifyFailure(
+          `[${botName}] fallback restore failed [reason: ${classifyFailure(
             String(error)
           )}]`
         );
-        return false;
       }
     }
     runtime.lastCompactAt = Date.now();
@@ -1110,8 +1316,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     journalCompaction(fleet.dir, botName, {
       tokensBefore,
       fill: runtime.fill,
-      trigger: opts.force ? "force" : "threshold",
+      trigger,
       preambleChars: preamble.length,
+      ...(fallback ? { summarizer: fallbackModel } : {}),
     });
     appendTranscript(runtime, {
       id: randomUUID(),
@@ -1119,7 +1326,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       origin: "system",
       text: refused
         ? "Context managed — nothing to compact, below threshold."
-        : `Context managed (${Math.round((tokensBefore ?? 0) / 1000)}K tokens in)`,
+        : `Context managed (${Math.round((tokensBefore ?? 0) / 1000)}K tokens in)${
+            fallback ? ` — summarized on ${fallbackModel}` : ""
+          }`,
       ts: new Date().toISOString(),
     });
     return true;
@@ -1187,6 +1396,8 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       },
     });
     runtime.session = session;
+    runtime.activeModelId =
+      stored.models?.[name] || runtime.config.model || undefined;
     watchPersona(runtime);
     // Issue 72: session spawn is NOT user activity — touching here reset every
     // bot to "now" on each daemon boot, exactly the false first-load times
@@ -1199,6 +1410,29 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         (state as any)?.data?.contextWindow;
       if (typeof window === "number" && window > 0)
         runtime.contextWindow = window;
+      // Issue 43 amendment: every window (re)learn recomputes fill from the
+      // tokens we already carry and schedules a FORCED compaction at the
+      // next settled boundary when fill ≥ 60% of the NEW window — a model
+      // switch (or restart) onto a smaller window must never silently leave
+      // the session over-window. Telemetry reads the live window from here
+      // on; there is no stale-config path.
+      if (runtime.inputTokens !== undefined && runtime.contextWindow) {
+        const liveFill = computeFill(
+          runtime.inputTokens,
+          runtime.contextWindow
+        );
+        if (liveFill !== undefined) {
+          runtime.fill = liveFill;
+          if (liveFill >= COMPACT_TRIGGER) {
+            runtime.forceCompactNext = true;
+            log(
+              `[${name}] window ${runtime.contextWindow} vs ${runtime.inputTokens} tokens (fill ${Math.round(
+                liveFill * 100
+              )}%) — force-compaction scheduled at next settled boundary`
+            );
+          }
+        }
+      }
       const messages = (await session.getMessages()) as {
         data?: { messages?: any[] };
       };
@@ -1595,7 +1829,14 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           });
           touch(source);
         }
-        void maybeCompact(runtime, {}).catch(() => {});
+        // Issue 43 amendment: a window-(re)learn that showed fill ≥ 60%
+        // (model switch onto a smaller window, restart over a big session)
+        // schedules a FORCED compaction here — the first settled boundary.
+        const forceNext = runtime.forceCompactNext === true;
+        runtime.forceCompactNext = false;
+        void maybeCompact(runtime, forceNext ? { force: true } : {}).catch(
+          () => {}
+        );
         return;
       }
       case "ui_request": {
@@ -2116,6 +2357,11 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         else (stored.models ??= {})[name] = model;
         persistStateFile();
         runtime.config = { ...runtime.config, model: model || undefined };
+        runtime.activeModelId = model || undefined;
+        // Window + fill recompute happens when the respawned child reports
+        // its model (boot probe): over-window sessions schedule a forced
+        // compaction at the next settled boundary (issue 43 amendment).
+        runtime.forceCompactNext = false;
         runtime.stopping = true;
         personaWatchers.get(name)?.close();
         personaWatchers.delete(name);
@@ -2337,7 +2583,13 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           }
           // Issue 72: flush any debounced lastActive writes before exit — a
           // SIGTERM inside the 5s window must not lose activity state.
-          flushLastActive();
+          // Best-effort: a vanished fleet dir must never abort the shutdown
+          // BEFORE the server closes (a leaked Server handle hangs hosts).
+          try {
+            flushLastActive();
+          } catch {
+            // State writes are best-effort; shutdown must always continue.
+          }
           lockResult.lock.release();
           for (const socket of sockets) socket.close();
           await new Promise<void>((resolveStop) =>
@@ -2504,10 +2756,19 @@ function buildHttpServer(deps: ServerDeps): Hono {
   app.get("/api/bots/:name/context", (context) => {
     const runtime = deps.runtimes.get(context.req.param("name"));
     if (!runtime) return context.json({ error: "unknown bot" }, 404);
+    // Amendment: fill always reads the LIVE window (recomputed on every
+    // window learn); overWindow flags contexts exceeding the model window.
     return context.json({
       fill: runtime.fill ?? null,
       inputTokens: runtime.inputTokens ?? null,
       contextWindow: runtime.contextWindow ?? null,
+      overWindow:
+        runtime.inputTokens !== undefined &&
+        runtime.contextWindow !== undefined &&
+        runtime.inputTokens > runtime.contextWindow,
+      ...(deps.fleet.compactFallbackModel || DEFAULT_COMPACT_FALLBACK_MODEL
+        ? { compactFallbackModel: deps.fleet.compactFallbackModel ?? DEFAULT_COMPACT_FALLBACK_MODEL }
+        : {}),
       lastCompactAt: runtime.lastCompactAt ?? null,
       turnsSinceCompact: runtime.turnsSinceCompact,
     });

@@ -31,6 +31,13 @@ export interface FleetConfig {
   port: number;
   host: string;
   bots: BotConfig[];
+  /**
+   * Issue 43 amendment: fallback summarizer model ("provider/id") used when
+   * the context exceeds the SESSION model's window — the summary is prose;
+   * any compliant model can write it. Optional; sane default applied by the
+   * daemon.
+   */
+  compactFallbackModel?: string;
 }
 
 export class ConfigError extends Error {}
@@ -166,6 +173,10 @@ export function loadFleetConfig(
       overrides.host ??
       (typeof fleet.host === "string" ? fleet.host : "127.0.0.1"),
     bots,
+    ...(typeof fleet.compactFallbackModel === "string" &&
+    fleet.compactFallbackModel.length > 0
+      ? { compactFallbackModel: fleet.compactFallbackModel }
+      : {}),
   };
 }
 

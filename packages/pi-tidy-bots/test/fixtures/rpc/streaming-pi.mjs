@@ -8,8 +8,8 @@
 // Events fire on timers so tests can observe the mid-turn window where the
 // operator bubble must already read as delivering=false.
 import readline from "node:readline";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { appendFileSync } from "node:fs";
 
 // Issue 58 test seam: record every inbound request so tests can prove a
@@ -28,6 +28,26 @@ const trace = (kind, text, images = 0) => {
 };
 
 const send = (frame) => process.stdout.write(JSON.stringify(frame) + "\n");
+const freshSession = () =>
+  existsSync(
+    join(dirname(process.env.PTB_STUB_TRACE ?? "."), "fresh-session")
+  );
+
+// Issue 43 amendment test knobs: window from a FILE (so a test can change it
+// between spawns) else env, else 128000 default.
+const stubWindow = () => {
+  if (process.env.PTB_STUB_WINDOW_FILE) {
+    try {
+      const value = Number(readFileSync(process.env.PTB_STUB_WINDOW_FILE, "utf8"));
+      if (Number.isFinite(value) && value > 0) return value;
+    } catch {}
+  }
+  if (process.env.PTB_STUB_WINDOW !== undefined) {
+    const value = Number(process.env.PTB_STUB_WINDOW);
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+  return 128000;
+};
 const respond = (id, extra = {}) =>
   send({ type: "response", id, success: true, ...extra });
 
@@ -41,13 +61,56 @@ rl.on("line", (line) => {
   }
   if (request.type === "get_state") {
     trace("get_state", "");
-    respond(request.id, {
-      result: { contextWindow: 128000, streaming: false },
+    send({
+      type: "response",
+      id: request.id,
+      success: true,
+      data: { model: { contextWindow: stubWindow() }, streaming: false },
     });
     return;
   }
   if (request.type === "get_messages") {
     respond(request.id, { result: { messages: [] } });
+    return;
+  }
+  if (request.type === "set_model") {
+    trace("set_model", `${request.provider}/${request.modelId}`);
+    // pi returns the full Model object under data.model.
+    send({
+      type: "response",
+      id: request.id,
+      success: true,
+      data: { model: { contextWindow: stubWindow() * 10, id: request.modelId } },
+    });
+    return;
+  }
+  if (request.type === "compact") {
+    trace("compact", process.env.PTB_STUB_COMPACT_FAIL === "1" ? "FAIL" : "ok");
+    if (process.env.PTB_STUB_COMPACT_FAIL === "1") {
+      // A failed compact models a hard reset in these tests: subsequent
+      // turns (including in RESPAWNED stub processes) report a SMALL
+      // fresh-session usage, not the oversized knob. File-based so the
+      // marker survives the session-reset respawn.
+      try {
+        writeFileSync(
+          join(dirname(process.env.PTB_STUB_TRACE ?? "."), "fresh-session"),
+          "1"
+        );
+      } catch {}
+      send({
+        type: "response",
+        id: request.id,
+        success: false,
+        error: "provider_error: summarization refused",
+      });
+      return;
+    }
+    send({
+      type: "response",
+      id: request.id,
+      success: true,
+      data: { summary: "stub summary", tokensBefore: 1, estimatedTokensAfter: 1 },
+    });
     return;
   }
   if (request.type === "prompt" || request.type === "follow_up") {
@@ -106,7 +169,18 @@ rl.on("line", (line) => {
             content: [{ type: "text", text: "done" }],
           },
         });
-        send({ type: "turn_end", message: { usage: { input: 10 } } });
+        send({
+          type: "turn_end",
+          message: {
+            usage: {
+              input: freshSession()
+                ? 10
+                : process.env.PTB_STUB_USAGE !== undefined
+                  ? Number(process.env.PTB_STUB_USAGE)
+                  : 10,
+            },
+          },
+        });
         send({ type: "agent_end" });
         send({ type: "agent_settled" });
         if (request.type === "prompt" && !request.streamingBehavior)

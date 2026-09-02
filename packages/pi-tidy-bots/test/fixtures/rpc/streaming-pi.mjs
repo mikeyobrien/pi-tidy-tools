@@ -15,7 +15,8 @@ import { appendFileSync } from "node:fs";
 // Issue 58 test seam: record every inbound request so tests can prove a
 // session was (or was NOT) prompted. Opt-in via PTB_STUB_TRACE.
 const trace = (kind, text, images = 0) => {
-  if (process.env.PTB_STUB_TRACE)
+  if (!process.env.PTB_STUB_TRACE) return;
+  try {
     appendFileSync(
       process.env.PTB_STUB_TRACE,
       JSON.stringify({
@@ -25,6 +26,9 @@ const trace = (kind, text, images = 0) => {
         images,
       }) + "\n"
     );
+  } catch {
+    // Stale trace path (test fleet torn down) — never kill the stub.
+  }
 };
 
 const send = (frame) => process.stdout.write(JSON.stringify(frame) + "\n");
@@ -142,6 +146,37 @@ rl.on("line", (line) => {
       // (three assistant messages; the tool-call-only middle one carries no
       // text). PTB_STUB_MULTI=whole sends complete messages (no deltas);
       // =delta streams each message's text first. Both must interleave.
+      // Issue 128 fixture: the turn dispatches via message_agent (tool part
+      // carries the receipt chip); the embedded brief is long so the
+      // bounded-reason rule is observable.
+      if (process.env.PTB_STUB_DISPATCH) {
+        send({
+          type: "tool_execution_start",
+          toolCallId: "t9",
+          toolName: "message_agent",
+          args: {
+            target: "bb",
+            message:
+              "Full dispatch brief that goes on for a while: rebuild the widget, verify gates, report hashes back. ".repeat(
+                3
+              ),
+          },
+        });
+        send({
+          type: "tool_execution_end",
+          toolCallId: "t9",
+          result: "Delivered to bb.",
+          isError: false,
+          piTidyElapsedMs: 12,
+        });
+        send({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "dispatched" }] } });
+        send({ type: "turn_end", message: { usage: { input: 10 } } });
+        send({ type: "agent_end" });
+        send({ type: "agent_settled" });
+        if (request.type === "prompt" && !request.streamingBehavior)
+          respond(request.id);
+        return;
+      }
       if (process.env.PTB_STUB_MULTI) {
         const streamed = process.env.PTB_STUB_MULTI === "delta";
         const message = (text) => ({

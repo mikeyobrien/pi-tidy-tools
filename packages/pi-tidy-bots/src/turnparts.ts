@@ -20,6 +20,9 @@ export interface ToolPart {
   started?: number;
   duration?: number;
   output?: string;
+  /** Issue 128: structured dispatch receipt — the chip renders in-order
+   * at the tool call; single surface, no standalone entry. */
+  receipt?: { name: string; avatar?: string; title?: string };
 }
 
 export type TurnPart = TextPart | ToolPart;
@@ -58,6 +61,7 @@ export class TurnPartsAccumulator {
     label?: string;
     reason?: string;
     started?: number;
+    receipt?: { name: string; avatar?: string; title?: string };
   }): void {
     // Idempotent by toolCallId (issue 29-item-4 mirror): replayed/re-delivered
     // starts update the existing part instead of duplicating it.

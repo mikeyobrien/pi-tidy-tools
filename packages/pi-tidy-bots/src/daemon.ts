@@ -1646,6 +1646,23 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           label: event.label,
           reason: event.reason,
           started: Date.now(),
+          // Issue 128: message_agent dispatches carry the receipt ON the
+          // tool part — the chip renders in-order at the call site; the
+          // standalone receipt ENTRY is gone (single surface).
+          ...(event.target
+            ? {
+                receipt: (() => {
+                  const target = fleet.bots.find(
+                    (bot) => bot.name === event.target
+                  );
+                  return {
+                    name: event.target,
+                    ...(target?.avatar ? { avatar: target.avatar } : {}),
+                    ...(target?.title ? { title: target.title } : {}),
+                  };
+                })(),
+              }
+            : {}),
         });
         runtime.steps.push({
           toolCallId: event.toolCallId,
@@ -2171,25 +2188,11 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         return { status: 503, body: { delivered: false, reason: retryReason } };
       }
     }
-    // Issue 58: successful bus send leaves a centered receipt on the
-    // SENDER's transcript — structured from the target's bot config, never a
-    // display string to parse. The console renders "Messaged <avatar> <name>".
-    const sender = runtimes.get(fromName);
-    if (sender) {
-      appendTranscript(sender, {
-        id: randomUUID(),
-        role: "system",
-        origin: "system",
-        kind: "handoff-receipt",
-        text: `Messaged ${targetName}`,
-        receipt: {
-          name: targetName,
-          avatar: route.target.avatar,
-          title: route.target.title,
-        },
-        ts: new Date().toISOString(),
-      });
-    }
+    // Issue 128: NO standalone receipt entry — the dispatch chip lives on
+    // the message_agent tool part (receipt {name, avatar, title}), rendered
+    // in-order at the call site. Legacy receipt entries in existing
+    // transcripts stay renderable. Trade (accepted): a never-settling turn
+    // loses the chip; delivery is still recorded target-side.
     return { status: 200, body: { delivered: true } };
   };
 

@@ -227,17 +227,15 @@ test(
         )
       );
 
-      // Sender gets the structured receipt (bot config, not display strings).
-      await waitFor(async () =>
-        (await transcript("aa")).some((e) => e.kind === "handoff-receipt")
+      // Issue 128: NO standalone receipt entry — the chip lives on the
+      // message_agent tool part (asserted in the dispatch test below);
+      // legacy entries in existing history stay renderable.
+      await new Promise((r) => setTimeout(r, 800));
+      assert.equal(
+        (await transcript("aa")).some((e) => e.kind === "handoff-receipt"),
+        false,
+        "no standalone receipt entry (single surface)"
       );
-      const receipt = (await transcript("aa")).find(
-        (e) => e.kind === "handoff-receipt"
-      );
-      assert.equal(receipt?.text, "Messaged bb");
-      assert.equal(receipt?.receipt?.name, "bb", "structured target name");
-      assert.equal(receipt?.receipt?.avatar, "B", "avatar from bot config");
-      assert.equal(receipt?.receipt?.title, "Worker", "title from bot config");
 
       // bb's turn settles → the completion lands on aa as a transcript fact.
       await waitFor(async () =>
@@ -274,6 +272,104 @@ test(
         "the target did get the brief"
       );
     } finally {
+      await Promise.all(handles.map((h) => h.stop().catch(() => {})));
+      rmSync(fleetDir, { recursive: true, force: true });
+    }
+  }
+);
+
+test(
+  "dispatch chip on the message_agent tool part: receipt + bounded reason (issue 128)",
+  { timeout: 45000 },
+  async () => {
+    const fleetDir = mkdtempSync(join(tmpdir(), "ptb-dispatch-chip-"));
+    const handles: Array<{ stop(): Promise<void> }> = [];
+    try {
+      for (const bot of ["aa", "bb"]) {
+        mkdirSync(join(fleetDir, "bots", bot), { recursive: true });
+        writeFileSync(join(fleetDir, "bots", bot, "AGENTS.md"), `# ${bot}\n`);
+      }
+      writeFileSync(
+        join(fleetDir, "bots.toml"),
+        `[[bot]]\nname = "aa"\ntitle = "Sender"\navatar = "A"\ndir = "bots/aa"\n` +
+          `[[bot]]\nname = "bb"\ntitle = "Worker"\navatar = "B"\ndir = "bots/bb"\n`
+      );
+      const wrapper = join(fleetDir, "streaming-pi.sh");
+      writeFileSync(wrapper, `#!/bin/sh\nexec node ${runner}\n`);
+      spawnSync("chmod", ["+x", wrapper]);
+      process.env.PTB_STUB_DISPATCH = "1";
+      delete process.env.PTB_STUB_MULTI;
+      // Earlier tests leave a PTB_STUB_TRACE pointing at deleted dirs.
+      process.env.PTB_STUB_TRACE = join(fleetDir, "trace.jsonl");
+
+      const { startFleet } = await import("../src/daemon.ts");
+      const handle = await startFleet({
+        dir: fleetDir,
+        port: 0,
+        host: "127.0.0.1",
+        piBin: wrapper,
+        log: () => {},
+      });
+      handles.push(handle);
+      const base = `http://127.0.0.1:${handle.port}`;
+      await waitFor(async () =>
+        (
+          (await (await fetch(`${base}/api/fleet`)).json()) as {
+            bots: { online: boolean }[];
+          }
+        ).bots.every((b) => b.online)
+      );
+
+      await fetch(`${base}/api/bots/aa/message`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "dispatch please" }),
+      });
+      const entries = async () =>
+        (
+          (await (await fetch(`${base}/api/bots/aa/transcript`)).json()) as {
+            transcript: {
+              role: string;
+              parts?: {
+                type: string;
+                tool?: string;
+                reason?: string;
+                receipt?: { name: string; avatar?: string; title?: string };
+              }[];
+            }[];
+          }
+        ).transcript;
+      await waitFor(
+        async () =>
+          (await entries()).some(
+            (e) =>
+              e.role === "assistant" &&
+              (e.parts ?? []).some((part) => part.receipt?.name === "bb")
+          ),
+        30000
+      );
+      const turn = (await entries()).find(
+        (e) =>
+          e.role === "assistant" &&
+          (e.parts ?? []).some((part) => part.receipt?.name === "bb")
+      );
+      const part = turn?.parts?.find((p) => p.receipt?.name === "bb");
+      assert.equal(part?.tool, "message_agent");
+      assert.deepEqual(part?.receipt, {
+        name: "bb",
+        avatar: "B",
+        title: "Worker",
+      }, "structured receipt from bot config");
+      assert.ok(
+        (part?.reason ?? "").length <= 60,
+        `reason bounded — got ${part?.reason?.length} chars`
+      );
+      assert.ok(
+        !(part?.reason ?? "").includes("report hashes"),
+        "reason is a gist, not the full brief"
+      );
+    } finally {
+      delete process.env.PTB_STUB_DISPATCH;
       await Promise.all(handles.map((h) => h.stop().catch(() => {})));
       rmSync(fleetDir, { recursive: true, force: true });
     }

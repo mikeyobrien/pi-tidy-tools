@@ -103,6 +103,8 @@ export type RpcEvent =
       toolName: string;
       reason: string;
       label?: string;
+      /** Issue 128: message_agent dispatch target (receipt enrichment). */
+      target?: string;
     }
   | { kind: "tool_output"; toolCallId: string; text: string }
   | {
@@ -186,9 +188,15 @@ export function describeUiAnswer(method: string, answer: UiAnswer): string {
 }
 
 /** Pick the human-readable "why" from a tool call's arguments. */
-export function stepReason(args: unknown): string {
+export function stepReason(args: unknown, toolName?: string): string {
   if (args === null || typeof args !== "object") return "";
   const record = args as Record<string, unknown>;
+  // Issue 128: dispatch-class tools — the reason is a BOUNDED gist of the
+  // brief, never the full message (the label already carries the target).
+  if (toolName === "message_agent" && typeof record.message === "string") {
+    const firstLine = record.message.trim().split("\n")[0] ?? "";
+    return firstLine.length > 60 ? `${firstLine.slice(0, 57)}…` : firstLine;
+  }
   const candidates = [
     "reasoning",
     "reason",
@@ -499,12 +507,22 @@ export class RpcSession {
         return;
       }
       case "tool_execution_start":
+        const toolName = String(parsed.toolName ?? "tool");
         this.options.onEvent({
           kind: "tool_start",
           toolCallId: String(parsed.toolCallId ?? ""),
-          toolName: String(parsed.toolName ?? "tool"),
-          reason: stepReason(parsed.args),
-          label: stepLabel(String(parsed.toolName ?? "tool"), parsed.args),
+          toolName,
+          reason: stepReason(parsed.args, toolName),
+          label: stepLabel(toolName, parsed.args),
+          // Issue 128: dispatch target — the daemon enriches the tool part
+          // with the structured receipt (avatar/title from bot config).
+          ...(toolName === "message_agent" &&
+          typeof (parsed.args as { target?: unknown } | undefined)?.target ===
+            "string"
+            ? {
+                target: (parsed.args as { target: string }).target,
+              }
+            : {}),
         });
         return;
       case "tool_execution_end": {

@@ -2452,11 +2452,24 @@ function buildHttpServer(deps: ServerDeps): Hono {
     }
     if (!authorized(url, context.req.raw)) {
       if (url.pathname.startsWith("/api/") || url.pathname === "/api/ws") {
+        deps.log(
+          `http ${context.req.method} ${url.pathname} -> 401 (unauthorized)`
+        );
         return context.json({ error: "unauthorized" }, 401);
       }
+      deps.log(
+        `http ${context.req.method} ${url.pathname} -> 401 (token page)`
+      );
       return context.html(tokenPage, 401);
     }
     await next();
+    // Request telemetry (issue 51 ops): one line per API request with status,
+    // so unreachable-vs-auth-vs-app-bug is answerable from the log alone.
+    if (url.pathname.startsWith("/api/")) {
+      deps.log(
+        `http ${context.req.method} ${url.pathname} -> ${context.res.status}`
+      );
+    }
   });
 
   const serveAsset = (file: string, type: string) => (context: any) => {

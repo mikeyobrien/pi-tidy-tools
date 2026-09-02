@@ -40,7 +40,7 @@ import {
   type UiAnswer,
 } from "./rpc.ts";
 import { isDue, minuteKey, parseCron } from "./cron.ts";
-import { createEventLog } from "./eventlog.ts";
+import { createEventLog, resolveSinceCursor } from "./eventlog.ts";
 import { attributionPrefix, stripActionMarkers } from "./actions.ts";
 import { classifyFailure, isRetryable } from "./reasons.ts";
 import {
@@ -2743,7 +2743,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           seq: eventLog.current,
         })
       );
-      for (const missed of eventLog.since(Number.isFinite(since) ? since : 0)) {
+      for (const missed of eventLog.since(
+        resolveSinceCursor(since, eventLog.current)
+      )) {
         socket_.send(JSON.stringify(missed.payload));
       }
       socket_.send(
@@ -3050,11 +3052,14 @@ function buildHttpServer(deps: ServerDeps): Hono {
       return context.html(tokenPage, 401);
     }
     await next();
-    // Request telemetry (issue 51 ops): one line per API request with status,
-    // so unreachable-vs-auth-vs-app-bug is answerable from the log alone.
+    // Request telemetry (issue 51 ops): one line per API request with status
+    // and source, so unreachable-vs-auth-vs-app-bug is answerable from the
+    // log alone.
     if (url.pathname.startsWith("/api/")) {
+      const peer =
+        (context.env as any)?.incoming?.socket?.remoteAddress ?? "unknown";
       deps.log(
-        `http ${context.req.method} ${url.pathname} -> ${context.res.status}`
+        `http ${context.req.method} ${url.pathname} -> ${context.res.status} from ${peer}`
       );
     }
   });

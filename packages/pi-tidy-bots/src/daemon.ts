@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
   appendFileSync,
+  rmSync,
   chmodSync,
   existsSync,
   statSync,
@@ -50,7 +51,7 @@ import {
 import { createPendingStore, type PendingMessage } from "./pending.ts";
 import { TurnPartsAccumulator, type TurnPart } from "./turnparts.ts";
 import { versionPayload } from "./contract.ts";
-import { describePortHolder } from "./cli-core.ts";
+import { describePortHolder, pidAlive } from "./cli-core.ts";
 
 export interface TranscriptEntry {
   id: string;
@@ -139,6 +140,12 @@ interface BotRuntime {
    * respawn, daemon restart over a big session).
    */
   forceCompactNext?: boolean;
+  /**
+   * Issue 148: pending-journal ids being replayed this boot — an unclean
+   * death lost activeDeliveryId, so the replayed entries' delivering flags
+   * would spin forever. agent_start clears them by id.
+   */
+  replayDeliveryIds: Set<string>;
   /**
    * Issue 43 amendment: the session model currently active INSIDE the child
    * ("provider/id") — differs from config during fallback summarization and
@@ -843,6 +850,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     turnParts: new TurnPartsAccumulator(),
     queuedCount: 0,
     rulesApplied: null,
+    replayDeliveryIds: new Set<string>(),
     clientMessageIds: new Set<string>(),
     turnsSinceCompact: 0,
     toolFailStreak: null,
@@ -1348,9 +1356,52 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     return true;
   }
 
+  /**
+   * Issue 148: reap orphaned children from an unclean daemon death. The
+   * previous daemon's ledger (.fleet/children/<bot>.pid) names child pids
+   * that no longer belong to us — a stub/real child left parentless after
+   * SIGKILL. Verified-daemon-command orphans are SIGTERMed (session-dir
+   * contention on restart otherwise); foreign pids are never signalled.
+   */
+  const reapOrphanedChildren = (name: string): void => {
+    try {
+      const ledger = join(fleet.dir, ".fleet", "children", `${name}.pid`);
+      if (!existsSync(ledger)) return;
+      const raw = readFileSync(ledger, "utf8").trim();
+      rmSync(ledger, { force: true });
+      const pid = Number(raw);
+      if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) return;
+      if (!pidAlive(pid)) return;
+      const command = (() => {
+        try {
+          return spawnSync("ps", ["-p", String(pid), "-o", "command="], {
+            encoding: "utf8",
+            timeout: 5_000,
+          }).stdout.trim();
+        } catch {
+          return "";
+        }
+      })();
+      // Orphans of the OLD daemon run the same pi/stub entry — anything
+      // referencing the fleet's piBin shape. Foreign pids: leave alone.
+      if (command.length === 0) return;
+      if (/pi(\s|$)|pi\.sh|stub|node/.test(command)) {
+        try {
+          process.kill(pid, "SIGTERM");
+          log(`[${name}] reaped orphaned child pid ${pid} from previous daemon`);
+        } catch {
+          // died racing us
+        }
+      }
+    } catch {
+      // ledger is best-effort
+    }
+  };
+
   const spawnBot = async (name: string): Promise<void> => {
     const runtime = runtimes.get(name);
     if (!runtime) return;
+    reapOrphanedChildren(name);
     // A respawn drops any queue the dead child was holding.
     runtime.queuedCount = 0;
     // Issue 92: bot-scoped pi packages. `pi install -l` writes the package
@@ -1421,6 +1472,17 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     runtime.session = session;
     runtime.activeModelId =
       stored.models?.[name] || runtime.config.model || undefined;
+    // Issue 148: child-pid ledger — record the spawned child so an unclean
+    // daemon death is detectable at next boot (orphan reaping below).
+    try {
+      mkdirSync(join(fleet.dir, ".fleet", "children"), { recursive: true });
+      writeFileSync(
+        join(fleet.dir, ".fleet", "children", `${name}.pid`),
+        String(session.pid ?? "")
+      );
+    } catch {
+      // best-effort ledger
+    }
     watchPersona(runtime);
     // Issue 72: session spawn is NOT user activity — touching here reset every
     // bot to "now" on each daemon boot, exactly the false first-load times
@@ -1534,7 +1596,10 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         try {
           // Issue 74: a replayed message is queued until ITS turn starts
           // streaming — same accept-window semantics as a direct message.
-          if (target) runtime.activeDeliveryId = target.id;
+          if (target) {
+            runtime.activeDeliveryId = target.id;
+            runtime.replayDeliveryIds.add(target.id);
+          }
           await session.prompt(
             injectRules(runtime, message.text),
             undefined,
@@ -1607,6 +1672,21 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
             accepted.delivering = false;
             emit({ type: "append", bot: botName, entry: accepted });
           }
+        }
+        // Issue 148: replayed journal entries have no activeDeliveryId (it
+        // died with the old daemon) — clear their delivering flags by id so
+        // the operator bubble stops spinning after the restart replay.
+        if (runtime.replayDeliveryIds.size > 0) {
+          for (const id of runtime.replayDeliveryIds) {
+            const replayed = runtime.transcript.find(
+              (candidate) => candidate.id === id
+            );
+            if (replayed?.delivering) {
+              replayed.delivering = false;
+              emit({ type: "append", bot: botName, entry: replayed });
+            }
+          }
+          runtime.replayDeliveryIds.clear();
         }
         runtime.turnId = randomUUID();
         runtime.turnText = "";

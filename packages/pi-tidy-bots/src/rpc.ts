@@ -330,6 +330,11 @@ export class RpcSession {
     return new RpcSession(options, child);
   }
 
+  /** Issue 148: the spawned child's pid (for the daemon's ledger). */
+  get pid(): number | undefined {
+    return this.process.pid;
+  }
+
   get alive(): boolean {
     return (
       !this.closed &&

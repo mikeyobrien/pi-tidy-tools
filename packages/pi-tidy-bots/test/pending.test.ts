@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPendingStore, type PendingMessage } from "../src/pending.ts";
@@ -72,4 +72,58 @@ test("claimClientMessageId: once per id, absent ids always claim", async () => {
   assert.equal(claimClientMessageId(seen, "cm-1"), false, "duplicate rejected");
   const other = new Set<string>();
   assert.equal(claimClientMessageId(other, "cm-1"), true, "per-bot registry");
+});
+
+test("torn journal line salvages good rows; rewrite keeps them (issue 143)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ptb-torn-"));
+  try {
+    const store = createPendingStore(dir);
+    store.append("aa", {
+      id: "m1",
+      text: "first",
+      origin: "operator",
+      ts: new Date().toISOString(),
+    });
+    store.append("aa", {
+      id: "m2",
+      text: "second",
+      origin: "operator",
+      ts: new Date().toISOString(),
+    });
+    store.append("aa", {
+      id: "m3",
+      text: "third",
+      origin: "operator",
+      ts: new Date().toISOString(),
+    });
+    // Corrupt the MIDDLE line (crash mid-write shape: truncated JSON).
+    const file = join(dir, "aa.jsonl");
+    const lines = readFileSync(file, "utf8").split("\n");
+    lines[1] = lines[1].slice(0, Math.max(1, lines[1].length - 20));
+    writeFileSync(file, lines.join("\n"));
+
+    const salvaged = store.load("aa");
+    assert.equal(salvaged.length, 2, "good rows survive the torn line");
+    assert.deepEqual(
+      salvaged.map((message) => message.id),
+      ["m1", "m3"],
+      "order preserved around the tear"
+    );
+
+    // The rewrite-after-append must KEEP the salvaged rows (hound probe:
+    // the old flow physically deleted them on the next append).
+    store.append("aa", {
+      id: "m4",
+      text: "fourth",
+      origin: "operator",
+      ts: new Date().toISOString(),
+    });
+    assert.equal(store.load("aa").length, 3);
+    const onDisk = readFileSync(file, "utf8");
+    assert.ok(
+      onDisk.includes("m1") && onDisk.includes("m3") && onDisk.includes("m4")
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

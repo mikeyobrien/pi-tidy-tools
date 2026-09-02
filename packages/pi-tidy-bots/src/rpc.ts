@@ -17,6 +17,8 @@ export interface RpcSpawnOptions {
   bridgePath: string;
   /** Issue 85: extra extensions loaded after bridge (MCP wrap etc.). */
   extensions?: string[];
+  /** Issue 132: extra child env (image provider id, fleet dir for outputs). */
+  env?: Record<string, string>;
   daemonUrl: string;
   childSecret: string;
   onEvent: (event: RpcEvent) => void;
@@ -58,6 +60,22 @@ export function rpcSpawnArgs(
   ];
 }
 
+/** Issue 158: reasons bound to ~90 chars (first line + ellipsis). */
+export const REASON_MAX_CHARS = 90;
+
+/**
+ * Issue 158: shared wire-bounding contract for step text. First line only
+ * (multi-line JS bodies never ride the wire) + hard truncate with an
+ * ellipsis. stepReason and stepLabel both route through this — the old
+ * contracts were inconsistent (40 vs unbounded, and reason could carry
+ * 3.4k-char mcpScript bodies).
+ */
+export function boundStepText(value: string, max: number): string {
+  const firstLine = value.trim().split("\n")[0] ?? "";
+  const collapsed = firstLine.replace(/\s+/g, " ").trim();
+  return collapsed.length > max ? `${collapsed.slice(0, max - 1)}…` : collapsed;
+}
+
 /** Compact, non-sensitive args digest for a tool step row (issue 36). */
 export function stepLabel(toolName: string, args: unknown): string | undefined {
   if (typeof args !== "object" || args === null) return undefined;
@@ -70,8 +88,7 @@ export function stepLabel(toolName: string, args: unknown): string | undefined {
     }
     return undefined;
   };
-  const truncate = (value: string, max: number) =>
-    value.length > max ? `${value.slice(0, max)}…` : value;
+  const truncate = boundStepText;
   if (toolName === "message_agent") {
     const target = first("target");
     return target ? `→ ${target}` : undefined;
@@ -103,6 +120,8 @@ export type RpcEvent =
       toolName: string;
       reason: string;
       label?: string;
+      /** Issue 128: message_agent dispatch target (receipt enrichment). */
+      target?: string;
     }
   | { kind: "tool_output"; toolCallId: string; text: string }
   | {
@@ -186,9 +205,14 @@ export function describeUiAnswer(method: string, answer: UiAnswer): string {
 }
 
 /** Pick the human-readable "why" from a tool call's arguments. */
-export function stepReason(args: unknown): string {
+export function stepReason(args: unknown, toolName?: string): string {
   if (args === null || typeof args !== "object") return "";
   const record = args as Record<string, unknown>;
+  // Issue 128: dispatch-class tools — the reason is a BOUNDED gist of the
+  // brief, never the full message (the label already carries the target).
+  if (toolName === "message_agent" && typeof record.message === "string") {
+    return boundStepText(record.message, 60);
+  }
   const candidates = [
     "reasoning",
     "reason",
@@ -202,11 +226,11 @@ export function stepReason(args: unknown): string {
   for (const key of candidates) {
     const value = record[key];
     if (typeof value === "string" && value.trim().length > 0)
-      return value.trim();
+      return boundStepText(value, REASON_MAX_CHARS);
   }
   for (const value of Object.values(record)) {
     if (typeof value === "string" && value.trim().length > 0)
-      return value.trim();
+      return boundStepText(value, REASON_MAX_CHARS);
   }
   return "";
 }
@@ -246,6 +270,10 @@ const toolResultText = (result: unknown): string => {
  * One perpetual `pi --mode rpc` child. Strict LF JSONL framing (no readline —
  * pi's rpc protocol forbids readers that split on U+2028/U+2029).
  */
+/** Issue 149: prompt-class guard — 10 minutes. Accept-acks are <10ms; only
+ * a wedged-alive child can hit this, and the timeout means UNKNOWN. */
+export const PROMPT_CLASS_TIMEOUT_MS = 10 * 60_000;
+
 export class RpcSession {
   readonly process: ChildProcess;
   private buffer = "";
@@ -313,10 +341,16 @@ export class RpcSession {
         PI_TIDY_BOTS_NAME: options.name,
         PI_TIDY_BOTS_DAEMON_URL: options.daemonUrl,
         PI_TIDY_BOTS_CHILD_SECRET: options.childSecret,
+        ...(options.env ?? {}),
       },
       stdio: ["pipe", "pipe", "pipe"],
     });
     return new RpcSession(options, child);
+  }
+
+  /** Issue 148: the spawned child's pid (for the daemon's ledger). */
+  get pid(): number | undefined {
+    return this.process.pid;
   }
 
   get alive(): boolean {
@@ -334,7 +368,8 @@ export class RpcSession {
 
   request<T = any>(
     payload: Record<string, unknown>,
-    timeoutMs = 30_000
+    timeoutMs = 30_000,
+    timeoutCode?: string
   ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       if (!this.alive) {
@@ -344,7 +379,11 @@ export class RpcSession {
       const id = randomUUID();
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`rpc request timed out after ${timeoutMs}ms`));
+        reject(
+          new Error(
+            `${timeoutCode ?? "rpc request timed out"} after ${timeoutMs}ms`
+          )
+        );
       }, timeoutMs);
       this.pending.set(id, {
         resolve: (value: T) => {
@@ -360,17 +399,29 @@ export class RpcSession {
     });
   }
 
+  /**
+   * Issue 149: prompt-class requests follow the ACCEPT-ACK contract — real
+   * pi resolves the request when the turn is accepted (<10ms measured), not
+   * when it finishes. The old shared 30s timeout misclassified long turns
+   * as delivery_failed while the reply still landed (phantom completion).
+   * The guard stays long — genuinely dead sessions are rejected by the
+   * exit handler immediately; only a wedged-but-alive child can hit this.
+   */
   async prompt(
     message: string,
     streamingBehavior?: "steer" | "followUp",
     images?: { type: "image"; data: string; mimeType: string }[]
   ): Promise<void> {
-    await this.request({
-      type: "prompt",
-      message,
-      ...(streamingBehavior ? { streamingBehavior } : {}),
-      ...(images ? { images } : {}),
-    });
+    await this.request(
+      {
+        type: "prompt",
+        message,
+        ...(streamingBehavior ? { streamingBehavior } : {}),
+        ...(images ? { images } : {}),
+      },
+      PROMPT_CLASS_TIMEOUT_MS,
+      "rpc_prompt_timeout"
+    );
   }
 
   async steer(message: string): Promise<void> {
@@ -381,11 +432,15 @@ export class RpcSession {
     message: string,
     images?: { type: "image"; data: string; mimeType: string }[]
   ): Promise<void> {
-    await this.request({
-      type: "follow_up",
-      message,
-      ...(images ? { images } : {}),
-    });
+    await this.request(
+      {
+        type: "follow_up",
+        message,
+        ...(images ? { images } : {}),
+      },
+      PROMPT_CLASS_TIMEOUT_MS,
+      "rpc_prompt_timeout"
+    );
   }
 
   async abort(): Promise<void> {
@@ -499,12 +554,22 @@ export class RpcSession {
         return;
       }
       case "tool_execution_start":
+        const toolName = String(parsed.toolName ?? "tool");
         this.options.onEvent({
           kind: "tool_start",
           toolCallId: String(parsed.toolCallId ?? ""),
-          toolName: String(parsed.toolName ?? "tool"),
-          reason: stepReason(parsed.args),
-          label: stepLabel(String(parsed.toolName ?? "tool"), parsed.args),
+          toolName,
+          reason: stepReason(parsed.args, toolName),
+          label: stepLabel(toolName, parsed.args),
+          // Issue 128: dispatch target — the daemon enriches the tool part
+          // with the structured receipt (avatar/title from bot config).
+          ...(toolName === "message_agent" &&
+          typeof (parsed.args as { target?: unknown } | undefined)?.target ===
+            "string"
+            ? {
+                target: (parsed.args as { target: string }).target,
+              }
+            : {}),
         });
         return;
       case "tool_execution_end": {

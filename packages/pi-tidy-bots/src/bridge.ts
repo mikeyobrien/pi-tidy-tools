@@ -168,6 +168,80 @@ export default async function bridge(pi: any): Promise<void> {
     },
   });
 
+  // Issue 122: attach a one-line summary to this bot's latest peer-completion
+  // entry — the receiving agent writes it during its turn; the daemon only
+  // stores and serves it (summary-first rendering, issue 121).
+  pi.registerTool({
+    name: "completion_summary",
+    label: "Completion summary",
+    description:
+      "Attach a one-line summary to the most recent completion entry on this " +
+      "bot's transcript (a teammate's report that arrived as a Message from X). " +
+      "Call it right after you finish reading/acting on a peer completion — the " +
+      "summary is what the operator sees first. Keep it to one line.",
+    promptSnippet:
+      "completion_summary attaches your one-line summary to the latest peer completion.",
+    promptGuidelines: [
+      "After handling a teammate completion, attach a terse one-line summary with completion_summary.",
+    ],
+    parameters: Type.Object({
+      summary: Type.String({
+        description:
+          "One line, e.g. 'fixed the badge reason drop — re-landed as 93b927b'",
+      }),
+    }),
+    async execute(_toolCallId: string, params: { summary: string }) {
+      let response: Response;
+      try {
+        response = await fetch(
+          `${daemonUrl}/api/bots/${selfName}/completion-summary`,
+          {
+            method: "PUT",
+            headers: {
+              "content-type": "application/json",
+              "x-fleet-child": childSecret,
+            },
+            body: JSON.stringify({ summary: params.summary }),
+          }
+        );
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Fleet bus unreachable: ${(error as Error).message} [reason: runtime_offline]`,
+            },
+          ],
+          details: { attached: false, reason: "runtime_offline" },
+        };
+      }
+      const data = (await response.json().catch(() => ({}))) as {
+        attached?: boolean;
+        error?: string;
+      };
+      if (!response.ok || data.attached !== true) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Summary not attached: ${data.error ?? response.status} [reason: ${data.error ?? "attach_failed"}]`,
+            },
+          ],
+          details: { attached: false, reason: data.error ?? "attach_failed" },
+        };
+      }
+      return {
+        content: [
+          {
+            type: "text",
+            text: "Summary attached to the latest completion entry.",
+          },
+        ],
+        details: { attached: true },
+      };
+    },
+  });
+
   pi.registerCommand("bots-reload", {
     description:
       "Reload persona and context files without leaving the fleet session",

@@ -26,3 +26,15 @@ export function createEventLog(max = 500) {
     },
   };
 }
+
+/**
+ * Resolve a client `since` cursor to a safe replay cursor for `since()`.
+ * Non-finite or negative cursors resolve to 0; cursors ahead of the current
+ * sequence clamp to current; cursors older than the buffer window are pulled
+ * to the window floor (the bounded log can only replay what it still holds).
+ */
+export function resolveSinceCursor(since: number, current: number): number {
+  if (!Number.isFinite(since) || since < 0) return 0;
+  const floor = Math.max(0, current - 500);
+  return Math.min(Math.max(since, floor), current);
+}

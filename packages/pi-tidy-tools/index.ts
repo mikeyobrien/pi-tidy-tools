@@ -40,48 +40,52 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
-	createBashTool,
-	createEditTool,
-	createFindTool,
-	createGrepTool,
-	createLsTool,
-	createReadTool,
+  createBashTool,
+  createEditTool,
+  createFindTool,
+  createGrepTool,
+  createLsTool,
+  createReadTool,
 } from "@earendil-works/pi-coding-agent";
-import { Container, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
-	CONFIG_PATH,
-	loadTidyIcons,
-	loadTidyMode,
-	loadTidyState,
-	saveTidyEnabled,
-	saveTidyIcons,
-	saveTidyMode,
-	type TidyMode,
+  Container,
+  truncateToWidth,
+  visibleWidth,
+} from "@earendil-works/pi-tui";
+import {
+  CONFIG_PATH,
+  loadTidyIcons,
+  loadTidyMode,
+  loadTidyState,
+  saveTidyEnabled,
+  saveTidyIcons,
+  saveTidyMode,
+  type TidyMode,
 } from "./config.js";
 import {
-	BOLD,
-	CYAN,
-	DIM,
-	GREEN,
-	MAGENTA,
-	RED,
-	RESET,
-	grepResultCounts,
-	nonEmptyLineCount,
-	shortPath,
-	style,
+  BOLD,
+  CYAN,
+  DIM,
+  GREEN,
+  MAGENTA,
+  RED,
+  RESET,
+  grepResultCounts,
+  nonEmptyLineCount,
+  shortPath,
+  style,
 } from "./render.js";
 import {
-	composeSourceTool,
-	createDiffingWriteTool,
-	stripReasoning,
-	withReasoning,
-	type SourceToolDefinition,
+  composeSourceTool,
+  createDiffingWriteTool,
+  stripReasoning,
+  withReasoning,
+  type SourceToolDefinition,
 } from "./tool-composition.js";
 import {
-	concisePiFffStatus,
-	createPiFffIntegrationController,
-	type PiFffIntegrationController,
+  concisePiFffStatus,
+  createPiFffIntegrationController,
+  type PiFffIntegrationController,
 } from "./pi-fff/controller.js";
 import type { PiFffLifecyclePreview } from "./pi-fff/integration.js";
 
@@ -92,21 +96,21 @@ const INDENT = "  ";
 
 /** Collapse whitespace/newlines to one line (width-based truncation happens at render). */
 function oneLine(s: string): string {
-	return s.replace(/\s+/g, " ").trim();
+  return s.replace(/\s+/g, " ").trim();
 }
 
 /** Fit a rendered line while preserving its useful result tail. */
 export function fitToolLine(line: string, width: number): string {
-	const max = Math.max(1, width);
-	if (visibleWidth(line) <= max) return line;
-	const arrowIndex = line.indexOf("→");
-	if (arrowIndex < 0) return truncateToWidth(line, max, "…");
+  const max = Math.max(1, width);
+  if (visibleWidth(line) <= max) return line;
+  const arrowIndex = line.indexOf("→");
+  if (arrowIndex < 0) return truncateToWidth(line, max, "…");
 
-	const tail = line.slice(arrowIndex);
-	const tailWidth = visibleWidth(tail);
-	if (tailWidth >= max) return truncateToWidth(tail, max, "…");
-	const head = line.slice(0, arrowIndex).trimEnd();
-	return `${truncateToWidth(head, max - tailWidth - 1, "…")} ${tail}`;
+  const tail = line.slice(arrowIndex);
+  const tailWidth = visibleWidth(tail);
+  if (tailWidth >= max) return truncateToWidth(tail, max, "…");
+  const head = line.slice(0, arrowIndex).trimEnd();
+  return `${truncateToWidth(head, max - tailWidth - 1, "…")} ${tail}`;
 }
 
 /**
@@ -115,175 +119,203 @@ export function fitToolLine(line: string, width: number): string {
  * because render(width) is re-invoked by the TUI.
  */
 class WidthAwareLines {
-	constructor(
-		private readonly source: string[] | (() => string[]),
-		private readonly background?: (text: string) => string,
-	) {}
-	invalidate(): void {}
-	render(width: number): string[] {
-		const max = Math.max(1, width);
-		const lines = typeof this.source === "function" ? this.source() : this.source;
-		return lines.map((line) => {
-			const fitted = fitToolLine(line, max);
-			if (!this.background) return fitted;
-			const padded = fitted + " ".repeat(Math.max(0, max - visibleWidth(fitted)));
-			// Raw foreground styling uses RESET, which also clears an enclosing
-			// background. Apply the background independently to every reset-delimited
-			// segment so it remains continuous through the full padded line.
-			return padded.split(RESET).map((segment) => this.background!(`${segment}${RESET}`)).join("");
-		});
-	}
+  constructor(
+    private readonly source: string[] | (() => string[]),
+    private readonly background?: (text: string) => string
+  ) {}
+  invalidate(): void {}
+  render(width: number): string[] {
+    const max = Math.max(1, width);
+    const lines =
+      typeof this.source === "function" ? this.source() : this.source;
+    return lines.map((line) => {
+      const fitted = fitToolLine(line, max);
+      if (!this.background) return fitted;
+      const padded =
+        fitted + " ".repeat(Math.max(0, max - visibleWidth(fitted)));
+      // Raw foreground styling uses RESET, which also clears an enclosing
+      // background. Apply the background independently to every reset-delimited
+      // segment so it remains continuous through the full padded line.
+      return padded
+        .split(RESET)
+        .map((segment) => this.background!(`${segment}${RESET}`))
+        .join("");
+    });
+  }
 }
 
 /** Dim line-2 detail when the model gave no `reasoning`. Always ONE line. */
 function argDetail(name: string, args: Record<string, unknown>): string {
-	if (name === "bash" && typeof args.command === "string") return oneLine(args.command);
-	if ((name === "grep" || name === "find") && typeof args.pattern === "string") {
-		return oneLine(typeof args.path === "string" ? `${args.pattern} in ${args.path}` : String(args.pattern));
-	}
-	if (typeof args.path === "string") return oneLine(args.path);
-	if (typeof args.name === "string") return oneLine(args.name);
-	return "";
+  if (name === "bash" && typeof args.command === "string")
+    return oneLine(args.command);
+  if (
+    (name === "grep" || name === "find") &&
+    typeof args.pattern === "string"
+  ) {
+    return oneLine(
+      typeof args.path === "string"
+        ? `${args.pattern} in ${args.path}`
+        : String(args.pattern)
+    );
+  }
+  if (typeof args.path === "string") return oneLine(args.path);
+  if (typeof args.name === "string") return oneLine(args.name);
+  return "";
 }
 
 /** Compact elapsed time for an in-progress tool. */
 export function formatElapsed(milliseconds: number): string {
-	if (milliseconds < 1000) return "<1s";
-	const seconds = Math.floor(milliseconds / 1000);
-	if (seconds < 60) return `${seconds}s`;
-	const minutes = Math.floor(seconds / 60);
-	const remainder = seconds % 60;
-	if (minutes < 60) return `${minutes}m ${remainder.toString().padStart(2, "0")}s`;
-	const hours = Math.floor(minutes / 60);
-	return `${hours}h ${(minutes % 60).toString().padStart(2, "0")}m`;
+  if (milliseconds < 1000) return "<1s";
+  const seconds = Math.floor(milliseconds / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  if (minutes < 60)
+    return `${minutes}m ${remainder.toString().padStart(2, "0")}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${(minutes % 60).toString().padStart(2, "0")}m`;
 }
 
 /** Colored result summary from a finished tool result. */
 function summarize(
-	name: string,
-	result: any,
-	isError: boolean,
-	args: Record<string, unknown> = {},
-	elapsedMs = 0,
+  name: string,
+  result: any,
+  isError: boolean,
+  args: Record<string, unknown> = {},
+  elapsedMs = 0
 ): string {
-	const text = textFromResult(result);
-	if (isError) {
-		if (name === "bash") return `${RED}error${RESET} ${DIM}in ${formatElapsed(elapsedMs)}${RESET}`;
-		return `${RED}${text.split("\n")[0] || "error"}${RESET}`;
-	}
-	if (name === "read") return `${GREEN}${text.split("\n").length} lines${RESET}`;
-	if (name === "write") {
-		if (typeof args.content === "string" && !args.content.includes("\0")) {
-			const lines = args.content.length === 0
-				? 0
-				: (args.content.match(/\n/g)?.length ?? 0) + (args.content.endsWith("\n") ? 0 : 1);
-			return `${GREEN}${lines}${RESET} ${DIM}${lines === 1 ? "line" : "lines"}${RESET}`;
-		}
-		const bytes = text.match(/wrote (\d+) bytes/i)?.[1];
-		return bytes ? `${GREEN}${bytes}b${RESET}` : `${GREEN}written${RESET}`;
-	}
-	if (name === "edit") {
-		const diff = result?.details?.diff as string | undefined;
-		if (!diff) return `${GREEN}applied${RESET}`;
-		let add = 0;
-		let del = 0;
-		for (const l of diff.split("\n")) {
-			if (l.startsWith("+") && !l.startsWith("+++")) add++;
-			if (l.startsWith("-") && !l.startsWith("---")) del++;
-		}
-		return `${GREEN}+${add}${RESET}${DIM}/${RESET}${RED}-${del}${RESET}`;
-	}
-	if (name === "bash") {
-		const m = text.match(/exit code: (\d+)/);
-		const exit = m ? Number(m[1]) : null;
-		const status = exit && exit !== 0 ? `${RED}exit ${exit}` : `${GREEN}done`;
-		return `${status}${RESET} ${DIM}in ${formatElapsed(elapsedMs)}${RESET}`;
-	}
-	if (name === "grep") {
-		const { matches: count, files } = grepResultCounts(text);
-		const matchLabel = count === 1 ? "match" : "matches";
-		const fileLabel = files === 1 ? "file" : "files";
-		return `${GREEN}${count} ${matchLabel}${RESET} ${DIM}in${RESET} ${CYAN}${files} ${fileLabel}${RESET}`;
-	}
-	const count = nonEmptyLineCount(text);
-	const noun = name === "find" ? "files" : name === "ls" ? "entries" : "results";
-	return `${DIM}${count} ${noun}${RESET}`;
+  const text = textFromResult(result);
+  if (isError) {
+    if (name === "bash")
+      return `${RED}error${RESET} ${DIM}in ${formatElapsed(elapsedMs)}${RESET}`;
+    return `${RED}${text.split("\n")[0] || "error"}${RESET}`;
+  }
+  if (name === "read")
+    return `${GREEN}${text.split("\n").length} lines${RESET}`;
+  if (name === "write") {
+    if (typeof args.content === "string" && !args.content.includes("\0")) {
+      const lines =
+        args.content.length === 0
+          ? 0
+          : (args.content.match(/\n/g)?.length ?? 0) +
+            (args.content.endsWith("\n") ? 0 : 1);
+      return `${GREEN}${lines}${RESET} ${DIM}${lines === 1 ? "line" : "lines"}${RESET}`;
+    }
+    const bytes = text.match(/wrote (\d+) bytes/i)?.[1];
+    return bytes ? `${GREEN}${bytes}b${RESET}` : `${GREEN}written${RESET}`;
+  }
+  if (name === "edit") {
+    const diff = result?.details?.diff as string | undefined;
+    if (!diff) return `${GREEN}applied${RESET}`;
+    let add = 0;
+    let del = 0;
+    for (const l of diff.split("\n")) {
+      if (l.startsWith("+") && !l.startsWith("+++")) add++;
+      if (l.startsWith("-") && !l.startsWith("---")) del++;
+    }
+    return `${GREEN}+${add}${RESET}${DIM}/${RESET}${RED}-${del}${RESET}`;
+  }
+  if (name === "bash") {
+    const m = text.match(/exit code: (\d+)/);
+    const exit = m ? Number(m[1]) : null;
+    const status = exit && exit !== 0 ? `${RED}exit ${exit}` : `${GREEN}done`;
+    return `${status}${RESET} ${DIM}in ${formatElapsed(elapsedMs)}${RESET}`;
+  }
+  if (name === "grep") {
+    const { matches: count, files } = grepResultCounts(text);
+    const matchLabel = count === 1 ? "match" : "matches";
+    const fileLabel = files === 1 ? "file" : "files";
+    return `${GREEN}${count} ${matchLabel}${RESET} ${DIM}in${RESET} ${CYAN}${files} ${fileLabel}${RESET}`;
+  }
+  const count = nonEmptyLineCount(text);
+  const noun =
+    name === "find" ? "files" : name === "ls" ? "entries" : "results";
+  return `${DIM}${count} ${noun}${RESET}`;
 }
 
 /** Pull the first text block out of a tool result / partial (shape varies). */
 function textFromResult(r: any): string {
-	const content = r?.content ?? r?.partialResult?.content;
-	if (Array.isArray(content)) {
-		const c = content.find((x: any) => x?.type === "text");
-		if (c?.text) return c.text;
-	}
-	if (typeof r?.output === "string") return r.output;
-	if (typeof r?.error === "string") return r.error;
-	if (typeof r?.message === "string") return r.message;
-	if (typeof r?.details?.error === "string") return r.details.error;
-	return "";
+  const content = r?.content ?? r?.partialResult?.content;
+  if (Array.isArray(content)) {
+    const c = content.find((x: any) => x?.type === "text");
+    if (c?.text) return c.text;
+  }
+  if (typeof r?.output === "string") return r.output;
+  if (typeof r?.error === "string") return r.error;
+  if (typeof r?.message === "string") return r.message;
+  if (typeof r?.details?.error === "string") return r.details.error;
+  return "";
 }
 
 /** Replace tabs with painted cells using stops relative to the code payload. */
 function expandTabs(text: string): string {
-	let column = 0;
-	let expanded = "";
-	for (const character of text) {
-		if (character === "\t") {
-			const spaces = 8 - (column % 8);
-			expanded += " ".repeat(spaces);
-			column += spaces;
-		} else {
-			expanded += character;
-			column += visibleWidth(character);
-		}
-	}
-	return expanded;
+  let column = 0;
+  let expanded = "";
+  for (const character of text) {
+    if (character === "\t") {
+      const spaces = 8 - (column % 8);
+      expanded += " ".repeat(spaces);
+      column += spaces;
+    } else {
+      expanded += character;
+      column += visibleWidth(character);
+    }
+  }
+  return expanded;
 }
 
 /** Keep line-number prefixes out of edit payload tab-stop calculations. */
 function expandDiffTabs(line: string): string {
-	const numbered = line.match(/^([ +\-]\s*\d+ )(.*)$/);
-	return numbered ? `${numbered[1]}${expandTabs(numbered[2])}` : expandTabs(line);
+  const numbered = line.match(/^([ +\-]\s*\d+ )(.*)$/);
+  return numbered
+    ? `${numbered[1]}${expandTabs(numbered[2])}`
+    : expandTabs(line);
 }
 
 /** Colorize a unified/line-numbered diff string (edit tool's details.diff). */
 function colorizeDiff(diff: string): string[] {
-	return diff.split("\n").map((rawLine) => {
-		const line = expandDiffTabs(rawLine);
-		if (line.startsWith("+") && !line.startsWith("+++")) return `${GREEN}${line}${RESET}`;
-		if (line.startsWith("-") && !line.startsWith("---")) return `${RED}${line}${RESET}`;
-		if (line.startsWith("@@")) return `${CYAN}${line}${RESET}`;
-		return `${DIM}${line}${RESET}`;
-	});
+  return diff.split("\n").map((rawLine) => {
+    const line = expandDiffTabs(rawLine);
+    if (line.startsWith("+") && !line.startsWith("+++"))
+      return `${GREEN}${line}${RESET}`;
+    if (line.startsWith("-") && !line.startsWith("---"))
+      return `${RED}${line}${RESET}`;
+    if (line.startsWith("@@")) return `${CYAN}${line}${RESET}`;
+    return `${DIM}${line}${RESET}`;
+  });
 }
 
 /** A file change captured during a turn, for the `/diff` recap. */
 export interface TurnDiff {
-	tool: string; // "edit" | "write"
-	path: string;
-	diff: string; // raw details.diff (may be empty for whole-file writes)
+  tool: string; // "edit" | "write"
+  path: string;
+  diff: string; // raw details.diff (may be empty for whole-file writes)
 }
 
 /** Render a set of turn diffs as colored lines with per-file headers. */
 function renderTurnDiffs(diffs: TurnDiff[], icons = true): string[] {
-	const lines: string[] = [];
-	diffs.forEach((d, i) => {
-		if (i > 0) lines.push("");
-		const { icon, color } = style(d.tool);
-		lines.push(`${color}${icons ? `${icon} ` : ""}${BOLD}${shortPath(d.path)}${RESET}`);
-		if (d.diff.trim()) lines.push(...colorizeDiff(d.diff.replace(/\s+$/, "")));
-		else lines.push(`${DIM}(new file / full overwrite — no line diff)${RESET}`);
-	});
-	return lines;
+  const lines: string[] = [];
+  diffs.forEach((d, i) => {
+    if (i > 0) lines.push("");
+    const { icon, color } = style(d.tool);
+    lines.push(
+      `${color}${icons ? `${icon} ` : ""}${BOLD}${shortPath(d.path)}${RESET}`
+    );
+    if (d.diff.trim()) lines.push(...colorizeDiff(d.diff.replace(/\s+$/, "")));
+    else lines.push(`${DIM}(new file / full overwrite — no line diff)${RESET}`);
+  });
+  return lines;
 }
 
 /** Full `/diff` recap block — same lines the command posts into the transcript. */
-export function buildTurnDiffBlock(diffs: TurnDiff[], opts: { icons?: boolean } = {}): string[] {
-	const { icons = true } = opts;
-	const n = diffs.length;
-	const header = `${MAGENTA}${icons ? "◆ " : ""}${BOLD}last turn diff${RESET} ${DIM}(${n} file${n === 1 ? "" : "s"})${RESET}`;
-	return [header, ...renderTurnDiffs(diffs, icons)];
+export function buildTurnDiffBlock(
+  diffs: TurnDiff[],
+  opts: { icons?: boolean } = {}
+): string[] {
+  const { icons = true } = opts;
+  const n = diffs.length;
+  const header = `${MAGENTA}${icons ? "◆ " : ""}${BOLD}last turn diff${RESET} ${DIM}(${n} file${n === 1 ? "" : "s"})${RESET}`;
+  return [header, ...renderTurnDiffs(diffs, icons)];
 }
 
 /**
@@ -293,45 +325,53 @@ export function buildTurnDiffBlock(diffs: TurnDiff[], opts: { icons?: boolean } 
  *   - otherwise: the raw result text
  * Each line is prefixed with the hanging INDENT.
  */
-function expandedLines(name: string, args: Record<string, unknown>, result: any): string[] {
-	const out: string[] = [];
+function expandedLines(
+  name: string,
+  args: Record<string, unknown>,
+  result: any
+): string[] {
+  const out: string[] = [];
 
-	// bash: show the full command (collapsed line 2 is truncated to one line).
-	if (name === "bash" && typeof args.command === "string") {
-		const cmdLines = args.command.replace(/\s+$/, "").split("\n");
-		cmdLines.forEach((cl, i) => {
-			const prefix = i === 0 ? `${CYAN}$ ${RESET}` : `${DIM}  ${RESET}`;
-			out.push(`${INDENT}${prefix}${CYAN}${cl}${RESET}`);
-		});
-	}
+  // bash: show the full command (collapsed line 2 is truncated to one line).
+  if (name === "bash" && typeof args.command === "string") {
+    const cmdLines = args.command.replace(/\s+$/, "").split("\n");
+    cmdLines.forEach((cl, i) => {
+      const prefix = i === 0 ? `${CYAN}$ ${RESET}` : `${DIM}  ${RESET}`;
+      out.push(`${INDENT}${prefix}${CYAN}${cl}${RESET}`);
+    });
+  }
 
-	// Whole-file writes do not provide a useful diff. Show the actual written
-	// content instead of repeating the generic "Successfully wrote..." result.
-	if (name === "write" && typeof args.content === "string") {
-		if (args.content.length === 0) {
-			out.push(`${INDENT}${DIM}(empty file)${RESET}`);
-			return out;
-		}
-		const splitLines = args.content.split("\n");
-		const contentLines = args.content.endsWith("\n") ? splitLines.slice(0, -1) : splitLines;
-		const lineNumberWidth = String(contentLines.length).length;
-		contentLines.forEach((line, index) => {
-			const lineNumber = String(index + 1).padStart(lineNumberWidth, " ");
-			out.push(`${INDENT}${DIM}${lineNumber} ${RESET}${expandTabs(line)}`);
-		});
-		return out;
-	}
+  // Whole-file writes do not provide a useful diff. Show the actual written
+  // content instead of repeating the generic "Successfully wrote..." result.
+  if (name === "write" && typeof args.content === "string") {
+    if (args.content.length === 0) {
+      out.push(`${INDENT}${DIM}(empty file)${RESET}`);
+      return out;
+    }
+    const splitLines = args.content.split("\n");
+    const contentLines = args.content.endsWith("\n")
+      ? splitLines.slice(0, -1)
+      : splitLines;
+    const lineNumberWidth = String(contentLines.length).length;
+    contentLines.forEach((line, index) => {
+      const lineNumber = String(index + 1).padStart(lineNumberWidth, " ");
+      out.push(`${INDENT}${DIM}${lineNumber} ${RESET}${expandTabs(line)}`);
+    });
+    return out;
+  }
 
-	// Prefer the structured diff over the generic "Successfully replaced..." text.
-	const diff = result?.details?.diff as string | undefined;
-	if (diff && diff.trim()) {
-		for (const dl of colorizeDiff(diff)) out.push(`${INDENT}${dl}`);
-		return out;
-	}
+  // Prefer the structured diff over the generic "Successfully replaced..." text.
+  const diff = result?.details?.diff as string | undefined;
+  if (diff && diff.trim()) {
+    for (const dl of colorizeDiff(diff)) out.push(`${INDENT}${dl}`);
+    return out;
+  }
 
-	const text = textFromResult(result).replace(/\s+$/, "");
-	if (text) for (const raw of text.split("\n")) out.push(`${INDENT}${DIM}${raw}${RESET}`);
-	return out;
+  const text = textFromResult(result).replace(/\s+$/, "");
+  if (text)
+    for (const raw of text.split("\n"))
+      out.push(`${INDENT}${DIM}${raw}${RESET}`);
+  return out;
 }
 
 /**
@@ -340,228 +380,452 @@ function expandedLines(name: string, args: Record<string, unknown>, result: any)
  * hand-typed ANSI. `args` includes the model's `reasoning` (stripped here).
  */
 export function buildToolBlock(
-	name: string,
-	args: Record<string, unknown>,
-	result: any,
-	opts: { isError?: boolean; isPartial?: boolean; expanded?: boolean; elapsedMs?: number; mode?: TidyMode; icons?: boolean } = {},
+  name: string,
+  args: Record<string, unknown>,
+  result: any,
+  opts: {
+    isError?: boolean;
+    isPartial?: boolean;
+    expanded?: boolean;
+    elapsedMs?: number;
+    mode?: TidyMode;
+    icons?: boolean;
+  } = {}
 ): string[] {
-	const { isError = false, isPartial = false, expanded = false, elapsedMs = 0, mode = "default", icons = true } = opts;
-	const { reasoning, rest } = stripReasoning(args ?? {});
+  const {
+    isError = false,
+    isPartial = false,
+    expanded = false,
+    elapsedMs = 0,
+    mode = "default",
+    icons = true,
+  } = opts;
+  const { reasoning, rest } = stripReasoning(args ?? {});
 
-	// Settled success/error is already encoded by Pi's native row background.
-	// Only running calls need an inline state mark.
-	const runningPrefix = isPartial ? `${DIM}·${RESET} ` : "";
-	const summary = isPartial
-		? `${DIM}${formatElapsed(elapsedMs)}${RESET}`
-		: summarize(name, result, isError, rest, elapsedMs);
+  // Settled success/error is already encoded by Pi's native row background.
+  // Only running calls need an inline state mark.
+  const runningPrefix = isPartial ? `${DIM}·${RESET} ` : "";
+  const summary = isPartial
+    ? `${DIM}${formatElapsed(elapsedMs)}${RESET}`
+    : summarize(name, result, isError, rest, elapsedMs);
 
-	const { icon, color } = style(name);
-	const toolLabel = `${color}${icons ? `${icon} ` : ""}${BOLD}${name}${RESET}`;
-	const headline = oneLine(reasoning || argDetail(name, rest));
-	const detail = argDetail(name, rest);
-	// Keep the target on failures too; width fitting preserves the useful error
-	// tail while the command/path answers what actually failed.
-	const line2 = !detail
-		? `${INDENT}${DIM}→${RESET} ${summary}`
-		: `${INDENT}${DIM}${detail}${RESET} ${DIM}→${RESET} ${summary}`;
-	let lines: string[];
-	if (mode === "reasoning") {
-		lines = [`${runningPrefix}${toolLabel} ${headline} ${DIM}→${RESET} ${summary}`];
-	} else if (mode === "result") {
-		const resultDetail = !detail ? "" : ` ${DIM}${detail}${RESET}`;
-		lines = [`${runningPrefix}${toolLabel}${resultDetail} ${DIM}→${RESET} ${summary}`];
-	} else {
-		lines = [
-			`${runningPrefix}${toolLabel} ${headline}`,
-			line2,
-		];
-	}
-	if (expanded && !isPartial) lines.push(...expandedLines(name, rest, result));
-	return lines;
+  const { icon, color } = style(name);
+  const toolLabel = `${color}${icons ? `${icon} ` : ""}${BOLD}${name}${RESET}`;
+  const headline = oneLine(reasoning || argDetail(name, rest));
+  const detail = argDetail(name, rest);
+  // Keep the target on failures too; width fitting preserves the useful error
+  // tail while the command/path answers what actually failed.
+  const line2 = !detail
+    ? `${INDENT}${DIM}→${RESET} ${summary}`
+    : `${INDENT}${DIM}${detail}${RESET} ${DIM}→${RESET} ${summary}`;
+  let lines: string[];
+  if (mode === "reasoning") {
+    lines = [
+      `${runningPrefix}${toolLabel} ${headline} ${DIM}→${RESET} ${summary}`,
+    ];
+  } else if (mode === "result") {
+    const resultDetail = !detail ? "" : ` ${DIM}${detail}${RESET}`;
+    lines = [
+      `${runningPrefix}${toolLabel}${resultDetail} ${DIM}→${RESET} ${summary}`,
+    ];
+  } else {
+    lines = [`${runningPrefix}${toolLabel} ${headline}`, line2];
+  }
+  if (expanded && !isPartial) lines.push(...expandedLines(name, rest, result));
+  return lines;
 }
 
 const DIFF_MSG_TYPE = "minimal-turn-diff";
 const TIDY_COMPLETIONS = [
-	"on", "off", "toggle", "status", "mode default", "mode reasoning", "mode result", "mode status",
-	"icons on", "icons off", "icons status",
-	"pi-fff setup", "pi-fff status", "pi-fff teardown",
+  "on",
+  "off",
+  "toggle",
+  "status",
+  "mode default",
+  "mode reasoning",
+  "mode result",
+  "mode status",
+  "icons on",
+  "icons off",
+  "icons status",
+  "pi-fff setup",
+  "pi-fff status",
+  "pi-fff teardown",
 ];
 
 export interface TidyExtensionDependencies {
-	cwd?: string;
-	loadState?: typeof loadTidyState;
-	loadMode?: typeof loadTidyMode;
-	loadIcons?: typeof loadTidyIcons;
-	saveIcons?: typeof saveTidyIcons;
-	createIntegration?: (pi: ExtensionAPI, cwd: string) => PiFffIntegrationController;
+  cwd?: string;
+  loadState?: typeof loadTidyState;
+  loadMode?: typeof loadTidyMode;
+  loadIcons?: typeof loadTidyIcons;
+  saveIcons?: typeof saveTidyIcons;
+  createIntegration?: (
+    pi: ExtensionAPI,
+    cwd: string
+  ) => PiFffIntegrationController;
 }
 
 function previewText(preview: PiFffLifecyclePreview): string {
-	return preview.changes.map((change) => `${change.scope}: ${change.settingsPath}\n${JSON.stringify(change.before)} → ${JSON.stringify(change.after)}`).join("\n");
+  return preview.changes
+    .map(
+      (change) =>
+        `${change.scope}: ${change.settingsPath}\n${JSON.stringify(change.before)} → ${JSON.stringify(change.after)}`
+    )
+    .join("\n");
 }
 
-export function createTidyExtension(dependencies: TidyExtensionDependencies = {}) {
-	return async (pi: ExtensionAPI): Promise<void> => {
-		const cwd = dependencies.cwd ?? process.cwd();
-		const tidyState = (dependencies.loadState ?? loadTidyState)();
-		const tidyMode = (dependencies.loadMode ?? loadTidyMode)();
-		const tidyIcons = (dependencies.loadIcons ?? loadTidyIcons)();
-		const persistIcons = dependencies.saveIcons ?? saveTidyIcons;
-		const integration = dependencies.createIntegration?.(pi, cwd)
-			?? createPiFffIntegrationController({ pi: pi as any, cwd });
-		let startupPlan: Awaited<ReturnType<PiFffIntegrationController["initialize"]>> | undefined;
+export function createTidyExtension(
+  dependencies: TidyExtensionDependencies = {}
+) {
+  return async (pi: ExtensionAPI): Promise<void> => {
+    const cwd = dependencies.cwd ?? process.cwd();
+    const tidyState = (dependencies.loadState ?? loadTidyState)();
+    const tidyMode = (dependencies.loadMode ?? loadTidyMode)();
+    const tidyIcons = (dependencies.loadIcons ?? loadTidyIcons)();
+    const persistIcons = dependencies.saveIcons ?? saveTidyIcons;
+    const integration =
+      dependencies.createIntegration?.(pi, cwd) ??
+      createPiFffIntegrationController({ pi: pi as any, cwd });
+    let startupPlan:
+      Awaited<ReturnType<PiFffIntegrationController["initialize"]>> | undefined;
 
-		pi.registerCommand("tidy", {
-			description: "Manage pi-tidy-tools state, layout, and pi-fff integration",
-			getArgumentCompletions: (prefix) => TIDY_COMPLETIONS
-				.filter((value) => value.startsWith(prefix.trim().toLowerCase()))
-				.map((value) => ({ value, label: value })),
-			handler: async (args, ctx) => {
-				const action = args.trim().toLowerCase();
-				const piFff = action.match(/^pi-fff (setup|status|teardown)$/);
-				if (piFff) {
-					const operation = piFff[1] as "setup" | "status" | "teardown";
-					const result = await integration.run(operation, {
-						enabled: tidyState.enabled,
-						confirm: ctx.hasUI === false ? undefined : async (preview) => ctx.ui.confirm(`pi-fff ${preview.action}`, previewText(preview)),
-						reload: operation === "status" ? undefined : async () => {
-							ctx.ui.notify(`pi-fff ${operation} committed; reloading.`, "info");
-							await ctx.reload();
-							return;
-						},
-					});
-					if (result.reload === "requested") return;
-					ctx.ui.notify(result.message, result.level);
-					return;
-				}
-				if (action === "status" || action === "mode status") {
-					const detail = tidyState.source === "environment" ? "PI_TIDY_TOOLS override"
-						: tidyState.source === "file" ? CONFIG_PATH : "default; no config file";
-					const status = (await integration.run("status", { enabled: tidyState.enabled })).status;
-					ctx.ui.notify(`pi-tidy-tools is ${tidyState.enabled ? "on" : "off"}, mode ${tidyMode}, icons ${tidyIcons ? "on" : "off"} (${detail}).\n${concisePiFffStatus(status)}.`, "info");
-					return;
-				}
-				if (action === "icons status") {
-					ctx.ui.notify(`pi-tidy-tools icons are ${tidyIcons ? "on" : "off"}.`, "info");
-					return;
-				}
-				const iconsMatch = action.match(/^icons (on|off)$/);
-				if (iconsMatch) {
-					const icons = iconsMatch[1] === "on";
-					if (icons === tidyIcons) { ctx.ui.notify(`pi-tidy-tools icons are already ${icons ? "on" : "off"}.`, "info"); return; }
-					try { await persistIcons(icons); }
-					catch (error) { ctx.ui.notify(`Could not save ${CONFIG_PATH}: ${error instanceof Error ? error.message : String(error)}`, "error"); return; }
-					ctx.ui.notify(`pi-tidy-tools icons set to ${icons ? "on" : "off"}; reloading.`, "info");
-					await ctx.reload(); return;
-				}
-				const modeMatch = action.match(/^mode (default|reasoning|result)$/);
-				if (modeMatch) {
-					const mode = modeMatch[1] as TidyMode;
-					if (mode === tidyMode) { ctx.ui.notify(`pi-tidy-tools mode is already ${mode}.`, "info"); return; }
-					try { await saveTidyMode(mode); }
-					catch (error) { ctx.ui.notify(`Could not save ${CONFIG_PATH}: ${error instanceof Error ? error.message : String(error)}`, "error"); return; }
-					ctx.ui.notify(`pi-tidy-tools mode set to ${mode}; reloading.`, "info");
-					await ctx.reload(); return;
-				}
-				if (action !== "on" && action !== "off" && action !== "toggle") {
-					ctx.ui.notify("Usage: /tidy on|off|toggle|status|mode default|reasoning|result|status|icons on|off|status|pi-fff setup|status|teardown", "warning"); return;
-				}
-				if (tidyState.source === "environment") { ctx.ui.notify("PI_TIDY_TOOLS overrides persistent settings; change or unset it first.", "warning"); return; }
-				const enabled = action === "toggle" ? !tidyState.enabled : action === "on";
-				if (enabled === tidyState.enabled) { ctx.ui.notify(`pi-tidy-tools is already ${enabled ? "on" : "off"}.`, "info"); return; }
-				try { await saveTidyEnabled(enabled); }
-				catch (error) { ctx.ui.notify(`Could not save ${CONFIG_PATH}: ${error instanceof Error ? error.message : String(error)}`, "error"); return; }
-				ctx.ui.notify(`pi-tidy-tools ${enabled ? "enabled" : "disabled"}; reloading.`, "info");
-				await ctx.reload(); return;
-			},
-		});
+    pi.registerCommand("tidy", {
+      description: "Manage pi-tidy-tools state, layout, and pi-fff integration",
+      getArgumentCompletions: (prefix) =>
+        TIDY_COMPLETIONS.filter((value) =>
+          value.startsWith(prefix.trim().toLowerCase())
+        ).map((value) => ({ value, label: value })),
+      handler: async (args, ctx) => {
+        const action = args.trim().toLowerCase();
+        const piFff = action.match(/^pi-fff (setup|status|teardown)$/);
+        if (piFff) {
+          const operation = piFff[1] as "setup" | "status" | "teardown";
+          const result = await integration.run(operation, {
+            enabled: tidyState.enabled,
+            confirm:
+              ctx.hasUI === false
+                ? undefined
+                : async (preview) =>
+                    ctx.ui.confirm(
+                      `pi-fff ${preview.action}`,
+                      previewText(preview)
+                    ),
+            reload:
+              operation === "status"
+                ? undefined
+                : async () => {
+                    ctx.ui.notify(
+                      `pi-fff ${operation} committed; reloading.`,
+                      "info"
+                    );
+                    await ctx.reload();
+                    return;
+                  },
+          });
+          if (result.reload === "requested") return;
+          ctx.ui.notify(result.message, result.level);
+          return;
+        }
+        if (action === "status" || action === "mode status") {
+          const detail =
+            tidyState.source === "environment"
+              ? "PI_TIDY_TOOLS override"
+              : tidyState.source === "file"
+                ? CONFIG_PATH
+                : "default; no config file";
+          const status = (
+            await integration.run("status", { enabled: tidyState.enabled })
+          ).status;
+          ctx.ui.notify(
+            `pi-tidy-tools is ${tidyState.enabled ? "on" : "off"}, mode ${tidyMode}, icons ${tidyIcons ? "on" : "off"} (${detail}).\n${concisePiFffStatus(status)}.`,
+            "info"
+          );
+          return;
+        }
+        if (action === "icons status") {
+          ctx.ui.notify(
+            `pi-tidy-tools icons are ${tidyIcons ? "on" : "off"}.`,
+            "info"
+          );
+          return;
+        }
+        const iconsMatch = action.match(/^icons (on|off)$/);
+        if (iconsMatch) {
+          const icons = iconsMatch[1] === "on";
+          if (icons === tidyIcons) {
+            ctx.ui.notify(
+              `pi-tidy-tools icons are already ${icons ? "on" : "off"}.`,
+              "info"
+            );
+            return;
+          }
+          try {
+            await persistIcons(icons);
+          } catch (error) {
+            ctx.ui.notify(
+              `Could not save ${CONFIG_PATH}: ${error instanceof Error ? error.message : String(error)}`,
+              "error"
+            );
+            return;
+          }
+          ctx.ui.notify(
+            `pi-tidy-tools icons set to ${icons ? "on" : "off"}; reloading.`,
+            "info"
+          );
+          await ctx.reload();
+          return;
+        }
+        const modeMatch = action.match(/^mode (default|reasoning|result)$/);
+        if (modeMatch) {
+          const mode = modeMatch[1] as TidyMode;
+          if (mode === tidyMode) {
+            ctx.ui.notify(`pi-tidy-tools mode is already ${mode}.`, "info");
+            return;
+          }
+          try {
+            await saveTidyMode(mode);
+          } catch (error) {
+            ctx.ui.notify(
+              `Could not save ${CONFIG_PATH}: ${error instanceof Error ? error.message : String(error)}`,
+              "error"
+            );
+            return;
+          }
+          ctx.ui.notify(
+            `pi-tidy-tools mode set to ${mode}; reloading.`,
+            "info"
+          );
+          await ctx.reload();
+          return;
+        }
+        if (action !== "on" && action !== "off" && action !== "toggle") {
+          ctx.ui.notify(
+            "Usage: /tidy on|off|toggle|status|mode default|reasoning|result|status|icons on|off|status|pi-fff setup|status|teardown",
+            "warning"
+          );
+          return;
+        }
+        if (tidyState.source === "environment") {
+          ctx.ui.notify(
+            "PI_TIDY_TOOLS overrides persistent settings; change or unset it first.",
+            "warning"
+          );
+          return;
+        }
+        const enabled =
+          action === "toggle" ? !tidyState.enabled : action === "on";
+        if (enabled === tidyState.enabled) {
+          ctx.ui.notify(
+            `pi-tidy-tools is already ${enabled ? "on" : "off"}.`,
+            "info"
+          );
+          return;
+        }
+        try {
+          await saveTidyEnabled(enabled);
+        } catch (error) {
+          ctx.ui.notify(
+            `Could not save ${CONFIG_PATH}: ${error instanceof Error ? error.message : String(error)}`,
+            "error"
+          );
+          return;
+        }
+        ctx.ui.notify(
+          `pi-tidy-tools ${enabled ? "enabled" : "disabled"}; reloading.`,
+          "info"
+        );
+        await ctx.reload();
+        return;
+      },
+    });
 
-		startupPlan = await integration.initialize(tidyState.enabled);
-		if (startupPlan.notice) {
-			const notice = startupPlan.notice;
-			pi.on("session_start", (_event: unknown, ctx: any) => ctx.ui.notify(notice.message, notice.level));
-		}
-		if (!tidyState.enabled) return;
+    startupPlan = await integration.initialize(tidyState.enabled);
+    if (startupPlan.notice) {
+      const notice = startupPlan.notice;
+      pi.on("session_start", (_event: unknown, ctx: any) =>
+        ctx.ui.notify(notice.message, notice.level)
+      );
+    }
+    if (!tidyState.enabled) return;
 
-		let currentTurn: TurnDiff[] = [], lastTurn: TurnDiff[] = [];
-		const pathByCallId = new Map<string, string>();
-		const startedAtByCallId = new Map<string, number>();
-		const elapsedTimerByCallId = new Map<string, ReturnType<typeof setInterval>>();
-		const ownedTools = new Set<string>();
+    let currentTurn: TurnDiff[] = [],
+      lastTurn: TurnDiff[] = [];
+    const pathByCallId = new Map<string, string>();
+    const startedAtByCallId = new Map<string, number>();
+    const elapsedTimerByCallId = new Map<
+      string,
+      ReturnType<typeof setInterval>
+    >();
+    const ownedTools = new Set<string>();
 
-		const decorate = (source: SourceToolDefinition): SourceToolDefinition => {
-			const name = source.name;
-			const tool = composeSourceTool(source, { mode: tidyMode, reasoningGuideline: `Always pass a "reasoning" phrase to ${name}: state the GOAL/intent, not the file or command (those are shown already).` });
-			ownedTools.add(name);
-			return {
-				...tool, name, renderShell: "self",
-				renderCall: (args: any, theme: any, context: any) => {
-					if (!context?.isPartial) return new Container();
-					const id = context.toolCallId as string;
-					if (!elapsedTimerByCallId.has(id)) { const timer = setInterval(() => context.invalidate(), 1000); timer.unref?.(); elapsedTimerByCallId.set(id, timer); }
-					let started = startedAtByCallId.get(id); if (started === undefined) { started = Date.now(); startedAtByCallId.set(id, started); }
-					return new WidthAwareLines(() => buildToolBlock(name, args ?? {}, {}, { isPartial: true, elapsedMs: Date.now() - started!, mode: tidyMode, icons: tidyIcons }), (text) => theme.bg("toolPendingBg", text));
-				},
-				renderResult: (result: any, options: any, theme: any, context: any) => {
-					if (options?.isPartial) return new Container();
-					const isError = context?.isError ?? result?.isError ?? false;
-					const id = context?.toolCallId as string | undefined;
-					const started = startedAtByCallId.get(id ?? ""), timer = elapsedTimerByCallId.get(id ?? "");
-					if (timer) clearInterval(timer); elapsedTimerByCallId.delete(id ?? ""); startedAtByCallId.delete(id ?? "");
-					const persisted = Number(result?.details?.piTidyElapsedMs);
-					const elapsedMs = Number.isFinite(persisted) ? persisted : started === undefined ? 0 : Date.now() - started;
-					const lines = buildToolBlock(name, context?.args ?? {}, result, { isError, expanded: options?.expanded ?? false, elapsedMs, mode: tidyMode, icons: tidyIcons });
-					return new WidthAwareLines(lines, (text) => theme.bg(isError ? "toolErrorBg" : "toolSuccessBg", text));
-				},
-			} as SourceToolDefinition;
-		};
+    const decorate = (source: SourceToolDefinition): SourceToolDefinition => {
+      const name = source.name;
+      const tool = composeSourceTool(source, {
+        mode: tidyMode,
+        reasoningGuideline: `Always pass a "reasoning" phrase to ${name}: state the GOAL/intent, not the file or command (those are shown already).`,
+      });
+      ownedTools.add(name);
+      return {
+        ...tool,
+        name,
+        renderShell: "self",
+        renderCall: (args: any, theme: any, context: any) => {
+          if (!context?.isPartial) return new Container();
+          const id = context.toolCallId as string;
+          if (!elapsedTimerByCallId.has(id)) {
+            const timer = setInterval(() => context.invalidate(), 1000);
+            timer.unref?.();
+            elapsedTimerByCallId.set(id, timer);
+          }
+          let started = startedAtByCallId.get(id);
+          if (started === undefined) {
+            started = Date.now();
+            startedAtByCallId.set(id, started);
+          }
+          return new WidthAwareLines(
+            () =>
+              buildToolBlock(
+                name,
+                args ?? {},
+                {},
+                {
+                  isPartial: true,
+                  elapsedMs: Date.now() - started!,
+                  mode: tidyMode,
+                  icons: tidyIcons,
+                }
+              ),
+            (text) => theme.bg("toolPendingBg", text)
+          );
+        },
+        renderResult: (result: any, options: any, theme: any, context: any) => {
+          if (options?.isPartial) return new Container();
+          const isError = context?.isError ?? result?.isError ?? false;
+          const id = context?.toolCallId as string | undefined;
+          const started = startedAtByCallId.get(id ?? ""),
+            timer = elapsedTimerByCallId.get(id ?? "");
+          if (timer) clearInterval(timer);
+          elapsedTimerByCallId.delete(id ?? "");
+          startedAtByCallId.delete(id ?? "");
+          const persisted = Number(result?.details?.piTidyElapsedMs);
+          const elapsedMs = Number.isFinite(persisted)
+            ? persisted
+            : started === undefined
+              ? 0
+              : Date.now() - started;
+          const lines = buildToolBlock(name, context?.args ?? {}, result, {
+            isError,
+            expanded: options?.expanded ?? false,
+            elapsedMs,
+            mode: tidyMode,
+            icons: tidyIcons,
+          });
+          return new WidthAwareLines(lines, (text) =>
+            theme.bg(isError ? "toolErrorBg" : "toolSuccessBg", text)
+          );
+        },
+      } as SourceToolDefinition;
+    };
 
-		pi.on("tool_execution_start", async (e: any) => {
-			if (!startedAtByCallId.has(e.toolCallId)) startedAtByCallId.set(e.toolCallId, Date.now());
-			if ((e.toolName === "edit" || e.toolName === "write") && typeof e?.args?.path === "string") pathByCallId.set(e.toolCallId, e.args.path);
-		});
-		pi.on("tool_execution_end", async (e: any) => {
-			const timer = elapsedTimerByCallId.get(e.toolCallId); if (timer) clearInterval(timer); elapsedTimerByCallId.delete(e.toolCallId);
-			if (e.toolName !== "edit" && e.toolName !== "write") return;
-			const path = pathByCallId.get(e.toolCallId); pathByCallId.delete(e.toolCallId);
-			if (!e.isError) currentTurn.push({ tool: e.toolName, path: path ?? "(unknown)", diff: (e?.result?.details?.diff as string | undefined) ?? "" });
-		});
-		pi.on("tool_result", async (e: any) => {
-			if (!ownedTools.has(e.toolName)) return;
-			const started = startedAtByCallId.get(e.toolCallId); if (started === undefined) return;
-			return { details: {
-				...(e.details ?? {}),
-				piTidyElapsedMs: Math.max(0, Date.now() - started),
-			} };
-		});
-		pi.on("turn_end", async () => {
-			lastTurn = currentTurn; currentTurn = []; pathByCallId.clear(); startedAtByCallId.clear();
-			for (const timer of elapsedTimerByCallId.values()) clearInterval(timer); elapsedTimerByCallId.clear();
-		});
-		pi.on("session_shutdown", async () => {
-			for (const timer of elapsedTimerByCallId.values()) clearInterval(timer);
-			elapsedTimerByCallId.clear();
-		});
-		pi.registerMessageRenderer(DIFF_MSG_TYPE, (message: any) => new WidthAwareLines(message.details?.rows ?? String(message.content ?? "").split("\n")));
-		const showLastTurnDiff = (ctx: any) => {
-			if (!lastTurn.length) { ctx.ui.notify("No file changes recorded in the last turn.", "info"); return; }
-			const rows = buildTurnDiffBlock(lastTurn, { icons: tidyIcons }); pi.sendMessage({ customType: DIFF_MSG_TYPE, content: rows.join("\n"), display: true, details: { rows } });
-		};
-		pi.registerCommand("diff", { description: "Show file changes (edit/write diffs) from the last turn", handler: async (_args, ctx) => showLastTurnDiff(ctx) });
-		pi.registerShortcut("ctrl+shift+o", { description: "Show file changes from the last turn", handler: async (ctx) => showLastTurnDiff(ctx) });
+    pi.on("tool_execution_start", async (e: any) => {
+      if (!startedAtByCallId.has(e.toolCallId))
+        startedAtByCallId.set(e.toolCallId, Date.now());
+      if (
+        (e.toolName === "edit" || e.toolName === "write") &&
+        typeof e?.args?.path === "string"
+      )
+        pathByCallId.set(e.toolCallId, e.args.path);
+    });
+    pi.on("tool_execution_end", async (e: any) => {
+      const timer = elapsedTimerByCallId.get(e.toolCallId);
+      if (timer) clearInterval(timer);
+      elapsedTimerByCallId.delete(e.toolCallId);
+      if (e.toolName !== "edit" && e.toolName !== "write") return;
+      const path = pathByCallId.get(e.toolCallId);
+      pathByCallId.delete(e.toolCallId);
+      if (!e.isError)
+        currentTurn.push({
+          tool: e.toolName,
+          path: path ?? "(unknown)",
+          diff: (e?.result?.details?.diff as string | undefined) ?? "",
+        });
+    });
+    pi.on("tool_result", async (e: any) => {
+      if (!ownedTools.has(e.toolName)) return;
+      const started = startedAtByCallId.get(e.toolCallId);
+      if (started === undefined) return;
+      return {
+        details: {
+          ...(e.details ?? {}),
+          piTidyElapsedMs: Math.max(0, Date.now() - started),
+        },
+      };
+    });
+    pi.on("turn_end", async () => {
+      lastTurn = currentTurn;
+      currentTurn = [];
+      pathByCallId.clear();
+      startedAtByCallId.clear();
+      for (const timer of elapsedTimerByCallId.values()) clearInterval(timer);
+      elapsedTimerByCallId.clear();
+    });
+    pi.on("session_shutdown", async () => {
+      for (const timer of elapsedTimerByCallId.values()) clearInterval(timer);
+      elapsedTimerByCallId.clear();
+    });
+    pi.registerMessageRenderer(
+      DIFF_MSG_TYPE,
+      (message: any) =>
+        new WidthAwareLines(
+          message.details?.rows ?? String(message.content ?? "").split("\n")
+        )
+    );
+    const showLastTurnDiff = (ctx: any) => {
+      if (!lastTurn.length) {
+        ctx.ui.notify("No file changes recorded in the last turn.", "info");
+        return;
+      }
+      const rows = buildTurnDiffBlock(lastTurn, { icons: tidyIcons });
+      pi.sendMessage({
+        customType: DIFF_MSG_TYPE,
+        content: rows.join("\n"),
+        display: true,
+        details: { rows },
+      });
+    };
+    pi.registerCommand("diff", {
+      description: "Show file changes (edit/write diffs) from the last turn",
+      handler: async (_args, ctx) => showLastTurnDiff(ctx),
+    });
+    pi.registerShortcut("ctrl+shift+o", {
+      description: "Show file changes from the last turn",
+      handler: async (ctx) => showLastTurnDiff(ctx),
+    });
 
-		const sourceTools: Record<string, SourceToolDefinition> = {
-			read: createReadTool(cwd) as SourceToolDefinition, write: createDiffingWriteTool(cwd) as SourceToolDefinition,
-			edit: createEditTool(cwd) as SourceToolDefinition, bash: createBashTool(cwd) as SourceToolDefinition,
-			grep: createGrepTool(cwd) as SourceToolDefinition, find: createFindTool(cwd) as SourceToolDefinition, ls: createLsTool(cwd) as SourceToolDefinition,
-		};
-		for (const [name, source] of Object.entries(sourceTools)) {
-			if (startupPlan.skipTidyTools.has(name as "read" | "grep" | "find")) continue;
-			pi.registerTool(decorate(source) as any);
-		}
-		startupPlan.commit(decorate);
-	};
+    const sourceTools: Record<string, SourceToolDefinition> = {
+      read: createReadTool(cwd) as SourceToolDefinition,
+      write: createDiffingWriteTool(cwd) as SourceToolDefinition,
+      edit: createEditTool(cwd) as SourceToolDefinition,
+      bash: createBashTool(cwd) as SourceToolDefinition,
+      grep: createGrepTool(cwd) as SourceToolDefinition,
+      find: createFindTool(cwd) as SourceToolDefinition,
+      ls: createLsTool(cwd) as SourceToolDefinition,
+    };
+    for (const [name, source] of Object.entries(sourceTools)) {
+      if (startupPlan.skipTidyTools.has(name as "read" | "grep" | "find"))
+        continue;
+      pi.registerTool(decorate(source) as any);
+    }
+    startupPlan.commit(decorate);
+
+    // Issue 132: provider-abstracted image generation. Default provider
+    // registrations (grok-build) load at import; further providers
+    // register themselves against the seam without core edits.
+    pi.registerTool(buildGenerateImageTool() as never);
+  };
 }
 
+import { buildGenerateImageTool } from "./imagegen/tool.js";
+import "./imagegen/providers/index.js";
 const extension = createTidyExtension();
 export default extension;

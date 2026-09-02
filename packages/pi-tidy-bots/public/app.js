@@ -213,6 +213,26 @@ function transcriptEl(entry) {
   } else {
     bubble.appendChild(el("span", null, entry.text));
   }
+  // Issue 176: persisted image payloads — render the app's twin from the
+  // blob refs (token-qualified URL; flat names only, server-guarded).
+  if (Array.isArray(entry.images) && entry.images.length > 0) {
+    const strip = el("div", "entry-images");
+    for (const image of entry.images) {
+      if (!image || typeof image.path !== "string") continue;
+      const file = image.path.split("/").pop() ?? "";
+      const joiner = state.token ? "&" : "";
+      const auth = state.token
+        ? `?token=${encodeURIComponent(state.token)}`
+        : "";
+      void joiner;
+      const img = el("img", "entry-image");
+      img.src = `/api/images/${encodeURIComponent(entry.bot)}/${encodeURIComponent(file)}${auth}`;
+      img.alt = image.name ?? "attached image";
+      img.loading = "lazy";
+      strip.appendChild(img);
+    }
+    if (strip.childNodes.length > 0) bubble.appendChild(strip);
+  }
   wrap.appendChild(bubble);
   const meta = el(
     "div",

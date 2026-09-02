@@ -20,6 +20,9 @@ export interface ToolPart {
   started?: number;
   duration?: number;
   output?: string;
+  /** Issue 128: structured dispatch receipt — the chip renders in-order
+   * at the tool call; single surface, no standalone entry. */
+  receipt?: { name: string; avatar?: string; title?: string };
 }
 
 export type TurnPart = TextPart | ToolPart;
@@ -28,12 +31,28 @@ const OUTPUT_CAP = 1200;
 
 export class TurnPartsAccumulator {
   parts: TurnPart[] = [];
+  /** Issue 123/124: pending message boundary — the next text opens a NEW
+   * part so narration blocks stay distinct even without a tool between
+   * them. */
+  private pendingSplit = false;
 
   /** Streaming text: append to the trailing text part, else open a new one. */
   appendText(delta: string): void {
+    if (delta.length === 0) return;
     const last = this.parts[this.parts.length - 1];
-    if (last && last.type === "text") last.text += delta;
-    else this.parts.push({ type: "text", text: delta });
+    if (!this.pendingSplit && last && last.type === "text") last.text += delta;
+    else {
+      this.parts.push({ type: "text", text: delta });
+      this.pendingSplit = false;
+    }
+  }
+
+  /**
+   * Issue 123/124: mark a message boundary — the next appended text starts
+   * a fresh part (narration blocks stay distinct; concatText unchanged).
+   */
+  splitText(): void {
+    this.pendingSplit = true;
   }
 
   startTool(part: {
@@ -42,6 +61,7 @@ export class TurnPartsAccumulator {
     label?: string;
     reason?: string;
     started?: number;
+    receipt?: { name: string; avatar?: string; title?: string };
   }): void {
     // Idempotent by toolCallId (issue 29-item-4 mirror): replayed/re-delivered
     // starts update the existing part instead of duplicating it.

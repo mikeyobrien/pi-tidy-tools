@@ -766,6 +766,7 @@ test("enabled startup preserves every optional registration", async () => {
     "grep",
     "find",
     "ls",
+    "generate_image",
   ]);
 });
 
@@ -1084,6 +1085,8 @@ test("iconless registered renderers retain state, colors, backgrounds, and compa
     },
   };
   for (const [name, tool] of tools) {
+    // Issue 132: generate_image is a plain tool — no tidy renderer to keep.
+    if (name === "generate_image") continue;
     const args =
       name === "bash"
         ? { command: "npm test", reasoning: "run checks" }
@@ -1720,6 +1723,10 @@ test("registered APIs expose exact completions and reason-first tool metadata", 
     "Show file changes from the last turn"
   );
   for (const [name, tool] of harness.tools) {
+    // Issue 132: generate_image is a plain fleet tool, not a decorated
+    // native tool — it carries none of the tidy renderShell/reasoning
+    // contracts.
+    if (name === "generate_image") continue;
     assert.equal(tool.name, name);
     assert.equal(tool.label, name);
     assert.equal(tool.renderShell, "self");

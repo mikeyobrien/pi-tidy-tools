@@ -76,6 +76,7 @@ export function runSchedulerTick<
   }
 }
 
+export type BusBehavior = "steer" | "followUp";
 /**
  * Idempotency guard (issue 33): a clientMessageId may be claimed once per
  * bot. Unknown/absent ids always claim. Returns false on duplicate.
@@ -88,6 +89,12 @@ export function journalCompaction(
     fill?: number;
     trigger: "threshold" | "idle" | "force";
     preambleChars?: number;
+    /** Issue 43 amendment: failures are journaled, never silent. */
+    success?: boolean;
+    error?: string;
+    escalated?: "session-reset";
+    /** Fallback summarizer used when the context exceeded the window. */
+    summarizer?: string;
   }
 ): void {
   try {

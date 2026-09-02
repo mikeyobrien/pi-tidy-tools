@@ -16,3 +16,4 @@ packages/*/docs/demo.html
 packages/*/docs/visual.html
 packages/*/docs/diff.html
 packages/*/docs/modes.html
+.fleet/

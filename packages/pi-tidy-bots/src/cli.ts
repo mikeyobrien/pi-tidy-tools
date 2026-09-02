@@ -779,9 +779,15 @@ async function resolveManageableDaemon(
   | { status: "absent" }
 > {
   const identityPort = servingPortFor(dir);
+  const identityToken = readStoredToken(dir);
   const identity = async (pid: number) => {
     if (!identityPort) return "match" as const;
-    const probe = await probeDaemonIdentity(identityPort, resolve(dir));
+    const probe = await probeDaemonIdentity(
+      identityPort,
+      resolve(dir),
+      (url, init) => fetch(url, init),
+      identityToken
+    );
     if (probe.kind === "match") return "match" as const;
     if (probe.kind === "foreign-fleet")
       return { foreign: true, fleetDir: probe.fleetDir } as const;
@@ -841,6 +847,11 @@ async function resolveManageableDaemon(
 /** Gracefully stop the fleet at dir; throws CliError when not running. */
 async function stopFleetAt(dir: string): Promise<number> {
   const resolved = await resolveManageableDaemon(dir);
+  // Issue 178 instrumentation: the resolved status + pid on every stop —
+  // silent catch-all in restart masked refusals behind "not running".
+  process.stderr.write(
+    `[stop] dir=${dir} status=${resolved.status} pid=${"pid" in resolved ? resolved.pid : "-"}\n`
+  );
   if (resolved.status === "foreign-fleet") {
     throw new CliError(
       `refusing to signal pid ${resolved.pid}: it belongs to fleet ${resolved.fleetDir} (or is not serving) — not ${dir}. Concurrent-fleet ambiguity; investigate before stopping.`,
@@ -863,6 +874,7 @@ async function stopFleetAt(dir: string): Promise<number> {
   const stop = { pid: resolved.pid };
   try {
     process.kill(stop.pid, "SIGTERM");
+    process.stderr.write(`[stop] SIGTERM delivered to ${stop.pid}\n`);
   } catch {
     // Died between the liveness probe and the signal - same as stopped.
   }
@@ -895,8 +907,16 @@ async function cmdRestart(args: Args, json: boolean): Promise<void> {
   let stoppedPid: number | undefined;
   try {
     stoppedPid = await stopFleetAt(dir);
-  } catch {
-    // Nothing running - restart is still the sanctioned boot path.
+  } catch (error) {
+    // Only NOT-RUNNING is tolerated (restart is the sanctioned boot path
+    // for a dark fleet). A refusal (foreign pid / foreign fleet) must
+    // surface — swallowing it silently boots into EADDRINUSE against the
+    // surviving generation and false-positives the health check (178).
+    if (error instanceof CliError && error.exitCode === EXIT.usage) {
+      // not running — proceed
+    } else {
+      throw error;
+    }
   }
   // 2. Wait for the port to release before booting the replacement.
   const port = bestEffortPort(dir);

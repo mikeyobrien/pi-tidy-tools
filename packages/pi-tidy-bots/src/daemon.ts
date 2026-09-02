@@ -671,7 +671,13 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
   const persistStateFile = () =>
     writeFileSync(
       statePath,
-      JSON.stringify({ ...stored, routines: routineState.routines }, null, 2)
+      // Record the actual bound host on every write (issue 51): restarts replay
+      // it, so the operator's non-loopback binding survives any daemon swap.
+      JSON.stringify(
+        { ...stored, host: fleet.host, routines: routineState.routines },
+        null,
+        2
+      )
     );
   const persistRoutineState = () => {
     stored.routines = routineState.routines;

@@ -524,7 +524,11 @@ const coerceImageItem = (
   const { mediaType, data } = image as { mediaType: string; data: string };
   const rawName = (image as { name?: unknown }).name;
   const name = typeof rawName === "string" && rawName.length > 0 ? rawName : undefined;
-  return { mediaType, data, ...(name ? { name } : {}) };
+  // Issue 115: tolerate dataURL-prefixed payloads from device clients
+  // ("data:image/png;base64,....") — strip to bare base64.
+  const bare = data.replace(/^data:[^;]+;base64,/, "");
+  if (bare.length === 0) return null;
+  return { mediaType, data: bare, ...(name ? { name } : {}) };
 };
 
 const coerceImageArray = (
@@ -2603,8 +2607,33 @@ function buildHttpServer(deps: ServerDeps): Hono {
     return context.json({ transcript: page.entries });
   });
 
+  // Issue 115: captioned device photos exceed default body budgets — the
+  // message route accepts an explicit ~15MB body (declared AND actual).
+  const MAX_MESSAGE_BODY_BYTES = 15 * 1024 * 1024;
+  const parseMessageBody = async (
+    context: { req: { header: (name: string) => string | undefined; arrayBuffer: () => Promise<ArrayBuffer> } }
+  ): Promise<{ ok: true; body: Record<string, unknown> } | { ok: false; status: 400 | 413; error: string }> => {
+    const declared = Number(context.req.header("content-length") ?? "0");
+    if (Number.isFinite(declared) && declared > MAX_MESSAGE_BODY_BYTES)
+      return { ok: false, status: 413, error: "body too large" };
+    const raw = await context.req.arrayBuffer();
+    if (raw.byteLength > MAX_MESSAGE_BODY_BYTES)
+      return { ok: false, status: 413, error: "body too large" };
+    try {
+      const parsed = JSON.parse(new TextDecoder().decode(raw)) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+        return { ok: false, status: 400, error: "invalid JSON body" };
+      return { ok: true, body: parsed as Record<string, unknown> };
+    } catch {
+      return { ok: false, status: 400, error: "invalid JSON body" };
+    }
+  };
+
   app.post("/api/bots/:name/message", async (context) => {
-    const body = (await context.req.json().catch(() => ({}))) as {
+    const parsedBody = await parseMessageBody(context);
+    if (!parsedBody.ok)
+      return context.json({ error: parsedBody.error }, parsedBody.status as 400 | 413);
+    const body = parsedBody.body as {
       text?: string;
       images?: unknown;
       clientMessageId?: unknown;

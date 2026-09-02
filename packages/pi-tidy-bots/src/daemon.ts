@@ -1958,8 +1958,21 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     runtime.turnId = null;
     // Child death drops the queue.
     runtime.queuedCount = 0;
-    for (const { timer } of runtime.pendingUi.values()) clearTimeout(timer);
-    runtime.pendingUi.clear();
+    // Issue 136: defuse every pending question card through the standard
+    // resolution path — a silent clear froze cards OPEN forever (answers
+    // 404'd, clients kept a false affordance). resolveUi tolerates the dead
+    // child and records `uiResolved (cancelled, auto)` entries + WS appends
+    // so every client settles the card read-only.
+    for (const [uiId, pending] of [...runtime.pendingUi.entries()]) {
+      clearTimeout(pending.timer);
+      resolveUi(
+        runtime,
+        pending.view,
+        { cancel: true },
+        true
+      );
+      runtime.pendingUi.delete(uiId);
+    }
     const droppedSources = runtime.pendingFrom;
     runtime.pendingFrom = [];
     if (runtime.turnId) {

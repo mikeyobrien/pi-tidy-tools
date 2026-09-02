@@ -17,6 +17,25 @@ const entry = (text: string, ts: string) => ({
   ts,
 });
 
+test("pagination rejects fractional and non-numeric limits (issue 180)", () => {
+  const entries = [1, 2, 3].map((n) => ({ ts: new Date(2026, 0, n).toISOString() }));
+  assert.deepEqual(
+    paginateTranscript(entries, { limit: "2.7" }),
+    { ok: false, error: "limit must be a positive integer" },
+    "fractional rejected, not silently floored"
+  );
+  assert.deepEqual(
+    paginateTranscript(entries, { limit: "abc" }),
+    { ok: false, error: "limit must be a positive integer" }
+  );
+  assert.deepEqual(
+    paginateTranscript(entries, { limit: "0" }),
+    { ok: false, error: "limit must be a positive integer" }
+  );
+  const ok = paginateTranscript(entries, { limit: "2" });
+  assert.equal(ok.ok && ok.entries.length, 2, "integer limit works");
+});
+
 test("transcript store persists across a restart and rotates at the cap", () => {
   const dir = mkdtempSync(join(tmpdir(), "ptb-transcripts-"));
   try {

@@ -110,6 +110,12 @@ interface BotRuntime {
   // current turn — null until the first eligible emission.
   deltaSent: { at: number; chars: number } | null;
   turnText: string;
+  /**
+   * Issue 124: did the CURRENT message stream deltas into the parts model?
+   * Reset at message_start; when a message arrives whole (no deltas), its
+   * text is appended to the parts at the assistant_message boundary.
+   */
+  messageStreamed: boolean;
   /** Issue 37: ordered text/tool parts for the in-flight turn. */
   turnParts: TurnPartsAccumulator;
   /** Issue 43 item 1: last observed usage + window (fill = input/window). */
@@ -833,6 +839,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     turnId: null,
     deltaSent: null,
     turnText: "",
+    messageStreamed: false,
     turnParts: new TurnPartsAccumulator(),
     queuedCount: 0,
     rulesApplied: null,
@@ -1724,6 +1731,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         return;
       }
       case "assistant_delta": {
+        runtime.messageStreamed = true;
         runtime.turnText += event.delta;
         runtime.turnParts.appendText(event.delta);
         const text = stripActionMarkers(runtime.turnText);
@@ -1755,8 +1763,18 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         return;
       }
       case "assistant_message": {
-        runtime.turnText = event.text;
-        // Message boundary: force an emit so paragraph completions land promptly.
+        // Issue 124: turnText is DERIVED from the parts model (append
+        // semantics), never replaced by the latest message — the old
+        // assignment wiped narration at every message boundary ("" at
+        // tool-call-only ones). A message that streamed no deltas (arrived
+        // whole) is appended so its text reaches the model exactly once.
+        if (!runtime.messageStreamed && event.text.length > 0)
+          runtime.turnParts.appendText(event.text);
+        // Message boundary: narration blocks stay distinct parts (issue
+        // 123's styling signal), and the boundary forces an emit so
+        // paragraph completions land promptly.
+        runtime.turnParts.splitText();
+        runtime.turnText = runtime.turnParts.concatText();
         runtime.deltaSent = {
           at: Date.now(),
           chars: stripActionMarkers(runtime.turnText).length,
@@ -1777,10 +1795,19 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         });
         return;
       }
+      case "event": {
+        // Issue 124: message boundaries reset the streamed flag — a message
+        // that arrives whole (no deltas) is appended at assistant_message.
+        const rawType = (event.raw as { type?: string } | undefined)?.type;
+        if (rawType === "message_start") runtime.messageStreamed = false;
+        return;
+      }
       case "agent_settled": {
         const turnId = runtime.turnId;
         runtime.turnId = null;
-        const text = stripActionMarkers(runtime.turnText);
+        // Issue 124: canonical text = the full turn's narration from the
+        // parts model — never the last message alone.
+        const text = stripActionMarkers(runtime.turnParts.concatText());
         const entry: TranscriptEntry = {
           id: randomUUID(),
           role: "assistant",

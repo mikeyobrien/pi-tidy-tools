@@ -138,6 +138,53 @@ rl.on("line", (line) => {
     const run = () => {
       send({ type: "turn_start" });
       send({ type: "agent_start" });
+      // Issue 124 fixture mode: a turn with narration A → tool → narration B
+      // (three assistant messages; the tool-call-only middle one carries no
+      // text). PTB_STUB_MULTI=whole sends complete messages (no deltas);
+      // =delta streams each message's text first. Both must interleave.
+      if (process.env.PTB_STUB_MULTI) {
+        const streamed = process.env.PTB_STUB_MULTI === "delta";
+        const message = (text) => ({
+          role: "assistant",
+          content: [{ type: "text", text }],
+        });
+        const emitMessage = (text) => {
+          send({ type: "message_start", message: message("") });
+          if (streamed) {
+            for (const chunk of text.match(/.{1,4}/g) ?? [])
+              send({
+                type: "message_update",
+                assistantMessageEvent: { type: "text_delta", delta: chunk },
+              });
+          }
+          send({ type: "message_end", message: message(text) });
+        };
+        emitMessage("Narration A");
+        send({
+          type: "tool_execution_start",
+          toolCallId: "t1",
+          toolName: "bash",
+          args: { command: "true" },
+        });
+        send({
+          type: "tool_execution_end",
+          toolCallId: "t1",
+          result: "ok",
+          isError: false,
+          piTidyElapsedMs: 5,
+        });
+        send({ type: "message_start", message: message("") });
+        send({ type: "message_end", message: message("") }); // tool-only msg
+        emitMessage("Narration B");
+        setTimeout(() => {
+          send({ type: "turn_end", message: { usage: { input: 10 } } });
+          send({ type: "agent_end" });
+          send({ type: "agent_settled" });
+          if (request.type === "prompt" && !request.streamingBehavior)
+            respond(request.id);
+        }, 300);
+        return;
+      }
       send({
         type: "tool_execution_start",
         toolCallId: "t1",

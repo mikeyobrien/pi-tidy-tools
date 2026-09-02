@@ -96,6 +96,7 @@ export const TranscriptEntrySchema = Type.Object({
       })
     )
   ),
+  summary: Type.Optional(Type.String()),
   text: Type.String(),
   ts: Type.String(),
   delivering: Type.Optional(Type.Boolean()),

@@ -9,6 +9,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  writeFileSync,
   renameSync,
   rmSync,
   statSync,
@@ -20,6 +21,9 @@ const DEFAULT_ROTATE_BYTES = 2_000_000;
 export interface TranscriptStore {
   append(bot: string, entry: unknown): void;
   load(bot: string): unknown[];
+  /** Issue 122: rewrite the journal (entry mutation, e.g. completion
+   * summaries attached after append). Best-effort like every store here. */
+  save(bot: string, entries: unknown[]): void;
 }
 
 export function createTranscriptStore(
@@ -67,6 +71,58 @@ export function createTranscriptStore(
         }
       }
       return out;
+    },
+
+    save(bot: string, entries: unknown[]): void {
+      // Issue 122: rewrite the current generation only — the rotated
+      // previous generation is history and stays untouched. Entries already
+      // held by the previous generation are filtered out so the next
+      // load() (previous + current) never yields duplicates.
+      try {
+        mkdirSync(dir, { recursive: true });
+        let previousIds: Set<string> | null = null;
+        try {
+          if (
+            existsSync(current(bot)) &&
+            statSync(current(bot)).size >= capBytes
+          ) {
+            rmSync(previous(bot), { force: true });
+            renameSync(current(bot), previous(bot));
+          }
+          if (existsSync(previous(bot))) {
+            previousIds = new Set(
+              readFileSync(previous(bot), "utf8")
+                .split("\n")
+                .filter((line) => line.trim().length > 0)
+                .map((line) => {
+                  try {
+                    return String(
+                      (JSON.parse(line) as { id?: unknown }).id ?? ""
+                    );
+                  } catch {
+                    return "";
+                  }
+                })
+            );
+          }
+        } catch {
+          // Rotation/index of the previous generation is best-effort.
+        }
+        const toWrite =
+          previousIds !== null
+            ? entries.filter((entry) => {
+                const id = (entry as { id?: unknown }).id;
+                return typeof id !== "string" || !previousIds?.has(id);
+              })
+            : entries;
+        writeFileSync(
+          current(bot),
+          toWrite.map((entry) => JSON.stringify(entry)).join("\n") +
+            (toWrite.length > 0 ? "\n" : "")
+        );
+      } catch {
+        // Journal writes are best-effort.
+      }
     },
   };
 }

@@ -77,6 +77,13 @@ export interface TranscriptEntry {
   attachments?: { name?: string; mediaType: string }[];
   ui?: UiRequestView;
   uiResolved?: { id: string; value: string; auto: boolean };
+  /**
+   * Issue 122: one-line summary the RECEIVING agent attached to a peer
+   * completion entry (kind=completion) during its turn — summary-first
+   * rendering for the console. Daemon stores and serves it; it never
+   * writes the text. Absent on legacy entries.
+   */
+  summary?: string;
 }
 
 /** A pending interactive question from the bot's session (ask_user_question and friends). */
@@ -2350,6 +2357,21 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       // Mirrors the reconcile changed-bot path: session dir kept, queue and
       // transcript preserved, in-flight turn aborted and replayed via the
       // pending journal. Empty string clears back to the manifest default.
+      // Issue 122: the RECEIVING agent attaches a one-line summary to its
+      // latest peer-completion entry (called mid-turn via the bridge tool).
+      // Daemon stores + serves; it never writes the text.
+      attachCompletionSummary: (name: string, summary: string) => {
+        const runtime = runtimes.get(name);
+        if (!runtime) return { status: 404, error: "unknown bot" };
+        const entry = [...runtime.transcript]
+          .reverse()
+          .find((candidate) => candidate.kind === "completion");
+        if (!entry) return { status: 404, error: "no completion entry" };
+        entry.summary = summary.slice(0, 2000);
+        transcripts.save(name, runtime.transcript);
+        emit({ type: "append", bot: name, entry });
+        return { status: 200, entry };
+      },
       setModel: (name: string, model: string) => {
         const runtime = runtimes.get(name);
         if (!runtime) return { status: 404 };
@@ -2639,6 +2661,10 @@ interface ServerDeps {
     ): { id: string; text: string; hasImage: boolean; filename?: string }[];
     unqueue(name: string, id: string): { status: 200 | 404 };
     setModel(name: string, model: string): { status: 200 | 404 };
+    attachCompletionSummary(
+      name: string,
+      summary: string
+    ): { status: 200 | 404; error?: string; entry?: unknown };
     steer(
       name: string,
       text: string
@@ -2988,6 +3014,23 @@ function buildHttpServer(deps: ServerDeps): Hono {
     if (result.status === 404)
       return context.json({ error: "unknown bot" }, 404);
     return context.json({ model: body.model });
+  });
+
+  // Issue 122: summary attach for peer completions — authorized like any
+  // console API; bots ride it with their child secret via the bridge tool.
+  app.put("/api/bots/:name/completion-summary", async (context) => {
+    const body = (await context.req.json().catch(() => ({}))) as {
+      summary?: unknown;
+    };
+    if (typeof body.summary !== "string" || body.summary.trim().length === 0)
+      return context.json({ error: "summary (non-empty string) required" }, 400);
+    const result = deps.handlers.attachCompletionSummary(
+      context.req.param("name"),
+      body.summary.trim()
+    );
+    if (result.status !== 200)
+      return context.json({ error: result.error }, result.status);
+    return context.json({ attached: true });
   });
 
   app.get("/api/bots/:name/instructions", (context) => {

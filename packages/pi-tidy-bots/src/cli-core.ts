@@ -192,13 +192,14 @@ export async function probeDaemonIdentity(
     url,
     init
   ) => fetch(url, init),
+  /** Issue 178: token-protected fleets 401 the bare probe — the stored
+   * token must ride the identity check exactly like the readiness loop. */
   token?: string
 ): Promise<DaemonIdentityCheck> {
   try {
-    const res = await fetchImpl(
-      `http://127.0.0.1:${port}/api/version`,
-      token ? { headers: { authorization: `Bearer ${token}` } } : undefined
-    );
+    const res = await fetchImpl(`http://127.0.0.1:${port}/api/version`, {
+      headers: token ? { authorization: `Bearer ${token}` } : {},
+    });
     if (!res.ok) return { kind: "unreachable" };
     const payload = (await res.json()) as { fleetDir?: string };
     const reported = payload.fleetDir

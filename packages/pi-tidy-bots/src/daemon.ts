@@ -2609,8 +2609,6 @@ function buildHttpServer(deps: ServerDeps): Hono {
       images?: unknown;
       clientMessageId?: unknown;
     };
-    if (!body.text || body.text.trim().length === 0)
-      return context.json({ error: "text required" }, 400);
     if (
       body.clientMessageId !== undefined &&
       typeof body.clientMessageId !== "string"
@@ -2626,9 +2624,17 @@ function buildHttpServer(deps: ServerDeps): Hono {
         400
       );
     }
+    // Issue 114: an image/media send may carry an empty caption — text is
+    // required only when nothing is attached. Empty text + no media is a 400.
+    const hasMedia =
+      (media.images?.length ?? 0) > 0 || (media.attachments?.length ?? 0) > 0;
+    const hasText =
+      typeof body.text === "string" && body.text.trim().length > 0;
+    if (!hasText && !hasMedia)
+      return context.json({ error: "text required" }, 400);
     const result = await deps.handlers.message(
       context.req.param("name"),
-      body.text.trim(),
+      typeof body.text === "string" ? body.text.trim() : "",
       media.images,
       body.clientMessageId,
       media.attachments

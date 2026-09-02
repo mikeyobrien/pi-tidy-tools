@@ -29,6 +29,71 @@ async function waitFor(
   throw new Error("waitFor: condition not met in time");
 }
 
+test("empty caption is valid with media, invalid without (issue 114)", async () => {
+  const fleetDir = mkdtempSync(join(tmpdir(), "ptb-caption-"));
+  const handles: Array<{ stop(): Promise<void> }> = [];
+  try {
+    mkdirSync(join(fleetDir, "bots", "aa"), { recursive: true });
+    writeFileSync(join(fleetDir, "bots", "aa", "AGENTS.md"), "# aa\n");
+    writeFileSync(
+      join(fleetDir, "bots.toml"),
+      `[[bot]]\nname = "aa"\ndir = "bots/aa"\n`
+    );
+    const wrapper = join(fleetDir, "streaming-pi.sh");
+    writeFileSync(wrapper, `#!/bin/sh\nexec node ${runner}\n`);
+    spawnSync("chmod", ["+x", wrapper]);
+
+    const { startFleet } = await import("../src/daemon.ts");
+    const handle = await startFleet({
+      dir: fleetDir,
+      port: 0,
+      host: "127.0.0.1",
+      piBin: wrapper,
+      log: () => {},
+    });
+    handles.push(handle);
+    const base = `http://127.0.0.1:${handle.port}`;
+    await waitFor(async () =>
+      (
+        (await (await fetch(`${base}/api/fleet`)).json()) as {
+          bots: { online: boolean }[];
+        }
+      ).bots.every((b) => b.online)
+    );
+
+    const post = (payload: unknown) =>
+      fetch(`${base}/api/bots/aa/message`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+    // Flutter 86 flow: empty caption + image — accepted.
+    const image = await post({
+      text: "",
+      images: [{ mediaType: "image/png", data: "aGk=" }],
+    });
+    assert.equal(image.status, 200, "empty caption with image accepted");
+
+    // Empty caption + video attachment (issue 110 media) — accepted.
+    const video = await post({
+      text: "",
+      images: [{ mediaType: "video/mp4", data: "AAAA", name: "c.mp4" }],
+    });
+    assert.equal(video.status, 200, "empty caption with video accepted");
+
+    // Empty text with NO media — still the 400 the API contract promises.
+    const bare = await post({ text: "" });
+    assert.equal(bare.status, 400);
+    assert.deepEqual(await bare.json(), { error: "text required" });
+    const blank = await post({ text: "   ", images: [] });
+    assert.equal(blank.status, 400, "whitespace text, empty images array");
+  } finally {
+    await Promise.all(handles.map((h) => h.stop().catch(() => {})));
+    rmSync(fleetDir, { recursive: true, force: true });
+  }
+});
+
 test("video message journals a file chip on the entry (issue 110)", async () => {
   const fleetDir = mkdtempSync(join(tmpdir(), "ptb-attach-"));
   const handles: Array<{ stop(): Promise<void> }> = [];

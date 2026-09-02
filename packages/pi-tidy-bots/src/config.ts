@@ -23,6 +23,8 @@ export interface BotConfig {
   /** Issue 92: bot-scoped pi packages — installed project-local and loaded
    * via project trust at spawn. Omitted/invalid = current behavior. */
   packages?: string[];
+  /** Issue 132: image provider override (fleet [image_provider] default). */
+  imageProvider?: string;
   approve: boolean;
   routines: BotRoutine[];
 }
@@ -32,6 +34,15 @@ export interface FleetConfig {
   port: number;
   host: string;
   bots: BotConfig[];
+  /**
+   * Issue 43 amendment: fallback summarizer model ("provider/id") used when
+   * the context exceeds the SESSION model's window — the summary is prose;
+   * any compliant model can write it. Optional; sane default applied by the
+   * daemon.
+   */
+  compactFallbackModel?: string;
+  /** Issue 132: default image provider id for the generate_image tool. */
+  imageProvider?: string;
 }
 
 export class ConfigError extends Error {}
@@ -143,6 +154,11 @@ export function loadFleetConfig(
     const packages = Array.isArray(table.packages)
       ? table.packages.map((value) => String(value))
       : undefined;
+    const imageProvider =
+      typeof table.image_provider === "string" &&
+      table.image_provider.length > 0
+        ? table.image_provider
+        : undefined;
     // Action pills are removed (issue 15); a manifest still carrying the row is
     // stale config — fail fast instead of silently ignoring it.
     if (table.actions !== undefined) {
@@ -173,6 +189,7 @@ export function loadFleetConfig(
       avatar: table.avatar === undefined ? "" : String(table.avatar),
       routes,
       packages,
+      ...(imageProvider ? { imageProvider } : {}),
       approve: table.approve === undefined ? true : table.approve === true,
       routines,
     });
@@ -188,6 +205,14 @@ export function loadFleetConfig(
       overrides.host ??
       (typeof fleet.host === "string" ? fleet.host : "127.0.0.1"),
     bots,
+    ...(typeof fleet.compactFallbackModel === "string" &&
+    fleet.compactFallbackModel.length > 0
+      ? { compactFallbackModel: fleet.compactFallbackModel }
+      : {}),
+    ...(typeof fleet.image_provider === "string" &&
+    fleet.image_provider.length > 0
+      ? { imageProvider: fleet.image_provider }
+      : {}),
   };
 }
 
@@ -214,10 +239,21 @@ export function diffFleet(
     }
     const same = (a: unknown, b: unknown) =>
       JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+    // Issue 157: ANY config change counts — routines, packages, approve,
+    // thinking, title, imageProvider… The old dir/model/routes-only diff
+    // silently ignored manifest edits on existing bots (a routine added to
+    // a live bot never registered; toggle 404'd; no log).
     const differs =
       existing.dir !== bot.dir ||
       !same(existing.model, bot.model) ||
-      !same(existing.routes, bot.routes);
+      !same(existing.routes, bot.routes) ||
+      !same(existing.routines, bot.routines) ||
+      !same(existing.packages, bot.packages) ||
+      !same(existing.approve, bot.approve) ||
+      !same(existing.title, bot.title) ||
+      !same(existing.avatar, bot.avatar) ||
+      !same(existing.description, bot.description) ||
+      !same(existing.imageProvider, bot.imageProvider);
     (differs ? changed : untouched).push(bot);
   }
   const removed = current.filter((bot) => !nextByName.has(bot.name));

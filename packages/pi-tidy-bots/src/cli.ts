@@ -42,6 +42,8 @@ import {
   isPortHeld,
   waitPortReleased,
   describePortHolder,
+  verifyDaemonPid,
+  probeDaemonIdentity,
 } from "./cli-core.ts";
 import {
   buildPairingUrl,
@@ -594,8 +596,34 @@ async function cmdStart(args: Args): Promise<void> {
     throw error;
   }
   const displayToken = handle.token ?? "";
-  if (process.env.PI_TIDY_BOTS_DAEMON_CHILD === "1") {
-    writeFileSync(daemonPidPath(dir), String(process.pid));
+  // Issue 135: the pidfile is claimed on EVERY boot — foreground starts
+  // too (the old daemon-child-only write left foreground daemons
+  // unmanageable by sanctioned restart). Clean foreground exits un-claim
+  // it so no stale pid survives.
+  const pidFile = daemonPidPath(dir);
+  writeFileSync(pidFile, String(process.pid));
+  // Issue 154: persist the SERVING port — CLI --port starts have no other
+  // discoverable record (manifest may lack [fleet] port), and lifecycle
+  // identity needs pid↔port binding before any signal.
+  writeFileSync(join(dir, ".fleet", "port"), String(handle.port));
+  if (process.env.PI_TIDY_BOTS_DAEMON_CHILD !== "1") {
+    const releasePidFile = () => {
+      try {
+        if (readFileSync(pidFile, "utf8").trim() === String(process.pid))
+          rmSync(pidFile, { force: true });
+      } catch {
+        /* already gone */
+      }
+    };
+    process.on("exit", releasePidFile);
+    process.on("SIGINT", () => {
+      releasePidFile();
+      process.exit(0);
+    });
+    process.on("SIGTERM", () => {
+      releasePidFile();
+      process.exit(0);
+    });
   }
   if (json) {
     // One clean readiness line on stdout — daemon chatter goes to stderr.
@@ -695,7 +723,14 @@ async function cmdStatus(args: Args, json: boolean): Promise<void> {
   } catch {
     // Daemon not serving — fall through to the not-running error below.
   }
-  const running = bots.length > 0 || (pid !== undefined && pidAlive(pid));
+  // Issue 135: a stale pidfile must not fake "running" — verify the pid
+  // is a live daemon; stale files are cleaned on sight.
+  let running = bots.length > 0;
+  if (!running && pid !== undefined) {
+    const check = verifyDaemonPid(pid);
+    if (check.kind === "alive-daemon") running = true;
+    else rmSync(daemonPidPath(dir), { force: true });
+  }
   if (!running) {
     throw new CliError("fleet is not running", {
       exitCode: EXIT.runtime,
@@ -730,20 +765,134 @@ function resolveFleetTarget(args: Args): string {
   return record?.dir ?? resolve(args.positional[0] ?? ".");
 }
 
+/**
+ * Issue 135: resolve the pid sanctioned stop/restart may signal. The
+ * pidfile wins (verified alive AND a fleet daemon); a dead or foreign
+ * entry is stale-cleaned and never signalled (pid-reuse kills the wrong
+ * process). With no usable pidfile, a daemon holding the configured port
+ * is ADOPTED — foreground starts and orphaned daemons stay manageable.
+ */
+/** Issue 154: the port this fleet's daemon actually serves. Boot-written
+ * .fleet/port wins (CLI --port starts), then a registry record matching
+ * the dir, then the manifest. Default only when nothing better exists. */
+function servingPortFor(dir: string): number {
+  try {
+    const port = Number(
+      readFileSync(join(dir, ".fleet", "port"), "utf8").trim()
+    );
+    if (Number.isFinite(port) && port > 0) return port;
+  } catch {
+    /* no boot-written port */
+  }
+  try {
+    const record = loadRegistry(registryPath()).find(
+      (entry: { dir: string; port?: number }) =>
+        entry.dir === resolve(dir) && typeof entry.port === "number"
+    );
+    if (record && record.port) return record.port;
+  } catch {
+    /* registry unreadable */
+  }
+  return bestEffortPort(dir);
+}
+
+async function resolveManageableDaemon(
+  dir: string
+): Promise<
+  | { status: "manage"; pid: number; from: "daemon.pid" | "lock.json" | "port" }
+  | { status: "stale"; pid: number }
+  | { status: "foreign"; pid: number; command: string }
+  | { status: "foreign-fleet"; pid: number; fleetDir: string }
+  | { status: "absent" }
+> {
+  const identityPort = servingPortFor(dir);
+  const identity = async (pid: number) => {
+    if (!identityPort) return "match" as const;
+    const probe = await probeDaemonIdentity(identityPort, resolve(dir));
+    if (probe.kind === "match") return "match" as const;
+    if (probe.kind === "foreign-fleet")
+      return { foreign: true, fleetDir: probe.fleetDir } as const;
+    // Unreachable: pid verified as a daemon command but not serving — a
+    // daemon mid-boot/mid-exit. Treat as not ours to signal (refuse).
+    return { foreign: true, fleetDir: "(not serving)" } as const;
+  };
+  const stop = pickStopPid(dir);
+  if (stop) {
+    const check = verifyDaemonPid(stop.pid);
+    if (check.kind === "alive-daemon") {
+      // Issue 154: bind pidfile pid ↔ port holder — a live daemon pid that
+      // is NOT the process holding this fleet's port is a cross-wired
+      // pidfile (concurrent fleets). Refuse before any probe.
+      if (identityPort) {
+        const holder = describePortHolder(identityPort);
+        const holderMatch = /pid (\d+)/.exec(holder);
+        const holderPid = holderMatch ? Number(holderMatch[1]) : undefined;
+        if (holderPid !== undefined && holderPid !== stop.pid) {
+          return {
+            status: "foreign-fleet",
+            pid: stop.pid,
+            fleetDir: `port :${identityPort} is held by pid ${holderPid}, not pidfile pid ${stop.pid}`,
+          };
+        }
+      }
+      const id = await identity(stop.pid);
+      if (id === "match")
+        return { status: "manage", pid: stop.pid, from: stop.from };
+      return {
+        status: "foreign-fleet",
+        pid: stop.pid,
+        fleetDir: (id as { fleetDir: string }).fleetDir,
+      };
+    }
+    if (check.kind === "foreign")
+      return { status: "foreign", pid: stop.pid, command: check.command };
+    rmSync(daemonPidPath(dir), { force: true });
+    return { status: "stale", pid: stop.pid };
+  }
+  // No pidfile: a fleet daemon on the configured port is still ours to
+  // manage (foreground boots never claimed the file before issue 135) —
+  // but ONLY when the port's fingerprint is THIS fleet (issue 154).
+  if (identityPort) {
+    const id = await identity(0);
+    if (id !== "match") return { status: "absent" };
+    const holder = describePortHolder(identityPort);
+    const match = /pid (\d+)/.exec(holder);
+    const pid = match ? Number(match[1]) : undefined;
+    if (pid !== undefined) {
+      const check = verifyDaemonPid(pid);
+      if (check.kind === "alive-daemon")
+        return { status: "manage", pid, from: "port" };
+    }
+  }
+  return { status: "absent" };
+}
+
 /** Gracefully stop the fleet at dir; throws CliError when not running. */
 async function stopFleetAt(dir: string): Promise<number> {
-  const stop = pickStopPid(dir);
-  if (!stop) {
+  const resolved = await resolveManageableDaemon(dir);
+  if (resolved.status === "foreign-fleet") {
+    throw new CliError(
+      `refusing to signal pid ${resolved.pid}: it belongs to fleet ${resolved.fleetDir} (or is not serving) — not ${dir}. Concurrent-fleet ambiguity; investigate before stopping.`,
+      {
+        exitCode: EXIT.conflict,
+        remedy: "check pi-tidy-bots fleets; fix the pidfile or registry entry",
+      }
+    );
+  }
+  if (resolved.status === "absent" || resolved.status === "stale") {
     throw new CliError("fleet is not running", {
       exitCode: EXIT.usage,
       remedy: "pi-tidy-bots start <dir>",
     });
   }
-  if (!pidAlive(stop.pid)) {
-    // Stale pidfile/lock: the fleet is already gone.
+  if (resolved.status === "foreign") {
     rmSync(daemonPidPath(dir), { force: true });
-    return stop.pid;
+    throw new CliError(
+      `pidfile pointed at pid ${resolved.pid} (${resolved.command.slice(0, 80)}) which is not this fleet's daemon — refusing to signal; stale pidfile cleared`,
+      { exitCode: EXIT.conflict, remedy: "pi-tidy-bots start <dir>" }
+    );
   }
+  const stop = { pid: resolved.pid };
   try {
     process.kill(stop.pid, "SIGTERM");
   } catch {

@@ -6,6 +6,7 @@ export type Reason =
   | "turn_in_flight"
   | "runtime_offline"
   | "delivery_timeout"
+  | "rpc_prompt_timeout"
   | "context_overflow"
   | "provider_quota_limit"
   | "provider_rate_limit"
@@ -29,6 +30,9 @@ const RULES: [Reason, string[]][] = [
   ],
   ["runtime_offline", ["offline", "not running", "closed", "exited", "dead"]],
   ["turn_in_flight", ["already processing"]],
+  // Issue 149: prompt-class timeout = UNKNOWN (accepted-and-running is
+  // possible under the accept-ack contract) — never a plain failure.
+  ["rpc_prompt_timeout", ["rpc_prompt_timeout"]],
 ];
 
 /** Failures where one retry can actually help. Everything else fails fast. */

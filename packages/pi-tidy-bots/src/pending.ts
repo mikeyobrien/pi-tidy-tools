@@ -31,15 +31,35 @@ export interface PendingStore {
 export function createPendingStore(dir: string): PendingStore {
   const file = (bot: string) => join(dir, `${bot}.jsonl`);
 
+  /**
+   * Issue 143 (hound pass 2): per-line tolerance — ONE torn line must never
+   * drop the whole operator queue (the old single try/catch returned [] and
+   * the next append physically deleted the surviving rows). Well-formed
+   * rows survive; torn lines are skipped LOUDLY (transcripts.ts idiom).
+   */
   const readAll = (bot: string): PendingMessage[] => {
+    let raw: string;
     try {
-      return readFileSync(file(bot), "utf8")
-        .split("\n")
-        .filter((line) => line.trim().length > 0)
-        .map((line) => JSON.parse(line) as PendingMessage);
+      raw = readFileSync(file(bot), "utf8");
     } catch {
       return [];
     }
+    const messages: PendingMessage[] = [];
+    let torn = 0;
+    for (const line of raw.split("\n")) {
+      if (line.trim().length === 0) continue;
+      try {
+        messages.push(JSON.parse(line) as PendingMessage);
+      } catch {
+        torn++;
+      }
+    }
+    if (torn > 0) {
+      console.error(
+        `[pending] ${bot}: skipped ${torn} torn journal line(s) — well-formed rows kept`
+      );
+    }
+    return messages;
   };
 
   const writeAll = (bot: string, messages: PendingMessage[]): void => {

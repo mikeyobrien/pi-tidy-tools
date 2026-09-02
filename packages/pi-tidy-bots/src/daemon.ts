@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
   appendFileSync,
@@ -77,6 +77,14 @@ export interface TranscriptEntry {
    * pi's prompt takes ImageContent only, so video/file bytes are not
    * deliverable to the model; the record carries name + mediaType. */
   attachments?: { name?: string; mediaType: string }[];
+  /**
+   * Issue 176: persisted image payloads as BLOB REFS — bytes live under
+   * .fleet/images/<bot>/, the journal stores only {mediaType, name, path}
+   * so rotation never fights megabyte payloads. Served via
+   * GET /api/images/:bot/:file; the console renders the twin of the app's
+   * optimistic bubble from the same ref.
+   */
+  images?: { mediaType: string; name?: string; path: string }[];
   ui?: UiRequestView;
   uiResolved?: { id: string; value: string; auto: boolean };
   /**
@@ -462,6 +470,55 @@ export function composeFleetPreamble(parts: {
     lines.push(`Owned issues (open): ${parts.issues.join("; ")}`);
   if (lines.length === 1) lines.push("No open fleet threads.");
   return lines.join("\n");
+}
+
+/**
+ * Issue 176: persist image bytes as fleet-side blobs; the transcript entry
+ * references them by path. Hash-named (content-addressed), size-capped per
+ * bot by oldest-first sweep (default 50MB) — hound proved request bodies
+ * are uncapped (146), so the DIR is the cap, never the journal.
+ */
+export function saveEntryImageBlobs(
+  fleetDir: string,
+  bot: string,
+  images: { type: "image"; data: string; mimeType: string }[],
+  capBytes = 50 * 1024 * 1024
+): { mediaType: string; name?: string; path: string }[] {
+  const dir = join(fleetDir, ".fleet", "images", bot);
+  try {
+    mkdirSync(dir, { recursive: true });
+    const refs: { mediaType: string; name?: string; path: string }[] = [];
+    for (const image of images) {
+      const buffer = Buffer.from(image.data, "base64");
+      const hash = createHash("sha256").update(buffer).digest("hex").slice(0, 16);
+      const ext =
+        image.mimeType.split("/")[1]?.replace(/[^a-z0-9]/gi, "") || "png";
+      const file = `${hash}.${ext}`;
+      writeFileSync(join(dir, file), buffer);
+      refs.push({ mediaType: image.mimeType, path: join(".fleet", "images", bot, file) });
+    }
+    // Oldest-first sweep at cap.
+    const entries = readdirSync(dir)
+      .map((file) => {
+        const full = join(dir, file);
+        return { file: full, mtime: statSync(full).mtimeMs, size: statSync(full).size };
+      })
+      .sort((a, b) => a.mtime - b.mtime);
+    let total = entries.reduce((sum, entry) => sum + entry.size, 0);
+    while (total > capBytes && entries.length > refs.length) {
+      const victim = entries.shift();
+      if (!victim) break;
+      total -= victim.size;
+      try {
+        rmSync(victim.file, { force: true });
+      } catch {
+        // best-effort sweep
+      }
+    }
+    return refs;
+  } catch {
+    return [];
+  }
 }
 
 /** Best-effort owned-issue scan over the fleet dir's .scratch tree. */
@@ -2241,6 +2298,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       originFrom: fromName,
       kind: "handoff",
       text: stripActionMarkers(message.trim()),
+      ...(images && images.length > 0
+        ? { images: saveEntryImageBlobs(fleet.dir, targetName, images) }
+        : {}),
       ts: new Date().toISOString(),
     };
     const attempt = async (): Promise<void> => {
@@ -2423,6 +2483,18 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           text: stripActionMarkers(text),
           ...(attachments && attachments.length > 0
             ? { attachments }
+            : {}),
+          // Issue 176: image bytes persist as fleet blobs; the entry (echo
+          // + journal + refetch) carries refs so restarts rehydrate WITH
+          // the image and the console renders the app's twin.
+          ...(images && images.length > 0
+            ? {
+                images: saveEntryImageBlobs(
+                  fleet.dir,
+                  name,
+                  images
+                ),
+              }
             : {}),
           ts: new Date().toISOString(),
         };
@@ -3256,6 +3328,35 @@ function buildHttpServer(deps: ServerDeps): Hono {
     if (result.status !== 200)
       return context.json({ error: result.error }, result.status);
     return context.json({ attached: true });
+  });
+
+  // Issue 176: serve persisted entry-image blobs (authed like every /api).
+  app.get("/api/images/:bot/:file", (context) => {
+    const bot = context.req.param("bot");
+    const file = context.req.param("file");
+    // Path traversal guard: flat names only.
+    if (!/^[A-Za-z0-9._-]+$/.test(file) || file.includes(".."))
+      return context.json({ error: "bad file" }, 400);
+    const path = join(deps.fleet.dir, ".fleet", "images", bot, file);
+    let body: Buffer;
+    try {
+      body = readFileSync(path);
+    } catch {
+      return context.json({ error: "not found" }, 404);
+    }
+    const ext = file.split(".").pop()?.toLowerCase() ?? "";
+    const media =
+      ext === "png"
+        ? "image/png"
+        : ext === "jpg" || ext === "jpeg"
+          ? "image/jpeg"
+          : ext === "webp"
+            ? "image/webp"
+            : "application/octet-stream";
+    return context.body(body, 200, {
+      "content-type": media,
+      "cache-control": "no-store",
+    });
   });
 
   app.get("/api/bots/:name/instructions", (context) => {

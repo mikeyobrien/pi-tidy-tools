@@ -172,6 +172,41 @@ export function daemonCommandMatches(command: string): boolean {
   return /pi-tidy-bots(\.mjs)?|cli\.ts/.test(command) && /\bstart\b/.test(command);
 }
 
+export type DaemonIdentityCheck =
+  | { kind: "match"; fleetDir: string }
+  | { kind: "foreign-fleet"; fleetDir: string }
+  | { kind: "unreachable" };
+
+/**
+ * Issue 154: identity fingerprint before ANY signal — the daemon serving
+ * the fleet's configured port must report THIS fleet dir via /api/version.
+ * A different fleet's daemon on the port (concurrent fleets, stale
+ * registry) is a loud refusal, never a signal.
+ */
+export async function probeDaemonIdentity(
+  port: number,
+  expectedDir: string,
+  fetchImpl: (url: string) => Promise<Response> = (url) => fetch(url)
+): Promise<DaemonIdentityCheck> {
+  try {
+    const res = await fetchImpl(`http://127.0.0.1:${port}/api/version`);
+    if (!res.ok) return { kind: "unreachable" };
+    const payload = (await res.json()) as { fleetDir?: string };
+    const reported = payload.fleetDir ? resolveLike(expectedDir, payload.fleetDir) : undefined;
+    if (reported === expectedDir) return { kind: "match", fleetDir: payload.fleetDir ?? "" };
+    return { kind: "foreign-fleet", fleetDir: payload.fleetDir ?? "" };
+  } catch {
+    return { kind: "unreachable" };
+  }
+}
+
+function resolveLike(expectedDir: string, reported: string): string | undefined {
+  // Compare resolved paths without importing node:path resolve twice.
+  return reported.replace(/\/$/, "") === expectedDir.replace(/\/$/, "")
+    ? expectedDir
+    : undefined;
+}
+
 export type DaemonPidCheck =
   | { kind: "alive-daemon"; pid: number; command: string }
   | { kind: "foreign"; pid: number; command: string }
@@ -310,7 +345,10 @@ export function describePortHolder(
     // SEPARATE holders per address family (e.g. our daemon on 127.0.0.1 and a
     // foreign listener on [::]) — name them all, not an arbitrary first.
     const seen = new Set<string>();
-    const pids = run("lsof", ["-ti", "-sTCP:LISTEN", "-i", `:${port}`])
+    // NB: the `-i :<port>` space form silently ignores the port filter on
+    // macOS lsof (returns every listener) — the glued `-iTCP:<port>` form
+    // is required. `-nP` keeps it numeric and fast.
+    const pids = run("lsof", ["-nP", "-t", "-sTCP:LISTEN", `-iTCP:${port}`])
       .split("\n")
       .map((line) => line.trim())
       .filter((line) => /^\d+$/.test(line))

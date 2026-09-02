@@ -56,6 +56,32 @@ test("restartSpawnArgs boots a daemonized json start via the bin", () => {
   assert.ok(!bare.includes("--fleet"), "no --fleet when unnamed");
 });
 
+test("probeDaemonIdentity fingerprints the serving fleet (issue 154)", async () => {
+  const { probeDaemonIdentity } = await import("../src/cli-core.ts");
+  const ok = (_url: string) =>
+    Promise.resolve(
+      new Response(JSON.stringify({ fleetDir: "/fleets/alpha" }), {
+        status: 200,
+      })
+    );
+  assert.deepEqual(
+    await probeDaemonIdentity(4000, "/fleets/alpha", ok),
+    { kind: "match", fleetDir: "/fleets/alpha" },
+    "same fleet"
+  );
+  assert.deepEqual(
+    await probeDaemonIdentity(4000, "/fleets/beta", ok),
+    { kind: "foreign-fleet", fleetDir: "/fleets/alpha" },
+    "different fleet on the port — loud refusal data"
+  );
+  const unreachable = () => Promise.reject(new Error("down"));
+  assert.deepEqual(
+    await probeDaemonIdentity(4000, "/fleets/alpha", unreachable),
+    { kind: "unreachable" },
+    "nothing serving"
+  );
+});
+
 test("daemonCommandMatches recognizes bin and source daemons only (issue 135)", async () => {
   const { daemonCommandMatches, verifyDaemonPid } = await import(
     "../src/cli-core.ts"

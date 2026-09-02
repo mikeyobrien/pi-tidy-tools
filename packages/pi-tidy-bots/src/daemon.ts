@@ -1690,8 +1690,24 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     emitRoster();
   };
 
+  /**
+   * Issue 99-FAIL: touch only ACTIVITY-BEARING kinds. The old blanket
+   * touch() stamped boot noise (session primers, extension status pings,
+   * replay deltas) as "activity" — every idle bot showed the daemon's
+   * boot second, and the poisoned values persisted via state.json.
+   */
+  const ACTIVITY_EVENT_KINDS = new Set([
+    "turn_start",
+    "agent_start",
+    "assistant_delta",
+    "assistant_message",
+    "tool_start",
+    "tool_end",
+    "tool_output",
+    "usage",
+  ]);
   const handleEvent = (runtime: BotRuntime, event: RpcEvent): void => {
-    touch(runtime);
+    if (ACTIVITY_EVENT_KINDS.has(event.kind)) touch(runtime);
     const botName = runtime.config.name;
     switch (event.kind) {
       case "turn_start": {
@@ -2045,7 +2061,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       }
       case "ui_request": {
         if (!event.id) return;
-        if (isFireAndForgetUiMethod(event.method)) return;
+        if (isFireAndForgetUiMethod(event.method)) return; // status pings: not activity
+        // A real interactive question is activity; status pings are not.
+        touch(runtime);
         if (!isInteractiveUiMethod(event.method)) {
           // Unknown method: defuse it immediately so a future interactive UI
           // request can never wedge a turn. The child ignores unmatched
@@ -3220,8 +3238,15 @@ function buildHttpServer(deps: ServerDeps): Hono {
     const body = parsedBody.body as {
       text?: string;
       images?: unknown;
+      attachments?: unknown;
       clientMessageId?: unknown;
     };
+    // Issue 181: a standalone `attachments` key is silently ignored today
+    // (200, attachments=null, "no clip came through") — honor it as an
+    // alias of `images` (same composer wire shape) rather than rejecting:
+    // callers already send it meaningfully.
+    if (body.images === undefined && body.attachments !== undefined)
+      body.images = body.attachments;
     if (
       body.clientMessageId !== undefined &&
       typeof body.clientMessageId !== "string"

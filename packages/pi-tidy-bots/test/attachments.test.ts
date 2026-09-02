@@ -29,6 +29,77 @@ async function waitFor(
   throw new Error("waitFor: condition not met in time");
 }
 
+test("standalone attachments key is honored, not ignored (issue 181)", async () => {
+  const fleetDir = mkdtempSync(join(tmpdir(), "ptb-att181-"));
+  const handles: Array<{ stop(): Promise<void> }> = [];
+  try {
+    mkdirSync(join(fleetDir, "bots", "aa"), { recursive: true });
+    writeFileSync(join(fleetDir, "bots", "aa", "AGENTS.md"), "# aa\n");
+    writeFileSync(
+      join(fleetDir, "bots.toml"),
+      `[[bot]]\nname = "aa"\ndir = "bots/aa"\n`
+    );
+    const wrapper = join(fleetDir, "streaming-pi.sh");
+    writeFileSync(wrapper, `#!/bin/sh\nexec node ${runner}\n`);
+    spawnSync("chmod", ["+x", wrapper]);
+
+    const { startFleet } = await import("../src/daemon.ts");
+    const handle = await startFleet({
+      dir: fleetDir,
+      port: 0,
+      host: "127.0.0.1",
+      piBin: wrapper,
+      log: () => {},
+    });
+    handles.push(handle);
+    const base = `http://127.0.0.1:${handle.port}`;
+    await waitFor(async () =>
+      (
+        (await (await fetch(`${base}/api/fleet`)).json()) as {
+          bots: { online: boolean }[];
+        }
+      ).bots.every((b) => b.online)
+    );
+
+    // The 181 repro shape: attachments-only body — was 200 + silently no clip.
+    const sent = await fetch(`${base}/api/bots/aa/message`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        text: "the clip",
+        attachments: [{ mediaType: "video/mp4", data: "AAAA", name: "c.mp4" }],
+      }),
+    });
+    assert.equal(sent.status, 200);
+    const entries = async () =>
+      (
+        (await (await fetch(`${base}/api/bots/aa/transcript`)).json()) as {
+          transcript: {
+            role: string;
+            text: string;
+            attachments?: { mediaType: string }[];
+          }[];
+        }
+      ).transcript;
+    await waitFor(async () =>
+      (await entries()).some(
+        (e) => e.role === "user" && e.attachments?.length === 1
+      )
+    );
+    const entry = (await entries()).find(
+      (e) => e.role === "user" && e.attachments?.length === 1
+    );
+    assert.equal(
+      entry?.attachments?.[0]?.mediaType,
+      "video/mp4",
+      "the clip came through"
+    );
+  } finally {
+    await Promise.all(handles.map((h) => h.stop().catch(() => {})));
+    rmSync(fleetDir, { recursive: true, force: true });
+  }
+});
+
 test("device payloads: dataURL strip, heic as image, 15MB cap (issue 115)", async () => {
   // Unit-level: the shared item coercion strips dataURL prefixes and
   // classifies image/heic as child-deliverable (startsWith image/).

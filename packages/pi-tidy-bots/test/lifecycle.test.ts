@@ -17,6 +17,41 @@ import { join } from "node:path";
 // graceful stop — all against a temp fleet with a stub pi binary.
 
 const PORT = 4694;
+
+/**
+ * Issue 162: ghost sweep — SIGTERM any pi-tidy-bots daemon serving a
+ * ptb-* temp fleet dir (OUR test daemons by construction; foreign pids
+ * are never touched). Runs before the suite (old ghosts wedge spawn) and
+ * in cleanup (this run's own leaks from mid-test assertion misses).
+ */
+function sweepGhostDaemons(port: number): number {
+  const held = spawnSync("lsof", ["-nP", "-t", "-sTCP:LISTEN", `-iTCP:${port}`], {
+    encoding: "utf8",
+    timeout: 5_000,
+  });
+  let swept = 0;
+  for (const line of (held.stdout ?? "").split("\n")) {
+    const pid = Number(line.trim());
+    if (!Number.isFinite(pid) || pid <= 0) continue;
+    const ps = spawnSync("ps", ["-p", String(pid), "-o", "command="], {
+      encoding: "utf8",
+      timeout: 5_000,
+    });
+    const command = (ps.stdout ?? "").trim();
+    if (/pi-tidy-bots(\.mjs)?|cli\.ts/.test(command) && /ptb-/.test(command)) {
+      try {
+        process.kill(pid, "SIGTERM");
+        swept++;
+      } catch {
+        /* died racing us */
+      }
+    }
+  }
+  return swept;
+}
+
+// Pre-flight: an old ghost on PORT wedges every spawn in this file.
+sweepGhostDaemons(PORT);
 const cliPath = new URL("../src/cli.ts", import.meta.url).pathname;
 const stubDir = mkdtempSync(join(tmpdir(), "ptb-lifecycle-"));
 process.env.PI_TIDY_BOTS_REGISTRY = join(stubDir, "fleets.json");
@@ -101,75 +136,104 @@ test(
   "restart: sanctioned path preserves token, writes daemon.log, twice (issue 51)",
   { timeout: 120000 },
   async () => {
-    const dir = mkdtempSync(join(tmpdir(), "ptb-restart-"));
-    mkdirSync(join(dir, "bots", "alpha"), { recursive: true });
-    writeFileSync(join(dir, "bots", "alpha", "AGENTS.md"), "# alpha\n");
-    writeFileSync(
-      join(dir, "bots.toml"),
-      `[fleet]\nport = ${PORT}\n[[bot]]\nname = "alpha"\ndir = "bots/alpha"\n`
-    );
+    try {
+      const dir = mkdtempSync(join(tmpdir(), "ptb-restart-"));
+      mkdirSync(join(dir, "bots", "alpha"), { recursive: true });
+      writeFileSync(join(dir, "bots", "alpha", "AGENTS.md"), "# alpha\n");
+      writeFileSync(
+        join(dir, "bots.toml"),
+        `[fleet]\nport = ${PORT}\n[[bot]]\nname = "alpha"\ndir = "bots/alpha"\n`
+      );
 
-    // 1. Boot with an explicit token (persisted to .fleet/token).
-    const start = runCli([
-      "start",
-      dir,
-      "--daemon",
-      "--fleet",
-      "rt",
-      "--json",
-      "--token",
-      "sekrit",
-    ]);
-    assert.equal(start.status, 0, `start stderr: ${start.stderr}`);
-    const ready = JSON.parse(start.stdout.trim().split("\n").at(-1) ?? "{}");
-    assert.equal(ready.port, PORT);
+      // 1. Boot with an explicit token (persisted to .fleet/token).
+      const start = runCli([
+        "start",
+        dir,
+        "--daemon",
+        "--fleet",
+        "rt",
+        "--json",
+        "--token",
+        "sekrit",
+      ]);
+      assert.equal(start.status, 0, `start stderr: ${start.stderr}`);
+      const ready = JSON.parse(start.stdout.trim().split("\n").at(-1) ?? "{}");
+      assert.equal(ready.port, PORT);
 
-    // 2. Bootstrap tee: daemon.log exists and is being written.
-    const logPath = join(dir, ".fleet", "logs", "daemon.log");
-    assert.equal(existsSync(logPath), true, "daemon.log written");
+      // 2. Bootstrap tee: daemon.log exists and is being written.
+      const logPath = join(dir, ".fleet", "logs", "daemon.log");
+      assert.equal(existsSync(logPath), true, "daemon.log written");
 
-    // 3. Sanctioned restart — returns (daemonize parent health-checks).
-    const restart = runCli(["restart", "--fleet", "rt", "--json"]);
-    assert.equal(restart.status, 0, `restart stderr: ${restart.stderr}`);
-    const first = JSON.parse(restart.stdout.trim().split("\n").at(-1) ?? "{}");
-    assert.equal(first.restarted, true);
-    assert.notEqual(
-      first.pid,
-      ready.pid,
-      "new daemon generation after restart"
-    );
+      // 3. Sanctioned restart — returns (daemonize parent health-checks).
+      const restart = runCli(["restart", "--fleet", "rt", "--json"]);
+      assert.equal(restart.status, 0, `restart stderr: ${restart.stderr}`);
+      const first = JSON.parse(restart.stdout.trim().split("\n").at(-1) ?? "{}");
+      assert.equal(first.restarted, true);
+      assert.notEqual(
+        first.pid,
+        ready.pid,
+        "new daemon generation after restart"
+      );
 
-    // 4. Token preserved across the restart: same credential still opens the
-    //    console API and a wrong one is still rejected.
-    const ok = await fetch(`http://127.0.0.1:${PORT}/api/fleet?token=sekrit`);
-    assert.equal(ok.status, 200, "stored token survives restart");
-    const bad = await fetch(`http://127.0.0.1:${PORT}/api/fleet?token=wrong`);
-    assert.equal(bad.status, 401);
+      // 4. Token preserved across the restart: same credential still opens the
+      //    console API and a wrong one is still rejected.
+      const ok = await fetch(`http://127.0.0.1:${PORT}/api/fleet?token=sekrit`);
+      assert.equal(ok.status, 200, "stored token survives restart");
+      const bad = await fetch(`http://127.0.0.1:${PORT}/api/fleet?token=wrong`);
+      assert.equal(bad.status, 401);
 
-    // 5. Restart AGAIN back-to-back — kills the durable-daemonize flake
-    //    (verifier flagged single-restart luck passing).
-    const restart2 = runCli(["restart", "--fleet", "rt", "--json"]);
-    assert.equal(restart2.status, 0, `restart2 stderr: ${restart2.stderr}`);
-    const second = JSON.parse(
-      restart2.stdout.trim().split("\n").at(-1) ?? "{}"
-    );
-    assert.equal(second.restarted, true);
-    assert.notEqual(second.pid, first.pid, "second new generation");
+      // 5. Restart AGAIN back-to-back — kills the durable-daemonize flake
+      //    (verifier flagged single-restart luck passing).
+      const restart2 = runCli(["restart", "--fleet", "rt", "--json"]);
+      assert.equal(restart2.status, 0, `restart2 stderr: ${restart2.stderr}`);
+      const second = JSON.parse(
+        restart2.stdout.trim().split("\n").at(-1) ?? "{}"
+      );
+      assert.equal(second.restarted, true);
+      assert.notEqual(second.pid, first.pid, "second new generation");
 
-    // 6. The log survived both restarts — appended, never truncated.
-    const log = readFileSync(logPath, "utf8");
-    assert.ok(log.length > 0, "log has content after two restarts");
+      // 6. The log survived both restarts — appended, never truncated.
+      const log = readFileSync(logPath, "utf8");
+      assert.ok(log.length > 0, "log has content after two restarts");
 
-    // 7. Clean stop so no daemon leaks out of the suite.
-    const stop = runCli(["stop", "--fleet", "rt", "--json"]);
-    assert.equal(stop.status, 0, `stop stderr: ${stop.stderr}`);
-    rmSync(dir, { recursive: true, force: true });
+      // 7. Clean stop so no daemon leaks out of the suite.
+      const stop = runCli(["stop", "--fleet", "rt", "--json"]);
+      assert.equal(stop.status, 0, `stop stderr: ${stop.stderr}`);
+      rmSync(dir, { recursive: true, force: true });
+    } finally {
+      runCli(["stop", "--fleet", "rt", "--json"]);
+    }
   }
 );
 
-test("cleanup", () => {
+test("cleanup: sanctioned stop before rmSync + port release (issue 162)", async () => {
+  // A failed assertion mid-test skips that test's own stop; rmSync then
+  // deletes the pidfile and leaves a GHOST daemon holding the port (4694
+  // observed). Stop every fleet dir first — the CLI tolerates not-running —
+  // then rm, then assert the port actually released.
+  for (const dir of [fleetDir]) {
+    runCli(["stop", dir, "--json"]);
+  }
+  for (const name of ["test", "rt"]) {
+    runCli(["stop", "--fleet", name, "--json"]);
+  }
+  sweepGhostDaemons(PORT);
   rmSync(stubDir, { recursive: true, force: true });
   rmSync(fleetDir, { recursive: true, force: true });
+  // Port release: 4694 must be free within a grace window (SIGTERM drain).
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    const probe = spawnSync(
+      process.execPath,
+      ["-e", "net.connect(4694).on('error',()=>process.exit(0)).on('connect',()=>process.exit(1))"],
+      { timeout: 5_000 }
+    );
+    if (probe.status === 0) break;
+    if (Date.now() >= deadline) {
+      assert.fail("port 4694 still held after cleanup — ghost daemon");
+    }
+    await new Promise((r) => setTimeout(r, 300));
+  }
 });
 
 test(
@@ -248,6 +312,10 @@ test(
     const status = runCli(["status", broken, "--json"]);
     assert.equal(status.status, 4);
     assert.match(status.stderr ?? status.stdout, /fleet is not running/);
+    // Issue 162: defensively stop before rm — the readiness-timeout path
+    // SHOULD have killed the child, but an assertion miss must not leak it.
+    runCli(["stop", broken, "--json"]);
     rmSync(broken, { recursive: true, force: true });
   }
 );
+

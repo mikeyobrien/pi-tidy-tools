@@ -217,10 +217,21 @@ export function diffFleet(
     }
     const same = (a: unknown, b: unknown) =>
       JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+    // Issue 157: ANY config change counts — routines, packages, approve,
+    // thinking, title, imageProvider… The old dir/model/routes-only diff
+    // silently ignored manifest edits on existing bots (a routine added to
+    // a live bot never registered; toggle 404'd; no log).
     const differs =
       existing.dir !== bot.dir ||
       !same(existing.model, bot.model) ||
-      !same(existing.routes, bot.routes);
+      !same(existing.routes, bot.routes) ||
+      !same(existing.routines, bot.routines) ||
+      !same(existing.packages, bot.packages) ||
+      !same(existing.approve, bot.approve) ||
+      !same(existing.title, bot.title) ||
+      !same(existing.avatar, bot.avatar) ||
+      !same(existing.description, bot.description) ||
+      !same(existing.imageProvider, bot.imageProvider);
     (differs ? changed : untouched).push(bot);
   }
   const removed = current.filter((bot) => !nextByName.has(bot.name));

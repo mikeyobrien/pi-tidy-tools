@@ -2668,7 +2668,14 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       if (runtime) runtime.config = bot; // title/avatar copy updates live.
     }
     fleet = next;
-    if (diff.added.length > 0 || diff.removed.length > 0)
+    // Issue 157: rebuild the routine view on ANY manifest change — a
+    // routine edited on an existing bot was invisible before (the view only
+    // rebuilt on add/remove).
+    if (
+      diff.added.length > 0 ||
+      diff.removed.length > 0 ||
+      diff.changed.length > 0
+    )
       routines.splice(
         0,
         routines.length,

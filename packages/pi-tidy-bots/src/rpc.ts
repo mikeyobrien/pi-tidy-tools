@@ -60,6 +60,22 @@ export function rpcSpawnArgs(
   ];
 }
 
+/** Issue 158: reasons bound to ~90 chars (first line + ellipsis). */
+export const REASON_MAX_CHARS = 90;
+
+/**
+ * Issue 158: shared wire-bounding contract for step text. First line only
+ * (multi-line JS bodies never ride the wire) + hard truncate with an
+ * ellipsis. stepReason and stepLabel both route through this — the old
+ * contracts were inconsistent (40 vs unbounded, and reason could carry
+ * 3.4k-char mcpScript bodies).
+ */
+export function boundStepText(value: string, max: number): string {
+  const firstLine = value.trim().split("\n")[0] ?? "";
+  const collapsed = firstLine.replace(/\s+/g, " ").trim();
+  return collapsed.length > max ? `${collapsed.slice(0, max - 1)}…` : collapsed;
+}
+
 /** Compact, non-sensitive args digest for a tool step row (issue 36). */
 export function stepLabel(toolName: string, args: unknown): string | undefined {
   if (typeof args !== "object" || args === null) return undefined;
@@ -72,8 +88,7 @@ export function stepLabel(toolName: string, args: unknown): string | undefined {
     }
     return undefined;
   };
-  const truncate = (value: string, max: number) =>
-    value.length > max ? `${value.slice(0, max)}…` : value;
+  const truncate = boundStepText;
   if (toolName === "message_agent") {
     const target = first("target");
     return target ? `→ ${target}` : undefined;
@@ -196,8 +211,7 @@ export function stepReason(args: unknown, toolName?: string): string {
   // Issue 128: dispatch-class tools — the reason is a BOUNDED gist of the
   // brief, never the full message (the label already carries the target).
   if (toolName === "message_agent" && typeof record.message === "string") {
-    const firstLine = record.message.trim().split("\n")[0] ?? "";
-    return firstLine.length > 60 ? `${firstLine.slice(0, 57)}…` : firstLine;
+    return boundStepText(record.message, 60);
   }
   const candidates = [
     "reasoning",
@@ -212,11 +226,11 @@ export function stepReason(args: unknown, toolName?: string): string {
   for (const key of candidates) {
     const value = record[key];
     if (typeof value === "string" && value.trim().length > 0)
-      return value.trim();
+      return boundStepText(value, REASON_MAX_CHARS);
   }
   for (const value of Object.values(record)) {
     if (typeof value === "string" && value.trim().length > 0)
-      return value.trim();
+      return boundStepText(value, REASON_MAX_CHARS);
   }
   return "";
 }

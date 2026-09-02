@@ -49,6 +49,7 @@ import {
   paginateTranscript,
 } from "./transcripts.ts";
 import { createPendingStore, type PendingMessage } from "./pending.ts";
+import { createOperatorQueueStore } from "./operator-queue.ts";
 import { TurnPartsAccumulator, type TurnPart } from "./turnparts.ts";
 import { versionPayload } from "./contract.ts";
 import { describePortHolder, pidAlive } from "./cli-core.ts";
@@ -759,6 +760,8 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     join(fleet.dir, ".fleet", "transcripts")
   );
   const pendingStore = createPendingStore(join(fleet.dir, ".fleet", "pending"));
+  // Issue 159: the operator attention queue — one-at-a-time, server-enforced.
+  const operatorQueue = createOperatorQueueStore(fleet.dir);
   let routineState: { routines?: Record<string, { enabled?: boolean }> } =
     stored;
   const persistStateFile = () =>
@@ -2550,6 +2553,11 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         void spawnBot(name);
         return { status: 200 };
       },
+      // Issue 159: operator attention queue.
+      operatorEnqueue: (input: { title: string; receipts?: { ref: string; detail?: string }[]; source: string }) =>
+        operatorQueue.enqueue(input),
+      operatorQueueView: () => operatorQueue.view(),
+      operatorQueueClear: (id: string) => operatorQueue.clear(id),
       unqueue: (name: string, id: string) => {
         const runtime = runtimes.get(name);
         if (!runtime) return { status: 404 };
@@ -2822,6 +2830,13 @@ interface ServerDeps {
     ): { id: string; text: string; hasImage: boolean; filename?: string }[];
     unqueue(name: string, id: string): { status: 200 | 404 };
     setModel(name: string, model: string): { status: 200 | 404 };
+    operatorEnqueue(input: {
+      title: string;
+      receipts?: { ref: string; detail?: string }[];
+      source: string;
+    }): unknown;
+    operatorQueueView(): unknown;
+    operatorQueueClear(id: string): unknown;
     attachCompletionSummary(
       name: string,
       summary: string
@@ -3014,6 +3029,55 @@ function buildHttpServer(deps: ServerDeps): Hono {
     mkdirSync(join(deps.fleet.dir, ".fleet"), { recursive: true });
     writeFileSync(rulesPath, body.text);
     return context.json({ text: body.text });
+  });
+
+  // Issue 159: operator attention queue — one-at-a-time, server-enforced.
+  app.get("/api/operator/queue", (context) => {
+    return context.json(deps.handlers.operatorQueueView());
+  });
+
+  app.post("/api/operator/queue", async (context) => {
+    const body = (await context.req.json().catch(() => ({}))) as {
+      title?: unknown;
+      receipts?: unknown;
+      source?: unknown;
+    };
+    if (typeof body.title !== "string" || body.title.trim().length === 0)
+      return context.json({ error: "title (non-empty string) required" }, 400);
+    const receipts = Array.isArray(body.receipts)
+      ? body.receipts
+          .filter(
+            (entry): entry is { ref: string; detail?: string } =>
+              typeof entry === "object" &&
+              entry !== null &&
+              typeof (entry as { ref?: unknown }).ref === "string" &&
+              (entry as { ref: string }).ref.length > 0
+          )
+          .map((entry) => ({
+            ref: entry.ref,
+            ...(typeof entry.detail === "string" && entry.detail.length > 0
+              ? { detail: entry.detail }
+              : {}),
+          }))
+      : [];
+    const item = deps.handlers.operatorEnqueue({
+      title: body.title.trim(),
+      ...(receipts.length > 0 ? { receipts } : {}),
+      source:
+        typeof body.source === "string" && body.source.length > 0
+          ? body.source
+          : "operator",
+    });
+    return context.json({ item });
+  });
+
+  app.post("/api/operator/queue/:id/clear", (context) => {
+    const result = deps.handlers.operatorQueueClear(
+      context.req.param("id")
+    );
+    if (!result)
+      return context.json({ error: "unknown or already-cleared id" }, 404);
+    return context.json(result);
   });
 
   app.get("/api/routines", (context) => {

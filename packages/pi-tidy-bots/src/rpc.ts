@@ -256,6 +256,10 @@ const toolResultText = (result: unknown): string => {
  * One perpetual `pi --mode rpc` child. Strict LF JSONL framing (no readline —
  * pi's rpc protocol forbids readers that split on U+2028/U+2029).
  */
+/** Issue 149: prompt-class guard — 10 minutes. Accept-acks are <10ms; only
+ * a wedged-alive child can hit this, and the timeout means UNKNOWN. */
+export const PROMPT_CLASS_TIMEOUT_MS = 10 * 60_000;
+
 export class RpcSession {
   readonly process: ChildProcess;
   private buffer = "";
@@ -350,7 +354,8 @@ export class RpcSession {
 
   request<T = any>(
     payload: Record<string, unknown>,
-    timeoutMs = 30_000
+    timeoutMs = 30_000,
+    timeoutCode?: string
   ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       if (!this.alive) {
@@ -360,7 +365,11 @@ export class RpcSession {
       const id = randomUUID();
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`rpc request timed out after ${timeoutMs}ms`));
+        reject(
+          new Error(
+            `${timeoutCode ?? "rpc request timed out"} after ${timeoutMs}ms`
+          )
+        );
       }, timeoutMs);
       this.pending.set(id, {
         resolve: (value: T) => {
@@ -376,17 +385,29 @@ export class RpcSession {
     });
   }
 
+  /**
+   * Issue 149: prompt-class requests follow the ACCEPT-ACK contract — real
+   * pi resolves the request when the turn is accepted (<10ms measured), not
+   * when it finishes. The old shared 30s timeout misclassified long turns
+   * as delivery_failed while the reply still landed (phantom completion).
+   * The guard stays long — genuinely dead sessions are rejected by the
+   * exit handler immediately; only a wedged-but-alive child can hit this.
+   */
   async prompt(
     message: string,
     streamingBehavior?: "steer" | "followUp",
     images?: { type: "image"; data: string; mimeType: string }[]
   ): Promise<void> {
-    await this.request({
-      type: "prompt",
-      message,
-      ...(streamingBehavior ? { streamingBehavior } : {}),
-      ...(images ? { images } : {}),
-    });
+    await this.request(
+      {
+        type: "prompt",
+        message,
+        ...(streamingBehavior ? { streamingBehavior } : {}),
+        ...(images ? { images } : {}),
+      },
+      PROMPT_CLASS_TIMEOUT_MS,
+      "rpc_prompt_timeout"
+    );
   }
 
   async steer(message: string): Promise<void> {
@@ -397,11 +418,15 @@ export class RpcSession {
     message: string,
     images?: { type: "image"; data: string; mimeType: string }[]
   ): Promise<void> {
-    await this.request({
-      type: "follow_up",
-      message,
-      ...(images ? { images } : {}),
-    });
+    await this.request(
+      {
+        type: "follow_up",
+        message,
+        ...(images ? { images } : {}),
+      },
+      PROMPT_CLASS_TIMEOUT_MS,
+      "rpc_prompt_timeout"
+    );
   }
 
   async abort(): Promise<void> {

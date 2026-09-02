@@ -1335,6 +1335,10 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     runtime.lastCompactAt = Date.now();
     runtime.turnsSinceCompact = 0;
     runtime.fill = 0;
+    // Issue 149/43: a successful compaction summarizes the context away —
+    // carried input tokens reset with it (the next usage event reports the
+    // post-compact truth). Otherwise overWindow telemetry stays poisoned.
+    runtime.inputTokens = 0;
     journalCompaction(fleet.dir, botName, {
       tokensBefore,
       fill: runtime.fill,
@@ -2133,6 +2137,15 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     entry: TranscriptEntry,
     images?: { type: "image"; data: string; mimeType: string }[]
   ): void => {
+    // Issue 149: idempotent by entry id — the handoff retry path re-runs
+    // journalPending per attempt and a retry after a timeout must never
+    // queue the same message twice.
+    if (
+      pendingStore
+        .load(runtime.config.name)
+        .some((message) => message.id === entry.id)
+    )
+      return;
     entry.delivering = true;
     pendingStore.append(runtime.config.name, {
       id: entry.id,
@@ -2415,6 +2428,15 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           return { status: 200, body: { accepted: true } };
         } catch (error) {
           const reason = classifyFailure(String(error));
+          if (reason === "rpc_prompt_timeout") {
+            // Issue 149: a prompt-class timeout means UNKNOWN, not failed —
+            // the accept-ack contract says the child may have accepted and
+            // still be running the turn. Keep the delivering flag (turn_start
+            // / settle reconciles it); the operator sees an in-flight bubble,
+            // never a phantom failed one.
+            emit({ type: "append", bot: name, entry });
+            return { status: 202, body: { accepted: true, unknown: true } };
+          }
           if (reason === "runtime_offline") {
             // Issue 33 item 3: offline sends queue for delivery on next spawn
             // instead of hard-failing — never a silent drop.

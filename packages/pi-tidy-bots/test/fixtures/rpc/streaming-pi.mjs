@@ -79,12 +79,14 @@ rl.on("line", (line) => {
   }
   if (request.type === "set_model") {
     trace("set_model", `${request.provider}/${request.modelId}`);
-    // pi returns the full Model object under data.model.
+    // pi returns the full Model object under data.model — the REAL window
+    // for the switched-to model (no fixture fiction: a fabricated window
+    // poisons the daemon's live telemetry on the restore path, issue 149).
     send({
       type: "response",
       id: request.id,
       success: true,
-      data: { model: { contextWindow: stubWindow() * 10, id: request.modelId } },
+      data: { model: { contextWindow: stubWindow(), id: request.modelId } },
     });
     return;
   }
@@ -129,10 +131,10 @@ rl.on("line", (line) => {
     // it also streams LATER, behind the running turn.
     const queued =
       request.type === "follow_up" || request.streamingBehavior === "followUp";
-    // Queued deliveries (follow_up request, or a prompt carrying
-    // streamingBehavior) ack on ACCEPTANCE — the turn streams later. Plain
-    // prompts resolve when their turn finishes.
-    if (request.type === "follow_up" || request.streamingBehavior !== undefined)
+    // Issue 149 (repro-verified against real pi): ALL prompt-class requests
+    // ack on ACCEPTANCE — real children resolve the RPC when the turn is
+    // accepted (<10ms), never at turn end. Events stream afterwards.
+    if (request.type === "prompt" || request.type === "follow_up")
       respond(request.id);
     // Deterministic queue tests: when PTB_STUB_HOLD_DIR is set, queued
     // turns WAIT for <dir>/release before streaming — the daemon-side
@@ -173,8 +175,6 @@ rl.on("line", (line) => {
         send({ type: "turn_end", message: { usage: { input: 10 } } });
         send({ type: "agent_end" });
         send({ type: "agent_settled" });
-        if (request.type === "prompt" && !request.streamingBehavior)
-          respond(request.id);
         return;
       }
       if (process.env.PTB_STUB_MULTI) {
@@ -215,8 +215,6 @@ rl.on("line", (line) => {
           send({ type: "turn_end", message: { usage: { input: 10 } } });
           send({ type: "agent_end" });
           send({ type: "agent_settled" });
-          if (request.type === "prompt" && !request.streamingBehavior)
-            respond(request.id);
         }, 300);
         return;
       }
@@ -265,8 +263,6 @@ rl.on("line", (line) => {
         });
         send({ type: "agent_end" });
         send({ type: "agent_settled" });
-        if (request.type === "prompt" && !request.streamingBehavior)
-          respond(request.id);
       }, 700);
     };
     if (queued && process.env.PTB_STUB_HOLD_DIR) {

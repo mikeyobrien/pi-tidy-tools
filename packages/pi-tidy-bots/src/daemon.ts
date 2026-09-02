@@ -70,6 +70,10 @@ export interface TranscriptEntry {
   deliveryError?: string;
   /** Issue 37: ordered text/tool parts for the settled turn. */
   parts?: TurnPart[];
+  /** Issue 110: non-image media journaled for client-side rendering —
+   * pi's prompt takes ImageContent only, so video/file bytes are not
+   * deliverable to the model; the record carries name + mediaType. */
+  attachments?: { name?: string; mediaType: string }[];
   ui?: UiRequestView;
   uiResolved?: { id: string; value: string; auto: boolean };
 }
@@ -507,7 +511,7 @@ export type ChildImages = { type: "image"; data: string; mimeType: string }[];
 
 const coerceImageItem = (
   image: unknown
-): { mediaType: string; data: string } | null => {
+): { mediaType: string; data: string; name?: string } | null => {
   if (
     typeof image !== "object" ||
     image === null ||
@@ -518,7 +522,9 @@ const coerceImageItem = (
   )
     return null;
   const { mediaType, data } = image as { mediaType: string; data: string };
-  return { mediaType, data };
+  const rawName = (image as { name?: unknown }).name;
+  const name = typeof rawName === "string" && rawName.length > 0 ? rawName : undefined;
+  return { mediaType, data, ...(name ? { name } : {}) };
 };
 
 const coerceImageArray = (
@@ -550,6 +556,52 @@ export function coerceMessageImages(
   | { ok: true; images?: { type: "image"; data: string; mimeType: string }[] }
   | { ok: false } {
   return coerceImageArray(value, 1);
+}
+
+/** Journal record for non-image media (issue 110): no base64 — just what a
+ * client needs to render a file chip. */
+export interface MessageAttachment {
+  name?: string;
+  mediaType: string;
+}
+
+/**
+ * Issue 110: POST /message accepts video and files, not only images.
+ * Composer contract stays one attachment; image/* routes to the child
+ * prompt (pi's ImageContent); any other media (video/*, application/*, …)
+ * is JOURNALED ON THE TRANSCRIPT ENTRY — pi's rpc prompt takes images only,
+ * so the bytes are not deliverable to the model. Clients render the chip
+ * from {name, mediaType}.
+ */
+export function coerceMessageMedia(
+  value: unknown
+):
+  | {
+      ok: true;
+      images?: { type: "image"; data: string; mimeType: string }[];
+      attachments?: MessageAttachment[];
+    }
+  | { ok: false } {
+  if (value === undefined) return { ok: true };
+  if (!Array.isArray(value) || value.length > 1) return { ok: false };
+  if (value.length === 0) return { ok: true };
+  const item = coerceImageItem(value[0]);
+  if (!item) return { ok: false };
+  if (item.mediaType.startsWith("image/")) {
+    return {
+      ok: true,
+      images: [{ type: "image", data: item.data, mimeType: item.mediaType }],
+    };
+  }
+  return {
+    ok: true,
+    attachments: [
+      {
+        mediaType: item.mediaType,
+        ...(item.name ? { name: item.name } : {}),
+      },
+    ],
+  };
 }
 
 /**
@@ -1950,7 +2002,13 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         resolveUi(runtime, pending.view, answer, false);
         return { status: 200, body: { accepted: true } };
       },
-      message: async (name, text, images, clientMessageId) => {
+      message: async (
+        name,
+        text,
+        images,
+        clientMessageId,
+        attachments
+      ) => {
         const runtime = runtimes.get(name);
         if (!runtime) return { status: 404, body: { error: "unknown bot" } };
         if (clientMessageId !== undefined) {
@@ -1963,6 +2021,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           origin: "operator",
           delivering: true,
           text: stripActionMarkers(text),
+          ...(attachments && attachments.length > 0
+            ? { attachments }
+            : {}),
           ts: new Date().toISOString(),
         };
         try {
@@ -2312,7 +2373,8 @@ interface ServerDeps {
       name: string,
       text: string,
       images?: { type: "image"; data: string; mimeType: string }[],
-      clientMessageId?: string
+      clientMessageId?: string,
+      attachments?: { name?: string; mediaType: string }[]
     ): Promise<{ status: number; body: unknown }>;
     compact(name: string): Promise<{ status: number; body: unknown }>;
     stop(name: string): Promise<{ status: number; body: unknown }>;
@@ -2554,8 +2616,8 @@ function buildHttpServer(deps: ServerDeps): Hono {
       typeof body.clientMessageId !== "string"
     )
       return context.json({ error: "clientMessageId must be a string" }, 400);
-    const images = coerceMessageImages(body.images);
-    if (!images.ok) {
+    const media = coerceMessageMedia(body.images);
+    if (!media.ok) {
       return context.json(
         {
           error:
@@ -2567,8 +2629,9 @@ function buildHttpServer(deps: ServerDeps): Hono {
     const result = await deps.handlers.message(
       context.req.param("name"),
       body.text.trim(),
-      images.images,
-      body.clientMessageId
+      media.images,
+      body.clientMessageId,
+      media.attachments
     );
     return context.json(
       result.body,

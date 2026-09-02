@@ -67,6 +67,49 @@ test("coerceHandoffImages forwards every image, no cap (issue 75)", async () => 
   assert.equal(coerceHandoffImages("nope").ok, false);
 });
 
+test("coerceMessageMedia routes video/files to journal records (issue 110)", async () => {
+  const { coerceMessageMedia } = await import("../src/daemon.ts");
+  // Video → attachment record only; no child images (pi prompt takes
+  // ImageContent — the bytes are NOT deliverable to the model; the record
+  // is what clients render as a file chip).
+  const video = coerceMessageMedia([
+    { mediaType: "video/mp4", data: "AAAA", name: "clip.mp4" },
+  ]);
+  assert.equal(video.ok, true);
+  if (video.ok) {
+    assert.equal(video.images, undefined, "no child images for video");
+    assert.deepEqual(video.attachments, [
+      { mediaType: "video/mp4", name: "clip.mp4" },
+    ]);
+  }
+  // application/* → same journaling.
+  const pdf = coerceMessageMedia([{ mediaType: "application/pdf", data: "JVBERiA=" }]);
+  assert.equal(pdf.ok, true);
+  if (pdf.ok)
+    assert.deepEqual(pdf.attachments, [{ mediaType: "application/pdf" }]);
+  // image/* still routes to the child prompt unchanged.
+  const image = coerceMessageMedia([
+    { mediaType: "image/png", data: "aGk=", name: "shot.png" },
+  ]);
+  assert.equal(image.ok, true);
+  if (image.ok) {
+    assert.deepEqual(image.images, [
+      { type: "image", data: "aGk=", mimeType: "image/png" },
+    ]);
+    assert.equal(image.attachments, undefined);
+  }
+  // Composer cap of one total attachment holds; malformed still fails.
+  assert.equal(
+    coerceMessageMedia([
+      { mediaType: "image/png", data: "aGk=" },
+      { mediaType: "video/mp4", data: "AAAA" },
+    ]).ok,
+    false,
+    "cap one total attachment"
+  );
+  assert.equal(coerceMessageMedia([{ mediaType: "video/mp4" }]).ok, false);
+});
+
 test("coerceMessageImages rejects multi, empty, and malformed payloads", () => {
   // Composer path stays capped at one (UI contract); the bus path is
   // covered by coerceHandoffImages above.

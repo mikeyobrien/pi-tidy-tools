@@ -87,6 +87,14 @@ export const TranscriptEntrySchema = Type.Object({
       title: Type.Optional(Type.String()),
     })
   ),
+  attachments: Type.Optional(
+    Type.Array(
+      Type.Object({
+        name: Type.Optional(Type.String()),
+        mediaType: Type.String(),
+      })
+    )
+  ),
   text: Type.String(),
   ts: Type.String(),
   delivering: Type.Optional(Type.Boolean()),

@@ -323,6 +323,7 @@ interface ServerDeps {
       name: string
     ): { id: string; text: string; hasImage: boolean; filename?: string }[];
     unqueue(name: string, id: string): { status: 200 | 404 };
+    loadTranscript(name: string): unknown[];
     setModel(name: string, model: string): { status: 200 | 404 };
     operatorEnqueue(input: {
       title: string;
@@ -622,10 +623,22 @@ export function buildHttpServer(deps: ServerDeps): Hono {
   app.get("/api/bots/:name/transcript", (context) => {
     const runtime = deps.runtimes.get(context.req.param("name"));
     if (!runtime) return context.json({ error: "unknown bot" }, 404);
-    const page = paginateTranscript(runtime.transcript, {
-      before: context.req.query("before"),
-      limit: context.req.query("limit"),
-    });
+    // Issue 104 (P1, live-hit): the RAM transcript is a slice(-50) of the
+    // merged history — the API served 54 of 968 real rows and `before=`
+    // walks died on page one. appendTranscript persists synchronously, so
+    // the JSONL journal IS the complete history: paginate from
+    // deps.handlers.loadTranscript when paging params are present; the
+    // no-param hot path stays the RAM list (identical content, zero disk
+    // reads).
+    const before = context.req.query("before");
+    const limit = context.req.query("limit");
+    const source =
+      before === undefined && limit === undefined
+        ? runtime.transcript
+        : (deps.handlers.loadTranscript(
+            context.req.param("name")
+          ) as typeof runtime.transcript);
+    const page = paginateTranscript(source, { before, limit });
     if (!page.ok) return context.json({ error: page.error }, 400);
     return context.json({ transcript: page.entries });
   });
@@ -668,8 +681,15 @@ export function buildHttpServer(deps: ServerDeps): Hono {
     const body = parsedBody.body as {
       text?: string;
       images?: unknown;
+      attachments?: unknown;
       clientMessageId?: unknown;
     };
+    // Issue 181: a standalone `attachments` key is silently ignored today
+    // (200, attachments=null, "no clip came through") — honor it as an
+    // alias of `images` (same composer wire shape) rather than rejecting:
+    // callers already send it meaningfully.
+    if (body.images === undefined && body.attachments !== undefined)
+      body.images = body.attachments;
     if (
       body.clientMessageId !== undefined &&
       typeof body.clientMessageId !== "string"

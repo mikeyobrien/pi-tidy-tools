@@ -172,8 +172,10 @@ export function paginateTranscript<T extends { ts: string }>(
   let limit: number | undefined;
   if (query.limit !== undefined) {
     limit = Number(query.limit);
-    if (!Number.isFinite(limit) || limit <= 0)
-      return { ok: false, error: "limit must be a positive number" };
+    if (!Number.isInteger(limit) || limit <= 0)
+      // Issue 180: reject fractional/garbage limits — "2.7" used to pass
+      // isFinite and silently truncate. Integers only.
+      return { ok: false, error: "limit must be a positive integer" };
   }
   if (query.before !== undefined) {
     const ts = Date.parse(query.before);

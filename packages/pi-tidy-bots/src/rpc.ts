@@ -17,6 +17,8 @@ export interface RpcSpawnOptions {
   bridgePath: string;
   /** Issue 85: extra extensions loaded after bridge (MCP wrap etc.). */
   extensions?: string[];
+  /** Issue 132: extra child env (image provider id, fleet dir for outputs). */
+  env?: Record<string, string>;
   daemonUrl: string;
   childSecret: string;
   onEvent: (event: RpcEvent) => void;
@@ -321,6 +323,7 @@ export class RpcSession {
         PI_TIDY_BOTS_NAME: options.name,
         PI_TIDY_BOTS_DAEMON_URL: options.daemonUrl,
         PI_TIDY_BOTS_CHILD_SECRET: options.childSecret,
+        ...(options.env ?? {}),
       },
       stdio: ["pipe", "pipe", "pipe"],
     });

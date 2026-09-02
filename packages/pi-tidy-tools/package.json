@@ -23,6 +23,7 @@
   ],
   "files": [
     "index.ts",
+    "imagegen/**/*.ts",
     "config.ts",
     "render.ts",
     "tool-composition.ts",

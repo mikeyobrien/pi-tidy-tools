@@ -560,8 +560,15 @@ export function createTidyExtension(dependencies: TidyExtensionDependencies = {}
 			pi.registerTool(decorate(source) as any);
 		}
 		startupPlan.commit(decorate);
+
+		// Issue 132: provider-abstracted image generation. Default provider
+		// registrations (grok-build) load at import; further providers
+		// register themselves against the seam without core edits.
+		pi.registerTool(buildGenerateImageTool() as never);
 	};
 }
 
+import { buildGenerateImageTool } from "./imagegen/tool.js";
+import "./imagegen/providers/index.js";
 const extension = createTidyExtension();
 export default extension;

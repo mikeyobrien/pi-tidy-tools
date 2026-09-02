@@ -1358,6 +1358,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     // spawn then runs with project trust (--approve) so those settings and
     // extensions actually load. pi's --approve is project-file trust, NOT
     // tool auto-approve — bots with approve=false stay non-auto-approved.
+    // Issue 132: bot scope wins over the fleet default.
+    const imageProvider =
+      runtime.config.imageProvider ?? fleet.imageProvider;
     const botPackages = runtime.config.packages ?? [];
     if (botPackages.length > 0) {
       for (const pkg of botPackages) {
@@ -1392,6 +1395,12 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       ...(botPackages.length > 0 ? { trustProject: true } : {}),
       bridgePath,
       extensions: [mcpWrapPath],
+      // Issue 132: image provider selection (bot scope overrides fleet)
+      // and the fleet dir so generate_image writes under .fleet/images.
+      env: {
+        ...(imageProvider ? { PI_TIDY_IMAGE_PROVIDER: imageProvider } : {}),
+        PI_TIDY_FLEET_DIR: fleet.dir,
+      },
       daemonUrl,
       childSecret,
       onEvent: (event) => {

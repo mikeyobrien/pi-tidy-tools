@@ -163,6 +163,25 @@ test("scaffoldBot writes --description (escaped) and omits it when absent", () =
   }
 });
 
+test("image_provider parses at fleet and bot scope (issue 132)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ptb-imgprov-"));
+  try {
+    const botDir = join(dir, "atlas");
+    mkdirSync(botDir, { recursive: true });
+    writeFileSync(join(botDir, "AGENTS.md"), "# atlas\n");
+    writeFileSync(
+      join(dir, "bots.toml"),
+      `[fleet]\nimage_provider = "fleet-default"\n[[bot]]\nname = "atlas"\ndir = "atlas"\n[[bot]]\nname = "scoped"\ndir = "atlas"\nimage_provider = "grok-build"\n`
+    );
+    const fleet = loadFleetConfig(dir);
+    assert.equal(fleet.imageProvider, "fleet-default", "fleet scope");
+    assert.equal(fleet.bots[0].imageProvider, undefined, "bot inherits");
+    assert.equal(fleet.bots[1].imageProvider, "grok-build", "bot overrides");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("stripActionMarkers removes [[action:]] lines from transcript text", () => {
   assert.equal(
     stripActionMarkers(

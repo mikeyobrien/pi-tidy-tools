@@ -162,6 +162,40 @@ export function pickStopPid(
   return undefined;
 }
 
+/**
+ * Issue 135: does this command line look like a pi-tidy-bots daemon?
+ * Matches the bin shim (`node .../pi-tidy-bots.mjs start …`) and the
+ * source entry (`node --import tsx .../cli.ts start …`) — foreground or
+ * daemonized.
+ */
+export function daemonCommandMatches(command: string): boolean {
+  return /pi-tidy-bots(\.mjs)?|cli\.ts/.test(command) && /\bstart\b/.test(command);
+}
+
+export type DaemonPidCheck =
+  | { kind: "alive-daemon"; pid: number; command: string }
+  | { kind: "foreign"; pid: number; command: string }
+  | { kind: "dead"; pid: number };
+
+/** Issue 135: verify a pid is alive AND ours before signalling it. */
+export function verifyDaemonPid(
+  pid: number,
+  run: (file: string, args: string[]) => string = (file, args) =>
+    execFileSync(file, args, { encoding: "utf8", timeout: 5_000 })
+): DaemonPidCheck {
+  const command = (() => {
+    try {
+      return run("ps", ["-p", String(pid), "-o", "command="]).trim();
+    } catch {
+      return "";
+    }
+  })();
+  if (command.length === 0) return { kind: "dead", pid };
+  if (daemonCommandMatches(command))
+    return { kind: "alive-daemon", pid, command };
+  return { kind: "foreign", pid, command };
+}
+
 /** True while the pid is alive (signal 0 probe). */
 export function pidAlive(pid: number): boolean {
   try {

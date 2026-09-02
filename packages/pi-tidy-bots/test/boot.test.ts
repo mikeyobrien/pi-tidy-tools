@@ -56,6 +56,60 @@ test("restartSpawnArgs boots a daemonized json start via the bin", () => {
   assert.ok(!bare.includes("--fleet"), "no --fleet when unnamed");
 });
 
+test("daemonCommandMatches recognizes bin and source daemons only (issue 135)", async () => {
+  const { daemonCommandMatches, verifyDaemonPid } = await import(
+    "../src/cli-core.ts"
+  );
+  assert.equal(
+    daemonCommandMatches(
+      "/opt/homebrew/bin/node /x/packages/pi-tidy-bots/bin/pi-tidy-bots.mjs start /fleet --port 4317"
+    ),
+    true,
+    "bin daemon"
+  );
+  assert.equal(
+    daemonCommandMatches(
+      "node --import tsx /x/packages/pi-tidy-bots/src/cli.ts start /fleet"
+    ),
+    true,
+    "source daemon"
+  );
+  assert.equal(
+    daemonCommandMatches("mosh-server new -s -c 256"),
+    false,
+    "foreign process"
+  );
+  assert.equal(
+    daemonCommandMatches("/x/pi-tidy-bots.mjs status /fleet"),
+    false,
+    "non-start subcommand"
+  );
+  // verifyDaemonPid: dead (ps misses), foreign (alive but not ours), ours.
+  const ps = (rows: Record<number, string>) => (_file: string, args: string[]) => {
+    const pid = Number(args[1]);
+    if (pid in rows) return rows[pid];
+    throw new Error("no such pid");
+  };
+  assert.deepEqual(
+    verifyDaemonPid(123, ps({})),
+    { kind: "dead", pid: 123 },
+    "dead pid"
+  );
+  assert.deepEqual(
+    verifyDaemonPid(123, ps({ 123: "top" })),
+    { kind: "foreign", pid: 123, command: "top" },
+    "foreign pid"
+  );
+  assert.deepEqual(
+    verifyDaemonPid(
+      123,
+      ps({ 123: "node /x/pi-tidy-bots.mjs start /fleet" })
+    ),
+    { kind: "alive-daemon", pid: 123, command: "node /x/pi-tidy-bots.mjs start /fleet" },
+    "our daemon"
+  );
+});
+
 test("describePortHolder names every listening pid and command", () => {
   const fakeRun = (file: string, args: string[]) => {
     if (file === "lsof") return "4242\n4243\n"; // two holders (v4 + v6)

@@ -910,7 +910,9 @@ async function stopFleetAt(dir: string): Promise<number> {
   } catch {
     // Died between the liveness probe and the signal - same as stopped.
   }
-  const graceful = await waitForReady(() => !pidAlive(stop.pid), 10_000, 200);
+  // 30s grace: an 11-bot fleet under load takes longer than 10s to tear down
+  // every child session; a premature SIGKILL strands state and pidfiles.
+  const graceful = await waitForReady(() => !pidAlive(stop.pid), 30_000, 200);
   if (!graceful) {
     process.kill(stop.pid, "SIGKILL");
     await waitForReady(() => !pidAlive(stop.pid), 3_000, 100);

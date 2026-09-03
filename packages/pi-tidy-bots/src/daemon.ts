@@ -1375,8 +1375,24 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     emitRoster();
   };
 
+  /**
+   * Issue 99-FAIL: touch only ACTIVITY-BEARING kinds. The old blanket
+   * touch() stamped boot noise (session primers, extension status pings,
+   * replay deltas) as "activity" — every idle bot showed the daemon's
+   * boot second, and the poisoned values persisted via state.json.
+   */
+  const ACTIVITY_EVENT_KINDS = new Set([
+    "turn_start",
+    "agent_start",
+    "assistant_delta",
+    "assistant_message",
+    "tool_start",
+    "tool_end",
+    "tool_output",
+    "usage",
+  ]);
   const handleEvent = (runtime: BotRuntime, event: RpcEvent): void => {
-    touch(runtime);
+    if (ACTIVITY_EVENT_KINDS.has(event.kind)) touch(runtime);
     const botName = runtime.config.name;
     switch (event.kind) {
       case "turn_start": {
@@ -1730,7 +1746,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       }
       case "ui_request": {
         if (!event.id) return;
-        if (isFireAndForgetUiMethod(event.method)) return;
+        if (isFireAndForgetUiMethod(event.method)) return; // status pings: not activity
+        // A real interactive question is activity; status pings are not.
+        touch(runtime);
         if (!isInteractiveUiMethod(event.method)) {
           // Unknown method: defuse it immediately so a future interactive UI
           // request can never wedge a turn. The child ignores unmatched
@@ -2269,6 +2287,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       },
       busSend: async (fromName, targetName, message, behavior, images) =>
         deliverHandoff(fromName, targetName, message, behavior, images),
+      loadTranscript: (name: string) => transcripts.load(name),
       queue: (name: string) => queueItems(name),
       // Issue 76: drop a journaled follow-up so it never replays. Live
       // unqueue inside the child is best-effort — pi has no RPC to remove an

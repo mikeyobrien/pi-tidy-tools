@@ -34,7 +34,7 @@ export function createEventLog(max = 500) {
  * to the window floor (the bounded log can only replay what it still holds).
  */
 export function resolveSinceCursor(since: number, current: number): number {
-  if (!Number.isFinite(since) || since < 0) return 0;
+  if (!Number.isFinite(since) || since < 0 || since > current) return 0;
   const floor = Math.max(0, current - 500);
-  return Math.min(Math.max(since, floor), current);
+  return Math.max(since, floor);
 }

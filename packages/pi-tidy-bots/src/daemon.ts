@@ -40,6 +40,7 @@ import {
   type UiAnswer,
 } from "./rpc.ts";
 import { createEventLog, resolveSinceCursor } from "./eventlog.ts";
+import { createRpcEventHandler } from "./events.ts";
 import { attributionPrefix, stripActionMarkers } from "./actions.ts";
 import { classifyFailure, isRetryable } from "./reasons.ts";
 import {
@@ -57,6 +58,7 @@ import {
   wsUpgradeAuthorized,
   writeWsAuthFailure,
 } from "./server.ts";
+export { deltaThrottleDue } from "./events.ts";
 import {
   COMPACT_TRIGGER,
   journalCompaction,
@@ -421,20 +423,6 @@ export function claimClientMessageId(
   if (seen.has(clientMessageId)) return false;
   seen.add(clientMessageId);
   return true;
-}
-
-/**
- * Delta throttle decision (issue 20 item 6): emit when nothing was sent yet,
- * when ≥300ms passed since the last emission, or when the cumulative text
- * grew by ≥256 bytes — whichever comes first.
- */
-export function deltaThrottleDue(
-  last: { at: number; chars: number } | null,
-  nextLength: number,
-  now: number
-): boolean {
-  if (!last) return true;
-  return now - last.at >= 300 || nextLength - last.chars >= 256;
 }
 
 export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
@@ -1376,424 +1364,25 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
   };
 
   /**
-   * Issue 99-FAIL: touch only ACTIVITY-BEARING kinds. The old blanket
-   * touch() stamped boot noise (session primers, extension status pings,
-   * replay deltas) as "activity" — every idle bot showed the daemon's
-   * boot second, and the poisoned values persisted via state.json.
+   * Issue 184: the RPC event pipeline moved to events.ts (one reviewable
+   * module); daemon.ts supplies its state access via RpcEventContext and
+   * keeps lifecycle glue only.
    */
-  const ACTIVITY_EVENT_KINDS = new Set([
-    "turn_start",
-    "agent_start",
-    "assistant_delta",
-    "assistant_message",
-    "tool_start",
-    "tool_end",
-    "tool_output",
-    "usage",
-  ]);
-  const handleEvent = (runtime: BotRuntime, event: RpcEvent): void => {
-    if (ACTIVITY_EVENT_KINDS.has(event.kind)) touch(runtime);
-    const botName = runtime.config.name;
-    switch (event.kind) {
-      case "turn_start": {
-        // A queued follow-up turn starts with turn_start, not agent_start —
-        // the oldest queued message is now streaming: mark it delivered.
-        if (runtime.queuedCount > 0) {
-          runtime.queuedCount--;
-          const head = pendingStore.load(botName)[0];
-          if (head) {
-            pendingStore.remove(botName, head.id);
-            const delivered = runtime.transcript.find(
-              (candidate) => candidate.id === head.id
-            );
-            if (delivered) {
-              delivered.delivering = false;
-              emit({ type: "append", bot: botName, entry: delivered });
-            }
-          }
-          emitRoster();
-        }
-        return;
-      }
-      case "usage": {
-        if (event.inputTokens !== undefined)
-          runtime.inputTokens = event.inputTokens;
-        if (runtime.contextWindow && runtime.inputTokens !== undefined)
-          runtime.fill = computeFill(
-            runtime.inputTokens,
-            runtime.contextWindow
-          );
-        return;
-      }
-      case "agent_start": {
-        // Issue 74: the child ACCEPTED a prompt — that entry is streaming,
-        // not queued. delivering now means only "not yet accepted".
-        if (runtime.activeDeliveryId) {
-          const accepted = runtime.transcript.find(
-            (candidate) => candidate.id === runtime.activeDeliveryId
-          );
-          runtime.activeDeliveryId = null;
-          if (accepted?.delivering) {
-            accepted.delivering = false;
-            emit({ type: "append", bot: botName, entry: accepted });
-          }
-        }
-        // Issue 148: replayed journal entries have no activeDeliveryId (it
-        // died with the old daemon) — clear their delivering flags by id so
-        // the operator bubble stops spinning after the restart replay.
-        if (runtime.replayDeliveryIds.size > 0) {
-          for (const id of runtime.replayDeliveryIds) {
-            const replayed = runtime.transcript.find(
-              (candidate) => candidate.id === id
-            );
-            if (replayed?.delivering) {
-              replayed.delivering = false;
-              emit({ type: "append", bot: botName, entry: replayed });
-            }
-          }
-          runtime.replayDeliveryIds.clear();
-        }
-        runtime.turnId = randomUUID();
-        runtime.turnText = "";
-        runtime.steps = [];
-        runtime.turnParts = new TurnPartsAccumulator();
-        runtime.deltaSent = null;
-        emit({
-          type: "bubble",
-          bot: botName,
-          turnId: runtime.turnId,
-          phase: "working",
-          steps: [],
-        });
-        return;
-      }
-      case "tool_start": {
-        // Issue 61 layer 2: circuit breaker — 5 consecutive identical
-        // tool_start events means the harness keeps rejecting the same call.
-        const failSig = `${event.toolName}:${event.label ?? ""}`;
-        if (
-          runtime.toolFailStreak &&
-          runtime.toolFailStreak.signature === failSig
-        ) {
-          runtime.toolFailStreak.count++;
-        } else {
-          runtime.toolFailStreak = { count: 1, signature: failSig };
-        }
-        if (runtime.toolFailStreak.count >= 5) {
-          runtime.toolFailStreak = null;
-          runtime.session?.abort();
-          appendTranscript(runtime, {
-            id: randomUUID(),
-            role: "system",
-            origin: "system",
-            text: `Stopped: 5 identical tool failures \u2014 model/tool contract broken (${event.toolName}). Operator intervention required.`,
-            ts: new Date().toISOString(),
-          });
-          log(
-            `[${botName}] circuit breaker: 5 identical tool failures, turn aborted`
-          );
-          return;
-        }
-        runtime.turnParts.startTool({
-          toolCallId: event.toolCallId,
-          tool: event.toolName,
-          label: event.label,
-          reason: event.reason,
-          started: Date.now(),
-          // Issue 128: message_agent dispatches carry the receipt ON the
-          // tool part — the chip renders in-order at the call site; the
-          // standalone receipt ENTRY is gone (single surface).
-          ...(event.target
-            ? {
-                receipt: (() => {
-                  const target = fleet.bots.find(
-                    (bot) => bot.name === event.target
-                  );
-                  return {
-                    name: event.target,
-                    ...(target?.avatar ? { avatar: target.avatar } : {}),
-                    ...(target?.title ? { title: target.title } : {}),
-                  };
-                })(),
-              }
-            : {}),
-        });
-        runtime.steps.push({
-          toolCallId: event.toolCallId,
-          name: event.toolName,
-          reason: event.reason,
-          ...(event.label ? { label: event.label } : {}),
-          started: Date.now(),
-        });
-        emit({
-          type: "bubble",
-          bot: botName,
-          turnId: runtime.turnId,
-          phase: "parts",
-          parts: runtime.turnParts.snapshot(),
-        });
-        if (activeToolOutput !== "off") {
-          emit({
-            type: "bubble",
-            bot: botName,
-            turnId: runtime.turnId,
-            phase: "steps",
-            steps: viewSteps(runtime.steps),
-          });
-        }
-        return;
-      }
-      case "tool_output": {
-        runtime.toolFailStreak = null;
-        runtime.turnParts.updateToolOutput(event.toolCallId, event.text);
-        const step = [...runtime.steps]
-          .reverse()
-          .find((candidate) => candidate.toolCallId === event.toolCallId);
-        if (step) step.output = event.text.slice(0, 1200);
-        if (activeToolOutput === "full") {
-          emit({
-            type: "bubble",
-            bot: botName,
-            turnId: runtime.turnId,
-            phase: "steps",
-            steps: viewSteps(runtime.steps),
-          });
-        }
-        return;
-      }
-      case "tool_end": {
-        // Issue 66: pi's tool_execution_end — THE settle event. Until this
-        // mapping existed every tool stayed "running" and the settle
-        // fallback flipped them all to error: every successful call rendered
-        // failed, durations never displayed, and the 61 breaker's output
-        // streak-reset never fired.
-        const step = [...runtime.steps]
-          .reverse()
-          .find((candidate) => candidate.toolCallId === event.toolCallId);
-        const duration =
-          event.elapsedMs ?? (step ? Date.now() - step.started : undefined);
-        if (!event.isError) runtime.toolFailStreak = null;
-        runtime.turnParts.settleTool(event.toolCallId, {
-          isError: event.isError,
-          duration,
-          output: event.result,
-        });
-        if (step) {
-          step.output = event.result.slice(0, 1200);
-          step.error = event.isError;
-          if (duration !== undefined) step.duration = duration;
-        }
-        emit({
-          type: "bubble",
-          bot: botName,
-          turnId: runtime.turnId,
-          phase: "parts",
-          parts: runtime.turnParts.snapshot(),
-        });
-        if (activeToolOutput === "full") {
-          emit({
-            type: "bubble",
-            bot: botName,
-            turnId: runtime.turnId,
-            phase: "steps",
-            steps: viewSteps(runtime.steps),
-          });
-        }
-        return;
-      }
-      case "assistant_delta": {
-        runtime.messageStreamed = true;
-        runtime.turnText += event.delta;
-        runtime.turnParts.appendText(event.delta);
-        const text = stripActionMarkers(runtime.turnText);
-        // Throttle: emit at most every ~300ms or ~256 bytes of growth. Frames
-        // are cumulative, so dropped frames lose nothing; the settle path
-        // always emits the final text.
-        const now = Date.now();
-        const last = runtime.deltaSent;
-        if (deltaThrottleDue(last, text.length, now)) {
-          runtime.deltaSent = { at: now, chars: text.length };
-          emit({
-            type: "bubble",
-            bot: botName,
-            turnId: runtime.turnId,
-            phase: "delta",
-            // Server-side marker stripping: any WS client gets clean streaming
-            // text. A marker line still open mid-stream becomes visible only
-            // until its closing ]] arrives — the grammar is line-based.
-            text,
-          });
-          emit({
-            type: "bubble",
-            bot: botName,
-            turnId: runtime.turnId,
-            phase: "parts",
-            parts: runtime.turnParts.snapshot(),
-          });
-        }
-        return;
-      }
-      case "assistant_message": {
-        // Issue 124: turnText is DERIVED from the parts model (append
-        // semantics), never replaced by the latest message — the old
-        // assignment wiped narration at every message boundary ("" at
-        // tool-call-only ones). A message that streamed no deltas (arrived
-        // whole) is appended so its text reaches the model exactly once.
-        if (!runtime.messageStreamed && event.text.length > 0)
-          runtime.turnParts.appendText(event.text);
-        // Message boundary: narration blocks stay distinct parts (issue
-        // 123's styling signal), and the boundary forces an emit so
-        // paragraph completions land promptly.
-        runtime.turnParts.splitText();
-        runtime.turnText = runtime.turnParts.concatText();
-        runtime.deltaSent = {
-          at: Date.now(),
-          chars: stripActionMarkers(runtime.turnText).length,
-        };
-        emit({
-          type: "bubble",
-          bot: botName,
-          turnId: runtime.turnId,
-          phase: "delta",
-          text: stripActionMarkers(runtime.turnText),
-        });
-        emit({
-          type: "bubble",
-          bot: botName,
-          turnId: runtime.turnId,
-          phase: "parts",
-          parts: runtime.turnParts.snapshot(),
-        });
-        return;
-      }
-      case "event": {
-        // Issue 124: message boundaries reset the streamed flag — a message
-        // that arrives whole (no deltas) is appended at assistant_message.
-        const rawType = (event.raw as { type?: string } | undefined)?.type;
-        if (rawType === "message_start") runtime.messageStreamed = false;
-        return;
-      }
-      case "agent_settled": {
-        const turnId = runtime.turnId;
-        runtime.turnId = null;
-        // Issue 124: canonical text = the full turn's narration from the
-        // parts model — never the last message alone.
-        const text = stripActionMarkers(runtime.turnParts.concatText());
-        const entry: TranscriptEntry = {
-          id: randomUUID(),
-          role: "assistant",
-          origin: "bot",
-          originFrom: botName,
-          text,
-          ts: new Date().toISOString(),
-          // Marker stripping applies to parts too: settled history never
-          // carries [[action:]] lines in any surface.
-          parts: runtime.turnParts.snapshot().map((part) => {
-            if (part.type === "text")
-              return { ...part, text: stripActionMarkers(part.text) };
-            // Issue 49: "running" clears at settle — a turn cannot end
-            // while a tool result is still owed.
-            if (part.status === "running") part.status = "error";
-            return part;
-          }),
-          ...(runtime.steps.length > 0
-            ? {
-                steps: runtime.steps.map((step) => ({
-                  name: step.name,
-                  duration: step.duration,
-                })),
-              }
-            : {}),
-        };
-        appendTranscript(runtime, entry);
-        if (turnId)
-          emit({
-            type: "bubble",
-            bot: botName,
-            turnId,
-            phase: "final",
-            text,
-          });
-        const pendingSources = runtime.pendingFrom;
-        runtime.pendingFrom = [];
-        for (const pendingFrom of pendingSources) {
-          const source = runtimes.get(pendingFrom);
-          if (!source) continue;
-          // Issue 58 (grok-style): the completion is a transcript FACT on the
-          // dispatcher, not a prompt. Prompting the dispatcher started a turn
-          // on it (ping-pong pollution in the operator's chat); the report now
-          // renders as a "Message from X" entry the dispatcher never answers.
-          appendTranscript(source, {
-            id: randomUUID(),
-            role: "assistant",
-            origin: "bot",
-            originFrom: botName,
-            kind: "completion",
-            text,
-            ts: new Date().toISOString(),
-          });
-          touch(source);
-        }
-        // Issue 43 amendment: a window-(re)learn that showed fill ≥ 60%
-        // (model switch onto a smaller window, restart over a big session)
-        // schedules a FORCED compaction here — the first settled boundary.
-        const forceNext = runtime.forceCompactNext === true;
-        runtime.forceCompactNext = false;
-        void maybeCompact(runtime, forceNext ? { force: true } : {}).catch(
-          () => {}
-        );
-        return;
-      }
-      case "ui_request": {
-        if (!event.id) return;
-        if (isFireAndForgetUiMethod(event.method)) return; // status pings: not activity
-        // A real interactive question is activity; status pings are not.
-        touch(runtime);
-        if (!isInteractiveUiMethod(event.method)) {
-          // Unknown method: defuse it immediately so a future interactive UI
-          // request can never wedge a turn. The child ignores unmatched
-          // responses, so a cancelled answer is safe for any method.
-          resolveUi(
-            runtime,
-            { id: event.id, method: event.method, title: event.title },
-            { cancel: true },
-            true
-          );
-          return;
-        }
-        if (runtime.pendingUi.has(event.id)) return;
-        const view: UiRequestView = {
-          id: event.id,
-          method: event.method,
-          title: event.title,
-          ...(event.options ? { options: event.options } : {}),
-          ...(event.message ? { message: event.message } : {}),
-          ...(event.placeholder ? { placeholder: event.placeholder } : {}),
-        };
-        appendTranscript(runtime, {
-          id: randomUUID(),
-          role: "system",
-          origin: "system",
-          text: view.message ? `${view.title} — ${view.message}` : view.title,
-          ts: new Date().toISOString(),
-          ui: view,
-        });
-        const timer = setTimeout(() => {
-          if (!runtime.pendingUi.delete(view.id)) return;
-          resolveUi(
-            runtime,
-            view,
-            autoUiAnswer(view.method, view.options),
-            true
-          );
-        }, UI_AUTO_ANSWER_MS);
-        runtime.pendingUi.set(view.id, { view, timer });
-        return;
-      }
-      default:
-        return;
-    }
-  };
+  const handleEvent = createRpcEventHandler({
+    runtimes,
+    fleetBots: () => fleet.bots,
+    pendingStore,
+    activeToolOutput: () => activeToolOutput,
+    viewSteps,
+    computeFill,
+    log,
+    emit,
+    emitRoster,
+    touch,
+    appendTranscript,
+    resolveUi,
+    maybeCompact,
+  });
 
   const handleExit = (
     runtime: BotRuntime,

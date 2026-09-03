@@ -301,7 +301,7 @@ rl.on("line", (line) => {
         });
         send({ type: "agent_end" });
         send({ type: "agent_settled" });
-      }, 700);
+      }, Number(process.env.PTB_STUB_TURN_MS ?? 700));
     };
     if (queued && process.env.PTB_STUB_HOLD_DIR) {
       const wait = setInterval(() => {

@@ -62,6 +62,11 @@ test(
       const holdDir = join(fleetDir, "hold");
       mkdirSync(holdDir, { recursive: true });
       process.env.PTB_STUB_HOLD_DIR = holdDir;
+      // Widen the live-turn window: the parked-items assertions must land
+      // while turn 1 is still running. 700ms raced under load (the
+      // pre-existing flake documented since 157); 5s makes the park
+      // deterministic.
+      process.env.PTB_STUB_TURN_MS = "5000";
 
       const { startFleet } = await import("../src/daemon.ts");
       const handle = await startFleet({
@@ -197,6 +202,7 @@ test(
       // Release the held queued turns; they drain into the transcript and
       // the queue empties. The dismissed row never replays.
       writeFileSync(join(holdDir, "release"), "1");
+      delete process.env.PTB_STUB_TURN_MS;
       await waitFor(async () => (await queue()).length === 0, 20000);
       ws.close();
     } finally {

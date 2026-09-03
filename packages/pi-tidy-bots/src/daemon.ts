@@ -2830,7 +2830,24 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           seq: eventLog.current,
         })
       );
+      // Issue 184: the replay must not re-animate history. since=0 replays
+      // the whole buffer INCLUDING retired turns' bubble working/delta/
+      // final frames — clients recreated historical bubbles and per-char
+      // revealed persisted text on every fresh load. Retired-turn bubbles
+      // are dropped: only frames for CURRENTLY-live turns pass (their
+      // content rides append events once settled).
+      const liveTurnIds = new Set(
+        [...runtimes.values()]
+          .map((runtime) => runtime.turnId)
+          .filter((turnId): turnId is string => typeof turnId === "string")
+      );
       for (const missed of eventLog.since(Number.isFinite(since) ? since : 0)) {
+        if (
+          missed.payload.type === "bubble" &&
+          typeof missed.payload.turnId === "string" &&
+          !liveTurnIds.has(missed.payload.turnId)
+        )
+          continue;
         socket_.send(JSON.stringify(missed.payload));
       }
       socket_.send(

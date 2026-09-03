@@ -117,18 +117,29 @@ export function fitToolLine(line: string, width: number): string {
  * A width-aware component: truncates each pre-composed (ANSI-colored) line to the
  * live viewport width so nothing soft-wraps. Re-flows on resize
  * because render(width) is re-invoked by the TUI.
+ *
+ * Static sources are settled, immutable blocks, so their fitted lines are
+ * cached per width: the TUI re-invokes render() on every frame, and without
+ * the cache every settled block in the transcript re-fits its lines on every
+ * keystroke — frame cost grows with the session's total tool calls. Function
+ * sources (running calls with ticking elapsed time) are never cached.
  */
 class WidthAwareLines {
+  private cache?: { width: number; lines: string[] };
+
   constructor(
     private readonly source: string[] | (() => string[]),
     private readonly background?: (text: string) => string
   ) {}
-  invalidate(): void {}
+  invalidate(): void {
+    this.cache = undefined;
+  }
   render(width: number): string[] {
+    if (this.cache?.width === width) return this.cache.lines;
     const max = Math.max(1, width);
     const lines =
       typeof this.source === "function" ? this.source() : this.source;
-    return lines.map((line) => {
+    const rendered = lines.map((line) => {
       const fitted = fitToolLine(line, max);
       if (!this.background) return fitted;
       const padded =
@@ -141,6 +152,9 @@ class WidthAwareLines {
         .map((segment) => this.background!(`${segment}${RESET}`))
         .join("");
     });
+    if (typeof this.source !== "function")
+      this.cache = { width, lines: rendered };
+    return rendered;
   }
 }
 

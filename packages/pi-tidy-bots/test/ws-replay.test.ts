@@ -1,12 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
-import {
-  mkdirSync,
-  mkdtempSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import WebSocket from "ws";
@@ -17,10 +12,8 @@ import WebSocket from "ws";
 // persisted text on every fresh load. Root fix: replay carries append
 // events + CURRENTLY-live turns' bubble frames only.
 
-const runner = new URL(
-  "./fixtures/rpc/streaming-pi.mjs",
-  import.meta.url
-).pathname;
+const runner = new URL("./fixtures/rpc/streaming-pi.mjs", import.meta.url)
+  .pathname;
 
 async function waitFor(
   probe: () => Promise<boolean> | boolean,
@@ -119,18 +112,27 @@ test("fresh-load replay: zero retired bubbles, appends intact (184)", async () =
 
     // Drive TWO full turns — bubble working/parts/delta/final frames get
     // published for both, then both turns retire (turnId back to null).
+    // 183 family: wait per-turn by COUNTING settled entries — a some(done)
+    // probe matches turn one's entry and returns while turn two is still
+    // mid-flight, and under load its settle can outrun the margin below.
+    let settled = 0;
     for (const text of ["turn one", "turn two"]) {
+      settled += 1;
       await fetch(`${h.base}/api/bots/aa/message`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ text }),
       });
-      await waitFor(async () =>
-        (
-          (await (await fetch(`${h.base}/api/bots/aa/transcript`)).json()) as {
-            transcript: { text: string }[];
-          }
-        ).transcript.some((e) => e.text.includes("done"))
+      const target = settled;
+      await waitFor(
+        async () =>
+          (
+            (await (
+              await fetch(`${h.base}/api/bots/aa/transcript`)
+            ).json()) as {
+              transcript: { text: string }[];
+            }
+          ).transcript.filter((e) => e.text.includes("done")).length >= target
       );
     }
     // Settle margin: the final bubble frame lands at agent_settled.
@@ -189,9 +191,7 @@ test("live turn: its bubble frames DO replay for reconnecting clients (184)", as
       return frames.some((f) => f.type === "bubble" && f.turnId);
     });
     const frames = await replay(h.wsUrl(0));
-    const liveBubbles = frames.filter(
-      (f) => f.type === "bubble" && f.turnId
-    );
+    const liveBubbles = frames.filter((f) => f.type === "bubble" && f.turnId);
     assert.ok(
       liveBubbles.length > 0,
       "the CURRENTLY-live turn's frames replay (reconnect-during-turn)"

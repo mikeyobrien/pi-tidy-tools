@@ -106,14 +106,25 @@ test(
         return res;
       };
 
-      // WS: collect roster frames to prove the queue change broadcasts.
+      // WS: collect roster frames to prove the queue change broadcasts, and
+      // bubble frames — agent_start's "working" bubble is the deterministic
+      // gate that bb is STREAMING (183 family: the transcript's delivering
+      //:false clears at prompt ACCEPTANCE, before turn_start — sending the
+      // image handoff in that window takes the idle path and never parks).
       const rosterFrames: Array<{
         bots: { name: string; queue?: QueueItem[] }[];
       }> = [];
+      let bbWorking = false;
       const ws = new WebSocket(`ws://127.0.0.1:${handle.port}/api/ws`);
       ws.on("message", (raw) => {
         const frame = JSON.parse(String(raw));
         if (frame.type === "roster") rosterFrames.push(frame);
+        if (
+          frame.type === "bubble" &&
+          frame.bot === "bb" &&
+          frame.phase === "working"
+        )
+          bbWorking = true;
       });
       await new Promise((resolve) => ws.once("open", resolve));
 
@@ -121,16 +132,9 @@ test(
       // Fire WITHOUT awaiting the response — the daemon answers only at
       // turn end, but the entry journals/streams immediately.
       const first = send("first");
-      // Wait until bb is streaming turn 1 (its prompt accepted, mid-turn).
-      await waitFor(async () => {
-        const transcript = await (
-          await fetch(`${base}/api/bots/bb/transcript`)
-        ).json();
-        return (transcript.transcript ?? []).some(
-          (e: { text?: string; delivering?: boolean }) =>
-            e.text === "first" && e.delivering === false
-        );
-      });
+      // Wait until bb's turn is STREAMING (agent_start fired) — only then do
+      // the follow-ups and the image handoff take the parking path.
+      await waitFor(() => bbWorking);
       await send("follow-up one");
       await send("follow-up two");
       const bus = await fetch(`${base}/bus/send`, {

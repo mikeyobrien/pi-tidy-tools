@@ -191,7 +191,7 @@ test(
 
 test(
   "model switch recomputes fill on the new window and force-compacts (acceptance 2+4)",
-  { timeout: 120000 },
+  { timeout: 240000 },
   async () => {
     const fleetDir = mkdtempSync(join(tmpdir(), "ptb-amd2-"));
     const handles: Array<{ stop(): Promise<void> }> = [];
@@ -248,13 +248,19 @@ test(
       // resume correctly triggers right after the learn.)
 
       // Next settled boundary force-compacts despite hysteresis being off.
+      // Same 183 family: under full-suite load the boundary turn + compaction
+      // chain can outrun the 20s default — the trace only grows once fired,
+      // so a load-tolerant wait is the deterministic shape here.
       await send(base, "trigger boundary");
-      await waitFor(() => traced(tracePath).some((r) => r.kind === "compact"));
+      await waitFor(
+        () => traced(tracePath).some((r) => r.kind === "compact"),
+        90000
+      );
       // The compaction fires at the first settled boundary against the NEW
       // window — trigger label is force (scheduled) or threshold (usage-event
       // fill drives it first on a fresh boot whose carried tokens reset);
       // both bypass hysteresis on a first boot. What matters: it fired.
-      await waitFor(() => journal(fleetDir).length > 0);
+      await waitFor(() => journal(fleetDir).length > 0, 45000);
       const rows = journal(fleetDir);
       assert.ok(
         rows.at(-1)?.trigger === "force" ||

@@ -191,6 +191,13 @@ export interface BotRuntime {
    */
   forceCompactNext?: boolean;
   /**
+   * Issue 79: the child returned a TERMINAL compaction no-op ("Already
+   * compacted") at this fill level. Further auto-compaction attempts are
+   * suppressed until fill drops below the trigger (context actually
+   * shrank) or the session resets — one refusal, zero spam.
+   */
+  compactNoop?: { at: number; fill: number };
+  /**
    * Issue 148: pending-journal ids being replayed this boot — an unclean
    * death lost activeDeliveryId, so the replayed entries' delivering flags
    * would spin forever. agent_start clears them by id.
@@ -888,6 +895,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     runtime.inputTokens = undefined;
     runtime.fill = undefined;
     runtime.turnsSinceCompact = 0;
+    runtime.compactNoop = undefined;
     runtime.lastCompactAt = Date.now();
     runtime.stopping = false;
     await spawnBot(botName);
@@ -908,6 +916,43 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     log(
       `[${botName}] session reset after failed compaction — fleet state re-injected`
     );
+  };
+
+  /**
+   * Issue 79 layer 2: reconcile the daemon's context estimates with the
+   * child's OWN numbers. get_state usage (when the child reports it) is
+   * ground truth over file-size/window fill math — the overnight loop
+   * ran because the daemon's stale estimate said compact while pi's
+   * compaction state said done.
+   */
+  const reconcileUsageFromChild = async (runtime: BotRuntime) => {
+    try {
+      const state = (await runtime.session?.getState()) as {
+        data?: {
+          usage?: {
+            input?: unknown;
+            inputTokens?: unknown;
+            promptTokens?: unknown;
+          };
+        };
+      };
+      const usage = state?.data?.usage;
+      const input =
+        typeof usage?.input === "number"
+          ? usage.input
+          : typeof usage?.inputTokens === "number"
+            ? usage.inputTokens
+            : typeof usage?.promptTokens === "number"
+              ? usage.promptTokens
+              : undefined;
+      if (input !== undefined && input >= 0) {
+        runtime.inputTokens = input;
+        if (runtime.contextWindow)
+          runtime.fill = computeFill(input, runtime.contextWindow);
+      }
+    } catch {
+      /* child unreachable: keep daemon estimates */
+    }
   };
 
   /** Issue 43 item 2: the compaction decision + flow (amendment-hardened). */
@@ -931,6 +976,17 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       now: Date.now(),
     });
     if (!go) return false;
+    // Issue 79: a terminal no-op ("Already compacted") already answered at
+    // this fill level — pi's state says done. Suppress every further
+    // attempt until fill actually drops below the trigger or the session
+    // resets. This is what ends the loop; hysteresis alone let forced
+    // re-arms (restart window re-learns) spam all night.
+    if (
+      runtime.compactNoop &&
+      runtime.fill !== undefined &&
+      runtime.fill >= COMPACT_TRIGGER
+    )
+      return false;
     const tokensBefore = runtime.inputTokens;
     const preamble = composeFleetPreamble({
       handoffs: runtime.pendingFrom,
@@ -1002,6 +1058,68 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         preamble,
       });
     } catch (error) {
+      // Issue 79 layer 1: "Already compacted" is a TERMINAL NO-OP from the
+      // child — pi's compaction state says done. It is not a delivery
+      // failure; the old classifier fed it to escalation as
+      // delivery_failed and retried at every settled boundary (118+
+      // identical entries overnight).
+      if (/already compacted/i.test(String(error))) {
+        // Restore the session model first if a fallback switch happened.
+        if (fallback && sessionModelId) {
+          try {
+            const back = splitModelId(sessionModelId);
+            if (back)
+              await runtime.session?.request({
+                type: "set_model",
+                provider: back.provider,
+                modelId: back.modelId,
+              });
+            runtime.activeModelId = sessionModelId;
+          } catch {
+            /* no-op proceeds regardless */
+          }
+        }
+        // Layer 2: prefer the child's own usage numbers, then judge.
+        await reconcileUsageFromChild(runtime);
+        const overAfterReconcile =
+          runtime.inputTokens !== undefined &&
+          runtime.contextWindow !== undefined &&
+          runtime.inputTokens > runtime.contextWindow;
+        if (overAfterReconcile) {
+          // Genuine overflow AFTER reconciliation: pi has nothing to
+          // compact yet usage is over the window — the issue 43 amendment
+          // reset terminates this in ONE reset, not unbounded spam.
+          await escalateCompactionFailure(
+            runtime,
+            trigger,
+            "already_compacted_over_window",
+            true
+          );
+          runtime.compactNoop = undefined;
+          return false;
+        }
+        runtime.lastCompactAt = Date.now();
+        runtime.turnsSinceCompact = 0;
+        runtime.forceCompactNext = false;
+        runtime.compactNoop = {
+          at: Date.now(),
+          fill: runtime.fill ?? 0,
+        };
+        // The single system entry — the loop ends here.
+        appendTranscript(runtime, {
+          id: randomUUID(),
+          role: "system",
+          origin: "system",
+          text: `Context already compacted (child state) — daemon estimate reconciled (${Math.round(
+            (runtime.fill ?? 0) * 100
+          )}% fill); retrying suppressed.`,
+          ts: new Date().toISOString(),
+        });
+        log(
+          `[${botName}] compaction refused as terminal no-op (already compacted) — estimates reconciled, loop suppressed`
+        );
+        return true;
+      }
       refused = /nothing to compact/i.test(String(error));
       if (!refused) {
         const reason = classifyFailure(String(error));
@@ -1914,6 +2032,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         // its model (boot probe): over-window sessions schedule a forced
         // compaction at the next settled boundary (issue 43 amendment).
         runtime.forceCompactNext = false;
+        runtime.compactNoop = undefined; // issue 79: fresh child state
         runtime.stopping = true;
         personaWatchers.get(name)?.close();
         personaWatchers.delete(name);
@@ -1992,9 +2111,26 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           seq: eventLog.current,
         })
       );
+      // Issue 184 (forge de6dfe4): the replay must not re-animate history.
+      // since=0 replays the whole buffer INCLUDING retired turns' bubble
+      // working/delta/final frames — clients recreated historical bubbles
+      // and per-char revealed persisted text on every fresh load.
+      // Retired-turn bubbles are dropped: only frames for CURRENTLY-live
+      // turns pass (their content rides append events once settled).
+      const liveTurnIds = new Set(
+        [...runtimes.values()]
+          .map((runtime) => runtime.turnId)
+          .filter((turnId): turnId is string => typeof turnId === "string")
+      );
       for (const missed of eventLog.since(
         resolveSinceCursor(since, eventLog.current)
       )) {
+        if (
+          missed.payload.type === "bubble" &&
+          typeof missed.payload.turnId === "string" &&
+          !liveTurnIds.has(missed.payload.turnId)
+        )
+          continue;
         socket_.send(JSON.stringify(missed.payload));
       }
       socket_.send(

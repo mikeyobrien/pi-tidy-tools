@@ -69,7 +69,30 @@ rl.on("line", (line) => {
       type: "response",
       id: request.id,
       success: true,
-      data: { model: { contextWindow: stubWindow() }, streaming: false },
+      data: {
+        model: { contextWindow: stubWindow() },
+        streaming: false,
+        // Issue 79 layer 2: the child's OWN usage numbers — ground truth
+        // the daemon must prefer over its fill estimates.
+        ...(process.env.PTB_STUB_STATE_USAGE_FILE !== undefined
+          ? (() => {
+              // Issue 79: file-backed so a test can flip the child's
+              // reported usage across the session-reset respawn.
+              try {
+                const n = Number(
+                  readFileSync(
+                    process.env.PTB_STUB_STATE_USAGE_FILE,
+                    "utf8"
+                  ).trim()
+                );
+                if (Number.isFinite(n)) return { usage: { input: n } };
+              } catch {}
+              return {};
+            })()
+          : process.env.PTB_STUB_STATE_USAGE !== undefined
+            ? { usage: { input: Number(process.env.PTB_STUB_STATE_USAGE) } }
+            : {}),
+      },
     });
     return;
   }
@@ -91,7 +114,25 @@ rl.on("line", (line) => {
     return;
   }
   if (request.type === "compact") {
-    trace("compact", process.env.PTB_STUB_COMPACT_FAIL === "1" ? "FAIL" : "ok");
+    trace(
+      "compact",
+      process.env.PTB_STUB_COMPACT_FAIL === "1"
+        ? "FAIL"
+        : process.env.PTB_STUB_COMPACT_REFUSAL
+          ? `REFUSE(${process.env.PTB_STUB_COMPACT_REFUSAL})`
+          : "ok"
+    );
+    if (process.env.PTB_STUB_COMPACT_REFUSAL === "already") {
+      // Issue 79: pi's compaction state says done — the terminal no-op
+      // refusal the daemon used to classify as delivery_failed.
+      send({
+        type: "response",
+        id: request.id,
+        success: false,
+        error: "Already compacted",
+      });
+      return;
+    }
     if (process.env.PTB_STUB_COMPACT_FAIL === "1") {
       // A failed compact models a hard reset in these tests: subsequent
       // turns (including in RESPAWNED stub processes) report a SMALL
@@ -244,36 +285,39 @@ rl.on("line", (line) => {
           partialResult: "still sleeping...\n",
         });
       }, 350);
-      setTimeout(() => {
-        send({
-          type: "tool_execution_end",
-          toolCallId: "t1",
-          result: "slept fine",
-          isError: false,
-          piTidyElapsedMs: 650,
-        });
-        send({
-          type: "message_end",
-          message: {
-            role: "assistant",
-            content: [{ type: "text", text: "done" }],
-          },
-        });
-        send({
-          type: "turn_end",
-          message: {
-            usage: {
-              input: freshSession()
-                ? 10
-                : process.env.PTB_STUB_USAGE !== undefined
-                  ? Number(process.env.PTB_STUB_USAGE)
-                  : 10,
+      setTimeout(
+        () => {
+          send({
+            type: "tool_execution_end",
+            toolCallId: "t1",
+            result: "slept fine",
+            isError: false,
+            piTidyElapsedMs: 650,
+          });
+          send({
+            type: "message_end",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "done" }],
             },
-          },
-        });
-        send({ type: "agent_end" });
-        send({ type: "agent_settled" });
-      }, 700);
+          });
+          send({
+            type: "turn_end",
+            message: {
+              usage: {
+                input: freshSession()
+                  ? 10
+                  : process.env.PTB_STUB_USAGE !== undefined
+                    ? Number(process.env.PTB_STUB_USAGE)
+                    : 10,
+              },
+            },
+          });
+          send({ type: "agent_end" });
+          send({ type: "agent_settled" });
+        },
+        Number(process.env.PTB_STUB_TURN_MS ?? 700)
+      );
     };
     if (queued && process.env.PTB_STUB_HOLD_DIR) {
       const wait = setInterval(() => {

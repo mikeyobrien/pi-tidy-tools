@@ -22,10 +22,8 @@ import { splitModelId } from "../src/daemon.ts";
 // 4. Fill telemetry always reads the live window.
 
 const extraDirs: string[] = [];
-const runner = new URL(
-  "./fixtures/rpc/streaming-pi.mjs",
-  import.meta.url
-).pathname;
+const runner = new URL("./fixtures/rpc/streaming-pi.mjs", import.meta.url)
+  .pathname;
 
 async function waitFor(
   probe: () => Promise<boolean> | boolean,
@@ -54,10 +52,7 @@ function makeFleet(
   writeFileSync(join(fleetDir, "bots.toml"), manifest);
   const tracePath = join(fleetDir, "stub-trace.jsonl");
   const wrapper = join(fleetDir, "pi.sh");
-  writeFileSync(
-    wrapper,
-    `#!/bin/sh\nexec node ${runner}\n`
-  );
+  writeFileSync(wrapper, `#!/bin/sh\nexec node ${runner}\n`);
   spawnSync("chmod", ["+x", wrapper]);
   process.env.PTB_STUB_TRACE = tracePath;
   return { wrapper, tracePath };
@@ -119,8 +114,6 @@ const journal = (fleetDir: string) =>
         .map((line) => JSON.parse(line) as Record<string, unknown>)
     : [];
 
-
-
 test("splitModelId parses provider/model pairs", () => {
   assert.deepEqual(splitModelId("spark/glm-5.3-flash"), {
     provider: "spark",
@@ -150,9 +143,7 @@ test(
       handles.push(handle);
 
       await send(base, "fill it up");
-      await waitFor(() =>
-        traced(tracePath).some((r) => r.kind === "compact")
-      );
+      await waitFor(() => traced(tracePath).some((r) => r.kind === "compact"));
 
       const records = traced(tracePath);
       const switchIdx = records.findIndex(
@@ -179,13 +170,12 @@ test(
       assert.ok(
         entries.some(
           (e) =>
-            e.role === "system" && e.text.includes("summarized on spark/stub-flash")
+            e.role === "system" &&
+            e.text.includes("summarized on spark/stub-flash")
         ),
         "system entry names the fallback"
       );
-      const context = await (
-        await fetch(`${base}/api/bots/aa/context`)
-      ).json();
+      const context = await (await fetch(`${base}/api/bots/aa/context`)).json();
       assert.equal(context.overWindow, false, "post-compact fill is 0");
       assert.equal(context.compactFallbackModel, "spark/stub-flash");
     } finally {
@@ -193,14 +183,15 @@ test(
         delete process.env[key];
       await Promise.all(handles.map((h) => h.stop().catch(() => {})));
       rmSync(fleetDir, { recursive: true, force: true });
-      for (const dir of extraDirs) rmSync(dir, { recursive: true, force: true });
+      for (const dir of extraDirs)
+        rmSync(dir, { recursive: true, force: true });
     }
   }
 );
 
 test(
   "model switch recomputes fill on the new window and force-compacts (acceptance 2+4)",
-  { timeout: 60000 },
+  { timeout: 120000 },
   async () => {
     const fleetDir = mkdtempSync(join(tmpdir(), "ptb-amd2-"));
     const handles: Array<{ stop(): Promise<void> }> = [];
@@ -240,12 +231,17 @@ test(
       });
       assert.equal(put.status, 200);
 
+      // 183-family load flake: the fill===5 observation is STABLE once the
+      // respawn's boot probe learns the new window (no turn runs until the
+      // boundary send), so no hold-gate applies — the 15s expiry pruner hit
+      // was the spawn→probe chain itself stalling under load. Load-tolerant
+      // wait + a test timeout with room for it (queue.test 183 gating).
       await waitFor(async () => {
         const context = await (
           await fetch(`${base}/api/bots/aa/context`)
         ).json();
         return context.contextWindow === 1000 && context.fill === 5;
-      }, 15000);
+      }, 45000);
       // Acceptance 4 is proven by the wait itself: fill === 5 against
       // contextWindow === 1000 IS the live-window recompute. (A mid-race
       // re-read would race the forced compaction that the interrupted-turn
@@ -253,9 +249,7 @@ test(
 
       // Next settled boundary force-compacts despite hysteresis being off.
       await send(base, "trigger boundary");
-      await waitFor(() =>
-        traced(tracePath).some((r) => r.kind === "compact")
-      );
+      await waitFor(() => traced(tracePath).some((r) => r.kind === "compact"));
       // The compaction fires at the first settled boundary against the NEW
       // window — trigger label is force (scheduled) or threshold (usage-event
       // fill drives it first on a fresh boot whose carried tokens reset);
@@ -263,7 +257,8 @@ test(
       await waitFor(() => journal(fleetDir).length > 0);
       const rows = journal(fleetDir);
       assert.ok(
-        rows.at(-1)?.trigger === "force" || rows.at(-1)?.trigger === "threshold",
+        rows.at(-1)?.trigger === "force" ||
+          rows.at(-1)?.trigger === "threshold",
         `compaction fired at the boundary (trigger=${rows.at(-1)?.trigger})`
       );
     } finally {
@@ -271,7 +266,8 @@ test(
         delete process.env[key];
       await Promise.all(handles.map((h) => h.stop().catch(() => {})));
       rmSync(fleetDir, { recursive: true, force: true });
-      for (const dir of extraDirs) rmSync(dir, { recursive: true, force: true });
+      for (const dir of extraDirs)
+        rmSync(dir, { recursive: true, force: true });
     }
   }
 );
@@ -332,7 +328,9 @@ test(
         traced(a.tracePath).some(
           (r) =>
             r.kind === "prompt" &&
-            (r.text ?? "").includes("FLEET STATE (authoritative daemon re-injection")
+            (r.text ?? "").includes(
+              "FLEET STATE (authoritative daemon re-injection"
+            )
         )
       );
 
@@ -365,7 +363,8 @@ test(
       await waitFor(async () => {
         const sysEntries = await transcript(bootB.base);
         return sysEntries.some(
-          (e) => e.role === "system" && e.text.includes("Context management FAILED")
+          (e) =>
+            e.role === "system" && e.text.includes("Context management FAILED")
         );
       });
       const rowsB = journal(b);
@@ -389,7 +388,8 @@ test(
         delete process.env[key];
       await Promise.all(handles.map((h) => h.stop().catch(() => {})));
       rmSync(fleetDir, { recursive: true, force: true });
-      for (const dir of extraDirs) rmSync(dir, { recursive: true, force: true });
+      for (const dir of extraDirs)
+        rmSync(dir, { recursive: true, force: true });
     }
   }
 );

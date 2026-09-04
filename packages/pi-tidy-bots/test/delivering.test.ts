@@ -38,6 +38,16 @@ test(
   async () => {
     const fleetDir = mkdtempSync(join(tmpdir(), "ptb-delivering-"));
     const handles: Array<{ stop(): Promise<void> }> = [];
+    // 183-family load flake: the queued follow-up's delivering=true window is
+    // a transient the old 50ms polls missed under load. Deterministic per
+    // queue.test's gating: a 5s first turn keeps the child streaming while
+    // the second message queues, and PTB_STUB_HOLD_DIR holds the queued
+    // turn until <holdDir>/release — the delivering flag is observable at
+    // leisure, then released to drain.
+    const holdDir = join(fleetDir, "hold");
+    mkdirSync(holdDir, { recursive: true });
+    process.env.PTB_STUB_TURN_MS = "5000";
+    process.env.PTB_STUB_HOLD_DIR = holdDir;
     try {
       mkdirSync(join(fleetDir, "bots", "aa"), { recursive: true });
       writeFileSync(join(fleetDir, "bots", "aa", "AGENTS.md"), "# aa\n");
@@ -105,23 +115,17 @@ test(
       );
 
       // 2. Second message DURING the still-streaming turn: queues (follow_up)
-      //    and must show delivering=true while queued, clearing when ITS
-      //    turn_start pops the journal (~400ms in the stub).
+      //    and must show delivering=true while queued. The hold-gate keeps
+      //    its turn from starting until released, so the flag is stable to
+      //    observe — not a ~400ms race.
       const second = send("second message");
-      let sawQueued = false;
-      const queueDeadline = Date.now() + 2000;
-      while (Date.now() < queueDeadline) {
+      await waitFor(async () => {
         const entries = await userEntries();
-        const queued = entries.find(
+        return entries.some(
           (e) => e.text === "second message" && e.delivering === true
         );
-        if (queued) {
-          sawQueued = true;
-          break;
-        }
-        await new Promise((r) => setTimeout(r, 50));
-      }
-      assert.ok(sawQueued, "queued follow-up reads as delivering while queued");
+      });
+      writeFileSync(join(holdDir, "release"), "");
 
       await first;
       await second;
@@ -138,6 +142,8 @@ test(
         "no stuck delivering flags after both turns"
       );
     } finally {
+      delete process.env.PTB_STUB_TURN_MS;
+      delete process.env.PTB_STUB_HOLD_DIR;
       await Promise.all(handles.map((h) => h.stop().catch(() => {})));
       rmSync(fleetDir, { recursive: true, force: true });
     }

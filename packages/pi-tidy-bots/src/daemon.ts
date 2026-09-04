@@ -198,6 +198,13 @@ export interface BotRuntime {
    */
   compactNoop?: { at: number; fill: number };
   /**
+   * pi-core 0.85.0: the manual-compact path can dereference its abort
+   * controller after cleanup (undefined.signal) — deterministic per child.
+   * Set on first crash; cleared only by a respawn (fresh session, fresh
+   * controller).
+   */
+  compactCrashBlackout?: boolean;
+  /**
    * Issue 148: pending-journal ids being replayed this boot — an unclean
    * death lost activeDeliveryId, so the replayed entries' delivering flags
    * would spin forever. agent_start clears them by id.
@@ -961,6 +968,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     opts: { force?: boolean; idle?: boolean } = {}
   ): Promise<boolean> {
     const botName = runtime.config.name;
+    // pi-core 0.85.0 crash class (undefined.signal in the child's manual-
+    // compact path): deterministic per child — respawn clears the blackout.
+    if (runtime.compactCrashBlackout) return false;
     const trigger: "threshold" | "idle" | "force" = opts.force
       ? "force"
       : opts.idle === true
@@ -1121,8 +1131,24 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         return true;
       }
       refused = /nothing to compact/i.test(String(error));
+      refused = /nothing to compact/i.test(String(error));
       if (!refused) {
-        const reason = classifyFailure(String(error));
+        const errorText = String(error);
+        // pi-core 0.85.0 crash class: the child's manual-compact path can
+        // dereference its abort controller after cleanup. Deterministic —
+        // retrying just spams. Blackout further attempts for this child and
+        // escalate to the preamble-preserving session reset (the recovery).
+        if (/reading 'signal'/.test(errorText)) {
+          runtime.compactCrashBlackout = true;
+          await escalateCompactionFailure(
+            runtime,
+            trigger,
+            "pi_compaction_crash:signal",
+            true
+          );
+          return false;
+        }
+        const reason = classifyFailure(errorText);
         log(`[${botName}] compact request failed [reason: ${reason}]`);
         if (fallback && sessionModelId) {
           // Restore the session model before escalating — the reset/next

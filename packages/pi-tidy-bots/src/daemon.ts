@@ -115,6 +115,8 @@ interface BotRuntime {
   pendingFrom: string[];
   restartTimes: number[];
   stopping: boolean;
+  /** Issue 140: a queue-wake spawn is in flight for this bot. */
+  wakeKick?: boolean;
   turnId: string | null;
   // Delta throttle state (issue 20 item 6): last WS delta emission for the
   // current turn — null until the first eligible emission.
@@ -497,18 +499,28 @@ export function saveEntryImageBlobs(
     const refs: { mediaType: string; name?: string; path: string }[] = [];
     for (const image of images) {
       const buffer = Buffer.from(image.data, "base64");
-      const hash = createHash("sha256").update(buffer).digest("hex").slice(0, 16);
+      const hash = createHash("sha256")
+        .update(buffer)
+        .digest("hex")
+        .slice(0, 16);
       const ext =
         image.mimeType.split("/")[1]?.replace(/[^a-z0-9]/gi, "") || "png";
       const file = `${hash}.${ext}`;
       writeFileSync(join(dir, file), buffer);
-      refs.push({ mediaType: image.mimeType, path: join(".fleet", "images", bot, file) });
+      refs.push({
+        mediaType: image.mimeType,
+        path: join(".fleet", "images", bot, file),
+      });
     }
     // Oldest-first sweep at cap.
     const entries = readdirSync(dir)
       .map((file) => {
         const full = join(dir, file);
-        return { file: full, mtime: statSync(full).mtimeMs, size: statSync(full).size };
+        return {
+          file: full,
+          mtime: statSync(full).mtimeMs,
+          size: statSync(full).size,
+        };
       })
       .sort((a, b) => a.mtime - b.mtime);
     let total = entries.reduce((sum, entry) => sum + entry.size, 0);
@@ -640,7 +652,8 @@ const coerceImageItem = (
     return null;
   const { mediaType, data } = image as { mediaType: string; data: string };
   const rawName = (image as { name?: unknown }).name;
-  const name = typeof rawName === "string" && rawName.length > 0 ? rawName : undefined;
+  const name =
+    typeof rawName === "string" && rawName.length > 0 ? rawName : undefined;
   // Issue 115: tolerate dataURL-prefixed payloads from device clients
   // ("data:image/png;base64,....") — strip to bare base64.
   const bare = data.replace(/^data:[^;]+;base64,/, "");
@@ -694,9 +707,7 @@ export interface MessageAttachment {
  * so the bytes are not deliverable to the model. Clients render the chip
  * from {name, mediaType}.
  */
-export function coerceMessageMedia(
-  value: unknown
-):
+export function coerceMessageMedia(value: unknown):
   | {
       ok: true;
       images?: { type: "image"; data: string; mimeType: string }[];
@@ -824,6 +835,44 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     join(fleet.dir, ".fleet", "transcripts")
   );
   const pendingStore = createPendingStore(join(fleet.dir, ".fleet", "pending"));
+  // Issue 140: in-flight turn markers survive daemon death. Written at
+  // agent_start, cleared at settle/exit — a marker left behind at boot means
+  // a turn died with the daemon: the boot re-drives it and notifies waiting
+  // handoff sources instead of losing the completion forever.
+  const inflightDir = join(fleet.dir, ".fleet", "inflight");
+  const inflightPath = (botName: string) =>
+    join(inflightDir, `${botName}.json`);
+  const writeInflightMarker = (runtime: BotRuntime): void => {
+    try {
+      mkdirSync(inflightDir, { recursive: true });
+      writeFileSync(
+        inflightPath(runtime.config.name),
+        JSON.stringify({
+          turnId: runtime.turnId,
+          pendingFrom: [...runtime.pendingFrom],
+          ts: new Date().toISOString(),
+        })
+      );
+    } catch {
+      /* best-effort: recovery degrades to the pre-140 behavior */
+    }
+  };
+  const clearInflightMarker = (botName: string): void => {
+    try {
+      rmSync(inflightPath(botName), { force: true });
+    } catch {
+      /* best-effort */
+    }
+  };
+  const readInflightMarker = (
+    botName: string
+  ): { turnId: string; pendingFrom?: string[]; ts: string } | null => {
+    try {
+      return JSON.parse(readFileSync(inflightPath(botName), "utf8"));
+    } catch {
+      return null;
+    }
+  };
   // Issue 159: the operator attention queue — one-at-a-time, server-enforced.
   const operatorQueue = createOperatorQueueStore(fleet.dir);
   let routineState: { routines?: Record<string, { enabled?: boolean }> } =
@@ -1229,10 +1278,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     try {
       const sessionDir = join(fleet.dir, ".fleet", "sessions", botName);
       if (existsSync(sessionDir))
-        renameSync(
-          sessionDir,
-          `${sessionDir}.pre-reset-${Date.now()}`
-        );
+        renameSync(sessionDir, `${sessionDir}.pre-reset-${Date.now()}`);
     } catch {
       /* best-effort */
     }
@@ -1252,7 +1298,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
             "the fleet state above is authoritative ground truth; resume owned work)",
         });
       } catch {
-        log(`[${botName}] preamble re-injection deferred — queued paths still deliver`);
+        log(
+          `[${botName}] preamble re-injection deferred — queued paths still deliver`
+        );
       }
     }
     log(
@@ -1271,7 +1319,11 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     try {
       const state = (await runtime.session?.getState()) as {
         data?: {
-          usage?: { input?: unknown; inputTokens?: unknown; promptTokens?: unknown };
+          usage?: {
+            input?: unknown;
+            inputTokens?: unknown;
+            promptTokens?: unknown;
+          };
         };
       };
       const usage = state?.data?.usage;
@@ -1354,11 +1406,11 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         `[${botName}] context over window and fallback "${fallbackModel}" is not provider/id — escalating`
       );
       await escalateCompactionFailure(
-          runtime,
-          trigger,
-          "invalid_fallback_model",
-          sessionOverWindow
-        );
+        runtime,
+        trigger,
+        "invalid_fallback_model",
+        sessionOverWindow
+      );
       return false;
     }
     if (fallback) {
@@ -1566,7 +1618,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       if (/pi(\s|$)|pi\.sh|stub|node/.test(command)) {
         try {
           process.kill(pid, "SIGTERM");
-          log(`[${name}] reaped orphaned child pid ${pid} from previous daemon`);
+          log(
+            `[${name}] reaped orphaned child pid ${pid} from previous daemon`
+          );
         } catch {
           // died racing us
         }
@@ -1588,8 +1642,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     // extensions actually load. pi's --approve is project-file trust, NOT
     // tool auto-approve — bots with approve=false stay non-auto-approved.
     // Issue 132: bot scope wins over the fleet default.
-    const imageProvider =
-      runtime.config.imageProvider ?? fleet.imageProvider;
+    const imageProvider = runtime.config.imageProvider ?? fleet.imageProvider;
     const botPackages = runtime.config.packages ?? [];
     if (botPackages.length > 0) {
       for (const pkg of botPackages) {
@@ -1747,9 +1800,51 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         mapped
       ).slice(-50);
       const lastEntry = runtime.transcript.at(-1);
-      // A trailing user message while the agent is still streaming is a turn in
-      // flight, not an interrupted one — resuming over it double-prompts.
-      if (lastEntry && lastEntry.role === "user" && !session.streaming) {
+      // Issue 140: a marker left behind means a turn died at daemon restart.
+      // Re-drive it once and tell every waiting handoff source — the old
+      // behavior lost the completion silently (pendingFrom was memory-only),
+      // leaving source bots parked forever. One-shot: cleared on read.
+      const inflight = readInflightMarker(name);
+      if (inflight?.turnId) {
+        clearInflightMarker(name);
+        appendTranscript(runtime, {
+          id: randomUUID(),
+          role: "system",
+          origin: "system",
+          text: "Turn interrupted by a daemon restart — re-driving it now.",
+          ts: new Date().toISOString(),
+        });
+        const waitingSources = inflight.pendingFrom ?? [];
+        void session
+          .prompt(
+            "[fleet runtime] Your previous turn was interrupted by a restart before it could complete. " +
+              "Complete it now — same style, terse."
+          )
+          .catch(() => {
+            log(
+              `[${name}] interrupted-turn re-drive failed [reason: runtime_offline]`
+            );
+            for (const waitingFrom of waitingSources) {
+              const source = runtimes.get(waitingFrom);
+              if (!source?.session?.alive) continue;
+              void source.session
+                .prompt(
+                  `[completion from 🤖 ${name} (@${name})] re-drive failed after the restart — the turn is lost; re-dispatch`
+                )
+                .catch(() => {});
+            }
+          });
+        for (const waitingFrom of waitingSources) {
+          const source = runtimes.get(waitingFrom);
+          if (!source?.session?.alive) continue;
+          void source.session
+            .prompt(
+              `[completion from 🤖 ${name} (@${name})] target's turn was interrupted by a daemon restart — ` +
+                "it is being re-driven now; if no response follows, re-dispatch"
+            )
+            .catch(() => {});
+        }
+      } else if (lastEntry && lastEntry.role === "user" && !session.streaming) {
         journal({ bot: name, status: "resumed-interrupted-turn" });
         void session
           .prompt(
@@ -1891,6 +1986,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           runtime.replayDeliveryIds.clear();
         }
         runtime.turnId = randomUUID();
+        writeInflightMarker(runtime);
         runtime.turnText = "";
         runtime.steps = [];
         runtime.turnParts = new TurnPartsAccumulator();
@@ -2111,6 +2207,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         return;
       }
       case "agent_settled": {
+        clearInflightMarker(botName);
         const turnId = runtime.turnId;
         runtime.turnId = null;
         // Issue 124: canonical text = the full turn's narration from the
@@ -2249,12 +2346,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     // so every client settles the card read-only.
     for (const [uiId, pending] of [...runtime.pendingUi.entries()]) {
       clearTimeout(pending.timer);
-      resolveUi(
-        runtime,
-        pending.view,
-        { cancel: true },
-        true
-      );
+      resolveUi(runtime, pending.view, { cancel: true }, true);
       runtime.pendingUi.delete(uiId);
     }
     const droppedSources = runtime.pendingFrom;
@@ -2269,6 +2361,10 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       });
       runtime.turnId = null;
     }
+    // Issue 140: the daemon handled this exit (sources notified below)
+    // — the marker's recovery job is done. A daemon death skips this,
+    // which is exactly what leaves the marker for the next boot.
+    clearInflightMarker(runtime.config.name);
     for (const droppedFrom of droppedSources) {
       const source = runtimes.get(droppedFrom);
       if (source?.session?.alive) {
@@ -2291,6 +2387,15 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       log(
         `[${runtime.config.name}] restart budget exhausted; bot offline [reason: runtime_offline]`
       );
+      // Issue 140: loud, operator-visible — offline is not silence. The next
+      // message re-kicks a respawn (wake-on-queue re-arms the budget).
+      appendTranscript(runtime, {
+        id: randomUUID(),
+        role: "system",
+        origin: "system",
+        text: "Restart budget exhausted — offline until the next message re-kicks a respawn or a manual restart.",
+        ts: new Date().toISOString(),
+      });
       const waitingSources = runtime.pendingFrom;
       runtime.pendingFrom = [];
       for (const waitingFrom of waitingSources) {
@@ -2602,13 +2707,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         resolveUi(runtime, pending.view, answer, false);
         return { status: 200, body: { accepted: true } };
       },
-      message: async (
-        name,
-        text,
-        images,
-        clientMessageId,
-        attachments
-      ) => {
+      message: async (name, text, images, clientMessageId, attachments) => {
         const runtime = runtimes.get(name);
         if (!runtime) return { status: 404, body: { error: "unknown bot" } };
         if (clientMessageId !== undefined) {
@@ -2621,19 +2720,13 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           origin: "operator",
           delivering: true,
           text: stripActionMarkers(text),
-          ...(attachments && attachments.length > 0
-            ? { attachments }
-            : {}),
+          ...(attachments && attachments.length > 0 ? { attachments } : {}),
           // Issue 176: image bytes persist as fleet blobs; the entry (echo
           // + journal + refetch) carries refs so restarts rehydrate WITH
           // the image and the console renders the app's twin.
           ...(images && images.length > 0
             ? {
-                images: saveEntryImageBlobs(
-                  fleet.dir,
-                  name,
-                  images
-                ),
+                images: saveEntryImageBlobs(fleet.dir, name, images),
               }
             : {}),
           ts: new Date().toISOString(),
@@ -2659,6 +2752,25 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
             emit({ type: "append", bot: name, entry });
             // Issue 76: the queue grew — the roster carries the item list.
             emitRoster();
+            // Issue 140: a journaled message for a dead runtime WAKES the
+            // child — "next spawn" must be triggered, not hoped for.
+            // Operator intent re-arms the restart budget: a crash-looping
+            // bot stays down, but every new message is a remote kick.
+            if (!runtime.stopping) {
+              runtime.restartTimes = [];
+              if (!runtime.wakeKick) {
+                runtime.wakeKick = true;
+                void spawnBot(name)
+                  .catch((error) =>
+                    log(
+                      `[${name}] queue-wake respawn failed: ${(error as Error).message}`
+                    )
+                  )
+                  .finally(() => {
+                    runtime.wakeKick = false;
+                  });
+              }
+            }
             return { status: 202, body: { accepted: true, queued: true } };
           }
           if (reason === "turn_in_flight") {
@@ -2705,6 +2817,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         if (!runtime.session.streaming)
           return { status: 200, body: { accepted: true, stopped: false } };
         await runtime.session.abort();
+        clearInflightMarker(name);
         appendTranscript(runtime, {
           id: randomUUID(),
           role: "system",
@@ -2768,8 +2881,11 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         return { status: 200 };
       },
       // Issue 159: operator attention queue.
-      operatorEnqueue: (input: { title: string; receipts?: { ref: string; detail?: string }[]; source: string }) =>
-        operatorQueue.enqueue(input),
+      operatorEnqueue: (input: {
+        title: string;
+        receipts?: { ref: string; detail?: string }[];
+        source: string;
+      }) => operatorQueue.enqueue(input),
       operatorQueueView: () => operatorQueue.view(),
       operatorQueueClear: (id: string) => operatorQueue.clear(id),
       unqueue: (name: string, id: string) => {
@@ -3201,7 +3317,10 @@ function buildHttpServer(deps: ServerDeps): Hono {
         runtime.contextWindow !== undefined &&
         runtime.inputTokens > runtime.contextWindow,
       ...(deps.fleet.compactFallbackModel || DEFAULT_COMPACT_FALLBACK_MODEL
-        ? { compactFallbackModel: deps.fleet.compactFallbackModel ?? DEFAULT_COMPACT_FALLBACK_MODEL }
+        ? {
+            compactFallbackModel:
+              deps.fleet.compactFallbackModel ?? DEFAULT_COMPACT_FALLBACK_MODEL,
+          }
         : {}),
       lastCompactAt: runtime.lastCompactAt ?? null,
       turnsSinceCompact: runtime.turnsSinceCompact,
@@ -3304,9 +3423,7 @@ function buildHttpServer(deps: ServerDeps): Hono {
   });
 
   app.post("/api/operator/queue/:id/clear", (context) => {
-    const result = deps.handlers.operatorQueueClear(
-      context.req.param("id")
-    );
+    const result = deps.handlers.operatorQueueClear(context.req.param("id"));
     if (!result)
       return context.json({ error: "unknown or already-cleared id" }, 404);
     return context.json(result);
@@ -3365,9 +3482,15 @@ function buildHttpServer(deps: ServerDeps): Hono {
   // Issue 115: captioned device photos exceed default body budgets — the
   // message route accepts an explicit ~15MB body (declared AND actual).
   const MAX_MESSAGE_BODY_BYTES = 15 * 1024 * 1024;
-  const parseMessageBody = async (
-    context: { req: { header: (name: string) => string | undefined; arrayBuffer: () => Promise<ArrayBuffer> } }
-  ): Promise<{ ok: true; body: Record<string, unknown> } | { ok: false; status: 400 | 413; error: string }> => {
+  const parseMessageBody = async (context: {
+    req: {
+      header: (name: string) => string | undefined;
+      arrayBuffer: () => Promise<ArrayBuffer>;
+    };
+  }): Promise<
+    | { ok: true; body: Record<string, unknown> }
+    | { ok: false; status: 400 | 413; error: string }
+  > => {
     const declared = Number(context.req.header("content-length") ?? "0");
     if (Number.isFinite(declared) && declared > MAX_MESSAGE_BODY_BYTES)
       return { ok: false, status: 413, error: "body too large" };
@@ -3387,7 +3510,10 @@ function buildHttpServer(deps: ServerDeps): Hono {
   app.post("/api/bots/:name/message", async (context) => {
     const parsedBody = await parseMessageBody(context);
     if (!parsedBody.ok)
-      return context.json({ error: parsedBody.error }, parsedBody.status as 400 | 413);
+      return context.json(
+        { error: parsedBody.error },
+        parsedBody.status as 400 | 413
+      );
     const body = parsedBody.body as {
       text?: string;
       images?: unknown;
@@ -3498,7 +3624,10 @@ function buildHttpServer(deps: ServerDeps): Hono {
       summary?: unknown;
     };
     if (typeof body.summary !== "string" || body.summary.trim().length === 0)
-      return context.json({ error: "summary (non-empty string) required" }, 400);
+      return context.json(
+        { error: "summary (non-empty string) required" },
+        400
+      );
     const result = deps.handlers.attachCompletionSummary(
       context.req.param("name"),
       body.summary.trim()

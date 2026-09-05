@@ -70,6 +70,45 @@ test("rpcSpawnArgs: trustProject adds --approve; default stays without", () => {
   );
 });
 
+test("rpcSpawnArgs: tool-isolation controls map 1:1 to pi flags", () => {
+  const base = {
+    name: "aa",
+    sessionDir: "/s",
+    resume: false,
+    approve: false,
+    bridgePath: "/b.ts",
+  };
+  // Default: none of the isolation flags ride the argv.
+  for (const flag of [
+    "--tools",
+    "--no-builtin-tools",
+    "--no-extensions",
+    "--no-skills",
+  ])
+    assert.ok(!rpcSpawnArgs(base).includes(flag), `${flag} absent by default`);
+  const argv = rpcSpawnArgs({
+    ...base,
+    tools: ["tiller_digest"],
+    noBuiltinTools: true,
+    noExtensions: true,
+    noSkills: true,
+  });
+  const toolsIndex = argv.indexOf("--tools");
+  assert.ok(toolsIndex !== -1, "--tools present");
+  assert.equal(argv[toolsIndex + 1], "tiller_digest");
+  assert.equal(
+    argv[toolsIndex + 1],
+    ["tiller_digest"].join(","),
+    "multi-entry tools join comma-separated"
+  );
+  assert.ok(argv.includes("--no-builtin-tools"));
+  assert.ok(argv.includes("--no-extensions"));
+  assert.ok(argv.includes("--no-skills"));
+  // The fleet's own -e extensions still load alongside --no-extensions.
+  const bridgeIndex = argv.indexOf("-e");
+  assert.ok(bridgeIndex !== -1, "bridge extension still explicit");
+});
+
 test("botPackageInstalled matches string and {source} entries", () => {
   const dir = mkdtempSync(join(tmpdir(), "ptb-pkg-set-"));
   try {

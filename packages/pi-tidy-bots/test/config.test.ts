@@ -182,6 +182,42 @@ test("image_provider parses at fleet and bot scope (issue 132)", () => {
   }
 });
 
+test("tool-isolation controls parse and validate", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ptb-isolate-"));
+  try {
+    const botDir = join(dir, "atlas");
+    mkdirSync(botDir, { recursive: true });
+    writeFileSync(join(botDir, "AGENTS.md"), "# atlas\n");
+    writeFileSync(
+      join(dir, "bots.toml"),
+      `[[bot]]\nname = "plain"\ndir = "atlas"\n[[bot]]\nname = "locked"\ndir = "atlas"\nextensions = ["finance/digest-ext.mjs"]\ntools = ["tiller_digest"]\nno_builtin_tools = true\nno_extensions = true\nno_skills = true\n`
+    );
+    const fleet = loadFleetConfig(dir);
+    const [plain, locked] = fleet.bots;
+    assert.equal(plain.tools, undefined, "no allowlist by default");
+    assert.deepEqual(locked.extensions, ["finance/digest-ext.mjs"]);
+    assert.equal(plain.noBuiltinTools, undefined);
+    assert.equal(plain.noExtensions, undefined);
+    assert.equal(plain.noSkills, undefined);
+    assert.deepEqual(locked.tools, ["tiller_digest"]);
+    assert.equal(plain.extensions, undefined, "no extra extensions by default");
+    assert.equal(locked.noBuiltinTools, true);
+    assert.equal(locked.noExtensions, true);
+    assert.equal(locked.noSkills, true);
+    // Empty tool names fail fast, not silently.
+    writeFileSync(
+      join(dir, "bots.toml"),
+      `[[bot]]\nname = "bad"\ndir = "atlas"\ntools = [""]\n`
+    );
+    assert.throws(
+      () => loadFleetConfig(dir),
+      /tools entries must be non-empty strings/
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("stripActionMarkers removes [[action:]] lines from transcript text", () => {
   assert.equal(
     stripActionMarkers(

@@ -14,7 +14,7 @@ import {
   mkdirSync,
   watch,
 } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
@@ -1675,8 +1675,17 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       model: stored.models?.[name] || runtime.config.model,
       approve: runtime.config.approve,
       ...(botPackages.length > 0 ? { trustProject: true } : {}),
+      ...(runtime.config.tools ? { tools: runtime.config.tools } : {}),
+      ...(runtime.config.noBuiltinTools ? { noBuiltinTools: true } : {}),
+      ...(runtime.config.noExtensions ? { noExtensions: true } : {}),
+      ...(runtime.config.noSkills ? { noSkills: true } : {}),
       bridgePath,
-      extensions: [mcpWrapPath],
+      extensions: [
+        mcpWrapPath,
+        ...(runtime.config.extensions ?? []).map((extension) =>
+          isAbsolute(extension) ? extension : resolve(fleet.dir, extension)
+        ),
+      ],
       // Issue 132: image provider selection (bot scope overrides fleet)
       // and the fleet dir so generate_image writes under .fleet/images.
       env: {

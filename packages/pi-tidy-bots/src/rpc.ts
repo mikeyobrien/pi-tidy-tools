@@ -17,6 +17,14 @@ export interface RpcSpawnOptions {
   bridgePath: string;
   /** Issue 85: extra extensions loaded after bridge (MCP wrap etc.). */
   extensions?: string[];
+  /** Tool allowlist — pi --tools (exact registered names). */
+  tools?: string[];
+  /** pi --no-builtin-tools. */
+  noBuiltinTools?: boolean;
+  /** pi --no-extensions (fleet -e flags still load). */
+  noExtensions?: boolean;
+  /** pi --no-skills. */
+  noSkills?: boolean;
   /** Issue 132: extra child env (image provider id, fleet dir for outputs). */
   env?: Record<string, string>;
   daemonUrl: string;
@@ -41,6 +49,10 @@ export function rpcSpawnArgs(
     | "trustProject"
     | "bridgePath"
     | "extensions"
+    | "tools"
+    | "noBuiltinTools"
+    | "noExtensions"
+    | "noSkills"
   >
 ): string[] {
   return [
@@ -54,6 +66,10 @@ export function rpcSpawnArgs(
     ...(options.model ? ["--model", options.model] : []),
     ...(options.approve ? ["--approve"] : []),
     ...(options.trustProject ? ["--approve"] : []),
+    ...(options.tools ? ["--tools", options.tools.join(",")] : []),
+    ...(options.noBuiltinTools ? ["--no-builtin-tools"] : []),
+    ...(options.noExtensions ? ["--no-extensions"] : []),
+    ...(options.noSkills ? ["--no-skills"] : []),
     "-e",
     options.bridgePath,
     ...(options.extensions ?? []).flatMap((extension) => ["-e", extension]),

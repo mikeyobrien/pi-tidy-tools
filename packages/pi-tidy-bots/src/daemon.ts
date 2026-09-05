@@ -1586,44 +1586,107 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     return true;
   }
 
-  /**
-   * Issue 148: reap orphaned children from an unclean daemon death. The
-   * previous daemon's ledger (.fleet/children/<bot>.pid) names child pids
-   * that no longer belong to us — a stub/real child left parentless after
-   * SIGKILL. Verified-daemon-command orphans are SIGTERMed (session-dir
-   * contention on restart otherwise); foreign pids are never signalled.
-   */
+  /** Process start time (ms since epoch) for a pid, or null when it cannot
+   * be observed. pid + start time is POSIX process identity: a recycled pid
+   * has a different start time, so an exact match is ownership proof. */
+  const processStartMs = (pid: number): number | null => {
+    try {
+      const out = spawnSync("ps", ["-p", String(pid), "-o", "lstart="], {
+        encoding: "utf8",
+        timeout: 5_000,
+      }).stdout.trim();
+      const parsed = out.length > 0 ? Date.parse(out) : NaN;
+      return Number.isFinite(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const processCommand = (pid: number): string => {
+    try {
+      return spawnSync("ps", ["-p", String(pid), "-o", "command="], {
+        encoding: "utf8",
+        timeout: 5_000,
+      }).stdout.trim();
+    } catch {
+      return "";
+    }
+  };
+
+  interface ChildLedger {
+    pid: number | null;
+    lstart: number | null;
+    command: string | null;
+  }
+
+  /** Issue 148 (verified rejection): the reaper must PROVE ownership before
+   * signalling. pid recycling + the old broad command regex let a FOREIGN
+   * process receive SIGTERM. Now the ledger records the child's PROCESS
+   * IDENTITY at spawn — pid + start time + exact command — and a signal is
+   * sent ONLY when all three match EXACTLY. Legacy bare-pid ledgers and any
+   * mismatch are UNVERIFIABLE: fail-closed (log, never signal). */
   const reapOrphanedChildren = (name: string): void => {
     try {
       const ledger = join(fleet.dir, ".fleet", "children", `${name}.pid`);
       if (!existsSync(ledger)) return;
       const raw = readFileSync(ledger, "utf8").trim();
       rmSync(ledger, { force: true });
-      const pid = Number(raw);
-      if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) return;
-      if (!pidAlive(pid)) return;
-      const command = (() => {
+      let identity: ChildLedger;
+      if (raw.startsWith("{")) {
+        // Identity-ledger format. A bare numeric pid is NOT this shape: it
+        // would JSON-parse as a number and silently lose the legacy branch.
         try {
-          return spawnSync("ps", ["-p", String(pid), "-o", "command="], {
-            encoding: "utf8",
-            timeout: 5_000,
-          }).stdout.trim();
+          const parsed = JSON.parse(raw) as Partial<ChildLedger>;
+          identity = {
+            pid: typeof parsed.pid === "number" ? parsed.pid : null,
+            lstart:
+              typeof parsed.lstart === "number" &&
+              Number.isFinite(parsed.lstart)
+                ? parsed.lstart
+                : null,
+            command: typeof parsed.command === "string" ? parsed.command : null,
+          };
         } catch {
-          return "";
+          identity = { pid: null, lstart: null, command: null };
         }
-      })();
-      // Orphans of the OLD daemon run the same pi/stub entry — anything
-      // referencing the fleet's piBin shape. Foreign pids: leave alone.
-      if (command.length === 0) return;
-      if (/pi(\s|$)|pi\.sh|stub|node/.test(command)) {
-        try {
-          process.kill(pid, "SIGTERM");
-          log(
-            `[${name}] reaped orphaned child pid ${pid} from previous daemon`
-          );
-        } catch {
-          // died racing us
-        }
+      } else {
+        identity = { pid: Number(raw), lstart: null, command: null };
+      }
+      if (
+        identity.pid === null ||
+        !Number.isFinite(identity.pid) ||
+        identity.pid <= 0 ||
+        identity.pid === process.pid
+      )
+        return;
+      if (identity.lstart === null || identity.command === null) {
+        log(
+          `[${name}] stale child ledger without full identity (pid ${identity.pid}) — not signaling; unverifiable`
+        );
+        return;
+      }
+      if (!pidAlive(identity.pid)) return;
+      const currentStart = processStartMs(identity.pid);
+      if (currentStart !== identity.lstart) {
+        log(
+          `[${name}] child ledger pid ${identity.pid} was recycled (start time changed) — not signaling a foreign process`
+        );
+        return;
+      }
+      const command = processCommand(identity.pid);
+      if (command !== identity.command) {
+        log(
+          `[${name}] child ledger pid ${identity.pid} command changed — not signaling a foreign process`
+        );
+        return;
+      }
+      try {
+        process.kill(identity.pid, "SIGTERM");
+        log(
+          `[${name}] reaped orphaned child pid ${identity.pid} from previous daemon (identity verified)`
+        );
+      } catch {
+        // died racing us
       }
     } catch {
       // ledger is best-effort
@@ -1712,13 +1775,35 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     runtime.session = session;
     runtime.activeModelId =
       stored.models?.[name] || runtime.config.model || undefined;
-    // Issue 148: child-pid ledger — record the spawned child so an unclean
-    // daemon death is detectable at next boot (orphan reaping below).
+    // Issue 148: child-pid ledger — record the spawned child's PROCESS
+    // IDENTITY (pid + start time + exact command) so a later reaper can
+    // PROVE ownership before signaling. A bare pid is not identity: the OS
+    // recycles pids, and the recycled holder must never receive our signal.
     try {
       mkdirSync(join(fleet.dir, ".fleet", "children"), { recursive: true });
+      let lstart: number | null = null;
+      let command: string | null = null;
+      if (session.pid) {
+        // Settle: wrapper-style bins exec into their real command within
+        // milliseconds; record only a stable observation.
+        let previous = "";
+        for (let attempt = 0; attempt < 10; attempt++) {
+          const observed = processCommand(session.pid);
+          if (observed.length > 0 && observed === previous) {
+            command = observed;
+            break;
+          }
+          previous = observed;
+          await new Promise((r) => setTimeout(r, 20));
+        }
+        for (let attempt = 0; attempt < 10 && lstart === null; attempt++) {
+          lstart = processStartMs(session.pid);
+          if (lstart === null) await new Promise((r) => setTimeout(r, 20));
+        }
+      }
       writeFileSync(
         join(fleet.dir, ".fleet", "children", `${name}.pid`),
-        String(session.pid ?? "")
+        JSON.stringify({ pid: session.pid ?? null, lstart, command })
       );
     } catch {
       // best-effort ledger

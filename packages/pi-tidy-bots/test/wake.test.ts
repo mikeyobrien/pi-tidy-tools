@@ -152,7 +152,11 @@ test(
     const markerPath = join(fleetDir, ".fleet", "inflight", "tgt.json");
     const pendingPath = join(fleetDir, ".fleet", "pending", "tgt.jsonl");
     const killChild = () => {
-      const pid = Number(readFileSync(ledger, "utf8").trim());
+      // The ledger carries {pid, lstart, command} identity JSON.
+      const raw = readFileSync(ledger, "utf8").trim();
+      const pid = Number(
+        raw.startsWith("{") ? (JSON.parse(raw) as { pid: number }).pid : raw
+      );
       process.kill(pid, "SIGKILL");
     };
     const handles: Array<{ stop(): Promise<void> }> = [];
@@ -162,16 +166,20 @@ test(
       handles.push(handle);
 
       // Exhaust the restart budget: 4 kills inside the 60s window (max 3).
+      // The ledger carries {pid, lstart, command} identity JSON.
+      const ledgerPid = () => {
+        const raw = readFileSync(ledger, "utf8").trim();
+        return Number(
+          raw.startsWith("{") ? (JSON.parse(raw) as { pid: number }).pid : raw
+        );
+      };
       for (let i = 0; i < 4; i++) {
-        const pid = Number(readFileSync(ledger, "utf8").trim());
+        const pid = ledgerPid();
         process.kill(pid, "SIGKILL");
         if (i < 3) {
           await waitFor(async () => !(await online("tgt")), 10000);
           await waitFor(() => online("tgt"), 15000);
-          await waitFor(
-            () => Number(readFileSync(ledger, "utf8").trim()) !== pid,
-            10000
-          );
+          await waitFor(() => ledgerPid() !== pid, 10000);
         }
       }
       await waitFor(async () => !(await online("tgt")), 15000);

@@ -164,6 +164,11 @@ interface BotRuntime {
    * would spin forever. agent_start clears them by id.
    */
   replayDeliveryIds: Set<string>;
+  /** Issue 80: consecutive turns that settled "successfully" with zero
+   * visible output (no text, no tools) — the quota-exhaustion signature.
+   * Cleared by any productive turn. */
+  emptyTurnStreak: number;
+  lastEmptyTurnAt?: string;
   /**
    * Issue 43 amendment: the session model currently active INSIDE the child
    * ("provider/id") — differs from config during fallback summarization and
@@ -967,6 +972,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     queuedCount: 0,
     rulesApplied: null,
     replayDeliveryIds: new Set<string>(),
+    emptyTurnStreak: 0,
     clientMessageIds: new Set<string>(),
     turnsSinceCompact: 0,
     toolFailStreak: null,
@@ -1049,6 +1055,21 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       lastActive: runtime.lastActive,
       queued: queue.length,
       queue,
+      // Issue 80: empty-success turns surfaced for health probes/wedge
+      // detection. Absent when the bot is clean — additive field, existing
+      // consumers unaffected.
+      ...(runtime.emptyTurnStreak > 0
+        ? {
+            emptyTurns: {
+              streak: runtime.emptyTurnStreak,
+              degraded:
+                runtime.emptyTurnStreak >= (fleet.emptyTurnAlertAfter ?? 2),
+              ...(runtime.lastEmptyTurnAt
+                ? { lastAt: runtime.lastEmptyTurnAt }
+                : {}),
+            },
+          }
+        : {}),
       // Issue 69: REST /api/fleet carries the transcript preview; the WS roster
       // shape must match or every roster broadcast erases client-side previews.
       latest: runtime.transcript.at(-1)?.text ?? "",
@@ -2304,6 +2325,51 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         clearInflightMarker(botName);
         const turnId = runtime.turnId;
         runtime.turnId = null;
+        // Issue 80: empty-success detection — a turn that completes without
+        // error yet produced NO visible output (no text part with content,
+        // no tool activity) is the quota-exhaustion signature (observed on
+        // atlas under codex-quota exhaustion: sessions looked fresh/healthy
+        // while producing nothing). Classified as an anomaly, journaled, and
+        // surfaced on the roster so health probes can see it.
+        const settledParts = runtime.turnParts.snapshot();
+        const hadVisibleOutput =
+          settledParts.some(
+            (part) => part.type === "text" && part.text.trim().length > 0
+          ) || settledParts.some((part) => part.type === "tool");
+        const emptyTurnThreshold = fleet.emptyTurnAlertAfter ?? 2;
+        if (turnId && !hadVisibleOutput) {
+          const priorStreak = runtime.emptyTurnStreak;
+          runtime.emptyTurnStreak = priorStreak + 1;
+          runtime.lastEmptyTurnAt = new Date().toISOString();
+          const degraded = runtime.emptyTurnStreak >= emptyTurnThreshold;
+          journal({
+            key: `${botName}:empty-turn`,
+            bot: botName,
+            status: degraded ? "empty-success-degraded" : "empty-success",
+            streak: runtime.emptyTurnStreak,
+            threshold: emptyTurnThreshold,
+          });
+          // Transcript entry at streak start and at the degradation
+          // crossing — every empty turn is journaled, the console is not
+          // spammed (the 79 lesson).
+          if (
+            priorStreak === 0 ||
+            (priorStreak < emptyTurnThreshold && degraded)
+          ) {
+            appendTranscript(runtime, {
+              id: randomUUID(),
+              role: "system",
+              origin: "system",
+              text: degraded
+                ? `Turn completed with no output (${runtime.emptyTurnStreak} consecutive) — classified degraded: possible model-quota exhaustion or provider anomaly.`
+                : "Turn completed with no output — classified as an anomaly (possible quota exhaustion).",
+              ts: new Date().toISOString(),
+            });
+          }
+          emitRoster();
+        } else if (turnId) {
+          runtime.emptyTurnStreak = 0;
+        }
         // Issue 124: canonical text = the full turn's narration from the
         // parts model — never the last message alone.
         const text = stripActionMarkers(runtime.turnParts.concatText());
@@ -3391,6 +3457,21 @@ function buildHttpServer(deps: ServerDeps): Hono {
         lastActive: runtime.lastActive,
         queued: queue.length,
         queue,
+        // Issue 80 (mirror of presence()): empty-success streak for health
+        // probes — REST and WS roster shapes must match.
+        ...(runtime.emptyTurnStreak > 0
+          ? {
+              emptyTurns: {
+                streak: runtime.emptyTurnStreak,
+                degraded:
+                  runtime.emptyTurnStreak >=
+                  (deps.fleet.emptyTurnAlertAfter ?? 2),
+                ...(runtime.lastEmptyTurnAt
+                  ? { lastAt: runtime.lastEmptyTurnAt }
+                  : {}),
+              },
+            }
+          : {}),
         latest: runtime.transcript.at(-1)?.text ?? "",
       };
     });

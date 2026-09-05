@@ -55,6 +55,9 @@ export interface FleetConfig {
    * daemon.
    */
   compactFallbackModel?: string;
+  /** Issue 80: consecutive empty-success turns before the roster flags the
+   * bot degraded (health probes/wedge detection). Default 2. */
+  emptyTurnAlertAfter?: number;
   /** Issue 132: default image provider id for the generate_image tool. */
   imageProvider?: string;
 }
@@ -208,6 +211,18 @@ export function loadFleetConfig(
   }
 
   const fleet = (doc.fleet ?? {}) as Record<string, unknown>;
+  const emptyTurnAlertAfter =
+    fleet.empty_turn_alert_after === undefined
+      ? undefined
+      : Number(fleet.empty_turn_alert_after);
+  if (
+    emptyTurnAlertAfter !== undefined &&
+    (!Number.isInteger(emptyTurnAlertAfter) || emptyTurnAlertAfter < 1)
+  ) {
+    throw new ConfigError(
+      `[fleet]: empty_turn_alert_after must be an integer >= 1`
+    );
+  }
   return {
     dir,
     port:
@@ -217,6 +232,7 @@ export function loadFleetConfig(
       overrides.host ??
       (typeof fleet.host === "string" ? fleet.host : "127.0.0.1"),
     bots,
+    ...(emptyTurnAlertAfter !== undefined ? { emptyTurnAlertAfter } : {}),
     ...(typeof fleet.compactFallbackModel === "string" &&
     fleet.compactFallbackModel.length > 0
       ? { compactFallbackModel: fleet.compactFallbackModel }

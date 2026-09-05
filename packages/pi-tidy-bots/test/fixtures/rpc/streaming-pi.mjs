@@ -33,16 +33,16 @@ const trace = (kind, text, images = 0) => {
 
 const send = (frame) => process.stdout.write(JSON.stringify(frame) + "\n");
 const freshSession = () =>
-  existsSync(
-    join(dirname(process.env.PTB_STUB_TRACE ?? "."), "fresh-session")
-  );
+  existsSync(join(dirname(process.env.PTB_STUB_TRACE ?? "."), "fresh-session"));
 
 // Issue 43 amendment test knobs: window from a FILE (so a test can change it
 // between spawns) else env, else 128000 default.
 const stubWindow = () => {
   if (process.env.PTB_STUB_WINDOW_FILE) {
     try {
-      const value = Number(readFileSync(process.env.PTB_STUB_WINDOW_FILE, "utf8"));
+      const value = Number(
+        readFileSync(process.env.PTB_STUB_WINDOW_FILE, "utf8")
+      );
       if (Number.isFinite(value) && value > 0) return value;
     } catch {}
   }
@@ -80,7 +80,10 @@ rl.on("line", (line) => {
               // reported usage across the session-reset respawn.
               try {
                 const n = Number(
-                  readFileSync(process.env.PTB_STUB_STATE_USAGE_FILE, "utf8").trim()
+                  readFileSync(
+                    process.env.PTB_STUB_STATE_USAGE_FILE,
+                    "utf8"
+                  ).trim()
                 );
                 if (Number.isFinite(n)) return { usage: { input: n } };
               } catch {}
@@ -153,7 +156,11 @@ rl.on("line", (line) => {
       type: "response",
       id: request.id,
       success: true,
-      data: { summary: "stub summary", tokensBefore: 1, estimatedTokensAfter: 1 },
+      data: {
+        summary: "stub summary",
+        tokensBefore: 1,
+        estimatedTokensAfter: 1,
+      },
     });
     return;
   }
@@ -182,6 +189,19 @@ rl.on("line", (line) => {
     const run = () => {
       send({ type: "turn_start" });
       send({ type: "agent_start" });
+      // Issue 80 fixture: a turn that completes "successfully" with ZERO
+      // visible output — no message, no tool — the quota-exhaustion shape.
+      if (process.env.PTB_STUB_EMPTY_TURN === "1") {
+        setTimeout(
+          () => {
+            send({ type: "turn_end", message: { usage: { input: 10 } } });
+            send({ type: "agent_end" });
+            send({ type: "agent_settled" });
+          },
+          Number(process.env.PTB_STUB_TURN_MS ?? 200)
+        );
+        return;
+      }
       // Issue 124 fixture mode: a turn with narration A → tool → narration B
       // (three assistant messages; the tool-call-only middle one carries no
       // text). PTB_STUB_MULTI=whole sends complete messages (no deltas);
@@ -209,7 +229,13 @@ rl.on("line", (line) => {
           isError: false,
           piTidyElapsedMs: 12,
         });
-        send({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "dispatched" }] } });
+        send({
+          type: "message_end",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "dispatched" }],
+          },
+        });
         send({ type: "turn_end", message: { usage: { input: 10 } } });
         send({ type: "agent_end" });
         send({ type: "agent_settled" });
@@ -272,36 +298,39 @@ rl.on("line", (line) => {
           partialResult: "still sleeping...\n",
         });
       }, 350);
-      setTimeout(() => {
-        send({
-          type: "tool_execution_end",
-          toolCallId: "t1",
-          result: "slept fine",
-          isError: false,
-          piTidyElapsedMs: 650,
-        });
-        send({
-          type: "message_end",
-          message: {
-            role: "assistant",
-            content: [{ type: "text", text: "done" }],
-          },
-        });
-        send({
-          type: "turn_end",
-          message: {
-            usage: {
-              input: freshSession()
-                ? 10
-                : process.env.PTB_STUB_USAGE !== undefined
-                  ? Number(process.env.PTB_STUB_USAGE)
-                  : 10,
+      setTimeout(
+        () => {
+          send({
+            type: "tool_execution_end",
+            toolCallId: "t1",
+            result: "slept fine",
+            isError: false,
+            piTidyElapsedMs: 650,
+          });
+          send({
+            type: "message_end",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "done" }],
             },
-          },
-        });
-        send({ type: "agent_end" });
-        send({ type: "agent_settled" });
-      }, Number(process.env.PTB_STUB_TURN_MS ?? 700));
+          });
+          send({
+            type: "turn_end",
+            message: {
+              usage: {
+                input: freshSession()
+                  ? 10
+                  : process.env.PTB_STUB_USAGE !== undefined
+                    ? Number(process.env.PTB_STUB_USAGE)
+                    : 10,
+              },
+            },
+          });
+          send({ type: "agent_end" });
+          send({ type: "agent_settled" });
+        },
+        Number(process.env.PTB_STUB_TURN_MS ?? 700)
+      );
     };
     if (queued && process.env.PTB_STUB_HOLD_DIR) {
       const wait = setInterval(() => {

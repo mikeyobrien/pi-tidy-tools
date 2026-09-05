@@ -138,5 +138,15 @@ export async function loadBundledAdapter(pi: any): Promise<void> {
 export default async function mcpWrap(pi: any): Promise<void> {
   // Patch first so the bundled adapter's registrations are wrapped.
   installWrap(pi);
+  // Smoke-race (P1) / adapter-conflict fix: when the operator's global
+  // settings ALSO load pi-mcp-adapter, loading the bundled copy makes BOTH
+  // register the same tool names (mcp, mcpScript, mcp__*) — pi enforces
+  // uniqueness and the CHILD EXITS 1 at boot ("Tool mcp conflicts"), which
+  // crashed every fleet bot on hosts with the global adapter. The daemon
+  // sets this flag when it detects the global adapter; the patch above
+  // still wraps the global adapter's registrations, so MCP support and the
+  // reasoning wrap are both preserved. Hosts WITHOUT the global adapter
+  // keep the bundled fallback exactly as before.
+  if (process.env.PI_TIDY_BOTS_GLOBAL_MCP_ADAPTER === "1") return;
   await loadBundledAdapter(pi);
 }

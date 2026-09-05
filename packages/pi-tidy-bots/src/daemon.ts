@@ -14,6 +14,7 @@ import {
   mkdirSync,
   watch,
 } from "node:fs";
+import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import { serve } from "@hono/node-server";
@@ -117,6 +118,10 @@ interface BotRuntime {
   stopping: boolean;
   /** Issue 140: a queue-wake spawn is in flight for this bot. */
   wakeKick?: boolean;
+  /** Smoke-race (P1): the in-flight bootBot promise — delivery awaits it
+   * (bounded) so a raced first message lands after boot instead of
+   * bouncing off the boot window. */
+  booting?: Promise<void> | null;
   turnId: string | null;
   // Delta throttle state (issue 20 item 6): last WS delta emission for the
   // current turn — null until the first eligible emission.
@@ -1714,7 +1719,52 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     }
   };
 
-  const spawnBot = async (name: string): Promise<void> => {
+  /** Smoke-race (P1): raced first messages must wait out the boot window
+   * instead of colliding with it. spawnBot tracks its own boot so delivery
+   * can await readiness (bounded) — the message path then delivers after
+   * boot, or queues (202) if the boot genuinely failed. Never a spurious
+   * turn_in_flight/offline rejection for a message that simply raced boot. */
+  const spawnBot = (name: string): Promise<void> => {
+    const runtime = runtimes.get(name);
+    if (!runtime) return Promise.resolve();
+    const boot = bootBot(name).finally(() => {
+      if (runtime.booting === boot) runtime.booting = null;
+    });
+    runtime.booting = boot;
+    return boot;
+  };
+
+  /** Smoke-race (P1) companion: does the operator's global pi settings load
+   * pi-mcp-adapter? When yes, fleet children must NOT also load the bundled
+   * adapter — the duplicate tool registrations (mcp, mcpScript, mcp__*) make
+   * pi exit 1 at extension load, killing every bot at boot. Memoized,
+   * best-effort: on any read/parse failure assume NO (bundled fallback). */
+  let globalMcpAdapterCache: boolean | undefined;
+  const hasGlobalMcpAdapter = (): boolean => {
+    if (globalMcpAdapterCache !== undefined) return globalMcpAdapterCache;
+    try {
+      const settings = JSON.parse(
+        readFileSync(join(homedir(), ".pi", "agent", "settings.json"), "utf8")
+      ) as { packages?: unknown };
+      const packages = settings.packages;
+      const list = Array.isArray(packages) ? packages : [];
+      globalMcpAdapterCache = list.some((entry) =>
+        typeof entry === "string"
+          ? entry.replace(/^npm:/, "").startsWith("pi-mcp-adapter")
+          : typeof entry === "object" &&
+            entry !== null &&
+            typeof (entry as { source?: unknown }).source === "string" &&
+            (entry as { source: string }).source
+              .replace(/^npm:/, "")
+              .startsWith("pi-mcp-adapter")
+      );
+    } catch {
+      globalMcpAdapterCache = false;
+    }
+    return globalMcpAdapterCache;
+  };
+
+  const bootBot = async (name: string): Promise<void> => {
     const runtime = runtimes.get(name);
     if (!runtime) return;
     reapOrphanedChildren(name);
@@ -1775,6 +1825,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       env: {
         ...(imageProvider ? { PI_TIDY_IMAGE_PROVIDER: imageProvider } : {}),
         PI_TIDY_FLEET_DIR: fleet.dir,
+        ...(hasGlobalMcpAdapter()
+          ? { PI_TIDY_BOTS_GLOBAL_MCP_ADAPTER: "1" }
+          : {}),
       },
       daemonUrl,
       childSecret,
@@ -1959,6 +2012,11 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
             )
             .catch(() => {});
         }
+        // Smoke-race (P1): hold boot until the re-drive turn is observable —
+        // same accept-window reasoning as the resume branch below.
+        for (let i = 0; i < 120 && !session.streaming && session.alive; i++) {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
       } else if (lastEntry && lastEntry.role === "user" && !session.streaming) {
         journal({ bot: name, status: "resumed-interrupted-turn" });
         void session
@@ -1971,6 +2029,15 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
               `[${name}] interrupted-turn resume failed [reason: runtime_offline]`
             )
           );
+        // Smoke-race (P1): the boot stays in flight until the resume turn is
+        // OBSERVABLE (streaming) or 3s pass — a raced first message then
+        // queues behind the resume turn (deliver's streaming check →
+        // followUp) instead of colliding with pi's accept window, where a
+        // plain prompt is rejected with "already processing" even though we
+        // would recover. No rejected wire line at all.
+        for (let i = 0; i < 120 && !session.streaming && session.alive; i++) {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
       }
       log(
         `[${name}] online (session ${hasSession ? "resumed" : "new"}, ${runtime.transcript.length} prior entries)`
@@ -1988,6 +2055,26 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
             runtime.activeDeliveryId = target.id;
             runtime.replayDeliveryIds.add(target.id);
           }
+          // Smoke-race (P1): the replay loop races the boot's own
+          // interrupted-turn resume. Attempting a plain prompt behind an
+          // in-flight turn makes pi REJECT it ("already processing") — and
+          // the rejected wire line lands in the daemon log even when we
+          // recover. Queue directly with followUp when a turn is streaming:
+          // no rejection, same delivery.
+          if (session.streaming) {
+            await session.followUp(
+              injectRules(runtime, message.text),
+              message.images
+            );
+            runtime.activeDeliveryId = null;
+            // Same queue discipline as deliver(): the row stays journalled
+            // and turn_start pops it — queuedCount drives that pop.
+            runtime.queuedCount++;
+            log(
+              `[${name}] replayed pending message behind the in-flight turn (id ${message.id})`
+            );
+            continue;
+          }
           await session.prompt(
             injectRules(runtime, message.text),
             undefined,
@@ -1997,7 +2084,28 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           pendingStore.remove(name, message.id);
           if (target) target.delivering = false;
           log(`[${name}] replayed pending message (id ${message.id})`);
-        } catch {
+        } catch (error) {
+          // Smoke-race (P1): the replay loop races the boot's own
+          // interrupted-turn resume — real pi rejects a plain prompt behind
+          // an in-flight turn ("already processing"). QUEUE behind it with
+          // followUp instead of deferring forever; turn_start pops the
+          // journal exactly like the streaming-queue path.
+          const reason = classifyFailure(String(error));
+          if (reason === "turn_in_flight" && session.alive) {
+            try {
+              await session.followUp(
+                injectRules(runtime, message.text),
+                message.images
+              );
+              runtime.queuedCount++;
+              log(
+                `[${name}] replayed pending message behind the in-flight turn (id ${message.id})`
+              );
+              continue;
+            } catch {
+              // fall through to defer
+            }
+          }
           // Keep it journalled; the next spawn retries.
           runtime.activeDeliveryId = null;
           log(`[${name}] pending replay deferred (id ${message.id})`);
@@ -2630,6 +2738,15 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     images?: { type: "image"; data: string; mimeType: string }[]
   ): Promise<void> => {
     appendTranscript(runtime, entry);
+    // Smoke-race (P1): a message that raced the boot window waits out the
+    // boot (bounded 10s) instead of colliding with the boot probe/resume —
+    // then delivers normally. Only a genuinely failed boot falls through.
+    if (runtime.booting) {
+      await Promise.race([
+        runtime.booting.catch(() => undefined),
+        new Promise((resolve) => setTimeout(resolve, 10_000)),
+      ]);
+    }
     const session = runtime.session;
     if (!session || !session.alive) throw new Error("runtime_offline");
     // Issue 50: a streaming child queues the message behind its turn —
@@ -2934,12 +3051,15 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
             return { status: 202, body: { accepted: true, queued: true } };
           }
           if (reason === "turn_in_flight") {
-            // Issue 50: busy is never runtime_offline — reject distinctly and
-            // visibly (the entry is marked failed, not half-delivered).
-            entry.delivering = false;
-            entry.deliveryError = "turn_in_flight";
+            // Smoke-race (P1), superseding issue 50's 409: a turn_in_flight
+            // after the followUp fallback failed is DEFERRED, never dropped —
+            // the message journals and delivers at the next spawn, exactly
+            // like an offline send. The operator sees a queued bubble, not a
+            // rejected one.
+            journalPending(runtime, entry, images);
             emit({ type: "append", bot: name, entry });
-            return { status: 409, body: { error: "turn_in_flight" } };
+            emitRoster();
+            return { status: 202, body: { accepted: true, queued: true } };
           }
           entry.delivering = false;
           entry.deliveryError = reason;

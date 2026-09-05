@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 
 // Hermetic smoke: boots the real fleet daemon + real `pi --mode rpc` children in a
 // temp fleet dir. Gated behind PI_TIDY_BOTS_REAL_SMOKE=1 (repo convention), because
@@ -15,6 +17,17 @@ test(
       "./fixtures/fleet/",
       import.meta.url
     ).pathname.replace(/\/$/, "");
+    // Deterministic race: stale pending-journal rows from a previous run
+    // must not ride along — the boot replay would deliver old messages.
+    // (Fixture-state hygiene; the raced first message stays deliberate.)
+    try {
+      for (const file of readdirSync(join(fleetDir, ".fleet", "pending"))) {
+        if (file.endsWith(".jsonl"))
+          rmSync(join(fleetDir, ".fleet", "pending", file));
+      }
+    } catch {
+      // no pending dir yet — fine
+    }
     const port = 4591;
     const lines: string[] = [];
     const handle = await startFleet({

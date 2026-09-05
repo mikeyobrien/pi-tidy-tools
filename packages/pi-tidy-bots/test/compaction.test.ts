@@ -191,7 +191,7 @@ test(
 
 test(
   "model switch recomputes fill on the new window and force-compacts (acceptance 2+4)",
-  { timeout: 60000 },
+  { timeout: 240000 },
   async () => {
     const fleetDir = mkdtempSync(join(tmpdir(), "ptb-amd2-"));
     const handles: Array<{ stop(): Promise<void> }> = [];
@@ -231,25 +231,36 @@ test(
       });
       assert.equal(put.status, 200);
 
+      // 183-family load flake: the fill===5 observation is STABLE once the
+      // respawn's boot probe learns the new window (no turn runs until the
+      // boundary send), so no hold-gate applies — the 15s expiry pruner hit
+      // was the spawn→probe chain itself stalling under load. Load-tolerant
+      // wait + a test timeout with room for it (queue.test 183 gating).
       await waitFor(async () => {
         const context = await (
           await fetch(`${base}/api/bots/aa/context`)
         ).json();
         return context.contextWindow === 1000 && context.fill === 5;
-      }, 15000);
+      }, 45000);
       // Acceptance 4 is proven by the wait itself: fill === 5 against
       // contextWindow === 1000 IS the live-window recompute. (A mid-race
       // re-read would race the forced compaction that the interrupted-turn
       // resume correctly triggers right after the learn.)
 
       // Next settled boundary force-compacts despite hysteresis being off.
+      // Same 183 family: under full-suite load the boundary turn + compaction
+      // chain can outrun the 20s default — the trace only grows once fired,
+      // so a load-tolerant wait is the deterministic shape here.
       await send(base, "trigger boundary");
-      await waitFor(() => traced(tracePath).some((r) => r.kind === "compact"));
+      await waitFor(
+        () => traced(tracePath).some((r) => r.kind === "compact"),
+        90000
+      );
       // The compaction fires at the first settled boundary against the NEW
       // window — trigger label is force (scheduled) or threshold (usage-event
       // fill drives it first on a fresh boot whose carried tokens reset);
       // both bypass hysteresis on a first boot. What matters: it fired.
-      await waitFor(() => journal(fleetDir).length > 0);
+      await waitFor(() => journal(fleetDir).length > 0, 45000);
       const rows = journal(fleetDir);
       assert.ok(
         rows.at(-1)?.trigger === "force" ||

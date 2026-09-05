@@ -14,7 +14,7 @@ import {
   mkdirSync,
   watch,
 } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
@@ -40,7 +40,7 @@ import {
   type UiAnswer,
 } from "./rpc.ts";
 import { createEventLog, resolveSinceCursor } from "./eventlog.ts";
-import { createRpcEventHandler } from "./events.ts";
+import { createRpcEventHandler, deltaThrottleDue } from "./events.ts";
 import { attributionPrefix, stripActionMarkers } from "./actions.ts";
 import { classifyFailure, isRetryable } from "./reasons.ts";
 import {
@@ -54,7 +54,15 @@ import { TurnPartsAccumulator, type TurnPart } from "./turnparts.ts";
 import { versionPayload } from "./contract.ts";
 import { describePortHolder, pidAlive } from "./cli-core.ts";
 import {
-  buildHttpServer,
+  appAssetCacheControl,
+  appAssetMimeType,
+  coerceBusBehavior,
+  coerceHandoffImages,
+  coerceMessageMedia,
+  isPublicAssetPath,
+  PUBLIC_DIR,
+  safeAppAssetPath,
+  tailscaleUserLogin,
   wsUpgradeAuthorized,
   writeWsAuthFailure,
 } from "./server.ts";
@@ -156,6 +164,8 @@ export interface BotRuntime {
   pendingFrom: string[];
   restartTimes: number[];
   stopping: boolean;
+  /** Issue 140: a queue-wake spawn is in flight for this bot. */
+  wakeKick?: boolean;
   turnId: string | null;
   // Delta throttle state (issue 20 item 6): last WS delta emission for the
   // current turn — null until the first eligible emission.
@@ -210,6 +220,11 @@ export interface BotRuntime {
    * would spin forever. agent_start clears them by id.
    */
   replayDeliveryIds: Set<string>;
+  /** Issue 80: consecutive turns that settled "successfully" with zero
+   * visible output (no text, no tools) — the quota-exhaustion signature.
+   * Cleared by any productive turn. */
+  emptyTurnStreak: number;
+  lastEmptyTurnAt?: string;
   /**
    * Issue 43 amendment: the session model currently active INSIDE the child
    * ("provider/id") — differs from config during fallback summarization and
@@ -484,6 +499,44 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     join(fleet.dir, ".fleet", "transcripts")
   );
   const pendingStore = createPendingStore(join(fleet.dir, ".fleet", "pending"));
+  // Issue 140: in-flight turn markers survive daemon death. Written at
+  // agent_start, cleared at settle/exit — a marker left behind at boot means
+  // a turn died with the daemon: the boot re-drives it and notifies waiting
+  // handoff sources instead of losing the completion forever.
+  const inflightDir = join(fleet.dir, ".fleet", "inflight");
+  const inflightPath = (botName: string) =>
+    join(inflightDir, `${botName}.json`);
+  const writeInflightMarker = (runtime: BotRuntime): void => {
+    try {
+      mkdirSync(inflightDir, { recursive: true });
+      writeFileSync(
+        inflightPath(runtime.config.name),
+        JSON.stringify({
+          turnId: runtime.turnId,
+          pendingFrom: [...runtime.pendingFrom],
+          ts: new Date().toISOString(),
+        })
+      );
+    } catch {
+      /* best-effort: recovery degrades to the pre-140 behavior */
+    }
+  };
+  const clearInflightMarker = (botName: string): void => {
+    try {
+      rmSync(inflightPath(botName), { force: true });
+    } catch {
+      /* best-effort */
+    }
+  };
+  const readInflightMarker = (
+    botName: string
+  ): { turnId: string; pendingFrom?: string[]; ts: string } | null => {
+    try {
+      return JSON.parse(readFileSync(inflightPath(botName), "utf8"));
+    } catch {
+      return null;
+    }
+  };
   // Issue 159: the operator attention queue — one-at-a-time, server-enforced.
   const operatorQueue = createOperatorQueueStore(fleet.dir);
   let routineState: { routines?: Record<string, { enabled?: boolean }> } =
@@ -584,6 +637,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     queuedCount: 0,
     rulesApplied: null,
     replayDeliveryIds: new Set<string>(),
+    emptyTurnStreak: 0,
     clientMessageIds: new Set<string>(),
     turnsSinceCompact: 0,
     toolFailStreak: null,
@@ -666,6 +720,21 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       lastActive: runtime.lastActive,
       queued: queue.length,
       queue,
+      // Issue 80: empty-success turns surfaced for health probes/wedge
+      // detection. Absent when the bot is clean — additive field, existing
+      // consumers unaffected.
+      ...(runtime.emptyTurnStreak > 0
+        ? {
+            emptyTurns: {
+              streak: runtime.emptyTurnStreak,
+              degraded:
+                runtime.emptyTurnStreak >= (fleet.emptyTurnAlertAfter ?? 2),
+              ...(runtime.lastEmptyTurnAt
+                ? { lastAt: runtime.lastEmptyTurnAt }
+                : {}),
+            },
+          }
+        : {}),
       // Issue 69: REST /api/fleet carries the transcript preview; the WS roster
       // shape must match or every roster broadcast erases client-side previews.
       latest: runtime.transcript.at(-1)?.text ?? "",
@@ -1222,44 +1291,107 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     return true;
   }
 
-  /**
-   * Issue 148: reap orphaned children from an unclean daemon death. The
-   * previous daemon's ledger (.fleet/children/<bot>.pid) names child pids
-   * that no longer belong to us — a stub/real child left parentless after
-   * SIGKILL. Verified-daemon-command orphans are SIGTERMed (session-dir
-   * contention on restart otherwise); foreign pids are never signalled.
-   */
+  /** Process start time (ms since epoch) for a pid, or null when it cannot
+   * be observed. pid + start time is POSIX process identity: a recycled pid
+   * has a different start time, so an exact match is ownership proof. */
+  const processStartMs = (pid: number): number | null => {
+    try {
+      const out = spawnSync("ps", ["-p", String(pid), "-o", "lstart="], {
+        encoding: "utf8",
+        timeout: 5_000,
+      }).stdout.trim();
+      const parsed = out.length > 0 ? Date.parse(out) : NaN;
+      return Number.isFinite(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const processCommand = (pid: number): string => {
+    try {
+      return spawnSync("ps", ["-p", String(pid), "-o", "command="], {
+        encoding: "utf8",
+        timeout: 5_000,
+      }).stdout.trim();
+    } catch {
+      return "";
+    }
+  };
+
+  interface ChildLedger {
+    pid: number | null;
+    lstart: number | null;
+    command: string | null;
+  }
+
+  /** Issue 148 (verified rejection): the reaper must PROVE ownership before
+   * signalling. pid recycling + the old broad command regex let a FOREIGN
+   * process receive SIGTERM. Now the ledger records the child's PROCESS
+   * IDENTITY at spawn — pid + start time + exact command — and a signal is
+   * sent ONLY when all three match EXACTLY. Legacy bare-pid ledgers and any
+   * mismatch are UNVERIFIABLE: fail-closed (log, never signal). */
   const reapOrphanedChildren = (name: string): void => {
     try {
       const ledger = join(fleet.dir, ".fleet", "children", `${name}.pid`);
       if (!existsSync(ledger)) return;
       const raw = readFileSync(ledger, "utf8").trim();
       rmSync(ledger, { force: true });
-      const pid = Number(raw);
-      if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) return;
-      if (!pidAlive(pid)) return;
-      const command = (() => {
+      let identity: ChildLedger;
+      if (raw.startsWith("{")) {
+        // Identity-ledger format. A bare numeric pid is NOT this shape: it
+        // would JSON-parse as a number and silently lose the legacy branch.
         try {
-          return spawnSync("ps", ["-p", String(pid), "-o", "command="], {
-            encoding: "utf8",
-            timeout: 5_000,
-          }).stdout.trim();
+          const parsed = JSON.parse(raw) as Partial<ChildLedger>;
+          identity = {
+            pid: typeof parsed.pid === "number" ? parsed.pid : null,
+            lstart:
+              typeof parsed.lstart === "number" &&
+              Number.isFinite(parsed.lstart)
+                ? parsed.lstart
+                : null,
+            command: typeof parsed.command === "string" ? parsed.command : null,
+          };
         } catch {
-          return "";
+          identity = { pid: null, lstart: null, command: null };
         }
-      })();
-      // Orphans of the OLD daemon run the same pi/stub entry — anything
-      // referencing the fleet's piBin shape. Foreign pids: leave alone.
-      if (command.length === 0) return;
-      if (/pi(\s|$)|pi\.sh|stub|node/.test(command)) {
-        try {
-          process.kill(pid, "SIGTERM");
-          log(
-            `[${name}] reaped orphaned child pid ${pid} from previous daemon`
-          );
-        } catch {
-          // died racing us
-        }
+      } else {
+        identity = { pid: Number(raw), lstart: null, command: null };
+      }
+      if (
+        identity.pid === null ||
+        !Number.isFinite(identity.pid) ||
+        identity.pid <= 0 ||
+        identity.pid === process.pid
+      )
+        return;
+      if (identity.lstart === null || identity.command === null) {
+        log(
+          `[${name}] stale child ledger without full identity (pid ${identity.pid}) — not signaling; unverifiable`
+        );
+        return;
+      }
+      if (!pidAlive(identity.pid)) return;
+      const currentStart = processStartMs(identity.pid);
+      if (currentStart !== identity.lstart) {
+        log(
+          `[${name}] child ledger pid ${identity.pid} was recycled (start time changed) — not signaling a foreign process`
+        );
+        return;
+      }
+      const command = processCommand(identity.pid);
+      if (command !== identity.command) {
+        log(
+          `[${name}] child ledger pid ${identity.pid} command changed — not signaling a foreign process`
+        );
+        return;
+      }
+      try {
+        process.kill(identity.pid, "SIGTERM");
+        log(
+          `[${name}] reaped orphaned child pid ${identity.pid} from previous daemon (identity verified)`
+        );
+      } catch {
+        // died racing us
       }
     } catch {
       // ledger is best-effort
@@ -1311,8 +1443,17 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       model: stored.models?.[name] || runtime.config.model,
       approve: runtime.config.approve,
       ...(botPackages.length > 0 ? { trustProject: true } : {}),
+      ...(runtime.config.tools ? { tools: runtime.config.tools } : {}),
+      ...(runtime.config.noBuiltinTools ? { noBuiltinTools: true } : {}),
+      ...(runtime.config.noExtensions ? { noExtensions: true } : {}),
+      ...(runtime.config.noSkills ? { noSkills: true } : {}),
       bridgePath,
-      extensions: [mcpWrapPath],
+      extensions: [
+        mcpWrapPath,
+        ...(runtime.config.extensions ?? []).map((extension) =>
+          isAbsolute(extension) ? extension : resolve(fleet.dir, extension)
+        ),
+      ],
       // Issue 132: image provider selection (bot scope overrides fleet)
       // and the fleet dir so generate_image writes under .fleet/images.
       env: {
@@ -1353,13 +1494,35 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     }
     runtime.activeModelId =
       stored.models?.[name] || runtime.config.model || undefined;
-    // Issue 148: child-pid ledger — record the spawned child so an unclean
-    // daemon death is detectable at next boot (orphan reaping below).
+    // Issue 148: child-pid ledger — record the spawned child's PROCESS
+    // IDENTITY (pid + start time + exact command) so a later reaper can
+    // PROVE ownership before signaling. A bare pid is not identity: the OS
+    // recycles pids, and the recycled holder must never receive our signal.
     try {
       mkdirSync(join(fleet.dir, ".fleet", "children"), { recursive: true });
+      let lstart: number | null = null;
+      let command: string | null = null;
+      if (session.pid) {
+        // Settle: wrapper-style bins exec into their real command within
+        // milliseconds; record only a stable observation.
+        let previous = "";
+        for (let attempt = 0; attempt < 10; attempt++) {
+          const observed = processCommand(session.pid);
+          if (observed.length > 0 && observed === previous) {
+            command = observed;
+            break;
+          }
+          previous = observed;
+          await new Promise((r) => setTimeout(r, 20));
+        }
+        for (let attempt = 0; attempt < 10 && lstart === null; attempt++) {
+          lstart = processStartMs(session.pid);
+          if (lstart === null) await new Promise((r) => setTimeout(r, 20));
+        }
+      }
       writeFileSync(
         join(fleet.dir, ".fleet", "children", `${name}.pid`),
-        String(session.pid ?? "")
+        JSON.stringify({ pid: session.pid ?? null, lstart, command })
       );
     } catch {
       // best-effort ledger
@@ -1450,9 +1613,51 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         mapped
       ).slice(-50);
       const lastEntry = runtime.transcript.at(-1);
-      // A trailing user message while the agent is still streaming is a turn in
-      // flight, not an interrupted one — resuming over it double-prompts.
-      if (lastEntry && lastEntry.role === "user" && !session.streaming) {
+      // Issue 140: a marker left behind means a turn died at daemon restart.
+      // Re-drive it once and tell every waiting handoff source — the old
+      // behavior lost the completion silently (pendingFrom was memory-only),
+      // leaving source bots parked forever. One-shot: cleared on read.
+      const inflight = readInflightMarker(name);
+      if (inflight?.turnId) {
+        clearInflightMarker(name);
+        appendTranscript(runtime, {
+          id: randomUUID(),
+          role: "system",
+          origin: "system",
+          text: "Turn interrupted by a daemon restart — re-driving it now.",
+          ts: new Date().toISOString(),
+        });
+        const waitingSources = inflight.pendingFrom ?? [];
+        void session
+          .prompt(
+            "[fleet runtime] Your previous turn was interrupted by a restart before it could complete. " +
+              "Complete it now — same style, terse."
+          )
+          .catch(() => {
+            log(
+              `[${name}] interrupted-turn re-drive failed [reason: runtime_offline]`
+            );
+            for (const waitingFrom of waitingSources) {
+              const source = runtimes.get(waitingFrom);
+              if (!source?.session?.alive) continue;
+              void source.session
+                .prompt(
+                  `[completion from 🤖 ${name} (@${name})] re-drive failed after the restart — the turn is lost; re-dispatch`
+                )
+                .catch(() => {});
+            }
+          });
+        for (const waitingFrom of waitingSources) {
+          const source = runtimes.get(waitingFrom);
+          if (!source?.session?.alive) continue;
+          void source.session
+            .prompt(
+              `[completion from 🤖 ${name} (@${name})] target's turn was interrupted by a daemon restart — ` +
+                "it is being re-driven now; if no response follows, re-dispatch"
+            )
+            .catch(() => {});
+        }
+      } else if (lastEntry && lastEntry.role === "user" && !session.streaming) {
         journal({ bot: name, status: "resumed-interrupted-turn" });
         void session
           .prompt(
@@ -1512,21 +1717,474 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
    * module); daemon.ts supplies its state access via RpcEventContext and
    * keeps lifecycle glue only.
    */
-  const handleEvent = createRpcEventHandler({
-    runtimes,
-    fleetBots: () => fleet.bots,
-    pendingStore,
-    activeToolOutput: () => activeToolOutput,
-    viewSteps,
-    computeFill,
-    log,
-    emit,
-    emitRoster,
-    touch,
-    appendTranscript,
-    resolveUi,
-    maybeCompact,
-  });
+  const ACTIVITY_EVENT_KINDS = new Set([
+    "turn_start",
+    "agent_start",
+    "assistant_delta",
+    "assistant_message",
+    "tool_start",
+    "tool_end",
+    "tool_output",
+    "usage",
+  ]);
+  const handleEvent = (runtime: BotRuntime, event: RpcEvent): void => {
+    if (ACTIVITY_EVENT_KINDS.has(event.kind)) touch(runtime);
+    const botName = runtime.config.name;
+    switch (event.kind) {
+      case "turn_start": {
+        // A queued follow-up turn starts with turn_start, not agent_start —
+        // the oldest queued message is now streaming: mark it delivered.
+        if (runtime.queuedCount > 0) {
+          runtime.queuedCount--;
+          const head = pendingStore.load(botName)[0];
+          if (head) {
+            pendingStore.remove(botName, head.id);
+            const delivered = runtime.transcript.find(
+              (candidate) => candidate.id === head.id
+            );
+            if (delivered) {
+              delivered.delivering = false;
+              emit({ type: "append", bot: botName, entry: delivered });
+            }
+          }
+          emitRoster();
+        }
+        return;
+      }
+      case "usage": {
+        if (event.inputTokens !== undefined)
+          runtime.inputTokens = event.inputTokens;
+        if (runtime.contextWindow && runtime.inputTokens !== undefined)
+          runtime.fill = computeFill(
+            runtime.inputTokens,
+            runtime.contextWindow
+          );
+        // Issue 79: the context actually shrank below the trigger (real
+        // compaction elsewhere / new session) — re-arm auto-compaction.
+        if (
+          runtime.compactNoop &&
+          runtime.fill !== undefined &&
+          runtime.fill < COMPACT_TRIGGER
+        )
+          runtime.compactNoop = undefined;
+        return;
+      }
+      case "agent_start": {
+        // Issue 74: the child ACCEPTED a prompt — that entry is streaming,
+        // not queued. delivering now means only "not yet accepted".
+        if (runtime.activeDeliveryId) {
+          const accepted = runtime.transcript.find(
+            (candidate) => candidate.id === runtime.activeDeliveryId
+          );
+          runtime.activeDeliveryId = null;
+          if (accepted?.delivering) {
+            accepted.delivering = false;
+            emit({ type: "append", bot: botName, entry: accepted });
+          }
+        }
+        // Issue 148: replayed journal entries have no activeDeliveryId (it
+        // died with the old daemon) — clear their delivering flags by id so
+        // the operator bubble stops spinning after the restart replay.
+        if (runtime.replayDeliveryIds.size > 0) {
+          for (const id of runtime.replayDeliveryIds) {
+            const replayed = runtime.transcript.find(
+              (candidate) => candidate.id === id
+            );
+            if (replayed?.delivering) {
+              replayed.delivering = false;
+              emit({ type: "append", bot: botName, entry: replayed });
+            }
+          }
+          runtime.replayDeliveryIds.clear();
+        }
+        runtime.turnId = randomUUID();
+        writeInflightMarker(runtime);
+        runtime.turnText = "";
+        runtime.steps = [];
+        runtime.turnParts = new TurnPartsAccumulator();
+        runtime.deltaSent = null;
+        emit({
+          type: "bubble",
+          bot: botName,
+          turnId: runtime.turnId,
+          phase: "working",
+          steps: [],
+        });
+        return;
+      }
+      case "tool_start": {
+        // Issue 61 layer 2: circuit breaker — 5 consecutive identical
+        // tool_start events means the harness keeps rejecting the same call.
+        const failSig = `${event.toolName}:${event.label ?? ""}`;
+        if (
+          runtime.toolFailStreak &&
+          runtime.toolFailStreak.signature === failSig
+        ) {
+          runtime.toolFailStreak.count++;
+        } else {
+          runtime.toolFailStreak = { count: 1, signature: failSig };
+        }
+        if (runtime.toolFailStreak.count >= 5) {
+          runtime.toolFailStreak = null;
+          runtime.session?.abort();
+          appendTranscript(runtime, {
+            id: randomUUID(),
+            role: "system",
+            origin: "system",
+            text: `Stopped: 5 identical tool failures \u2014 model/tool contract broken (${event.toolName}). Operator intervention required.`,
+            ts: new Date().toISOString(),
+          });
+          log(
+            `[${botName}] circuit breaker: 5 identical tool failures, turn aborted`
+          );
+          return;
+        }
+        runtime.turnParts.startTool({
+          toolCallId: event.toolCallId,
+          tool: event.toolName,
+          label: event.label,
+          reason: event.reason,
+          started: Date.now(),
+          // Issue 128: message_agent dispatches carry the receipt ON the
+          // tool part — the chip renders in-order at the call site; the
+          // standalone receipt ENTRY is gone (single surface).
+          ...(event.target
+            ? {
+                receipt: (() => {
+                  const target = fleet.bots.find(
+                    (bot) => bot.name === event.target
+                  );
+                  return {
+                    name: event.target,
+                    ...(target?.avatar ? { avatar: target.avatar } : {}),
+                    ...(target?.title ? { title: target.title } : {}),
+                  };
+                })(),
+              }
+            : {}),
+        });
+        runtime.steps.push({
+          toolCallId: event.toolCallId,
+          name: event.toolName,
+          reason: event.reason,
+          ...(event.label ? { label: event.label } : {}),
+          started: Date.now(),
+        });
+        emit({
+          type: "bubble",
+          bot: botName,
+          turnId: runtime.turnId,
+          phase: "parts",
+          parts: runtime.turnParts.snapshot(),
+        });
+        if (activeToolOutput !== "off") {
+          emit({
+            type: "bubble",
+            bot: botName,
+            turnId: runtime.turnId,
+            phase: "steps",
+            steps: viewSteps(runtime.steps),
+          });
+        }
+        return;
+      }
+      case "tool_output": {
+        runtime.toolFailStreak = null;
+        runtime.turnParts.updateToolOutput(event.toolCallId, event.text);
+        const step = [...runtime.steps]
+          .reverse()
+          .find((candidate) => candidate.toolCallId === event.toolCallId);
+        if (step) step.output = event.text.slice(0, 1200);
+        if (activeToolOutput === "full") {
+          emit({
+            type: "bubble",
+            bot: botName,
+            turnId: runtime.turnId,
+            phase: "steps",
+            steps: viewSteps(runtime.steps),
+          });
+        }
+        return;
+      }
+      case "tool_end": {
+        // Issue 66: pi's tool_execution_end — THE settle event. Until this
+        // mapping existed every tool stayed "running" and the settle
+        // fallback flipped them all to error: every successful call rendered
+        // failed, durations never displayed, and the 61 breaker's output
+        // streak-reset never fired.
+        const step = [...runtime.steps]
+          .reverse()
+          .find((candidate) => candidate.toolCallId === event.toolCallId);
+        const duration =
+          event.elapsedMs ?? (step ? Date.now() - step.started : undefined);
+        if (!event.isError) runtime.toolFailStreak = null;
+        runtime.turnParts.settleTool(event.toolCallId, {
+          isError: event.isError,
+          duration,
+          output: event.result,
+        });
+        if (step) {
+          step.output = event.result.slice(0, 1200);
+          step.error = event.isError;
+          if (duration !== undefined) step.duration = duration;
+        }
+        emit({
+          type: "bubble",
+          bot: botName,
+          turnId: runtime.turnId,
+          phase: "parts",
+          parts: runtime.turnParts.snapshot(),
+        });
+        if (activeToolOutput === "full") {
+          emit({
+            type: "bubble",
+            bot: botName,
+            turnId: runtime.turnId,
+            phase: "steps",
+            steps: viewSteps(runtime.steps),
+          });
+        }
+        return;
+      }
+      case "assistant_delta": {
+        runtime.messageStreamed = true;
+        runtime.turnText += event.delta;
+        runtime.turnParts.appendText(event.delta);
+        const text = stripActionMarkers(runtime.turnText);
+        // Throttle: emit at most every ~300ms or ~256 bytes of growth. Frames
+        // are cumulative, so dropped frames lose nothing; the settle path
+        // always emits the final text.
+        const now = Date.now();
+        const last = runtime.deltaSent;
+        if (deltaThrottleDue(last, text.length, now)) {
+          runtime.deltaSent = { at: now, chars: text.length };
+          emit({
+            type: "bubble",
+            bot: botName,
+            turnId: runtime.turnId,
+            phase: "delta",
+            // Server-side marker stripping: any WS client gets clean streaming
+            // text. A marker line still open mid-stream becomes visible only
+            // until its closing ]] arrives — the grammar is line-based.
+            text,
+          });
+          emit({
+            type: "bubble",
+            bot: botName,
+            turnId: runtime.turnId,
+            phase: "parts",
+            parts: runtime.turnParts.snapshot(),
+          });
+        }
+        return;
+      }
+      case "assistant_message": {
+        // Issue 124: turnText is DERIVED from the parts model (append
+        // semantics), never replaced by the latest message — the old
+        // assignment wiped narration at every message boundary ("" at
+        // tool-call-only ones). A message that streamed no deltas (arrived
+        // whole) is appended so its text reaches the model exactly once.
+        if (!runtime.messageStreamed && event.text.length > 0)
+          runtime.turnParts.appendText(event.text);
+        // Message boundary: narration blocks stay distinct parts (issue
+        // 123's styling signal), and the boundary forces an emit so
+        // paragraph completions land promptly.
+        runtime.turnParts.splitText();
+        runtime.turnText = runtime.turnParts.concatText();
+        runtime.deltaSent = {
+          at: Date.now(),
+          chars: stripActionMarkers(runtime.turnText).length,
+        };
+        emit({
+          type: "bubble",
+          bot: botName,
+          turnId: runtime.turnId,
+          phase: "delta",
+          text: stripActionMarkers(runtime.turnText),
+        });
+        emit({
+          type: "bubble",
+          bot: botName,
+          turnId: runtime.turnId,
+          phase: "parts",
+          parts: runtime.turnParts.snapshot(),
+        });
+        return;
+      }
+      case "event": {
+        // Issue 124: message boundaries reset the streamed flag — a message
+        // that arrives whole (no deltas) is appended at assistant_message.
+        const rawType = (event.raw as { type?: string } | undefined)?.type;
+        if (rawType === "message_start") runtime.messageStreamed = false;
+        return;
+      }
+      case "agent_settled": {
+        clearInflightMarker(botName);
+        const turnId = runtime.turnId;
+        runtime.turnId = null;
+        // Issue 80: empty-success detection — a turn that completes without
+        // error yet produced NO visible output (no text part with content,
+        // no tool activity) is the quota-exhaustion signature (observed on
+        // atlas under codex-quota exhaustion: sessions looked fresh/healthy
+        // while producing nothing). Classified as an anomaly, journaled, and
+        // surfaced on the roster so health probes can see it.
+        const settledParts = runtime.turnParts.snapshot();
+        const hadVisibleOutput =
+          settledParts.some(
+            (part) => part.type === "text" && part.text.trim().length > 0
+          ) || settledParts.some((part) => part.type === "tool");
+        const emptyTurnThreshold = fleet.emptyTurnAlertAfter ?? 2;
+        if (turnId && !hadVisibleOutput) {
+          const priorStreak = runtime.emptyTurnStreak;
+          runtime.emptyTurnStreak = priorStreak + 1;
+          runtime.lastEmptyTurnAt = new Date().toISOString();
+          const degraded = runtime.emptyTurnStreak >= emptyTurnThreshold;
+          journal({
+            key: `${botName}:empty-turn`,
+            bot: botName,
+            status: degraded ? "empty-success-degraded" : "empty-success",
+            streak: runtime.emptyTurnStreak,
+            threshold: emptyTurnThreshold,
+          });
+          // Transcript entry at streak start and at the degradation
+          // crossing — every empty turn is journaled, the console is not
+          // spammed (the 79 lesson).
+          if (
+            priorStreak === 0 ||
+            (priorStreak < emptyTurnThreshold && degraded)
+          ) {
+            appendTranscript(runtime, {
+              id: randomUUID(),
+              role: "system",
+              origin: "system",
+              text: degraded
+                ? `Turn completed with no output (${runtime.emptyTurnStreak} consecutive) — classified degraded: possible model-quota exhaustion or provider anomaly.`
+                : "Turn completed with no output — classified as an anomaly (possible quota exhaustion).",
+              ts: new Date().toISOString(),
+            });
+          }
+          emitRoster();
+        } else if (turnId) {
+          runtime.emptyTurnStreak = 0;
+        }
+        // Issue 124: canonical text = the full turn's narration from the
+        // parts model — never the last message alone.
+        const text = stripActionMarkers(runtime.turnParts.concatText());
+        const entry: TranscriptEntry = {
+          id: randomUUID(),
+          role: "assistant",
+          origin: "bot",
+          originFrom: botName,
+          text,
+          ts: new Date().toISOString(),
+          // Marker stripping applies to parts too: settled history never
+          // carries [[action:]] lines in any surface.
+          parts: runtime.turnParts.snapshot().map((part) => {
+            if (part.type === "text")
+              return { ...part, text: stripActionMarkers(part.text) };
+            // Issue 49: "running" clears at settle — a turn cannot end
+            // while a tool result is still owed.
+            if (part.status === "running") part.status = "error";
+            return part;
+          }),
+          ...(runtime.steps.length > 0
+            ? {
+                steps: runtime.steps.map((step) => ({
+                  name: step.name,
+                  duration: step.duration,
+                })),
+              }
+            : {}),
+        };
+        appendTranscript(runtime, entry);
+        if (turnId)
+          emit({
+            type: "bubble",
+            bot: botName,
+            turnId,
+            phase: "final",
+            text,
+          });
+        const pendingSources = runtime.pendingFrom;
+        runtime.pendingFrom = [];
+        for (const pendingFrom of pendingSources) {
+          const source = runtimes.get(pendingFrom);
+          if (!source) continue;
+          // Issue 58 (grok-style): the completion is a transcript FACT on the
+          // dispatcher, not a prompt. Prompting the dispatcher started a turn
+          // on it (ping-pong pollution in the operator's chat); the report now
+          // renders as a "Message from X" entry the dispatcher never answers.
+          appendTranscript(source, {
+            id: randomUUID(),
+            role: "assistant",
+            origin: "bot",
+            originFrom: botName,
+            kind: "completion",
+            text,
+            ts: new Date().toISOString(),
+          });
+          touch(source);
+        }
+        // Issue 43 amendment: a window-(re)learn that showed fill ≥ 60%
+        // (model switch onto a smaller window, restart over a big session)
+        // schedules a FORCED compaction here — the first settled boundary.
+        const forceNext = runtime.forceCompactNext === true;
+        runtime.forceCompactNext = false;
+        void maybeCompact(runtime, forceNext ? { force: true } : {}).catch(
+          () => {}
+        );
+        return;
+      }
+      case "ui_request": {
+        if (!event.id) return;
+        if (isFireAndForgetUiMethod(event.method)) return; // status pings: not activity
+        // A real interactive question is activity; status pings are not.
+        touch(runtime);
+        if (!isInteractiveUiMethod(event.method)) {
+          // Unknown method: defuse it immediately so a future interactive UI
+          // request can never wedge a turn. The child ignores unmatched
+          // responses, so a cancelled answer is safe for any method.
+          resolveUi(
+            runtime,
+            { id: event.id, method: event.method, title: event.title },
+            { cancel: true },
+            true
+          );
+          return;
+        }
+        if (runtime.pendingUi.has(event.id)) return;
+        const view: UiRequestView = {
+          id: event.id,
+          method: event.method,
+          title: event.title,
+          ...(event.options ? { options: event.options } : {}),
+          ...(event.message ? { message: event.message } : {}),
+          ...(event.placeholder ? { placeholder: event.placeholder } : {}),
+        };
+        appendTranscript(runtime, {
+          id: randomUUID(),
+          role: "system",
+          origin: "system",
+          text: view.message ? `${view.title} — ${view.message}` : view.title,
+          ts: new Date().toISOString(),
+          ui: view,
+        });
+        const timer = setTimeout(() => {
+          if (!runtime.pendingUi.delete(view.id)) return;
+          resolveUi(
+            runtime,
+            view,
+            autoUiAnswer(view.method, view.options),
+            true
+          );
+        }, UI_AUTO_ANSWER_MS);
+        runtime.pendingUi.set(view.id, { view, timer });
+        return;
+      }
+      default:
+        return;
+    }
+  };
 
   const handleExit = (
     runtime: BotRuntime,
@@ -1560,6 +2218,10 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       });
       runtime.turnId = null;
     }
+    // Issue 140: the daemon handled this exit (sources notified below)
+    // — the marker's recovery job is done. A daemon death skips this,
+    // which is exactly what leaves the marker for the next boot.
+    clearInflightMarker(runtime.config.name);
     for (const droppedFrom of droppedSources) {
       const source = runtimes.get(droppedFrom);
       if (source?.session?.alive) {
@@ -1582,6 +2244,15 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       log(
         `[${runtime.config.name}] restart budget exhausted; bot offline [reason: runtime_offline]`
       );
+      // Issue 140: loud, operator-visible — offline is not silence. The next
+      // message re-kicks a respawn (wake-on-queue re-arms the budget).
+      appendTranscript(runtime, {
+        id: randomUUID(),
+        role: "system",
+        origin: "system",
+        text: "Restart budget exhausted — offline until the next message re-kicks a respawn or a manual restart.",
+        ts: new Date().toISOString(),
+      });
       const waitingSources = runtime.pendingFrom;
       runtime.pendingFrom = [];
       for (const waitingFrom of waitingSources) {
@@ -1941,6 +2612,25 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
             emit({ type: "append", bot: name, entry });
             // Issue 76: the queue grew — the roster carries the item list.
             emitRoster();
+            // Issue 140: a journaled message for a dead runtime WAKES the
+            // child — "next spawn" must be triggered, not hoped for.
+            // Operator intent re-arms the restart budget: a crash-looping
+            // bot stays down, but every new message is a remote kick.
+            if (!runtime.stopping) {
+              runtime.restartTimes = [];
+              if (!runtime.wakeKick) {
+                runtime.wakeKick = true;
+                void spawnBot(name)
+                  .catch((error) =>
+                    log(
+                      `[${name}] queue-wake respawn failed: ${(error as Error).message}`
+                    )
+                  )
+                  .finally(() => {
+                    runtime.wakeKick = false;
+                  });
+              }
+            }
             return { status: 202, body: { accepted: true, queued: true } };
           }
           if (reason === "turn_in_flight") {
@@ -2009,6 +2699,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
             },
           };
         }
+        clearInflightMarker(name);
         appendTranscript(runtime, {
           id: randomUUID(),
           role: "system",
@@ -2342,3 +3033,645 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
 }
 
 // Local type alias keeps handleEvent usable before RpcEvent is exported below.
+type RpcEvent2 = import("./rpc.ts").RpcEvent;
+
+interface RoutineRuntimeView {
+  bot: string;
+  name: string;
+  schedule: string;
+  prompt: string;
+  enabled: boolean;
+}
+
+interface ServerDeps {
+  fleet: FleetConfig;
+  fleetName?: string;
+  runtimes: Map<string, BotRuntime>;
+  routines: RoutineRuntimeView[];
+  onRoster: () => void;
+  onToolOutput: (mode: ToolOutputMode) => void;
+  persistToolOutput: (mode: ToolOutputMode) => void;
+  getToolOutput(): ToolOutputMode;
+  token?: string;
+  childSecret: string;
+  log: (line: string) => void;
+  handlers: {
+    message(
+      name: string,
+      text: string,
+      images?: { type: "image"; data: string; mimeType: string }[],
+      clientMessageId?: string,
+      attachments?: { name?: string; mediaType: string }[]
+    ): Promise<{ status: number; body: unknown }>;
+    compact(name: string): Promise<{ status: number; body: unknown }>;
+    stop(name: string): Promise<{ status: number; body: unknown }>;
+    queue(
+      name: string
+    ): { id: string; text: string; hasImage: boolean; filename?: string }[];
+    unqueue(name: string, id: string): { status: 200 | 404 };
+    loadTranscript(name: string): unknown[];
+    setModel(name: string, model: string): { status: 200 | 404 };
+    operatorEnqueue(input: {
+      title: string;
+      receipts?: { ref: string; detail?: string }[];
+      source: string;
+    }): unknown;
+    operatorQueueView(): unknown;
+    operatorQueueClear(id: string): unknown;
+    attachCompletionSummary(
+      name: string,
+      summary: string
+    ): { status: 200 | 404; error?: string; entry?: unknown };
+    steer(
+      name: string,
+      text: string
+    ): Promise<{ status: number; body: unknown }>;
+    toggleRoutine(
+      botName: string,
+      routineName: string
+    ): { status: number; body: unknown };
+    runRoutine(
+      botName: string,
+      routineName: string
+    ): { status: number; body: unknown };
+    answerUi(
+      name: string,
+      uiId: string,
+      body: { value?: string; confirmed?: boolean; cancel?: boolean }
+    ): { status: number; body: unknown };
+    busSend(
+      from: string,
+      target: string,
+      message: string,
+      behavior?: "steer" | "followUp",
+      images?: { type: "image"; data: string; mimeType: string }[]
+    ): Promise<{ status: number; body: unknown }>;
+  };
+}
+
+function buildHttpServer(deps: ServerDeps): Hono {
+  const app = new Hono();
+  const authorized = (url: URL, request: Request): boolean =>
+    !deps.token ||
+    url.searchParams.get("token") === deps.token ||
+    (request.headers.get("authorization") ?? "") === `Bearer ${deps.token}` ||
+    // Issue 103: Tailscale Serve identity headers authenticate like the token.
+    tailscaleUserLogin(request) !== null;
+
+  const tokenPage = `<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>pi-tidy-bots — access</title><style>body{margin:0;height:100vh;display:grid;place-items:center;background:#0b0e14;color:#e8ecf3;font:14px/1.5 -apple-system,'Inter',sans-serif}main{background:#12161f;border:1px solid #232a38;border-radius:14px;padding:28px;width:min(420px,90vw)}h1{font-size:16px;margin:0 0 6px}p{color:#8a93a6;margin:0 0 16px;font-size:13px}input{width:100%;background:#171c27;border:1px solid #232a38;color:#e8ecf3;border-radius:10px;padding:11px 12px;font:inherit;outline:none}input:focus{border-color:#2dd4bf}button{margin-top:10px;width:100%;border:none;border-radius:10px;padding:11px;background:#2dd4bf;color:#06251f;font-weight:700;cursor:pointer}</style></head><body><main><h1>Fleet console access</h1><p>Paste the fleet token (printed by <code>pi-tidy-bots start</code>, or in <code>.fleet/token</code>).</p><form onsubmit="location.href='/?token='+encodeURIComponent(this.t.value.trim());return false"><input name="t" placeholder="fleet token" autofocus /><button>Enter console</button></form></main></body></html>`;
+
+  app.use(async (context, next) => {
+    const url = new URL(context.req.url);
+    if (url.pathname === "/bus/send") {
+      if (context.req.header("x-fleet-child") !== deps.childSecret) {
+        return context.json({ delivered: false, reason: "unauthorized" }, 401);
+      }
+      await next();
+      return;
+    }
+    // Issue 62: bots disclose peers by reading /api/fleet with their child
+    // secret (bridge.ts enumerates message_agent targets from the live
+    // roster). The secret is per-fleet and unguessable — allow it on any
+    // route, not just the bus.
+    if (context.req.header("x-fleet-child") === deps.childSecret) {
+      await next();
+      return;
+    }
+    // Public assets carry no fleet data; browsers fetch them without the document's query token.
+    if (isPublicAssetPath(url.pathname)) {
+      await next();
+      return;
+    }
+    if (!authorized(url, context.req.raw)) {
+      if (url.pathname.startsWith("/api/") || url.pathname === "/api/ws") {
+        return context.json({ error: "unauthorized" }, 401);
+      }
+      return context.html(tokenPage, 401);
+    }
+    await next();
+  });
+
+  const serveAsset = (file: string, type: string) => (context: any) => {
+    const body = readFileSync(join(PUBLIC_DIR, file), "utf8");
+    return context.body(body, 200, {
+      "content-type": `${type}; charset=utf-8`,
+      "cache-control": "no-store",
+    });
+  };
+  app.get("/", serveAsset("index.html", "text/html"));
+  app.get("/console", serveAsset("index.html", "text/html"));
+  app.get("/app.js", serveAsset("app.js", "text/javascript"));
+  app.get("/md.js", serveAsset("md.js", "text/javascript"));
+  app.get("/parts.js", serveAsset("parts.js", "text/javascript"));
+  app.get("/app/*", (context) => {
+    const asset = safeAppAssetPath(context.req.path);
+    if (!asset || !existsSync(asset) || !statSync(asset).isFile())
+      return context.json({ error: "not found" }, 404);
+    return context.body(readFileSync(asset), 200, {
+      "content-type": appAssetMimeType(asset),
+      "cache-control": appAssetCacheControl(asset),
+    });
+  });
+  app.get("/app", (context) =>
+    context.redirect(`/app/${new URL(context.req.url).search}`)
+  );
+  app.get("/style.css", serveAsset("style.css", "text/css"));
+
+  app.get("/api/fleet", (context) => {
+    const bots = [...deps.runtimes.values()].map((runtime) => {
+      const queue = deps.handlers.queue(runtime.config.name);
+      return {
+        name: runtime.config.name,
+        title: runtime.config.title,
+        description: botDisclosure(runtime.config),
+        avatar: runtime.config.avatar,
+        online: runtime.online,
+        active: Date.now() - Date.parse(runtime.lastActive) < ACTIVE_WINDOW_MS,
+        lastActive: runtime.lastActive,
+        queued: queue.length,
+        queue,
+        // Issue 80 (mirror of presence()): empty-success streak for health
+        // probes — REST and WS roster shapes must match.
+        ...(runtime.emptyTurnStreak > 0
+          ? {
+              emptyTurns: {
+                streak: runtime.emptyTurnStreak,
+                degraded:
+                  runtime.emptyTurnStreak >=
+                  (deps.fleet.emptyTurnAlertAfter ?? 2),
+                ...(runtime.lastEmptyTurnAt
+                  ? { lastAt: runtime.lastEmptyTurnAt }
+                  : {}),
+              },
+            }
+          : {}),
+        latest: runtime.transcript.at(-1)?.text ?? "",
+      };
+    });
+    return context.json({ dir: deps.fleet.dir, bots });
+  });
+
+  app.get("/api/bots/:name/context", (context) => {
+    const runtime = deps.runtimes.get(context.req.param("name"));
+    if (!runtime) return context.json({ error: "unknown bot" }, 404);
+    // Amendment: fill always reads the LIVE window (recomputed on every
+    // window learn); overWindow flags contexts exceeding the model window.
+    return context.json({
+      fill: runtime.fill ?? null,
+      inputTokens: runtime.inputTokens ?? null,
+      contextWindow: runtime.contextWindow ?? null,
+      overWindow:
+        runtime.inputTokens !== undefined &&
+        runtime.contextWindow !== undefined &&
+        runtime.inputTokens > runtime.contextWindow,
+      ...(deps.fleet.compactFallbackModel || DEFAULT_COMPACT_FALLBACK_MODEL
+        ? {
+            compactFallbackModel:
+              deps.fleet.compactFallbackModel ?? DEFAULT_COMPACT_FALLBACK_MODEL,
+          }
+        : {}),
+      lastCompactAt: runtime.lastCompactAt ?? null,
+      turnsSinceCompact: runtime.turnsSinceCompact,
+    });
+  });
+
+  app.get("/api/version", (context) => {
+    return context.json({
+      ...versionPayload(),
+      fleetName: deps.fleetName,
+      fleetDir: deps.fleet.dir,
+    });
+  });
+
+  app.get("/api/settings", (context) => {
+    return context.json({ toolOutput: deps.getToolOutput() });
+  });
+
+  app.post("/api/settings", async (context) => {
+    const body = (await context.req.json().catch(() => ({}))) as {
+      toolOutput?: string;
+    };
+    if (
+      !body.toolOutput ||
+      !["off", "counts", "reasons", "full"].includes(body.toolOutput)
+    ) {
+      return context.json(
+        { error: "toolOutput must be off|counts|reasons|full" },
+        400
+      );
+    }
+    deps.onToolOutput(body.toolOutput as ToolOutputMode);
+    return context.json({ toolOutput: body.toolOutput });
+  });
+
+  // Issue 82: fleet-wide rules — a single markdown file every bot receives
+  // on its NEXT delivered prompt/followUp (per rules version; no respawn
+  // needed, in-flight turns never steered). Missing/empty file is a normal
+  // state (text: "", never 404). Mason's drawer edits via PUT.
+  app.get("/api/rules", (context) => {
+    let text = "";
+    try {
+      text = readFileSync(join(deps.fleet.dir, ".fleet", "rules.md"), "utf8");
+    } catch {
+      // No rules yet.
+    }
+    return context.json({ text });
+  });
+
+  app.put("/api/rules", async (context) => {
+    const body = (await context.req.json().catch(() => ({}))) as {
+      text?: unknown;
+    };
+    if (typeof body.text !== "string")
+      return context.json({ error: "text (string) required" }, 400);
+    const rulesPath = join(deps.fleet.dir, ".fleet", "rules.md");
+    mkdirSync(join(deps.fleet.dir, ".fleet"), { recursive: true });
+    writeFileSync(rulesPath, body.text);
+    return context.json({ text: body.text });
+  });
+
+  // Issue 159: operator attention queue — one-at-a-time, server-enforced.
+  app.get("/api/operator/queue", (context) => {
+    return context.json(deps.handlers.operatorQueueView());
+  });
+
+  app.post("/api/operator/queue", async (context) => {
+    const body = (await context.req.json().catch(() => ({}))) as {
+      title?: unknown;
+      receipts?: unknown;
+      source?: unknown;
+    };
+    if (typeof body.title !== "string" || body.title.trim().length === 0)
+      return context.json({ error: "title (non-empty string) required" }, 400);
+    const receipts = Array.isArray(body.receipts)
+      ? body.receipts
+          .filter(
+            (entry): entry is { ref: string; detail?: string } =>
+              typeof entry === "object" &&
+              entry !== null &&
+              typeof (entry as { ref?: unknown }).ref === "string" &&
+              (entry as { ref: string }).ref.length > 0
+          )
+          .map((entry) => ({
+            ref: entry.ref,
+            ...(typeof entry.detail === "string" && entry.detail.length > 0
+              ? { detail: entry.detail }
+              : {}),
+          }))
+      : [];
+    const item = deps.handlers.operatorEnqueue({
+      title: body.title.trim(),
+      ...(receipts.length > 0 ? { receipts } : {}),
+      source:
+        typeof body.source === "string" && body.source.length > 0
+          ? body.source
+          : "operator",
+    });
+    return context.json({ item });
+  });
+
+  app.post("/api/operator/queue/:id/clear", (context) => {
+    const result = deps.handlers.operatorQueueClear(context.req.param("id"));
+    if (!result)
+      return context.json({ error: "unknown or already-cleared id" }, 404);
+    return context.json(result);
+  });
+
+  app.get("/api/routines", (context) => {
+    return context.json({
+      routines: deps.routines.map((routine) => ({
+        bot: routine.bot,
+        name: routine.name,
+        schedule: routine.schedule,
+        prompt: routine.prompt,
+        enabled: routine.enabled,
+      })),
+    });
+  });
+
+  app.post("/api/bots/:name/routines/:routine/toggle", (context) => {
+    const result = deps.handlers.toggleRoutine(
+      context.req.param("name"),
+      context.req.param("routine")
+    );
+    return context.json(result.body, result.status as 200 | 404);
+  });
+
+  app.post("/api/bots/:name/routines/:routine/run", (context) => {
+    const result = deps.handlers.runRoutine(
+      context.req.param("name"),
+      context.req.param("routine")
+    );
+    return context.json(result.body, result.status as 200 | 404 | 503);
+  });
+
+  app.get("/api/bots/:name/transcript", (context) => {
+    const runtime = deps.runtimes.get(context.req.param("name"));
+    if (!runtime) return context.json({ error: "unknown bot" }, 404);
+    // Issue 104 (P1, live-hit): the RAM transcript is a slice(-50) of the
+    // merged history — the API served 54 of 968 real rows and `before=`
+    // walks died on page one. appendTranscript persists synchronously, so
+    // the JSONL journal IS the complete history: paginate from
+    // transcripts.load(name) when paging params are present; the no-param
+    // hot path stays the RAM list (identical content, zero disk reads).
+    const before = context.req.query("before");
+    const limit = context.req.query("limit");
+    const source =
+      before === undefined && limit === undefined
+        ? runtime.transcript
+        : (deps.handlers.loadTranscript(
+            context.req.param("name")
+          ) as typeof runtime.transcript);
+    const page = paginateTranscript(source, { before, limit });
+    if (!page.ok) return context.json({ error: page.error }, 400);
+    return context.json({ transcript: page.entries });
+  });
+
+  // Issue 115: captioned device photos exceed default body budgets — the
+  // message route accepts an explicit ~15MB body (declared AND actual).
+  const MAX_MESSAGE_BODY_BYTES = 15 * 1024 * 1024;
+  const parseMessageBody = async (context: {
+    req: {
+      header: (name: string) => string | undefined;
+      arrayBuffer: () => Promise<ArrayBuffer>;
+    };
+  }): Promise<
+    | { ok: true; body: Record<string, unknown> }
+    | { ok: false; status: 400 | 413; error: string }
+  > => {
+    const declared = Number(context.req.header("content-length") ?? "0");
+    if (Number.isFinite(declared) && declared > MAX_MESSAGE_BODY_BYTES)
+      return { ok: false, status: 413, error: "body too large" };
+    const raw = await context.req.arrayBuffer();
+    if (raw.byteLength > MAX_MESSAGE_BODY_BYTES)
+      return { ok: false, status: 413, error: "body too large" };
+    try {
+      const parsed = JSON.parse(new TextDecoder().decode(raw)) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+        return { ok: false, status: 400, error: "invalid JSON body" };
+      return { ok: true, body: parsed as Record<string, unknown> };
+    } catch {
+      return { ok: false, status: 400, error: "invalid JSON body" };
+    }
+  };
+
+  app.post("/api/bots/:name/message", async (context) => {
+    const parsedBody = await parseMessageBody(context);
+    if (!parsedBody.ok)
+      return context.json(
+        { error: parsedBody.error },
+        parsedBody.status as 400 | 413
+      );
+    const body = parsedBody.body as {
+      text?: string;
+      images?: unknown;
+      attachments?: unknown;
+      clientMessageId?: unknown;
+    };
+    // Issue 181: a standalone `attachments` key is silently ignored today
+    // (200, attachments=null, "no clip came through") — honor it as an
+    // alias of `images` (same composer wire shape) rather than rejecting:
+    // callers already send it meaningfully.
+    if (body.images === undefined && body.attachments !== undefined)
+      body.images = body.attachments;
+    if (
+      body.clientMessageId !== undefined &&
+      typeof body.clientMessageId !== "string"
+    )
+      return context.json({ error: "clientMessageId must be a string" }, 400);
+    const media = coerceMessageMedia(body.images);
+    if (!media.ok) {
+      return context.json(
+        {
+          error:
+            "images must be one { mediaType, data } object with non-empty strings",
+        },
+        400
+      );
+    }
+    // Issue 114: an image/media send may carry an empty caption — text is
+    // required only when nothing is attached. Empty text + no media is a 400.
+    const hasMedia =
+      (media.images?.length ?? 0) > 0 || (media.attachments?.length ?? 0) > 0;
+    const hasText =
+      typeof body.text === "string" && body.text.trim().length > 0;
+    if (!hasText && !hasMedia)
+      return context.json({ error: "text required" }, 400);
+    const result = await deps.handlers.message(
+      context.req.param("name"),
+      typeof body.text === "string" ? body.text.trim() : "",
+      media.images,
+      body.clientMessageId,
+      media.attachments
+    );
+    return context.json(
+      result.body,
+      result.status as 200 | 202 | 404 | 409 | 503
+    );
+  });
+
+  app.post("/api/bots/:name/ui/:uiId", async (context) => {
+    const body = (await context.req.json().catch(() => ({}))) as {
+      value?: string;
+      confirmed?: boolean;
+      cancel?: boolean;
+    };
+    const result = deps.handlers.answerUi(
+      context.req.param("name"),
+      context.req.param("uiId"),
+      body
+    );
+    return context.json(result.body, result.status as 200 | 400 | 404 | 503);
+  });
+
+  app.post("/api/bots/:name/compact", async (context) => {
+    const result = await deps.handlers.compact(context.req.param("name"));
+    return context.json(result.body, result.status as 200 | 404 | 409 | 503);
+  });
+
+  app.post("/api/bots/:name/stop", async (context) => {
+    const result = await deps.handlers.stop(context.req.param("name"));
+    return context.json(result.body, result.status as 200 | 404 | 503);
+  });
+
+  // Issue 76: the follow-up queue as data — items (no base64) + dismiss.
+  // Issue 83: per-bot instructions — the persona document, read/written as
+  // opaque text. Applies on the bot's next turn via the existing persona
+  // watcher (in-place reload when idle, queued when busy). The wire surface
+  // stays abstract: no file names, no paths — a missing document is simply
+  // empty text, never an error.
+  // Issue 88: per-bot model — GET the effective model, PUT to change it.
+  // Persisted in the fleet state store (survives restarts); applied by
+  // respawning ONLY that bot (--model is spawn-time). The wire surface never
+  // names the manifest.
+  app.get("/api/bots/:name/model", (context) => {
+    const runtime = deps.runtimes.get(context.req.param("name"));
+    if (!runtime) return context.json({ error: "unknown bot" }, 404);
+    return context.json({ model: runtime.config.model ?? "" });
+  });
+
+  app.put("/api/bots/:name/model", async (context) => {
+    const body = (await context.req.json().catch(() => ({}))) as {
+      model?: unknown;
+    };
+    if (typeof body.model !== "string")
+      return context.json({ error: "model (string) required" }, 400);
+    const result = deps.handlers.setModel(
+      context.req.param("name"),
+      body.model
+    );
+    if (result.status === 404)
+      return context.json({ error: "unknown bot" }, 404);
+    return context.json({ model: body.model });
+  });
+
+  // Issue 122: summary attach for peer completions — authorized like any
+  // console API; bots ride it with their child secret via the bridge tool.
+  app.put("/api/bots/:name/completion-summary", async (context) => {
+    const body = (await context.req.json().catch(() => ({}))) as {
+      summary?: unknown;
+    };
+    if (typeof body.summary !== "string" || body.summary.trim().length === 0)
+      return context.json(
+        { error: "summary (non-empty string) required" },
+        400
+      );
+    const result = deps.handlers.attachCompletionSummary(
+      context.req.param("name"),
+      body.summary.trim()
+    );
+    if (result.status !== 200)
+      return context.json({ error: result.error }, result.status);
+    return context.json({ attached: true });
+  });
+
+  // Issue 176: serve persisted entry-image blobs (authed like every /api).
+  app.get("/api/images/:bot/:file", (context) => {
+    const bot = context.req.param("bot");
+    const file = context.req.param("file");
+    // Path traversal guard: flat names only.
+    if (!/^[A-Za-z0-9._-]+$/.test(file) || file.includes(".."))
+      return context.json({ error: "bad file" }, 400);
+    const path = join(deps.fleet.dir, ".fleet", "images", bot, file);
+    let body: Buffer;
+    try {
+      body = readFileSync(path);
+    } catch {
+      return context.json({ error: "not found" }, 404);
+    }
+    const ext = file.split(".").pop()?.toLowerCase() ?? "";
+    const media =
+      ext === "png"
+        ? "image/png"
+        : ext === "jpg" || ext === "jpeg"
+          ? "image/jpeg"
+          : ext === "webp"
+            ? "image/webp"
+            : "application/octet-stream";
+    return context.body(body, 200, {
+      "content-type": media,
+      "cache-control": "no-store",
+    });
+  });
+
+  app.get("/api/bots/:name/instructions", (context) => {
+    const runtime = deps.runtimes.get(context.req.param("name"));
+    if (!runtime) return context.json({ error: "unknown bot" }, 404);
+    let text = "";
+    try {
+      text = readFileSync(join(runtime.config.dir, "AGENTS.md"), "utf8");
+    } catch {
+      // No instructions yet — empty text, not an error.
+    }
+    return context.json({ text });
+  });
+
+  app.put("/api/bots/:name/instructions", async (context) => {
+    const runtime = deps.runtimes.get(context.req.param("name"));
+    if (!runtime) return context.json({ error: "unknown bot" }, 404);
+    const body = (await context.req.json().catch(() => ({}))) as {
+      text?: unknown;
+    };
+    if (typeof body.text !== "string")
+      return context.json({ error: "text (string) required" }, 400);
+    try {
+      writeFileSync(join(runtime.config.dir, "AGENTS.md"), body.text);
+    } catch {
+      return context.json({ error: "instructions not writable" }, 500);
+    }
+    return context.json({ text: body.text });
+  });
+
+  app.get("/api/bots/:name/queue", (context) => {
+    const name = context.req.param("name");
+    if (!deps.runtimes.has(name))
+      return context.json({ error: "unknown bot" }, 404);
+    return context.json({ queue: deps.handlers.queue(name) });
+  });
+
+  app.delete("/api/bots/:name/queue/:id", (context) => {
+    const result = deps.handlers.unqueue(
+      context.req.param("name"),
+      context.req.param("id")
+    );
+    if (result.status === 404) return context.json({ removed: false }, 404);
+    return context.json({ removed: true });
+  });
+
+  app.post("/api/bots/:name/steer", async (context) => {
+    const body = (await context.req.json().catch(() => ({}))) as {
+      text?: string;
+    };
+    if (!body.text) return context.json({ error: "text required" }, 400);
+    const result = await deps.handlers.steer(
+      context.req.param("name"),
+      body.text.trim()
+    );
+    return context.json(result.body, result.status as 200 | 404 | 503);
+  });
+
+  app.post("/bus/send", async (context) => {
+    const body = (await context.req.json().catch(() => ({}))) as {
+      from?: string;
+      target?: string;
+      message?: string;
+      behavior?: string;
+    };
+    if (!body.from || !body.target || !body.message) {
+      return context.json({ delivered: false, reason: "missing_config" }, 400);
+    }
+    const behavior = coerceBusBehavior(body.behavior);
+    if (!behavior.ok) {
+      return context.json(
+        {
+          delivered: false,
+          reason: "invalid_behavior",
+          error: 'behavior must be "steer" or "followUp"',
+        },
+        400
+      );
+    }
+    // Issue 75: handoff images — composer wire shape, uncapped.
+    const images = coerceHandoffImages((body as { images?: unknown }).images);
+    if (!images.ok) {
+      return context.json(
+        {
+          delivered: false,
+          reason: "invalid_images",
+          error: "images must be {mediaType, data} objects",
+        },
+        400
+      );
+    }
+    const result = await deps.handlers.busSend(
+      body.from,
+      body.target,
+      body.message,
+      behavior.behavior,
+      images.images
+    );
+    return context.json(result.body, result.status as 200 | 404 | 503);
+  });
+
+  return app;
+}

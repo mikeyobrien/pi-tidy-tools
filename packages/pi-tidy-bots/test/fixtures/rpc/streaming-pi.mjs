@@ -189,6 +189,19 @@ rl.on("line", (line) => {
     const run = () => {
       send({ type: "turn_start" });
       send({ type: "agent_start" });
+      // Issue 80 fixture: a turn that completes "successfully" with ZERO
+      // visible output — no message, no tool — the quota-exhaustion shape.
+      if (process.env.PTB_STUB_EMPTY_TURN === "1") {
+        setTimeout(
+          () => {
+            send({ type: "turn_end", message: { usage: { input: 10 } } });
+            send({ type: "agent_end" });
+            send({ type: "agent_settled" });
+          },
+          Number(process.env.PTB_STUB_TURN_MS ?? 200)
+        );
+        return;
+      }
       // Issue 124 fixture mode: a turn with narration A → tool → narration B
       // (three assistant messages; the tool-call-only middle one carries no
       // text). PTB_STUB_MULTI=whole sends complete messages (no deltas);

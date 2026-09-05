@@ -133,6 +133,16 @@ export const RosterBotSchema = Type.Object({
       })
     )
   ),
+  /** Issue 80: present ONLY when the bot has consecutive empty-success
+   * turns (quota-exhaustion signature). Additive — existing consumers
+   * that ignore unknown fields are unaffected. */
+  emptyTurns: Type.Optional(
+    Type.Object({
+      streak: Type.Number(),
+      degraded: Type.Boolean(),
+      lastAt: Type.Optional(Type.String()),
+    })
+  ),
 });
 
 export const RosterPayloadSchema = Type.Object({

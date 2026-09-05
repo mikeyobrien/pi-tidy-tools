@@ -23,7 +23,7 @@ import type { BotRuntime } from "./daemon.ts";
 // Mirrors daemon.ts ACTIVE_WINDOW_MS (presence staleness window).
 const ACTIVE_WINDOW_MS = 90_000;
 
-const PUBLIC_DIR = new URL("../public/", import.meta.url).pathname;
+export const PUBLIC_DIR = new URL("../public/", import.meta.url).pathname;
 const APP_DIR = join(PUBLIC_DIR, "app");
 
 // Issue 60: /app/ mounts the Flutter web build (synced via

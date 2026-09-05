@@ -25,6 +25,21 @@ export interface BotConfig {
   packages?: string[];
   /** Issue 132: image provider override (fleet [image_provider] default). */
   imageProvider?: string;
+  /** Per-bot extra pi extensions loaded after the fleet's own (absolute or
+   * fleet-dir-relative paths). Composes with noExtensions: explicit -e flags
+   * still load. */
+  extensions?: string[];
+  /** Tool allowlist passed to pi as --tools (exact registered tool names,
+   * across built-in, extension, and custom tools). Omitted = no allowlist. */
+  tools?: string[];
+  /** Pass --no-builtin-tools: built-ins (bash/read/edit/...) off; extension
+   * and custom tools stay unless also excluded via `tools`. */
+  noBuiltinTools?: boolean;
+  /** Pass --no-extensions: no extension/package discovery — inherited
+   * global integrations stay out; the fleet's own -e flags still load. */
+  noExtensions?: boolean;
+  /** Pass --no-skills: no skill discovery for this bot. */
+  noSkills?: boolean;
   approve: boolean;
   routines: BotRoutine[];
 }
@@ -41,6 +56,9 @@ export interface FleetConfig {
    * daemon.
    */
   compactFallbackModel?: string;
+  /** Issue 80: consecutive empty-success turns before the roster flags the
+   * bot degraded (health probes/wedge detection). Default 2. */
+  emptyTurnAlertAfter?: number;
   /** Issue 132: default image provider id for the generate_image tool. */
   imageProvider?: string;
 }
@@ -159,6 +177,20 @@ export function loadFleetConfig(
       table.image_provider.length > 0
         ? table.image_provider
         : undefined;
+    const tools = Array.isArray(table.tools)
+      ? table.tools.map((value) => String(value))
+      : undefined;
+    const extensions = Array.isArray(table.extensions)
+      ? table.extensions.map((value) => String(value))
+      : undefined;
+    if (tools && tools.some((tool) => tool.trim().length === 0)) {
+      throw new ConfigError(
+        `${where} (${name}): tools entries must be non-empty strings`
+      );
+    }
+    const noBuiltinTools = table.no_builtin_tools === true;
+    const noExtensions = table.no_extensions === true;
+    const noSkills = table.no_skills === true;
     // Action pills are removed (issue 15); a manifest still carrying the row is
     // stale config — fail fast instead of silently ignoring it.
     if (table.actions !== undefined) {
@@ -190,12 +222,29 @@ export function loadFleetConfig(
       routes,
       packages,
       ...(imageProvider ? { imageProvider } : {}),
+      ...(extensions ? { extensions } : {}),
+      ...(tools ? { tools } : {}),
+      ...(noBuiltinTools ? { noBuiltinTools } : {}),
+      ...(noExtensions ? { noExtensions } : {}),
+      ...(noSkills ? { noSkills } : {}),
       approve: table.approve === undefined ? true : table.approve === true,
       routines,
     });
   }
 
   const fleet = (doc.fleet ?? {}) as Record<string, unknown>;
+  const emptyTurnAlertAfter =
+    fleet.empty_turn_alert_after === undefined
+      ? undefined
+      : Number(fleet.empty_turn_alert_after);
+  if (
+    emptyTurnAlertAfter !== undefined &&
+    (!Number.isInteger(emptyTurnAlertAfter) || emptyTurnAlertAfter < 1)
+  ) {
+    throw new ConfigError(
+      `[fleet]: empty_turn_alert_after must be an integer >= 1`
+    );
+  }
   return {
     dir,
     port:
@@ -205,6 +254,7 @@ export function loadFleetConfig(
       overrides.host ??
       (typeof fleet.host === "string" ? fleet.host : "127.0.0.1"),
     bots,
+    ...(emptyTurnAlertAfter !== undefined ? { emptyTurnAlertAfter } : {}),
     ...(typeof fleet.compactFallbackModel === "string" &&
     fleet.compactFallbackModel.length > 0
       ? { compactFallbackModel: fleet.compactFallbackModel }
@@ -253,7 +303,12 @@ export function diffFleet(
       !same(existing.title, bot.title) ||
       !same(existing.avatar, bot.avatar) ||
       !same(existing.description, bot.description) ||
-      !same(existing.imageProvider, bot.imageProvider);
+      !same(existing.imageProvider, bot.imageProvider) ||
+      !same(existing.extensions, bot.extensions) ||
+      !same(existing.tools, bot.tools) ||
+      existing.noBuiltinTools !== bot.noBuiltinTools ||
+      existing.noExtensions !== bot.noExtensions ||
+      existing.noSkills !== bot.noSkills;
     (differs ? changed : untouched).push(bot);
   }
   const removed = current.filter((bot) => !nextByName.has(bot.name));

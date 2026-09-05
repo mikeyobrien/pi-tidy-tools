@@ -73,11 +73,20 @@ test(
         ).bots.every((b) => b.online)
       );
 
-      // Ledger exists with the spawned child's pid.
+      // Ledger exists with the spawned child's PROCESS IDENTITY.
       const ledger = join(fleetDir, ".fleet", "children", "aa.pid");
       assert.ok(existsSync(ledger), "ledger written at spawn");
-      const childPid = Number(readFileSync(ledger, "utf8").trim());
-      assert.ok(Number.isFinite(childPid) && childPid > 0, "real pid");
+      const identity = JSON.parse(readFileSync(ledger, "utf8")) as {
+        pid: number | null;
+        lstart: number | null;
+        command: string | null;
+      };
+      assert.ok(Number.isFinite(identity.pid) && identity.pid! > 0, "real pid");
+      assert.ok(typeof identity.lstart === "number", "start time recorded");
+      assert.ok(
+        typeof identity.command === "string" && identity.command.length > 0,
+        "command recorded"
+      );
 
       // Simulate the orphan: a same-shape process recorded in the ledger
       // (the daemon itself stops its own children; the orphan case is a
@@ -98,8 +107,27 @@ test(
         return row ? Number(row.trim().split(/\s+/)[0]) : undefined;
       })();
       assert.ok(orphanPid, "orphan spawned");
-      // Hand-forge the ledger the way the dead daemon left it.
-      writeFileSync(ledger, String(orphanPid));
+      // Hand-forge the ledger the way the dead daemon left it: the orphan's
+      // OWN identity (pid + start time + command) — the shape a real orphan
+      // carries. Anything less is unverifiable and must never be signaled.
+      const orphanLstart = Date.parse(
+        spawnSync("ps", ["-p", String(orphanPid), "-o", "lstart="], {
+          encoding: "utf8",
+        }).stdout.trim()
+      );
+      const orphanCommand = spawnSync(
+        "ps",
+        ["-p", String(orphanPid), "-o", "command="],
+        { encoding: "utf8" }
+      ).stdout.trim();
+      writeFileSync(
+        ledger,
+        JSON.stringify({
+          pid: orphanPid,
+          lstart: orphanLstart,
+          command: orphanCommand,
+        })
+      );
 
       // Next boot reaps it (kill-or-adopt): a same-shape process named in
       // the ledger is SIGTERMed before the fresh child spawns.
@@ -121,9 +149,13 @@ test(
         }
       }, 10000);
       assert.ok(true, "orphan reaped by the next boot");
-      // The ledger now names the NEW child (rewritten at spawn).
-      const newPid = Number(readFileSync(ledger, "utf8").trim());
-      assert.notEqual(newPid, orphanPid, "ledger refreshed");
+      // The ledger now names the NEW child (rewritten at spawn, after the
+      // identity settle loop — wait for the file, then compare).
+      await waitFor(() => existsSync(ledger), 15000);
+      const newIdentity = JSON.parse(readFileSync(ledger, "utf8")) as {
+        pid: number | null;
+      };
+      assert.notEqual(newIdentity.pid, orphanPid, "ledger refreshed");
     } finally {
       await Promise.all(handles.map((h) => h.stop().catch(() => {})));
       rmSync(fleetDir, { recursive: true, force: true });

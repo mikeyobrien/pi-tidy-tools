@@ -163,6 +163,9 @@ test(
         )
       );
 
+      // The child's restore trace precedes its RPC response and the daemon's
+      // journal append. Wait for the durable completion we assert below.
+      await waitFor(() => journal(fleetDir).length > 0);
       const rows = journal(fleetDir);
       assert.equal(rows.at(-1)?.success !== false, true, "journaled success");
       assert.equal(rows.at(-1)?.summarizer, "spark/stub-flash");

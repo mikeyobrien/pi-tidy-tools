@@ -51,9 +51,17 @@ export class GatewayStartupOwnershipError extends ProtocolError {
 }
 const terminal = new Set(["ended", "failed", "cancelled", "interrupted"]);
 interface MessageView {
+  sourceSequence: number;
   id: string;
   order: number;
   blocks: Map<string, { revision: number; text: string; order: number }>;
+  finished: boolean;
+  entry?: JsonObject;
+  emitted?: boolean;
+}
+interface ToolView {
+  sourceSequence: number;
+  part: JsonObject;
   finished: boolean;
   entry?: JsonObject;
   emitted?: boolean;
@@ -62,6 +70,7 @@ interface TurnView {
   operationId: string;
   turnId: string;
   messages: Map<string, MessageView>;
+  tools: Map<string, ToolView>;
 }
 interface BoundBot {
   config: BotConfig;
@@ -85,7 +94,11 @@ function effectiveCapabilities(
   return {
     input: { text: true, mediaTypes: [], maxMediaBytes: 0 },
     sessions: { load: false, import: false, continuity: "unverified" },
-    output: { text: native.output.text, tools: false, usage: "unknown" },
+    output: {
+      text: native.output.text,
+      tools: native.output.tools,
+      usage: "unknown",
+    },
     operations: { ...native.operations, cancel: "unsupported", steer: false },
     interactions: {
       permissions: native.interactions.permissions,
@@ -1142,6 +1155,7 @@ export class GatewayApplication {
           operationId: event.operationId!,
           turnId: event.turnId!,
           messages: new Map(),
+          tools: new Map(),
         };
         bot.turns.set(turn.turnId, turn);
       }
@@ -1262,6 +1276,7 @@ export class GatewayApplication {
         );
       turn.messages.set(id, {
         id,
+        sourceSequence: event.sourceSequence,
         order: Number(payload.order),
         blocks: new Map(),
         finished: false,
@@ -1368,24 +1383,90 @@ export class GatewayApplication {
           order,
         });
       });
-      projection.entries = [];
-      for (const settled of [...turn.messages.values()].sort(
-        (a, b) => a.order - b.order
-      )) {
-        if (!settled.finished) break;
-        if (settled.emitted) continue;
-        settled.emitted = true;
-        projection.entries.push(settled.entry!);
-        wire.push({
-          type: "append",
-          bot: bot.config.name,
-          entry: settled.entry!,
-        });
-      }
+      this.flushParts(bot, turn, projection);
       const remaining = this.bubble(bot, turn);
       // Flutter preserves prior text for an empty parts-only update. Reset the
       // active bubble before removing its newly canonical text, while keeping
       // this turn alive for subsequent messages (final retires it permanently).
+      if (remaining.text === "")
+        wire.push({
+          type: "bubble",
+          bot: bot.config.name,
+          turnId: turn.turnId,
+          phase: "working",
+          text: "",
+        });
+      wire.push(remaining);
+    } else if (
+      ["tool.started", "tool.updated", "tool.finished"].includes(event.type)
+    ) {
+      if (
+        !bot.capabilities.output.tools ||
+        typeof event.toolCallId !== "string" ||
+        !event.toolCallId
+      )
+        throw new ProtocolError(
+          "capability_unavailable",
+          "Tool projection requires a negotiated stable identity"
+        );
+      const id = event.toolCallId;
+      let tool = turn.tools.get(id);
+      if (event.type === "tool.started") {
+        if (
+          tool ||
+          turn.tools.size >= 4096 ||
+          payload.state !== "running" ||
+          typeof payload.label !== "string" ||
+          !payload.label.trim() ||
+          payload.label.length > 256
+        )
+          throw new ProtocolError("invalid_event", "Invalid tool start");
+        tool = {
+          sourceSequence: event.sourceSequence,
+          finished: false,
+          part: {
+            type: "tool",
+            toolCallId: id,
+            tool: "tool",
+            label: payload.label,
+            status: "running",
+          },
+        };
+        turn.tools.set(id, tool);
+      } else {
+        if (!tool || tool.finished)
+          throw new ProtocolError(
+            "invalid_event",
+            "Tool update requires a live identity"
+          );
+        if (event.type === "tool.finished") {
+          if (!["ended", "error"].includes(String(payload.state)))
+            throw new ProtocolError("invalid_event", "Invalid tool outcome");
+          tool.part.status = payload.state === "ended" ? "ok" : "error";
+          tool.finished = true;
+          tool.entry = {
+            id: payloadDigest({
+              bindingId: bot.binding.bindingId,
+              operationId: turn.operationId,
+              toolCallId: id,
+            }),
+            operationId: turn.operationId,
+            turnId: turn.turnId,
+            role: "assistant",
+            origin: "bot",
+            text: "",
+            parts: [{ ...tool.part }],
+            // Gateway observation time, not an invented native tool duration.
+            ts: new Date().toISOString(),
+          };
+          this.flushParts(bot, turn, projection);
+        } else if (payload.state !== "running")
+          throw new ProtocolError(
+            "invalid_event",
+            "Invalid running tool update"
+          );
+      }
+      const remaining = this.bubble(bot, turn);
       if (remaining.text === "")
         wire.push({
           type: "bubble",
@@ -1403,22 +1484,11 @@ export class GatewayApplication {
         );
       const complete =
         payload.observation === "complete" &&
-        [...turn.messages.values()].every((message) => message.finished);
+        [...turn.messages.values()].every((message) => message.finished) &&
+        [...turn.tools.values()].every((tool) => tool.finished);
       // Preserve completed messages even when a preceding unfinished message
       // makes overall observation incomplete; never fabricate its missing final.
-      projection.entries = [];
-      for (const message of [...turn.messages.values()].sort(
-        (a, b) => a.order - b.order
-      )) {
-        if (message.entry && !message.emitted) {
-          projection.entries.push(message.entry);
-          wire.push({
-            type: "append",
-            bot: bot.config.name,
-            entry: message.entry,
-          });
-        }
-      }
+      this.flushParts(bot, turn, projection, true);
       projection.operation = {
         delivery: "accepted",
         execution: payload.execution as OperationDisposition["execution"],
@@ -1462,7 +1532,7 @@ export class GatewayApplication {
         text: "",
       });
     } else {
-      // No tool, usage, or interaction capability is exposed until its exact
+      // No usage or additional interaction capability is exposed until its exact
       // projection/decision route is implemented. Never leak raw vendor payloads.
       throw new ProtocolError(
         "capability_unavailable",
@@ -1471,21 +1541,52 @@ export class GatewayApplication {
     }
     return projection;
   }
+  private orderedParts(turn: TurnView): Array<MessageView | ToolView> {
+    return [...turn.messages.values(), ...turn.tools.values()].sort(
+      (a, b) => a.sourceSequence - b.sourceSequence
+    );
+  }
+  private flushParts(
+    bot: BoundBot,
+    turn: TurnView,
+    projection: EventProjection,
+    terminal = false
+  ): void {
+    projection.entries = [];
+    for (const part of this.orderedParts(turn)) {
+      if (!part.finished) {
+        if (terminal) continue;
+        break;
+      }
+      if (part.emitted || !part.entry) continue;
+      part.emitted = true;
+      projection.entries.push(part.entry);
+      projection.publicEvents!.push({
+        type: "append",
+        bot: bot.config.name,
+        entry: part.entry,
+      });
+    }
+  }
   private bubble(bot: BoundBot, turn: TurnView): JsonObject {
-    const parts = [...turn.messages.values()]
-      .filter((message) => !message.emitted)
-      .sort((a, b) => a.order - b.order)
-      .flatMap((message) =>
-        [...message.blocks.values()]
-          .sort((a, b) => a.order - b.order)
-          .map((block) => ({ type: "text", text: block.text }))
+    const parts: JsonObject[] = this.orderedParts(turn)
+      .filter((part) => !part.emitted)
+      .flatMap((part) =>
+        "blocks" in part
+          ? [...part.blocks.values()]
+              .sort((a, b) => a.order - b.order)
+              .map((block) => ({ type: "text", text: block.text }))
+          : [{ ...part.part }]
       );
     return {
       type: "bubble",
       bot: bot.config.name,
       turnId: turn.turnId,
       phase: "parts",
-      text: parts.map((part) => part.text).join(""),
+      text: parts
+        .filter((part) => part.type === "text")
+        .map((part) => part.text)
+        .join(""),
       parts,
     };
   }

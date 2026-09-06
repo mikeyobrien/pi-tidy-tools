@@ -110,14 +110,14 @@ class FakeAgent:
             self.states[session_id].agent.run_conversation(user_message=text)
         except Exception:
             pass  # Pinned Hermes can return end_turn after an executor error.
-        if text == "[fleet-send]":
+        if text in ("[fleet-send]", "[fleet-send:pi]"):
             def invoke():
                 approval = sys.modules["tools.approval"]
                 session_token = approval._approval_session_id.set("internal-one")
                 tool_token = approval._approval_tool_call_id.set("native-tool-one")
                 try:
                     for _ in range(2):
-                        result = sys.modules["tools.mcp_tool"].handlers["fleet_send"]({"target": "peer", "text": "fixture task"})
+                        result = sys.modules["tools.mcp_tool"].handlers["fleet_send"]({"target": "pi" if text == "[fleet-send:pi]" else "peer", "text": "fixture task"})
                         record("fleet_result", result=result)
                 finally:
                     approval._approval_session_id.reset(session_token)

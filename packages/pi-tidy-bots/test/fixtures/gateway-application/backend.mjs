@@ -54,6 +54,77 @@ function event(request, type, payload, identities = {}) {
 }
 async function execute(request) {
   const text = request.input[0].text;
+  if (["[tools]", "[tools-error]", "[tools-unfinished]"].includes(text)) {
+    event(request, "turn.started", {});
+    const first = `message:${request.operationId}:0`,
+      second = `message:${request.operationId}:1`;
+    const tool = { toolCallId: "native-tool" };
+    event(
+      request,
+      "message.started",
+      { role: "assistant", order: 0 },
+      { messageId: first }
+    );
+    event(
+      request,
+      "text.snapshot",
+      { revision: 1, text: "Before" },
+      { messageId: first, blockId: "body" }
+    );
+    event(
+      request,
+      "tool.started",
+      { state: "running", label: "Inspect", arguments: "PRIVATE_TOOL_CANARY" },
+      tool
+    );
+    event(
+      request,
+      "tool.updated",
+      { state: "running", output: "PRIVATE_TOOL_CANARY" },
+      tool
+    );
+    if (text !== "[tools-unfinished]")
+      event(
+        request,
+        "tool.finished",
+        {
+          state: text === "[tools-error]" ? "error" : "ended",
+          output: "PRIVATE_TOOL_CANARY",
+        },
+        tool
+      );
+    event(
+      request,
+      "message.finished",
+      {
+        ts: "2026-09-05T12:00:00.000Z",
+        blocks: [
+          { type: "text", blockId: "body", text: "Before", revision: 1 },
+        ],
+      },
+      { messageId: first }
+    );
+    event(
+      request,
+      "message.started",
+      { role: "assistant", order: 1 },
+      { messageId: second }
+    );
+    event(
+      request,
+      "message.finished",
+      {
+        ts: "2026-09-05T12:00:01.000Z",
+        blocks: [{ type: "text", blockId: "body", text: "After", revision: 1 }],
+      },
+      { messageId: second }
+    );
+    event(request, "turn.terminal", {
+      execution: "ended",
+      observation: "complete",
+    });
+    return;
+  }
   if (text === "[exit-after-native]") {
     process.exit(0);
   }
@@ -197,7 +268,7 @@ input.on("line", (line) => {
       capabilities: {
         input: { text: true, mediaTypes: [], maxMediaBytes: 0 },
         sessions: { load: false, import: false, continuity: "unverified" },
-        output: { text: "snapshots", tools: false, usage: "unknown" },
+        output: { text: "snapshots", tools: true, usage: "unknown" },
         operations: {
           nativeDedupe: "none",
           nativeReplay: "none",

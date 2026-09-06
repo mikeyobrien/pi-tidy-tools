@@ -220,6 +220,72 @@ async function fixture(permissions = false, discovery = false) {
   };
 }
 
+for (const mode of ["tools", "tools-error", "tools-unfinished"]) {
+  test(`gateway retains ordered safe tool parts and exact observation state: ${mode}`, async () => {
+    const f = await fixture();
+    try {
+      const handle = await f.start();
+      const binding = await f.binding(handle);
+      const { ws, events } = await f.socket(handle);
+      try {
+        await f.submit(handle, binding, mode, `[${mode}]`);
+        const receipt = await waitFor(
+          () => f.request(handle, `/api/bots/fixture/operations/${mode}`),
+          (value) => value.body.execution === "ended"
+        );
+        assert.equal(
+          receipt.body.observation,
+          mode === "tools-unfinished" ? "reconciliation_required" : "complete"
+        );
+        const transcript = (
+          await f.request(handle, "/api/bots/fixture/transcript")
+        ).body.transcript as ObjectValue[];
+        assert.deepEqual(
+          transcript.map((entry) => entry.text),
+          mode === "tools-unfinished"
+            ? [`[${mode}]`, "Before", "After"]
+            : [`[${mode}]`, "Before", "", "After"]
+        );
+        if (mode !== "tools-unfinished") {
+          assert.deepEqual(transcript[2].parts, [
+            {
+              type: "tool",
+              toolCallId: "native-tool",
+              tool: "tool",
+              label: "Inspect",
+              status: mode === "tools-error" ? "error" : "ok",
+            },
+          ]);
+          assert.equal(typeof transcript[2].ts, "string");
+        }
+        await waitFor(
+          () => events,
+          (values) =>
+            values.some(
+              (event) =>
+                event.type === "bubble" &&
+                Array.isArray(event.parts) &&
+                event.parts.some(
+                  (part: any) =>
+                    part.type === "tool" && part.status === "running"
+                )
+            )
+        );
+        assert.equal(
+          JSON.stringify({ transcript, events }).includes(
+            "PRIVATE_TOOL_CANARY"
+          ),
+          false
+        );
+      } finally {
+        ws.terminate();
+      }
+    } finally {
+      await f.cleanup();
+    }
+  });
+}
+
 test("fleet send admits one target and one nonrecursive completion despite duplicate native calls", async () => {
   const f = await fixture(false, true);
   try {

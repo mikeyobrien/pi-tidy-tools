@@ -78,8 +78,15 @@ for await (const line of createInterface({ input: process.stdin })) {
     response(request);
     send({ type: "agent_start" });
     await handlers.get("agent_start")?.({}, ctx);
-    if (["[fleet-send]", "[fleet-no-events]"].includes(request.message)) {
-      const args = { target: "peer", text: "fixture task" };
+    if (
+      ["[fleet-send]", "[fleet-no-events]", "[fleet-send:hermes]"].includes(
+        request.message
+      )
+    ) {
+      const args = {
+        target: request.message === "[fleet-send:hermes]" ? "hermes" : "peer",
+        text: "fixture task",
+      };
       if (request.message !== "[fleet-no-events]")
         send({
           type: "tool_execution_start",

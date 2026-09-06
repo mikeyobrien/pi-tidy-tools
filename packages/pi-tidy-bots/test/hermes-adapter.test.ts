@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { existsSync } from "node:fs";
 import {
+  chmod,
   copyFile,
   mkdir,
   mkdtemp,
@@ -9,6 +10,8 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
+import { WebSocket } from "ws";
+import { startFleet, type FleetHandle } from "../src/daemon.ts";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -133,6 +136,8 @@ async function setup() {
   });
   return {
     dir,
+    source,
+    home,
     profile,
     host,
     events,
@@ -153,6 +158,238 @@ async function until(probe: () => boolean | Promise<boolean>) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
+
+test("Pi and Hermes shipped adapters share authenticated HTTP and WS without crossing bot identities", async () => {
+  const f = await setup();
+  let fleet: FleetHandle | undefined;
+  let ws: WebSocket | undefined;
+  try {
+    await f.host.close();
+    const piHome = join(f.dir, "pi-home"),
+      piProfile = join(f.dir, "pi-profile"),
+      piNative = join(f.dir, "pi-native");
+    for (const path of [piHome, piProfile, piNative]) await mkdir(path);
+    const piExecutable = join(piNative, "native.mjs"),
+      piMetadata = join(piNative, "package.json");
+    await copyFile(
+      new URL("./fixtures/pi-adapter/native.mjs", import.meta.url),
+      piExecutable
+    );
+    await chmod(piExecutable, 0o755);
+    await writeFile(
+      piMetadata,
+      JSON.stringify({
+        name: "@earendil-works/pi-coding-agent",
+        version: "0.85.0",
+        bin: { pi: "native.mjs" },
+      })
+    );
+    const plugins = await Promise.all(
+      ["pi", "hermes"].map(async (name) => {
+        const artifactPath = fileURLToPath(
+          new URL(`../backends/${name}`, import.meta.url)
+        );
+        return {
+          id: `tidy.${name}`,
+          version: "0.1.0-dev",
+          artifactPath,
+          sha256: await digestArtifact(artifactPath),
+          enabled: true,
+        };
+      })
+    );
+    await writeFile(
+      join(f.dir, "registry.json"),
+      JSON.stringify({ registryVersion: 1, plugins })
+    );
+    await writeFile(
+      join(f.dir, "AGENTS.md"),
+      "Disposable deterministic mixed-fleet fixture.\n"
+    );
+    const configs = {
+      pi: {
+        executable: piExecutable,
+        package_json: piMetadata,
+        home_dir: piHome,
+        profile_dir: piProfile,
+        environment_keys: ["PATH"],
+      },
+      hermes: {
+        executable: python,
+        source_dir: f.source,
+        home_dir: f.home,
+        profile_dir: f.profile,
+        environment_keys: [],
+      },
+    };
+    await writeFile(
+      join(f.dir, "bots.toml"),
+      [
+        "[gateway]",
+        'registry = "registry.json"',
+        'environment = ["PATH"]',
+        'workspace_access = "read-write"',
+        "native_profile = true",
+        "network = true",
+        ...Object.entries(configs).flatMap(([name, config]) => [
+          "[[bot]]",
+          `name = "${name}"`,
+          'dir = "."',
+          `backend = "tidy.${name}"`,
+          "[bot.backend_config]",
+          ...Object.entries(config).map(
+            ([key, value]) => `${key} = ${JSON.stringify(value)}`
+          ),
+        ]),
+        "",
+      ].join("\n")
+    );
+    fleet = await startFleet({
+      dir: f.dir,
+      port: 0,
+      token: "mixed-fixture-token",
+      log() {},
+    });
+    const request = async (path: string, options: RequestInit = {}) => {
+      const response = await fetch(fleet!.url + path, {
+        ...options,
+        headers: {
+          authorization: "Bearer mixed-fixture-token",
+          ...options.headers,
+        },
+      });
+      return { status: response.status, body: (await response.json()) as any };
+    };
+    assert.equal((await fetch(fleet.url + "/api/fleet")).status, 401);
+    const bindings = Object.fromEntries(
+      await Promise.all(
+        ["pi", "hermes"].map(async (name) => [
+          name,
+          (await request(`/api/bots/${name}/capabilities`)).body,
+        ])
+      )
+    );
+    assert.notEqual(bindings.pi.bindingId, bindings.hermes.bindingId);
+    assert.notEqual(bindings.pi.conversationId, bindings.hermes.conversationId);
+    assert.equal(bindings.pi.backend.id, "tidy.pi");
+    assert.equal(bindings.hermes.backend.id, "tidy.hermes");
+    const events: any[] = [];
+    ws = new WebSocket(
+      fleet.url.replace("http", "ws") +
+        "/api/ws?token=mixed-fixture-token&clientContract=2"
+    );
+    ws.on("message", (data) => events.push(JSON.parse(String(data))));
+    await new Promise<void>((resolve, reject) => {
+      ws!.once("open", resolve);
+      ws!.once("error", reject);
+    });
+    await until(() => events.some((event) => event.type === "hello"));
+    const send = (name: string) =>
+      request(`/api/bots/${name}/message`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-tidy-client-contract": "2",
+          "x-tidy-binding-revision": bindings[name].bindingRevision,
+        },
+        body: JSON.stringify({
+          operationId: `mixed-${name}`,
+          clientMessageId: `mixed-${name}`,
+          conversationId: bindings[name].conversationId,
+          text: name === "pi" ? "[multi]" : "hello Hermes",
+        }),
+      });
+    const receipts = await Promise.all([send("pi"), send("hermes")]);
+    for (const receipt of receipts)
+      assert.equal(receipt.status, 202, JSON.stringify(receipt.body));
+    await until(async () =>
+      (
+        await Promise.all(
+          ["pi", "hermes"].map(
+            async (name) =>
+              (await request(`/api/bots/${name}/operations/mixed-${name}`)).body
+                .execution
+          )
+        )
+      ).every((execution) => execution === "ended")
+    );
+    for (const [index, name] of ["pi", "hermes"].entries()) {
+      assert.equal(
+        (await send(name)).body.userEntryId,
+        receipts[index].body.userEntryId
+      );
+      const transcript = (await request(`/api/bots/${name}/transcript`)).body
+        .transcript;
+      assert.deepEqual(
+        transcript.map((entry: any) => entry.text),
+        name === "pi"
+          ? ["[multi]", "First corrected", "second"]
+          : ["hello Hermes", "Transformed final answer"]
+      );
+      assert.ok(
+        events.some((event) => event.type === "bubble" && event.bot === name)
+      );
+      assert.ok(
+        transcript.every((entry: any) => entry.operationId === `mixed-${name}`)
+      );
+    }
+    ws.terminate();
+    await fleet.stop();
+    fleet = await startFleet({
+      dir: f.dir,
+      port: 0,
+      token: "mixed-fixture-token",
+      log() {},
+    });
+    for (const [index, name] of ["pi", "hermes"].entries()) {
+      const previous = bindings[name];
+      bindings[name] = (await request(`/api/bots/${name}/capabilities`)).body;
+      assert.equal(bindings[name].bindingId, previous.bindingId);
+      assert.equal(
+        (await send(name)).body.userEntryId,
+        receipts[index].body.userEntryId
+      );
+      assert.equal(
+        (await request(`/api/bots/${name}/operations/mixed-${name}`)).body
+          .execution,
+        "ended"
+      );
+      const transcript = (await request(`/api/bots/${name}/transcript`)).body
+        .transcript;
+      assert.equal(transcript.length, name === "pi" ? 3 : 2);
+    }
+    const piCalls = (
+      await readFile(
+        join(
+          f.dir,
+          ".fleet/plugins",
+          bindings.pi.bindingId,
+          "native-effects.jsonl"
+        ),
+        "utf8"
+      )
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const hermesCalls = (
+      await readFile(join(f.profile, "effects.jsonl"), "utf8")
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.equal(piCalls.filter((call) => call.command === "prompt").length, 1);
+    assert.equal(
+      hermesCalls.filter((call) => call.kind === "prompt").length,
+      1
+    );
+    assert.equal(hermesCalls.filter((call) => call.kind === "new").length, 1);
+  } finally {
+    ws?.terminate();
+    await fleet?.stop();
+    await f.cleanup();
+  }
+});
 
 test("installed Hermes adapter durably joins exact permission controls", async () => {
   const f = await setup();

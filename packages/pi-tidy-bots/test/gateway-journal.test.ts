@@ -232,6 +232,170 @@ test("queued origin cannot admit a target and corrupt dispatch history cannot be
   }
 });
 
+test("completion admission and outbox acknowledgement roll back and replay together", (t) => {
+  const f = fixture(t);
+  accepted(f.journal, f.lease);
+  const target = {
+    ...binding,
+    botId: "target",
+    conversationId: "target-conversation",
+    bindingId: "target-binding",
+    bindingRevision: "target-revision",
+  };
+  f.journal.ensureConversation(f.lease, target);
+  const dispatched = f.journal.admitFleetDispatch(f.lease, {
+    origin: { ...binding, operationId: key().operationId },
+    target,
+    toolCallId: "tool",
+    actionId: "action",
+    text: "Task",
+  });
+  f.journal.reserveNext(f.lease, target);
+  f.journal.commitPluginEvent(
+    f.lease,
+    {
+      bindingId: target.bindingId,
+      leaseGeneration: f.lease.generation,
+      sourceSequence: 1,
+      eventId: "target-end",
+      type: "turn.terminal",
+      operationId: dispatched.dispatchId,
+      payload: { execution: "ended" },
+    },
+    {
+      operation: {
+        delivery: "accepted",
+        execution: "ended",
+        evidence: "native_terminal",
+      },
+      completion: {
+        dispatchId: dispatched.dispatchId,
+        originBotId: binding.botId,
+        payload: {
+          originConversationId: binding.conversationId,
+          originBindingId: binding.bindingId,
+          depth: 1,
+          text: "Result",
+          execution: "ended",
+          observation: "complete",
+        },
+      },
+    }
+  );
+  const item = f.journal.readOutbox()[0];
+  const sql = new DatabaseSync(f.path);
+  try {
+    sql.exec(
+      "CREATE TRIGGER reject_completion_ack BEFORE UPDATE ON completion_outbox WHEN NEW.delivered=1 BEGIN SELECT RAISE(ABORT, 'fixture failure'); END"
+    );
+    assert.throws(() =>
+      f.journal.admitCompletion(f.lease, item.id, binding, "origin")
+    );
+    assert.equal(f.journal.listOperationRecords(binding).length, 1);
+    assert.equal(f.journal.readOutbox().length, 1);
+    sql.exec("DROP TRIGGER reject_completion_ack");
+    const result = f.journal.admitCompletion(
+      f.lease,
+      item.id,
+      binding,
+      "origin"
+    );
+    assert.equal(result.created, true);
+    assert.deepEqual(
+      f.journal.admitCompletion(f.lease, item.id, binding, "origin"),
+      { ...result, created: false }
+    );
+    assert.equal(f.journal.readOutbox().length, 0);
+    assert.equal(
+      f.journal.getOperationRecord(result.receipt)!.payload!.dispatch,
+      undefined
+    );
+  } finally {
+    sql.close();
+  }
+});
+
+test("fleet route budgets refuse new work but never invalidate retained receipts", (t) => {
+  const f = fixture(t);
+  accepted(f.journal, f.lease);
+  const input = {
+    origin: { ...binding, operationId: key().operationId },
+    target: binding,
+    toolCallId: "tool",
+    actionId: "action",
+    text: "Task",
+  };
+  code(
+    () =>
+      f.journal.admitFleetDispatch(f.lease, {
+        ...input,
+        text: "x".repeat(65537),
+      }),
+    "resource_limit"
+  );
+  const first = f.journal.admitFleetDispatch(f.lease, input);
+  for (let index = 1; index < 32; index++)
+    f.journal.admitFleetDispatch(f.lease, {
+      ...input,
+      actionId: `action-${index}`,
+    });
+  code(
+    () =>
+      f.journal.admitFleetDispatch(f.lease, {
+        ...input,
+        actionId: "over-budget",
+      }),
+    "route_limit"
+  );
+  assert.deepEqual(f.journal.admitFleetDispatch(f.lease, input), {
+    ...first,
+    created: false,
+  });
+});
+
+test("fleet dispatch depth follows retained native causation rather than caller arguments", (t) => {
+  const f = fixture(t);
+  accepted(f.journal, f.lease);
+  let operationId = key().operationId;
+  for (let depth = 1; depth <= 8; depth++) {
+    const next = f.journal.admitFleetDispatch(f.lease, {
+      origin: { ...binding, operationId },
+      target: binding,
+      toolCallId: "tool",
+      actionId: "action",
+      text: "Next task",
+    });
+    f.journal.recordDisposition(
+      f.lease,
+      { ...binding, operationId },
+      { delivery: "accepted", execution: "ended", evidence: "native_terminal" }
+    );
+    operationId = next.dispatchId;
+    assert.equal(
+      (
+        f.journal.getOperationRecord(next.receipt)!.payload!
+          .dispatch as JsonObject
+      ).depth,
+      depth
+    );
+    assert.equal(
+      f.journal.reserveNext(f.lease, binding)!.receipt.operationId,
+      operationId
+    );
+  }
+  code(
+    () =>
+      f.journal.admitFleetDispatch(f.lease, {
+        origin: { ...binding, operationId },
+        target: binding,
+        toolCallId: "tool",
+        actionId: "action",
+        text: "Too deep",
+      }),
+    "route_limit"
+  );
+});
+
 function permissionFixture(t: TestContext) {
   const f = fixture(t);
   accepted(f.journal, f.lease);

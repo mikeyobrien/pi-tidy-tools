@@ -1155,6 +1155,19 @@ export class GatewayJournal {
   /** Route grants and native tool correlation are checked by the host. This
    * transaction prevents a lost host reply from admitting another target turn.
    */
+  hasFleetDispatch(
+    input: Pick<AdmitFleetDispatch, "origin" | "toolCallId" | "actionId">
+  ): boolean {
+    const digest = payloadDigest({
+      bindingId: input.origin.bindingId,
+      operationId: input.origin.operationId,
+      toolCallId: input.toolCallId,
+      actionId: input.actionId,
+    }).slice(7);
+    return !!this.prepare("SELECT 1 FROM gateway_meta WHERE key=?").get(
+      `fleet_dispatch_v1:dispatch-${digest}`
+    );
+  }
   admitFleetDispatch(
     lease: WriterLease,
     input: AdmitFleetDispatch
@@ -1262,6 +1275,36 @@ export class GatewayJournal {
           "invalid_origin",
           "Dispatch requires a live reserved origin operation"
         );
+      if (Buffer.byteLength(input.text, "utf8") > 65536)
+        fail("resource_limit", "Fleet dispatch exceeds the text budget");
+      const originPayload = parseObject(origin.payload_json);
+      const parent = originPayload.dispatch;
+      const parentDepth =
+        parent && typeof parent === "object" && !Array.isArray(parent)
+          ? parent.depth
+          : (originPayload.completionDepth ?? 0);
+      if (
+        !Number.isSafeInteger(parentDepth) ||
+        Number(parentDepth) < 0 ||
+        Number(parentDepth) >= 8
+      )
+        fail("route_limit", "Fleet dispatch chain reached its depth budget");
+      const depth = Number(parentDepth) + 1;
+      const recent = this.prepare(
+        "WITH dispatches AS MATERIALIZED (SELECT value FROM gateway_meta WHERE key LIKE 'fleet_dispatch_v1:%') SELECT count(*) AS n FROM dispatches WHERE json_extract(value,'$.originBotId')=? AND json_extract(value,'$.targetBotId')=? AND json_extract(value,'$.createdAt')>?"
+      ).get(input.origin.botId, input.target.botId, this.now() - 60000);
+      if (Number(recent!.n) >= 32)
+        fail("route_limit", "Fleet route admission rate exceeded");
+      const pending = this.prepare(
+        "SELECT (SELECT count(*) FROM operations WHERE bot_id=? AND execution NOT IN ('ended','failed','cancelled','interrupted') AND delivery!='rejected' AND json_extract(payload_json,'$.dispatch.originBotId')=?) + (SELECT count(*) FROM completion_outbox WHERE origin_bot_id=? AND target_bot_id=? AND delivered=0) AS n"
+      ).get(
+        input.target.botId,
+        input.origin.botId,
+        input.origin.botId,
+        input.target.botId
+      );
+      if (Number(pending!.n) >= 32)
+        fail("route_limit", "Fleet route outstanding work budget exceeded");
       const target = { ...input.target, operationId: dispatchId };
       if (this.operationRow(target))
         fail(
@@ -1282,6 +1325,7 @@ export class GatewayJournal {
               originOperationId: input.origin.operationId,
               originBindingId: input.origin.bindingId,
               toolCallId: input.toolCallId,
+              depth,
             },
           },
           userEntry: { dispatchId, from: input.origin.botId },
@@ -1290,7 +1334,14 @@ export class GatewayJournal {
       );
       this.prepare("INSERT INTO gateway_meta(key,value) VALUES(?,?)").run(
         key,
-        canonicalJson({ dispatchId, digest, receipt: admitted.receipt })
+        canonicalJson({
+          dispatchId,
+          digest,
+          receipt: admitted.receipt,
+          originBotId: input.origin.botId,
+          targetBotId: input.target.botId,
+          createdAt: this.now(),
+        })
       );
       return { dispatchId, receipt: admitted.receipt, created: true };
     });
@@ -2195,13 +2246,19 @@ export class GatewayJournal {
       ).get()!.seq
     );
   }
-  readOutbox(limit = 100): OutboxDelivery[] {
-    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10_000)
+  readOutbox(limit = 100, afterId = 0): OutboxDelivery[] {
+    if (
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > 10_000 ||
+      !Number.isSafeInteger(afterId) ||
+      afterId < 0
+    )
       fail("invalid_cursor", "Invalid outbox limit");
     return this.prepare(
-      "SELECT * FROM completion_outbox WHERE delivered=0 ORDER BY id LIMIT ?"
+      "SELECT * FROM completion_outbox WHERE delivered=0 AND id>? ORDER BY id LIMIT ?"
     )
-      .all(limit)
+      .all(afterId, limit)
       .map((row) => ({
         id: Number(row.id),
         dispatchId: String(row.dispatch_id),
@@ -2219,6 +2276,60 @@ export class GatewayJournal {
       this.prepare("UPDATE completion_outbox SET delivered=1 WHERE id=?").run(
         id
       );
+    });
+  }
+
+  admitCompletion(
+    lease: WriterLease,
+    id: number,
+    target: ConversationBinding,
+    publicBotName: string
+  ): { receipt: OperationReceipt; created: boolean } {
+    return this.write(lease, () => {
+      const row = this.prepare(
+        "SELECT * FROM completion_outbox WHERE id=?"
+      ).get(id);
+      if (!row)
+        fail("delivery_not_found", "Completion outbox record is missing");
+      const payload = parseObject(row.payload_json);
+      if (
+        row.origin_bot_id !== target.botId ||
+        payload.originConversationId !== target.conversationId ||
+        payload.originBindingId !== target.bindingId
+      )
+        fail(
+          "binding_conflict",
+          "Completion belongs to another origin binding"
+        );
+      if (
+        typeof payload.text !== "string" ||
+        typeof payload.execution !== "string" ||
+        !Number.isSafeInteger(payload.depth)
+      )
+        fail("corrupt_storage", "Completion payload is invalid");
+      const admitted = this.admitOperation(
+        {
+          ...target,
+          operationId: `completion-${String(row.dispatch_id)}`,
+          actorId: String(row.target_bot_id),
+          publicBotName,
+          payload: {
+            text: `Fleet completion from ${String(row.target_bot_id)}. Execution: ${payload.execution}; observation: ${String(payload.observation)}.\n\n${payload.text}`,
+            completionOf: String(row.dispatch_id),
+            completionDepth: payload.depth,
+          },
+          userEntry: {
+            from: String(row.target_bot_id),
+            dispatchId: String(row.dispatch_id),
+            completion: true,
+          },
+        },
+        "fleet"
+      );
+      this.prepare("UPDATE completion_outbox SET delivered=1 WHERE id=?").run(
+        id
+      );
+      return admitted;
     });
   }
 

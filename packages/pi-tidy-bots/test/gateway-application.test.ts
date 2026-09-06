@@ -69,7 +69,7 @@ async function fixture(permissions = false, discovery = false) {
         workspace: "none",
         nativeProfile: false,
         network: false,
-        gatewayTools: discovery ? ["fleet.discover"] : [],
+        gatewayTools: discovery ? ["fleet.discover", "fleet.send"] : [],
       },
     })
   );
@@ -106,7 +106,7 @@ async function fixture(permissions = false, discovery = false) {
     discovery
       ? manifest.replace(
           'environment = ["PATH"]',
-          'environment = ["PATH"]\ngateway_tools = ["fleet.discover"]'
+          'environment = ["PATH"]\ngateway_tools = ["fleet.discover", "fleet.send"]'
         ) +
           'routes = ["allowed"]\n[bot.backend_config]\ndiscovery = true\n[[bot]]\nname = "allowed"\ndir = "."\nbackend = "org.example.independent"\n[[bot]]\nname = "hidden"\ndir = "."\nbackend = "org.example.independent"\n'
       : manifest +
@@ -219,6 +219,74 @@ async function fixture(permissions = false, discovery = false) {
     },
   };
 }
+
+test("fleet send admits one target and one nonrecursive completion despite duplicate native calls", async () => {
+  const f = await fixture(false, true);
+  try {
+    const handle = await f.start();
+    const binding = await f.binding(handle);
+    await f.submit(handle, binding, "dispatch-origin", "[send]");
+    const calls = await waitFor(
+      () => f.calls(binding),
+      (values) => values.filter((value) => value.dispatch).length === 2,
+      "duplicate native dispatch replies"
+    );
+    const replies = calls
+      .filter((value) => value.dispatch)
+      .map((value) => value.dispatch as ObjectValue);
+    assert.deepEqual(replies[0], replies[1]);
+    assert.equal(replies[0].status, "admitted");
+    const dispatchId = replies[0].dispatchId;
+    await waitFor(
+      () =>
+        f.request(
+          handle,
+          `/api/bots/fixture/operations/completion-${dispatchId}`
+        ),
+      (value) => value.body.execution === "ended",
+      "completion execution"
+    );
+    const target = (await f.request(handle, "/api/bots/allowed/transcript"))
+      .body.transcript as ObjectValue[];
+    assert.deepEqual(
+      target.map((entry) => entry.text),
+      ["Delegated task", "Reply: Delegated task"]
+    );
+    assert.equal(target[0].origin, "fleet");
+    const origin = (await f.request(handle, "/api/bots/fixture/transcript"))
+      .body.transcript as ObjectValue[];
+    assert.equal(origin.filter((entry) => entry.completion === true).length, 1);
+    assert.equal(origin.length, 4);
+    const allowedBinding = (
+      await f.request(handle, "/api/bots/allowed/capabilities")
+    ).body;
+    assert.equal(
+      (await f.calls(allowedBinding)).filter(
+        (entry) => entry.method === "operation.submit"
+      ).length,
+      1
+    );
+    await f.submit(handle, binding, "forbidden-origin", "[send-forbidden]");
+    const denied = await waitFor(
+      () => f.calls(binding),
+      (values) =>
+        values.some(
+          (entry) => entry.dispatch && entry.operationId === "forbidden-origin"
+        ),
+      "route refusal"
+    );
+    const error = denied.find(
+      (entry) => entry.dispatch && entry.operationId === "forbidden-origin"
+    )!.dispatch as ObjectValue;
+    assert.equal((error.data as ObjectValue).code, "route_forbidden");
+    assert.deepEqual(
+      (await f.request(handle, "/api/bots/hidden/transcript")).body.transcript,
+      []
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
 
 test("fleet discovery returns only route-authorized peers and refuses sender overrides", async () => {
   const f = await fixture(false, true);

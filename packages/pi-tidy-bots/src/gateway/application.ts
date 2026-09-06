@@ -262,6 +262,7 @@ export class GatewayApplication {
       for (const config of fleet.bots)
         await app.bind(config, registry.resolve(config.backend!));
       app.publishRoster();
+      app.deliverCompletions();
       return app;
     } catch (error) {
       await app.stop();
@@ -340,6 +341,7 @@ export class GatewayApplication {
               "not_initialized",
               "Fleet service binding is unavailable"
             );
+          if (call.name === "fleet.send") return this.sendFleet(bot, call);
           if (call.name !== "fleet.discover")
             throw new ProtocolError(
               "capability_unavailable",
@@ -566,6 +568,120 @@ export class GatewayApplication {
   }
   transcript(name: string): JsonObject[] {
     return this.journal.readTranscript(this.requireBot(name).binding);
+  }
+  private sendFleet(
+    origin: BoundBot,
+    call: Record<string, unknown>
+  ): JsonObject {
+    const args = call.arguments;
+    if (
+      !object(args) ||
+      Object.keys(args).some((key) => !["target", "text"].includes(key)) ||
+      typeof args.target !== "string" ||
+      typeof args.text !== "string" ||
+      !args.text.trim() ||
+      ![call.operationId, call.toolCallId, call.actionId].every(
+        (value) => typeof value === "string" && value.length > 0
+      )
+    )
+      throw new ProtocolError(
+        "invalid_payload",
+        "Fleet send requires a target, text and correlated native action"
+      );
+    const route = checkRoute(origin.config.name, args.target, this.fleet.bots);
+    if (!route.ok)
+      throw new ProtocolError(route.reason, "Fleet route is unavailable");
+    const target = this.requireBot(args.target);
+    const scope = {
+      origin: { ...origin.binding, operationId: String(call.operationId) },
+      toolCallId: String(call.toolCallId),
+      actionId: String(call.actionId),
+    };
+    const known = this.journal.hasFleetDispatch(scope);
+    if (!known && (!target.ready || !target.host?.isReady))
+      throw new ProtocolError(
+        "session_unavailable",
+        "Fleet target cannot admit new work"
+      );
+    if (!known)
+      target.host!.assertSubmitFits({
+        operationId: `dispatch-${"0".repeat(64)}`,
+        payloadDigest: `sha256:${"0".repeat(64)}`,
+        conversationId: target.binding.conversationId,
+        turnId: `turn-${randomUUID()}`,
+        policyRevision: target.binding.policyRevision,
+        input: [{ type: "text", text: args.text }],
+      });
+    let admitted;
+    try {
+      admitted = this.journal.admitFleetDispatch(this.lease, {
+        ...scope,
+        target: target.binding,
+        toolCallId: String(call.toolCallId),
+        actionId: String(call.actionId),
+        text: args.text,
+        publicBotName: target.config.name,
+      });
+    } catch (error) {
+      if (object(error) && typeof error.code === "string")
+        throw new ProtocolError(error.code, "Fleet dispatch admission failed");
+      throw error;
+    }
+    this.publishCommitted(target, true);
+    if (admitted.created)
+      queueMicrotask(() => {
+        void this.pump(target);
+      });
+    return {
+      status: "admitted",
+      dispatchId: admitted.dispatchId,
+      receipt: admitted.receipt as unknown as JsonObject,
+    };
+  }
+  private deliverCompletions(afterId = 0): void {
+    if (this.stopping) return;
+    let deliveries;
+    try {
+      deliveries = this.journal.readOutbox(100, afterId);
+    } catch {
+      return;
+    }
+    if (deliveries.length === 100)
+      queueMicrotask(() => this.deliverCompletions(deliveries.at(-1)!.id));
+    for (const delivery of deliveries) {
+      const origin = [...this.bots.values()].find(
+        (bot) => bot.binding.botId === delivery.originBotId
+      );
+      if (!origin?.ready || !origin.host?.isReady) continue;
+      try {
+        origin.host.assertSubmitFits({
+          operationId: `completion-${delivery.dispatchId}`,
+          payloadDigest: `sha256:${"0".repeat(64)}`,
+          conversationId: origin.binding.conversationId,
+          turnId: `turn-${randomUUID()}`,
+          policyRevision: origin.binding.policyRevision,
+          input: [
+            {
+              type: "text",
+              text: `Fleet completion from ${delivery.targetBotId}. Execution: ${String(delivery.payload.execution)}; observation: ${String(delivery.payload.observation)}.\n\n${String(delivery.payload.text)}`,
+            },
+          ],
+        });
+        const admitted = this.journal.admitCompletion(
+          this.lease,
+          delivery.id,
+          origin.binding,
+          origin.config.name
+        );
+        this.publishCommitted(origin, true);
+        if (admitted.created)
+          queueMicrotask(() => {
+            void this.pump(origin);
+          });
+      } catch {
+        // Keep the durable outbox item pending for recovery; never fabricate an ACK.
+      }
+    }
   }
   inspect(
     name: string,
@@ -984,6 +1100,7 @@ export class GatewayApplication {
     // Storage committed the projection and source watermark together. A later
     // observer/roster failure cannot roll RAM back or nack that durable event.
     this.publishCommitted(bot, event.type === "turn.terminal");
+    if (event.type === "turn.terminal") this.deliverCompletions();
     if (event.type === "turn.terminal" || event.type === "interaction.resolved")
       queueMicrotask(() => {
         void this.pump(bot);
@@ -1309,6 +1426,33 @@ export class GatewayApplication {
         evidence: "correlated_terminal_event",
         result: { taskOutcome: "unknown" },
       };
+      const dispatched = this.journal.getOperationRecord({
+        ...bot.binding,
+        operationId: turn.operationId,
+      })?.payload?.dispatch;
+      if (object(dispatched)) {
+        const text = [...turn.messages.values()]
+          .sort((a, b) => a.order - b.order)
+          .filter((message) => message.finished)
+          .map((message) => String(message.entry?.text ?? ""))
+          .join("\n\n");
+        projection.completion = {
+          dispatchId: String(dispatched.dispatchId),
+          originBotId: String(dispatched.originBotId),
+          payload: {
+            originConversationId: dispatched.originConversationId,
+            originBindingId: dispatched.originBindingId,
+            depth: dispatched.depth,
+            execution: String(payload.execution),
+            observation: complete ? "complete" : "reconciliation_required",
+            text:
+              text.length > 32000
+                ? text.slice(0, 32000) +
+                  "\n[Output truncated; full output remains in the target transcript.]"
+                : text,
+          },
+        };
+      }
       bot.turns.delete(turn.turnId);
       wire.push({
         type: "bubble",

@@ -15,6 +15,7 @@ let init;
 let sequence = 0;
 const permissions = new Map();
 const discoveries = new Map();
+const dispatches = new Map();
 const dir = process.env.TIDY_DATA_DIR;
 const logPath = join(dir, "calls.jsonl");
 function record(value) {
@@ -148,6 +149,25 @@ const methods = [
 const input = createInterface({ input: process.stdin });
 input.on("line", (line) => {
   const message = JSON.parse(line);
+  if (dispatches.has(message.id)) {
+    const pending = dispatches.get(message.id);
+    dispatches.delete(message.id);
+    record({
+      dispatch: message.result ?? message.error,
+      operationId: pending.request.operationId,
+    });
+    if (!pending.repeated && message.result) {
+      const id = message.id + ":retry";
+      dispatches.set(id, { ...pending, repeated: true });
+      send({
+        jsonrpc: "2.0",
+        id,
+        method: "host.call",
+        params: { ...pending.params, callId: id },
+      });
+    } else void execute(pending.request);
+    return;
+  }
   if (discoveries.has(message.id)) {
     const request = discoveries.get(message.id);
     discoveries.delete(message.id);
@@ -214,6 +234,27 @@ input.on("line", (line) => {
     });
   } else if (message.method === "operation.submit") {
     record({ method: "operation.submit", ...p });
+    if (["[send]", "[send-forbidden]"].includes(p.input[0].text)) {
+      const id = `send:${p.operationId}`;
+      const params = {
+        bindingId: init.bindingId,
+        leaseGeneration: init.leaseGeneration,
+        name: "fleet.send",
+        callId: id,
+        operationId: p.operationId,
+        toolCallId: "native-tool-1",
+        actionId: "action-1",
+        payloadDigest: "fixture-action-intent",
+        arguments: {
+          target: p.input[0].text === "[send]" ? "allowed" : "hidden",
+          text: "Delegated task",
+        },
+      };
+      dispatches.set(id, { request: p, params });
+      send({ jsonrpc: "2.0", id, method: "host.call", params });
+      respond(message, { disposition: "accepted" });
+      return;
+    }
     if (["[discover]", "[discover-forged]"].includes(p.input[0].text)) {
       const id = `discover:${p.operationId}`;
       discoveries.set(id, p);

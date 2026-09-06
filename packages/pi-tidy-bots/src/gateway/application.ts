@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { BotConfig, FleetConfig } from "../config.ts";
+import { checkRoute } from "../config.ts";
 import {
   GatewayJournal,
   payloadDigest,
@@ -332,11 +333,45 @@ export class GatewayApplication {
             );
           return this.receive(bot, event);
         },
-        onHostCall: async () => {
-          throw new ProtocolError(
-            "capability_unavailable",
-            "Gateway host tools are unavailable for this binding"
-          );
+        onHostCall: async (call) => {
+          await provision;
+          if (!bot || this.stopping || !bot.ready)
+            throw new ProtocolError(
+              "not_initialized",
+              "Fleet service binding is unavailable"
+            );
+          if (call.name !== "fleet.discover")
+            throw new ProtocolError(
+              "capability_unavailable",
+              "Gateway host service is not implemented"
+            );
+          if (
+            !object(call.arguments) ||
+            Object.keys(call.arguments).length !== 0
+          )
+            throw new ProtocolError(
+              "invalid_payload",
+              "Fleet discovery accepts no routing or identity overrides"
+            );
+          return {
+            origin: bot.config.name,
+            bots: [...this.bots.values()]
+              .filter(
+                (target) =>
+                  checkRoute(
+                    bot!.config.name,
+                    target.config.name,
+                    this.fleet.bots
+                  ).ok
+              )
+              .map((target) => ({
+                name: target.config.name,
+                title: target.config.title ?? "",
+                description: target.config.description ?? "",
+                online: target.ready && !!target.host?.isReady,
+                backend: target.installation.manifest.id,
+              })),
+          };
         },
         onFailure: (error) => {
           // Startup failure may be waiting for a queued event callback to drain.

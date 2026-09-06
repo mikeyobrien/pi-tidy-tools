@@ -14,6 +14,7 @@ import { join } from "node:path";
 let init;
 let sequence = 0;
 const permissions = new Map();
+const discoveries = new Map();
 const dir = process.env.TIDY_DATA_DIR;
 const logPath = join(dir, "calls.jsonl");
 function record(value) {
@@ -147,6 +148,16 @@ const methods = [
 const input = createInterface({ input: process.stdin });
 input.on("line", (line) => {
   const message = JSON.parse(line);
+  if (discoveries.has(message.id)) {
+    const request = discoveries.get(message.id);
+    discoveries.delete(message.id);
+    record({
+      discovery: message.result ?? message.error,
+      operationId: request.operationId,
+    });
+    void execute(request);
+    return;
+  }
   const p = message.params ?? {};
   if (message.method === "initialize") {
     init = p;
@@ -178,7 +189,7 @@ input.on("line", (line) => {
           questions: false,
         },
         configuration: { model: false, thinking: false, compact: false },
-        fleetTools: false,
+        fleetTools: p.config.discovery === true,
       },
     });
     sequence++;
@@ -203,6 +214,25 @@ input.on("line", (line) => {
     });
   } else if (message.method === "operation.submit") {
     record({ method: "operation.submit", ...p });
+    if (["[discover]", "[discover-forged]"].includes(p.input[0].text)) {
+      const id = `discover:${p.operationId}`;
+      discoveries.set(id, p);
+      send({
+        jsonrpc: "2.0",
+        id,
+        method: "host.call",
+        params: {
+          bindingId: init.bindingId,
+          leaseGeneration: init.leaseGeneration,
+          name: "fleet.discover",
+          callId: id,
+          arguments:
+            p.input[0].text === "[discover-forged]" ? { from: "hidden" } : {},
+        },
+      });
+      respond(message, { disposition: "accepted" });
+      return;
+    }
     if (p.input[0].text === "[permission]") {
       const descriptor = {
         kind: "permission",

@@ -36,7 +36,7 @@ async function waitFor<T>(
     await new Promise((resolve) => setTimeout(resolve, 15));
   }
 }
-async function fixture(permissions = false) {
+async function fixture(permissions = false, discovery = false) {
   const dir = await mkdtemp(join(tmpdir(), "tidy-gateway-application-"));
   const artifact = join(dir, "plugin");
   await mkdir(artifact);
@@ -69,7 +69,7 @@ async function fixture(permissions = false) {
         workspace: "none",
         nativeProfile: false,
         network: false,
-        gatewayTools: [],
+        gatewayTools: discovery ? ["fleet.discover"] : [],
       },
     })
   );
@@ -80,6 +80,7 @@ async function fixture(permissions = false) {
       properties: {
         health: { type: "string", enum: ["ready", "auth_required"] },
         permissions: { type: "boolean" },
+        discovery: { type: "boolean" },
       },
       additionalProperties: false,
     })
@@ -102,7 +103,14 @@ async function fixture(permissions = false) {
   const manifest = `[gateway]\nregistry = "registry.json"\nenvironment = ["PATH"]\n[[bot]]\nname = "fixture"\ndir = "."\nbackend = "org.example.independent"\n`;
   await writeFile(
     join(dir, "bots.toml"),
-    manifest + (permissions ? "[bot.backend_config]\npermissions = true\n" : "")
+    discovery
+      ? manifest.replace(
+          'environment = ["PATH"]',
+          'environment = ["PATH"]\ngateway_tools = ["fleet.discover"]'
+        ) +
+          'routes = ["allowed"]\n[bot.backend_config]\ndiscovery = true\n[[bot]]\nname = "allowed"\ndir = "."\nbackend = "org.example.independent"\n[[bot]]\nname = "hidden"\ndir = "."\nbackend = "org.example.independent"\n'
+      : manifest +
+          (permissions ? "[bot.backend_config]\npermissions = true\n" : "")
   );
   const handles: FleetHandle[] = [];
   let fleetToken = "disposable-test-token";
@@ -211,6 +219,72 @@ async function fixture(permissions = false) {
     },
   };
 }
+
+test("fleet discovery returns only route-authorized peers and refuses sender overrides", async () => {
+  const f = await fixture(false, true);
+  try {
+    const handle = await f.start();
+    const binding = await f.binding(handle);
+    await f.submit(handle, binding, "discover-1", "[discover]");
+    const calls = await waitFor(
+      () => f.calls(binding),
+      (values) => values.some((value) => value.discovery),
+      "scoped discovery response"
+    );
+    assert.deepEqual(calls.find((value) => value.discovery)!.discovery, {
+      origin: "fixture",
+      bots: [
+        {
+          name: "allowed",
+          title: "",
+          description: "",
+          online: true,
+          backend: "org.example.independent",
+        },
+      ],
+    });
+    await waitFor(
+      () => f.request(handle, "/api/bots/fixture/operations/discover-1"),
+      (value) => value.body.execution === "ended",
+      "first discovery settlement"
+    );
+    await f.submit(handle, binding, "discover-2", "[discover-forged]");
+    const forged = await waitFor(
+      () => f.calls(binding),
+      (values) =>
+        values.some(
+          (value) => value.discovery && value.operationId === "discover-2"
+        ),
+      "forged identity rejection"
+    );
+    const error = forged.find(
+      (value) => value.discovery && value.operationId === "discover-2"
+    )!.discovery as ObjectValue;
+    assert.equal((error.data as ObjectValue).code, "invalid_payload");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("fleet discovery without a manifest and policy grant exposes no roster", async () => {
+  const f = await fixture();
+  try {
+    const handle = await f.start();
+    const binding = await f.binding(handle);
+    await f.submit(handle, binding, "ungranted-discovery", "[discover]");
+    const calls = await waitFor(
+      () => f.calls(binding),
+      (values) => values.some((value) => value.discovery),
+      "discovery grant refusal"
+    );
+    const result = calls.find((value) => value.discovery)!
+      .discovery as ObjectValue;
+    assert.equal((result.data as ObjectValue).code, "capability_unavailable");
+    assert.equal(result.bots, undefined);
+  } finally {
+    await f.cleanup();
+  }
+});
 
 test("HTTP permissions interrupt a pending submit and retain one late resolution and decision", async () => {
   const f = await fixture(true);

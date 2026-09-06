@@ -25,7 +25,8 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          node-version: 24
+          # Gateway journal conformance pins the bundled SQLite 3.53.4 engine.
+          node-version: 26.7.0
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
 

@@ -210,10 +210,28 @@ test(
       handles.push(handle);
 
       // Turn 1 under the big window: fill 5% — no compaction.
-      await send(base, "small turn");
-      await waitFor(async () =>
-        (await transcript(base)).some((e) => e.text === "small turn")
-      );
+      assert.equal((await send(base, "small turn")).status, 200);
+      // Prompt HTTP success is an acceptance ack, and the user entry exists
+      // before the native turn runs. Wait for settled output AND its usage:
+      // swapping earlier can kill the child before it reports the 5000 tokens
+      // that the new window is supposed to recompute. A longer post-swap wait
+      // cannot recover usage that the interrupted fixture never emitted.
+      await waitFor(async () => {
+        if (
+          !(await transcript(base)).some(
+            (e) => e.role === "assistant" && e.text === "done"
+          )
+        )
+          return false;
+        const context = await (
+          await fetch(`${base}/api/bots/aa/context`)
+        ).json();
+        return (
+          context.inputTokens === 5000 &&
+          context.contextWindow === 100000 &&
+          context.fill === 0.05
+        );
+      });
       assert.equal(
         traced(tracePath).some((r) => r.kind === "compact"),
         false,
@@ -231,21 +249,17 @@ test(
       });
       assert.equal(put.status, 200);
 
-      // 183-family load flake: the fill===5 observation is STABLE once the
-      // respawn's boot probe learns the new window (no turn runs until the
-      // boundary send), so no hold-gate applies — the 15s expiry pruner hit
-      // was the spawn→probe chain itself stalling under load. Load-tolerant
-      // wait + a test timeout with room for it (queue.test 183 gating).
+      // The completed turn's usage is now stable. No turn runs between this
+      // respawn's boot probe and the next boundary send, so the new-window
+      // fill can be observed without racing an interrupted-turn recovery.
       await waitFor(async () => {
         const context = await (
           await fetch(`${base}/api/bots/aa/context`)
         ).json();
         return context.contextWindow === 1000 && context.fill === 5;
       }, 45000);
-      // Acceptance 4 is proven by the wait itself: fill === 5 against
-      // contextWindow === 1000 IS the live-window recompute. (A mid-race
-      // re-read would race the forced compaction that the interrupted-turn
-      // resume correctly triggers right after the learn.)
+      // Acceptance 4: fill === 5 against contextWindow === 1000 proves the
+      // live-window recompute used the completed first turn's carried usage.
 
       // Next settled boundary force-compacts despite hysteresis being off.
       // Same 183 family: under full-suite load the boundary turn + compaction

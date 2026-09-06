@@ -1,0 +1,310 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://tidy.invalid/backend-protocol/v1/capabilities.schema.json",
+  "type": "object",
+  "properties": {
+    "input": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "const": true
+        },
+        "mediaTypes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "maxMediaBytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": ["text", "mediaTypes", "maxMediaBytes"],
+      "additionalProperties": false,
+      "patternProperties": {
+        "\\.": {
+          "not": {
+            "type": "object",
+            "properties": {
+              "required": {
+                "const": true
+              },
+              "properties": {
+                "const": {}
+              }
+            },
+            "required": ["required"]
+          }
+        }
+      }
+    },
+    "sessions": {
+      "type": "object",
+      "properties": {
+        "load": {
+          "type": "boolean"
+        },
+        "import": {
+          "type": "boolean"
+        },
+        "continuity": {
+          "enum": ["verified", "unverified"]
+        }
+      },
+      "required": ["load", "import", "continuity"],
+      "additionalProperties": false,
+      "patternProperties": {
+        "\\.": {
+          "not": {
+            "type": "object",
+            "properties": {
+              "required": {
+                "const": true
+              },
+              "properties": {
+                "const": {}
+              }
+            },
+            "required": ["required"]
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "anyOf": [
+              {
+                "properties": {
+                  "load": {
+                    "const": true
+                  }
+                },
+                "required": ["load"]
+              },
+              {
+                "properties": {
+                  "import": {
+                    "const": true
+                  }
+                },
+                "required": ["import"]
+              }
+            ]
+          },
+          "then": {
+            "properties": {
+              "continuity": {
+                "const": "verified"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "enum": ["final-only", "snapshots"]
+        },
+        "tools": {
+          "type": "boolean"
+        },
+        "usage": {
+          "enum": ["reported", "estimated", "unknown"]
+        }
+      },
+      "required": ["text", "tools", "usage"],
+      "additionalProperties": false,
+      "patternProperties": {
+        "\\.": {
+          "not": {
+            "type": "object",
+            "properties": {
+              "required": {
+                "const": true
+              },
+              "properties": {
+                "const": {}
+              }
+            },
+            "required": ["required"]
+          }
+        }
+      }
+    },
+    "operations": {
+      "type": "object",
+      "properties": {
+        "nativeDedupe": {
+          "enum": ["durable", "none"]
+        },
+        "nativeDedupeRetentionMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "nativeReplay": {
+          "enum": ["cursor", "none"]
+        },
+        "nativeReplayRetentionMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "nativeReplayGapSemantics": {
+          "const": "explicit-gap"
+        },
+        "cancel": {
+          "enum": ["cooperative", "process-termination", "unsupported"]
+        },
+        "steer": {
+          "type": "boolean"
+        }
+      },
+      "required": ["nativeDedupe", "nativeReplay", "cancel", "steer"],
+      "additionalProperties": false,
+      "patternProperties": {
+        "\\.": {
+          "not": {
+            "type": "object",
+            "properties": {
+              "required": {
+                "const": true
+              },
+              "properties": {
+                "const": {}
+              }
+            },
+            "required": ["required"]
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "nativeDedupe": {
+                "const": "durable"
+              }
+            },
+            "required": ["nativeDedupe"]
+          },
+          "then": {
+            "required": ["nativeDedupeRetentionMs"],
+            "properties": {
+              "nativeDedupeRetentionMs": {}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "nativeReplay": {
+                "const": "cursor"
+              }
+            },
+            "required": ["nativeReplay"]
+          },
+          "then": {
+            "required": ["nativeReplayRetentionMs", "nativeReplayGapSemantics"],
+            "properties": {
+              "nativeReplayRetentionMs": {},
+              "nativeReplayGapSemantics": {}
+            }
+          }
+        }
+      ]
+    },
+    "interactions": {
+      "type": "object",
+      "properties": {
+        "permissions": {
+          "enum": ["exact-request", "none"]
+        },
+        "questions": {
+          "type": "boolean"
+        }
+      },
+      "required": ["permissions", "questions"],
+      "additionalProperties": false,
+      "patternProperties": {
+        "\\.": {
+          "not": {
+            "type": "object",
+            "properties": {
+              "required": {
+                "const": true
+              },
+              "properties": {
+                "const": {}
+              }
+            },
+            "required": ["required"]
+          }
+        }
+      }
+    },
+    "configuration": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": "boolean"
+        },
+        "thinking": {
+          "type": "boolean"
+        },
+        "compact": {
+          "type": "boolean"
+        }
+      },
+      "required": ["model", "thinking", "compact"],
+      "additionalProperties": false,
+      "patternProperties": {
+        "\\.": {
+          "not": {
+            "type": "object",
+            "properties": {
+              "required": {
+                "const": true
+              },
+              "properties": {
+                "const": {}
+              }
+            },
+            "required": ["required"]
+          }
+        }
+      }
+    },
+    "fleetTools": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "input",
+    "sessions",
+    "output",
+    "operations",
+    "interactions",
+    "configuration",
+    "fleetTools"
+  ],
+  "additionalProperties": false,
+  "patternProperties": {
+    "\\.": {
+      "not": {
+        "type": "object",
+        "properties": {
+          "required": {
+            "const": true
+          },
+          "properties": {
+            "const": {}
+          }
+        },
+        "required": ["required"]
+      }
+    }
+  }
+}

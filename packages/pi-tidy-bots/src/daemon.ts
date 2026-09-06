@@ -455,6 +455,15 @@ export function claimClientMessageId(
 }
 
 export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
+  const fleetOverrides = { port: options.port, host: options.host };
+  let fleet: FleetConfig = loadFleetConfig(options.dir, fleetOverrides);
+  // The explicit gateway mode enters the neutral runtime before installing any
+  // legacy Pi process handlers, spawns, schedulers or compatibility endpoints.
+  if (fleet.gateway) {
+    return import("./gateway/server.ts").then(({ startGatewayFleet }) =>
+      startGatewayFleet(options, fleet)
+    );
+  }
   const log = options.log ?? ((line: string) => console.log(line));
   // Availability over purity: an always-on fleet daemon must outlive async
   // bugs. Log loudly and keep serving — a dead daemon strands every bot.
@@ -471,8 +480,6 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       )
     );
   });
-  const fleetOverrides = { port: options.port, host: options.host };
-  let fleet: FleetConfig = loadFleetConfig(options.dir, fleetOverrides);
   const childSecret = randomUUID();
 
   // Fleet state: routines toggles + console settings persist in .fleet/state.json;

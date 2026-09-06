@@ -75,6 +75,8 @@ export function resolveStartToken(opts: {
   explicitToken?: string;
   wantsQr: boolean;
   wantsRotate: boolean;
+  /** Neutral gateway mode always requires authentication, including loopback. */
+  requireAuth?: boolean;
 }): StartTokenResolution {
   if (opts.wantsRotate)
     return { token: rotateStoredToken(opts.fleetDir), rotated: true };
@@ -87,7 +89,7 @@ export function resolveStartToken(opts: {
   // on loopback boots.
   const stored = readStoredToken(opts.fleetDir);
   if (stored) return { token: stored };
-  if (!isLoopbackHost(opts.host))
+  if (opts.requireAuth || !isLoopbackHost(opts.host))
     return { token: ensureStoredToken(opts.fleetDir).token };
   if (opts.wantsQr)
     return { token: ensureStoredToken(opts.fleetDir, undefined, true).token };

@@ -12,6 +12,9 @@ export interface BotRoutine {
 export interface BotConfig {
   name: string;
   dir: string;
+  /** Registered, pinned plugin identity; interpreted only in gateway mode. */
+  backend?: string;
+  backendConfig?: Record<string, unknown>;
   model?: string;
   thinking?: string;
   /** Role label (legacy identity), kept for back-compat disclosure. */
@@ -49,6 +52,16 @@ export interface FleetConfig {
   port: number;
   host: string;
   bots: BotConfig[];
+  gateway?: {
+    registry: string;
+    environment: string[];
+    policy: {
+      workspace: "none" | "read" | "read-write";
+      nativeProfile: boolean;
+      network: boolean;
+      gatewayTools: string[];
+    };
+  };
   /**
    * Issue 43 amendment: fallback summarizer model ("provider/id") used when
    * the context exceeds the SESSION model's window — the summary is prose;
@@ -123,6 +136,72 @@ export function loadFleetConfig(
     throw new ConfigError(`bots.toml parse error: ${(error as Error).message}`);
   }
 
+  let gateway: FleetConfig["gateway"];
+  if (doc.gateway !== undefined) {
+    const value = doc.gateway;
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new ConfigError("[gateway] must be a table");
+    }
+    const table = value as Record<string, unknown>;
+    const allowed = [
+      "registry",
+      "environment",
+      "workspace_access",
+      "native_profile",
+      "network",
+      "gateway_tools",
+    ];
+    if (Object.keys(table).some((key) => !allowed.includes(key))) {
+      throw new ConfigError("[gateway] has an unknown configuration key");
+    }
+    if (typeof table.registry !== "string" || !table.registry.trim()) {
+      throw new ConfigError(
+        "[gateway].registry must name an explicit installation registry"
+      );
+    }
+    const strings = (key: string): string[] => {
+      const field = table[key] ?? [];
+      if (
+        !Array.isArray(field) ||
+        !field.every((entry) => typeof entry === "string" && entry.length > 0)
+      ) {
+        throw new ConfigError(`[gateway].${key} must be a string array`);
+      }
+      return field as string[];
+    };
+    const environment = strings("environment");
+    if (environment.some((key) => !/^[A-Za-z_][A-Za-z_0-9]*$/.test(key))) {
+      throw new ConfigError(
+        "[gateway].environment contains an invalid variable name"
+      );
+    }
+    const workspace = table.workspace_access ?? "none";
+    if (
+      workspace !== "none" &&
+      workspace !== "read" &&
+      workspace !== "read-write"
+    ) {
+      throw new ConfigError(
+        "[gateway].workspace_access must be none, read, or read-write"
+      );
+    }
+    for (const key of ["native_profile", "network"]) {
+      if (table[key] !== undefined && typeof table[key] !== "boolean") {
+        throw new ConfigError(`[gateway].${key} must be a boolean`);
+      }
+    }
+    gateway = {
+      registry: resolve(dir, table.registry),
+      environment,
+      policy: {
+        workspace,
+        nativeProfile: table.native_profile === true,
+        network: table.network === true,
+        gatewayTools: strings("gateway_tools"),
+      },
+    };
+  }
+
   const botsRaw = doc.bot;
   if (!Array.isArray(botsRaw) || botsRaw.length === 0) {
     throw new ConfigError("bots.toml must define at least one [[bot]] table");
@@ -166,6 +245,65 @@ export function loadFleetConfig(
       botDirOverride = scoped;
     }
     const botDir = botDirOverride;
+    if (
+      !gateway &&
+      (table.backend !== undefined || table.backend_config !== undefined)
+    ) {
+      throw new ConfigError(
+        `${where} (${name}): backend selection requires [gateway].registry; it cannot fall through to the legacy runtime`
+      );
+    }
+    const backend = gateway ? (table.backend ?? "tidy.pi") : undefined;
+    if (
+      backend !== undefined &&
+      (typeof backend !== "string" ||
+        !/^[a-z0-9]+(?:[.-][a-z0-9]+)+$/.test(backend))
+    ) {
+      throw new ConfigError(
+        `${where} (${name}): backend must be a registered plugin ID`
+      );
+    }
+    let backendConfig: Record<string, unknown> | undefined;
+    if (gateway) {
+      const supplied = table.backend_config ?? {};
+      if (
+        !supplied ||
+        typeof supplied !== "object" ||
+        Array.isArray(supplied)
+      ) {
+        throw new ConfigError(
+          `${where} (${name}): backend_config must be a table`
+        );
+      }
+      backendConfig = { ...(supplied as Record<string, unknown>) };
+      const piKeys = [
+        "model",
+        "thinking",
+        "packages",
+        "extensions",
+        "tools",
+        "no_builtin_tools",
+        "no_extensions",
+        "no_skills",
+        "image_provider",
+      ];
+      for (const key of piKeys) {
+        if (table[key] === undefined) continue;
+        if (backend !== "tidy.pi")
+          throw new ConfigError(
+            `${where} (${name}): ${key} is a legacy Pi key; use this backend's backend_config schema`
+          );
+        if (
+          backendConfig[key] !== undefined &&
+          JSON.stringify(backendConfig[key]) !== JSON.stringify(table[key])
+        ) {
+          throw new ConfigError(
+            `${where} (${name}): conflicting ${key} and backend_config.${key}; remove the legacy key`
+          );
+        }
+        backendConfig[key] = table[key];
+      }
+    }
     const routes = Array.isArray(table.routes)
       ? table.routes.map((value) => String(value))
       : undefined;
@@ -213,6 +351,7 @@ export function loadFleetConfig(
     bots.push({
       name,
       dir: botDir,
+      ...(backend ? { backend: backend as string, backendConfig } : {}),
       model: table.model === undefined ? undefined : String(table.model),
       thinking,
       title: table.title === undefined ? undefined : String(table.title),
@@ -254,6 +393,7 @@ export function loadFleetConfig(
       overrides.host ??
       (typeof fleet.host === "string" ? fleet.host : "127.0.0.1"),
     bots,
+    ...(gateway ? { gateway } : {}),
     ...(emptyTurnAlertAfter !== undefined ? { emptyTurnAlertAfter } : {}),
     ...(typeof fleet.compactFallbackModel === "string" &&
     fleet.compactFallbackModel.length > 0
@@ -295,6 +435,8 @@ export function diffFleet(
     // a live bot never registered; toggle 404'd; no log).
     const differs =
       existing.dir !== bot.dir ||
+      !same(existing.backend, bot.backend) ||
+      !same(existing.backendConfig, bot.backendConfig) ||
       !same(existing.model, bot.model) ||
       !same(existing.routes, bot.routes) ||
       !same(existing.routines, bot.routines) ||

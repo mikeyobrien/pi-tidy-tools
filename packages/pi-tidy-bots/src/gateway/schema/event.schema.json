@@ -1,0 +1,336 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://tidy.invalid/backend-protocol/v1/event.schema.json",
+  "type": "object",
+  "properties": {
+    "bindingId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "leaseGeneration": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "sourceSequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "eventId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "type": {
+      "enum": [
+        "session.state",
+        "operation.disposition",
+        "turn.started",
+        "message.started",
+        "text.snapshot",
+        "tool.started",
+        "tool.updated",
+        "tool.finished",
+        "message.finished",
+        "interaction.requested",
+        "interaction.resolved",
+        "usage.updated",
+        "turn.terminal",
+        "observation.gap"
+      ]
+    },
+    "payload": {
+      "type": "object"
+    },
+    "operationId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "turnId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "messageId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "blockId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "toolCallId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "interactionId": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": [
+    "bindingId",
+    "leaseGeneration",
+    "sourceSequence",
+    "eventId",
+    "type",
+    "payload"
+  ],
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "not": {
+              "enum": ["session.state", "observation.gap"]
+            }
+          }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "required": ["operationId", "turnId"],
+        "properties": {
+          "operationId": {},
+          "turnId": {}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "enum": ["message.started", "message.finished", "text.snapshot"]
+          }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "required": ["messageId"],
+        "properties": {
+          "messageId": {}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "text.snapshot"
+          }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "required": ["blockId"],
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": ["revision", "text"],
+            "additionalProperties": true
+          },
+          "blockId": {}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "enum": ["tool.started", "tool.updated", "tool.finished"]
+          }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "required": ["toolCallId"],
+        "properties": {
+          "toolCallId": {}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "enum": ["interaction.requested", "interaction.resolved"]
+          }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "required": ["interactionId"],
+        "properties": {
+          "interactionId": {}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "operation.disposition"
+          }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "disposition": {
+                "enum": ["accepted", "rejected", "unknown"]
+              }
+            },
+            "required": ["disposition"],
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "message.started"
+          }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "role": {
+                "enum": ["assistant", "user", "tool", "system"]
+              },
+              "order": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": ["role", "order"],
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "message.finished"
+          }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "blocks": {
+                "type": "array",
+                "items": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "const": "text"
+                        },
+                        "blockId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "revision": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "required": ["type", "blockId", "text", "revision"],
+                      "additionalProperties": true
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "const": "artifact"
+                        },
+                        "blockId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "artifactId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "mediaType": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "revision": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "blockId",
+                        "artifactId",
+                        "mediaType",
+                        "revision"
+                      ],
+                      "additionalProperties": true
+                    }
+                  ]
+                }
+              }
+            },
+            "required": ["blocks"],
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "turn.terminal"
+          }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "execution": {
+                "enum": ["ended", "failed", "cancelled", "interrupted"]
+              },
+              "observation": {
+                "enum": ["complete", "live_gap", "reconciliation_required"]
+              }
+            },
+            "required": ["execution", "observation"],
+            "additionalProperties": true
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "fleetId": "fleet-example-1",
+  "botId": "bot-builder-1",
+  "conversationId": "conv-builder-1",
+  "bindingId": "binding-builder-1",
+  "bindingRevision": "binding-builder-1:cap-7",
+  "kind": "model",
+  "operationId": "op-model-example-43",
+  "delivery": "accepted",
+  "execution": "ended",
+  "observation": "complete",
+  "result": { "status": "applied" }
+}

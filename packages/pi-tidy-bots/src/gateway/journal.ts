@@ -1,0 +1,1351 @@
+import { createHash, randomUUID } from "node:crypto";
+import { chmodSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+import { DatabaseSync, type StatementSync } from "node:sqlite";
+
+/** Gateway storage is certified against this engine, rather than a best-effort substitute. */
+export const GATEWAY_SQLITE_VERSION = "3.53.4";
+const APPLICATION_ID = 0x54474459;
+const SCHEMA_VERSION = 1;
+
+export type JsonValue =
+  null | boolean | number | string | JsonValue[] | JsonObject;
+export interface JsonObject {
+  [key: string]: JsonValue;
+}
+export type OperationKind =
+  | "message"
+  | "model"
+  | "thinking"
+  | "compact"
+  | "instructions"
+  | "question"
+  | "permission"
+  | "cancel"
+  | "session_open";
+export type DeliveryState =
+  "queued" | "dispatching" | "accepted" | "rejected" | "unknown";
+export type ExecutionState =
+  | "not_started"
+  | "running"
+  | "waiting_for_input"
+  | "cancel_requested"
+  | "ended"
+  | "failed"
+  | "cancelled"
+  | "interrupted"
+  | "unknown";
+export type ObservationState =
+  "complete" | "live_gap" | "reconciliation_required";
+export interface ConversationKey {
+  botId: string;
+  conversationId: string;
+}
+export interface OperationKey extends ConversationKey {
+  operationId: string;
+}
+export interface ConversationBinding extends ConversationKey {
+  bindingId: string;
+  bindingRevision: string;
+  policyRevision: string;
+}
+export interface WriterLease {
+  ownerId: string;
+  generation: number;
+  expiresAt: number;
+}
+export interface OperationReceipt extends OperationKey {
+  fleetId: string;
+  bindingId: string;
+  bindingRevision: string;
+  kind?: OperationKind;
+  userEntryId?: string;
+  delivery: DeliveryState;
+  execution: ExecutionState;
+  observation: ObservationState;
+  result?: JsonObject;
+}
+export interface AdmitOperation extends ConversationBinding {
+  operationId: string;
+  kind?: OperationKind;
+  payload: JsonObject;
+  actorId?: string;
+  /** Display routing alias for the atomic public append; identities remain ID based. */
+  publicBotName?: string;
+  /** Additional canonical message metadata, after upstream validation. */
+  userEntry?: JsonObject;
+}
+export interface OperationRecord {
+  receipt: OperationReceipt;
+  payload: JsonObject | null;
+  payloadDigest: string;
+  policyRevision: string;
+  actorId: string;
+  turnId: string;
+  ordinal: number;
+  leaseGeneration: number | null;
+  expired: boolean;
+}
+export interface OperationDisposition {
+  delivery?: DeliveryState;
+  execution?: ExecutionState;
+  observation?: ObservationState;
+  result?: JsonObject;
+  /** Correlated native evidence is required to resolve ambiguity or an observation gap. */
+  evidence?: string;
+}
+export interface PluginSourceEvent {
+  bindingId: string;
+  leaseGeneration: number;
+  sourceSequence: number;
+  eventId: string;
+  type: string;
+  operationId?: string;
+  turnId?: string;
+  payload: JsonObject;
+}
+export interface CompletionDelivery {
+  dispatchId: string;
+  originBotId: string;
+  payload: JsonObject;
+}
+export interface EventProjection {
+  entries?: JsonObject[];
+  operation?: OperationDisposition;
+  completion?: CompletionDelivery;
+  /** Wire events, without seq. Omit to expose the source event as one public event. */
+  publicEvents?: JsonObject[];
+}
+export interface PublicEvent {
+  seq: number;
+  event: JsonObject;
+}
+export interface EventCommit {
+  duplicate: boolean;
+  /** Highest contiguous source sequence committed, suitable for events.ack. */
+  ack: number;
+  publicEvents: PublicEvent[];
+}
+export interface OutboxDelivery extends CompletionDelivery {
+  id: number;
+  targetBotId: string;
+  conversationId: string;
+  operationId: string;
+}
+
+export class GatewayJournalError extends Error {
+  readonly code: string;
+  constructor(code: string, message: string) {
+    super(message);
+    this.code = code;
+    this.name = "GatewayJournalError";
+  }
+}
+function fail(code: string, message: string): never {
+  throw new GatewayJournalError(code, message);
+}
+function identifier(value: string, label: string): void {
+  if (
+    typeof value !== "string" ||
+    !value.trim() ||
+    value.length > 1024 ||
+    value.includes("\0")
+  )
+    fail("invalid_identity", `Invalid ${label}`);
+}
+
+/** Sorted JSON encoding rejects values JSON.stringify would silently erase or coerce. */
+export function canonicalJson(value: unknown): string {
+  const stack = new Set<object>();
+  function encode(item: unknown): string {
+    if (item === null || typeof item === "boolean" || typeof item === "string")
+      return JSON.stringify(item);
+    if (typeof item === "number" && Number.isFinite(item))
+      return JSON.stringify(item);
+    if (typeof item !== "object" || item === null || stack.has(item))
+      return fail("invalid_payload", "Payload must be finite, acyclic JSON");
+    stack.add(item);
+    let result: string;
+    if (Array.isArray(item)) {
+      // Sparse slots must not silently become null.
+      for (let i = 0; i < item.length; i++)
+        if (!(i in item)) fail("invalid_payload", "Sparse JSON array");
+      result = `[${item.map(encode).join(",")}]`;
+    } else {
+      if (
+        Object.getPrototypeOf(item) !== Object.prototype &&
+        Object.getPrototypeOf(item) !== null
+      )
+        fail("invalid_payload", "Payload must use plain JSON objects");
+      if (Object.getOwnPropertySymbols(item).length)
+        fail("invalid_payload", "Symbol keys are not JSON");
+      const object = item as Record<string, unknown>;
+      result = `{${Object.keys(object)
+        .sort()
+        .map((key) => `${JSON.stringify(key)}:${encode(object[key])}`)
+        .join(",")}}`;
+    }
+    stack.delete(item);
+    return result;
+  }
+  return encode(value);
+}
+export function payloadDigest(value: unknown): string {
+  return `sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
+}
+function parseObject(value: unknown): JsonObject {
+  return JSON.parse(String(value)) as JsonObject;
+}
+type Row = Record<string, unknown>;
+type SqlValue = null | number | bigint | string | Uint8Array;
+type RowStatement = Omit<StatementSync, "get" | "all"> & {
+  get(...parameters: SqlValue[]): Row | undefined;
+  all(...parameters: SqlValue[]): Row[];
+};
+const terminalExecutions = new Set<ExecutionState>([
+  "ended",
+  "failed",
+  "cancelled",
+  "interrupted",
+]);
+const operationKinds = new Set<OperationKind>([
+  "message",
+  "model",
+  "thinking",
+  "compact",
+  "instructions",
+  "question",
+  "permission",
+  "cancel",
+  "session_open",
+]);
+function terminal(receipt: OperationReceipt): boolean {
+  return (
+    terminalExecutions.has(receipt.execution) || receipt.delivery === "rejected"
+  );
+}
+function uncertain(receipt: OperationReceipt): boolean {
+  return (
+    receipt.delivery === "unknown" ||
+    receipt.execution === "unknown" ||
+    receipt.observation !== "complete"
+  );
+}
+function resolved(receipt: OperationReceipt): boolean {
+  if (uncertain(receipt) || !terminal(receipt)) return false;
+  if (
+    receipt.delivery === "rejected" ||
+    receipt.execution !== "ended" ||
+    !receipt.kind ||
+    receipt.kind === "message"
+  )
+    return true;
+  if (receipt.kind === "session_open")
+    return (
+      ["opened", "applied"].includes(String(receipt.result?.status)) &&
+      typeof receipt.result?.nativeReference === "string" &&
+      receipt.result.nativeReference.length > 0
+    );
+  return (
+    ["applied", "expired", "cancelled", "failed"].includes(
+      String(receipt.result?.status)
+    ) ||
+    (receipt.kind === "cancel" && receipt.result?.status === "requested")
+  );
+}
+
+/**
+ * One local writer, fenced across every transaction. An expired lease never proves
+ * old native ownership ended: acquiring its replacement requires supervisor evidence.
+ * No method in this module invokes a native runtime or retries a native mutation.
+ */
+export class GatewayJournal {
+  readonly fleetId: string;
+  readonly sqliteVersion: string;
+  private readonly db: DatabaseSync;
+  private readonly now: () => number;
+  private closed = false;
+
+  constructor(
+    path: string,
+    options: { fleetId?: string; now?: () => number } = {}
+  ) {
+    if (!path || path === ":memory:")
+      fail(
+        "storage_not_durable",
+        "Gateway journal requires an on-disk database"
+      );
+    if (options.fleetId !== undefined) identifier(options.fleetId, "fleet ID");
+    this.now = options.now ?? Date.now;
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    this.db = new DatabaseSync(path);
+    try {
+      chmodSync(path, 0o600);
+      this.sqliteVersion = String(
+        this.prepare("SELECT sqlite_version() AS version").get()!.version
+      );
+      if (this.sqliteVersion !== GATEWAY_SQLITE_VERSION)
+        fail(
+          "unsupported_sqlite",
+          `Gateway requires SQLite ${GATEWAY_SQLITE_VERSION}; found ${this.sqliteVersion}`
+        );
+      this.db.exec("PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;");
+      const applicationId = Number(
+        this.prepare("PRAGMA application_id").get()!.application_id
+      );
+      const schemaVersion = Number(
+        this.prepare("PRAGMA user_version").get()!.user_version
+      );
+      if (applicationId !== 0 && applicationId !== APPLICATION_ID)
+        fail("incompatible_storage", "Database belongs to another application");
+      if (schemaVersion !== 0 && schemaVersion !== SCHEMA_VERSION)
+        fail(
+          "incompatible_storage",
+          `Unsupported gateway schema ${schemaVersion}`
+        );
+      if ((applicationId === 0) !== (schemaVersion === 0))
+        fail(
+          "incompatible_storage",
+          "Gateway schema and application identities disagree"
+        );
+      if (
+        applicationId === 0 &&
+        Number(
+          this.prepare(
+            "SELECT count(*) AS n FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
+          ).get()!.n
+        )
+      )
+        fail(
+          "incompatible_storage",
+          "Refusing to adopt an existing non-gateway database"
+        );
+      const mode = this.prepare("PRAGMA journal_mode = WAL").get()!
+        .journal_mode;
+      this.db.exec("PRAGMA synchronous = FULL;");
+      if (
+        mode !== "wal" ||
+        Number(this.prepare("PRAGMA synchronous").get()!.synchronous) !== 2
+      )
+        fail(
+          "unsupported_storage",
+          "Gateway requires SQLite WAL and synchronous FULL"
+        );
+      const check = this.prepare("PRAGMA quick_check").all();
+      if (check.length !== 1 || check[0].quick_check !== "ok")
+        fail("corrupt_storage", "Gateway journal integrity check failed");
+      if (schemaVersion !== 0) {
+        const existingTables = new Set(
+          this.prepare("SELECT name FROM sqlite_master WHERE type='table'")
+            .all()
+            .map((row) => row.name)
+        );
+        for (const table of [
+          "gateway_meta",
+          "bots",
+          "writer_lease",
+          "conversations",
+          "operations",
+          "transcript_entries",
+          "source_events",
+          "public_events",
+          "completion_outbox",
+        ]) {
+          if (!existingTables.has(table))
+            fail(
+              "corrupt_storage",
+              `Gateway table ${table} is missing; refusing to fabricate empty recovery state`
+            );
+        }
+        if (this.prepare("PRAGMA foreign_key_check").all().length)
+          fail(
+            "corrupt_storage",
+            "Gateway journal contains broken identity references"
+          );
+      } else
+        this.transaction(() => {
+          this.db.exec(`
+          CREATE TABLE IF NOT EXISTS gateway_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+          CREATE TABLE IF NOT EXISTS bots (bot_id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE) STRICT;
+          CREATE TABLE IF NOT EXISTS writer_lease (singleton INTEGER PRIMARY KEY CHECK(singleton=1), owner_id TEXT,
+            generation INTEGER NOT NULL, expires_at INTEGER NOT NULL, reconciled INTEGER NOT NULL CHECK(reconciled IN (0,1))) STRICT;
+          CREATE TABLE IF NOT EXISTS conversations (bot_id TEXT NOT NULL, conversation_id TEXT NOT NULL,
+            binding_id TEXT NOT NULL UNIQUE, binding_revision TEXT NOT NULL, policy_revision TEXT NOT NULL,
+            deleted INTEGER NOT NULL DEFAULT 0 CHECK(deleted IN (0,1)), source_ack INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(bot_id, conversation_id)) STRICT;
+          CREATE TABLE IF NOT EXISTS operations (ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
+            bot_id TEXT NOT NULL, conversation_id TEXT NOT NULL, operation_id TEXT NOT NULL,
+            binding_id TEXT NOT NULL, binding_revision TEXT NOT NULL, policy_revision TEXT NOT NULL,
+            actor_id TEXT NOT NULL, kind TEXT NOT NULL, payload_digest TEXT NOT NULL, payload_json TEXT,
+            turn_id TEXT NOT NULL, user_entry_id TEXT, delivery TEXT NOT NULL, execution TEXT NOT NULL,
+            observation TEXT NOT NULL, result_json TEXT, lease_generation INTEGER, expired INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(bot_id, conversation_id, operation_id),
+            FOREIGN KEY(bot_id, conversation_id) REFERENCES conversations(bot_id, conversation_id)) STRICT;
+          CREATE INDEX IF NOT EXISTS operations_fifo ON operations(bot_id, conversation_id, ordinal);
+          CREATE TABLE IF NOT EXISTS transcript_entries (ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
+            bot_id TEXT NOT NULL, conversation_id TEXT NOT NULL, entry_id TEXT NOT NULL, operation_id TEXT,
+            entry_json TEXT NOT NULL, digest TEXT NOT NULL, UNIQUE(bot_id, conversation_id, entry_id),
+            FOREIGN KEY(bot_id, conversation_id) REFERENCES conversations(bot_id, conversation_id)) STRICT;
+          CREATE TABLE IF NOT EXISTS source_events (binding_id TEXT NOT NULL, source_sequence INTEGER NOT NULL,
+            event_id TEXT NOT NULL, digest TEXT NOT NULL, event_json TEXT NOT NULL, projection_json TEXT NOT NULL,
+            applied INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(binding_id, source_sequence), UNIQUE(binding_id, event_id),
+            FOREIGN KEY(binding_id) REFERENCES conversations(binding_id)) STRICT;
+          CREATE TABLE IF NOT EXISTS public_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, binding_id TEXT NOT NULL,
+            event_json TEXT NOT NULL, FOREIGN KEY(binding_id) REFERENCES conversations(binding_id)) STRICT;
+          CREATE TABLE IF NOT EXISTS completion_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, dispatch_id TEXT NOT NULL UNIQUE,
+            origin_bot_id TEXT NOT NULL, target_bot_id TEXT NOT NULL, conversation_id TEXT NOT NULL,
+            operation_id TEXT NOT NULL, payload_json TEXT NOT NULL, digest TEXT NOT NULL, delivered INTEGER NOT NULL DEFAULT 0) STRICT;
+        `);
+          this.prepare(
+            "INSERT INTO gateway_meta(key,value) VALUES('fleet_id',?)"
+          ).run(options.fleetId ?? `fleet-${randomUUID()}`);
+          this.db.exec(
+            `PRAGMA application_id = ${APPLICATION_ID}; PRAGMA user_version = ${SCHEMA_VERSION};`
+          );
+        });
+      const stored = this.prepare(
+        "SELECT value FROM gateway_meta WHERE key='fleet_id'"
+      ).get();
+      if (!stored || typeof stored.value !== "string" || !stored.value)
+        fail("corrupt_storage", "Gateway fleet identity is missing");
+      if (options.fleetId !== undefined && stored.value !== options.fleetId)
+        fail(
+          "fleet_mismatch",
+          "Stored fleet ID differs from requested fleet ID"
+        );
+      this.fleetId = stored.value;
+    } catch (error) {
+      this.db.close();
+      throw error;
+    }
+  }
+
+  close(): void {
+    if (!this.closed) {
+      this.db.close();
+      this.closed = true;
+    }
+  }
+
+  private prepare(sql: string): RowStatement {
+    return this.db.prepare(sql) as RowStatement;
+  }
+
+  private transaction<T>(work: () => T): T {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = work();
+      this.db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        /* Preserve the original failure; acceptance was never returned. */
+      }
+      throw error;
+    }
+  }
+  private write<T>(lease: WriterLease, work: () => T): T {
+    return this.transaction(() => {
+      this.assertLease(lease);
+      return work();
+    });
+  }
+  private assertLease(lease: WriterLease): void {
+    const row = this.prepare(
+      "SELECT * FROM writer_lease WHERE singleton=1"
+    ).get();
+    if (
+      !row ||
+      row.owner_id !== lease.ownerId ||
+      row.generation !== lease.generation ||
+      Number(row.expires_at) <= this.now()
+    )
+      fail(
+        "stale_writer",
+        "Writer lease is stale, expired, or owned by another process"
+      );
+  }
+  acquireWriterLease(
+    ownerId: string,
+    options: { ttlMs?: number; previousOwnerReconciled?: boolean } = {}
+  ): WriterLease {
+    identifier(ownerId, "writer ID");
+    const ttl = options.ttlMs ?? 30_000;
+    if (!Number.isSafeInteger(ttl) || ttl < 1 || ttl > 86_400_000)
+      fail("invalid_lease", "Lease TTL must be between 1 ms and one day");
+    return this.transaction(() => {
+      const row = this.prepare(
+        "SELECT * FROM writer_lease WHERE singleton=1"
+      ).get();
+      const now = this.now();
+      if (row && row.owner_id === ownerId && Number(row.expires_at) > now) {
+        const lease = {
+          ownerId,
+          generation: Number(row.generation),
+          expiresAt: now + ttl,
+        };
+        this.prepare(
+          "UPDATE writer_lease SET expires_at=? WHERE singleton=1"
+        ).run(lease.expiresAt);
+        return lease;
+      }
+      if (row && row.owner_id !== null && Number(row.expires_at) > now)
+        fail("writer_busy", "Another writer still owns the gateway journal");
+      if (row && !row.reconciled && !options.previousOwnerReconciled)
+        fail(
+          "ownership_unreconciled",
+          "Expired lease does not prove old native ownership ended"
+        );
+      const lease = {
+        ownerId,
+        generation: Number(row?.generation ?? 0) + 1,
+        expiresAt: now + ttl,
+      };
+      this.prepare(
+        "INSERT INTO writer_lease VALUES(1,?,?,?,0) ON CONFLICT(singleton) DO UPDATE SET owner_id=excluded.owner_id,generation=excluded.generation,expires_at=excluded.expires_at,reconciled=0"
+      ).run(ownerId, lease.generation, lease.expiresAt);
+      return lease;
+    });
+  }
+  renewWriterLease(lease: WriterLease, ttlMs = 30_000): WriterLease {
+    if (!Number.isSafeInteger(ttlMs) || ttlMs < 1 || ttlMs > 86_400_000)
+      fail("invalid_lease", "Invalid lease TTL");
+    return this.write(lease, () => {
+      const renewed = { ...lease, expiresAt: this.now() + ttlMs };
+      this.prepare(
+        "UPDATE writer_lease SET expires_at=? WHERE singleton=1"
+      ).run(renewed.expiresAt);
+      return renewed;
+    });
+  }
+  /** Call with true only after the supervisor proved owned native processes stopped/fenced. */
+  releaseWriterLease(
+    lease: WriterLease,
+    options: { ownershipReconciled?: boolean } = {}
+  ): void {
+    this.write(lease, () =>
+      this.prepare(
+        "UPDATE writer_lease SET owner_id=NULL,expires_at=0,reconciled=? WHERE singleton=1"
+      ).run(options.ownershipReconciled ? 1 : 0)
+    );
+  }
+
+  ensureBot(lease: WriterLease, name: string): { botId: string; name: string } {
+    identifier(name, "bot name");
+    return this.write(lease, () => {
+      const existing = this.botByName(name);
+      if (existing) return existing;
+      const bot = { botId: `bot-${randomUUID()}`, name };
+      this.prepare("INSERT INTO bots(bot_id,name) VALUES(?,?)").run(
+        bot.botId,
+        name
+      );
+      return bot;
+    });
+  }
+  botByName(name: string): { botId: string; name: string } | null {
+    const row = this.prepare("SELECT * FROM bots WHERE name=?").get(name);
+    return row ? { botId: String(row.bot_id), name: String(row.name) } : null;
+  }
+  renameBot(lease: WriterLease, botId: string, name: string): void {
+    identifier(name, "bot name");
+    this.write(lease, () => {
+      if (!this.prepare("SELECT 1 FROM bots WHERE bot_id=?").get(botId))
+        fail("bot_not_found", "Unknown bot identity");
+      const other = this.botByName(name);
+      if (other && other.botId !== botId)
+        fail(
+          "bot_name_conflict",
+          "Bot name already belongs to another identity"
+        );
+      this.prepare("UPDATE bots SET name=? WHERE bot_id=?").run(name, botId);
+    });
+  }
+
+  ensureConversation(
+    lease: WriterLease,
+    binding: ConversationBinding
+  ): ConversationBinding {
+    Object.entries(binding).forEach(([key, value]) => identifier(value, key));
+    return this.write(lease, () => {
+      const existing = this.conversation(binding, true);
+      if (existing) {
+        if (existing.deleted)
+          fail(
+            "conversation_deleted",
+            "Deleted conversation identity cannot be reused"
+          );
+        if (
+          existing.binding_id !== binding.bindingId ||
+          existing.binding_revision !== binding.bindingRevision ||
+          existing.policy_revision !== binding.policyRevision
+        )
+          fail(
+            "binding_conflict",
+            "Conversation already has a different immutable binding"
+          );
+        return { ...binding };
+      }
+      if (
+        this.prepare("SELECT 1 FROM conversations WHERE binding_id=?").get(
+          binding.bindingId
+        )
+      )
+        fail(
+          "binding_conflict",
+          "Binding identity already belongs to another conversation"
+        );
+      this.prepare(
+        "INSERT INTO conversations(bot_id,conversation_id,binding_id,binding_revision,policy_revision) VALUES(?,?,?,?,?)"
+      ).run(
+        binding.botId,
+        binding.conversationId,
+        binding.bindingId,
+        binding.bindingRevision,
+        binding.policyRevision
+      );
+      return { ...binding };
+    });
+  }
+  getConversation(key: ConversationKey): ConversationBinding | null {
+    const row = this.conversation(key, true);
+    return !row || row.deleted ? null : this.binding(row);
+  }
+  listConversations(): ConversationBinding[] {
+    return this.prepare(
+      "SELECT * FROM conversations WHERE deleted=0 ORDER BY bot_id,conversation_id"
+    )
+      .all()
+      .map((row) => this.binding(row));
+  }
+  private binding(row: Row): ConversationBinding {
+    return {
+      botId: String(row.bot_id),
+      conversationId: String(row.conversation_id),
+      bindingId: String(row.binding_id),
+      bindingRevision: String(row.binding_revision),
+      policyRevision: String(row.policy_revision),
+    };
+  }
+  private conversation(
+    key: ConversationKey,
+    allowMissing = false
+  ): Row | undefined {
+    identifier(key.botId, "bot ID");
+    identifier(key.conversationId, "conversation ID");
+    const row = this.prepare(
+      "SELECT * FROM conversations WHERE bot_id=? AND conversation_id=?"
+    ).get(key.botId, key.conversationId);
+    if (!row && !allowMissing)
+      fail("conversation_not_found", "Conversation was not provisioned");
+    if (row?.deleted && !allowMissing)
+      fail("conversation_deleted", "Conversation was deleted");
+    return row;
+  }
+
+  admit(
+    lease: WriterLease,
+    input: AdmitOperation
+  ): { receipt: OperationReceipt; created: boolean } {
+    identifier(input.operationId, "operation ID");
+    const kind = input.kind ?? "message";
+    if (!operationKinds.has(kind))
+      fail("invalid_kind", "Unsupported operation kind");
+    const actorId = input.actorId ?? "operator";
+    identifier(actorId, "actor ID");
+    const digest = payloadDigest({
+      fleetId: this.fleetId,
+      botId: input.botId,
+      conversationId: input.conversationId,
+      bindingId: input.bindingId,
+      bindingRevision: input.bindingRevision,
+      policyRevision: input.policyRevision,
+      actorId,
+      kind,
+      payload: input.payload,
+      ...(input.userEntry ? { userEntry: input.userEntry } : {}),
+    });
+    const payload = canonicalJson(input.payload);
+    if (kind === "message" && typeof input.payload.text !== "string")
+      fail("invalid_payload", "Message payload requires text");
+    if (kind !== "message" && input.userEntry)
+      fail("invalid_payload", "Control operations do not create user entries");
+    return this.write(lease, () => {
+      const binding = this.conversation(input)!;
+      if (
+        binding.binding_id !== input.bindingId ||
+        binding.binding_revision !== input.bindingRevision ||
+        binding.policy_revision !== input.policyRevision
+      )
+        fail(
+          "binding_conflict",
+          "Operation targets a stale binding or policy revision"
+        );
+      const existing = this.operationRow(input);
+      if (existing) {
+        if (existing.payload_digest !== digest)
+          fail(
+            "operation_conflict",
+            "Operation key already identifies different immutable intent"
+          );
+        if (existing.expired)
+          fail(
+            "operation_expired",
+            "Operation body expired; its identity cannot be reused"
+          );
+        return { receipt: this.receipt(existing), created: false };
+      }
+      const userEntryId = kind === "message" ? `entry-${randomUUID()}` : null;
+      this.prepare(
+        "INSERT INTO operations(bot_id,conversation_id,operation_id,binding_id,binding_revision,policy_revision,actor_id,kind,payload_digest,payload_json,turn_id,user_entry_id,delivery,execution,observation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?, 'queued','not_started','complete')"
+      ).run(
+        input.botId,
+        input.conversationId,
+        input.operationId,
+        input.bindingId,
+        input.bindingRevision,
+        input.policyRevision,
+        actorId,
+        kind,
+        digest,
+        payload,
+        `turn-${randomUUID()}`,
+        userEntryId
+      );
+      if (userEntryId) {
+        const entry = {
+          ...input.userEntry,
+          id: userEntryId,
+          operationId: input.operationId,
+          clientMessageId: input.operationId,
+          role: "user",
+          origin: "operator",
+          text: input.payload.text,
+          ts: new Date(this.now()).toISOString(),
+        };
+        this.insertEntry(input, entry, input.operationId);
+        if (input.publicBotName !== undefined) {
+          identifier(input.publicBotName, "public bot name");
+          this.insertPublicEvents(input.bindingId, [
+            { type: "append", bot: input.publicBotName, entry },
+          ]);
+        }
+      }
+      return {
+        receipt: this.receipt(this.operationRow(input)!),
+        created: true,
+      };
+    });
+  }
+  private operationRow(key: OperationKey): Row | undefined {
+    return this.prepare(
+      "SELECT * FROM operations WHERE bot_id=? AND conversation_id=? AND operation_id=?"
+    ).get(key.botId, key.conversationId, key.operationId);
+  }
+  private receipt(row: Row): OperationReceipt {
+    return {
+      fleetId: this.fleetId,
+      botId: String(row.bot_id),
+      conversationId: String(row.conversation_id),
+      bindingId: String(row.binding_id),
+      bindingRevision: String(row.binding_revision),
+      operationId: String(row.operation_id),
+      ...(row.kind === "message" ? {} : { kind: row.kind as OperationKind }),
+      ...(row.user_entry_id ? { userEntryId: String(row.user_entry_id) } : {}),
+      delivery: row.delivery as DeliveryState,
+      execution: row.execution as ExecutionState,
+      observation: row.observation as ObservationState,
+      ...(row.result_json === null
+        ? {}
+        : { result: parseObject(row.result_json) }),
+    };
+  }
+  private record(row: Row): OperationRecord {
+    return {
+      receipt: this.receipt(row),
+      payload: row.payload_json === null ? null : parseObject(row.payload_json),
+      payloadDigest: String(row.payload_digest),
+      policyRevision: String(row.policy_revision),
+      actorId: String(row.actor_id),
+      turnId: String(row.turn_id),
+      ordinal: Number(row.ordinal),
+      leaseGeneration:
+        row.lease_generation === null ? null : Number(row.lease_generation),
+      expired: Boolean(row.expired),
+    };
+  }
+  getOperation(key: OperationKey): OperationReceipt | null {
+    const row = this.operationRow(key);
+    return row ? this.receipt(row) : null;
+  }
+  getOperationRecord(key: OperationKey): OperationRecord | null {
+    const row = this.operationRow(key);
+    return row ? this.record(row) : null;
+  }
+  listOperationRecords(key?: ConversationKey): OperationRecord[] {
+    return (
+      key
+        ? this.prepare(
+            "SELECT * FROM operations WHERE bot_id=? AND conversation_id=? ORDER BY ordinal"
+          ).all(key.botId, key.conversationId)
+        : this.prepare("SELECT * FROM operations ORDER BY ordinal").all()
+    ).map((row) => this.record(row));
+  }
+
+  /** Strict FIFO by default. Explicit interrupt controls must name the active target. */
+  reserveNext(
+    lease: WriterLease,
+    key: ConversationKey,
+    options: { interruptKinds?: ("permission" | "question" | "cancel")[] } = {}
+  ): OperationRecord | null {
+    return this.write(lease, () => {
+      this.conversation(key);
+      const rows = this.prepare(
+        "SELECT * FROM operations WHERE bot_id=? AND conversation_id=? AND expired=0 ORDER BY ordinal"
+      ).all(key.botId, key.conversationId);
+      const unresolved = rows.filter((row) => !resolved(this.receipt(row)));
+      if (unresolved.some((row) => uncertain(this.receipt(row)))) return null;
+      const active = unresolved.filter((row) => row.delivery !== "queued");
+      let candidate: Row | undefined;
+      if (!active.length)
+        candidate = unresolved.find((row) => row.delivery === "queued");
+      else if (
+        options.interruptKinds?.length &&
+        active.length === 1 &&
+        active[0].delivery === "accepted" &&
+        !terminal(this.receipt(active[0]))
+      ) {
+        candidate = unresolved.find(
+          (row) =>
+            row.delivery === "queued" &&
+            options.interruptKinds!.includes(
+              row.kind as "permission" | "question" | "cancel"
+            ) &&
+            parseObject(row.payload_json).targetOperationId ===
+              active[0].operation_id
+        );
+      }
+      if (!candidate) return null;
+      this.prepare(
+        "UPDATE operations SET delivery='dispatching',lease_generation=? WHERE ordinal=? AND delivery='queued'"
+      ).run(lease.generation, Number(candidate.ordinal));
+      return this.record(
+        this.operationRow({
+          ...key,
+          operationId: String(candidate.operation_id),
+        })!
+      );
+    });
+  }
+  recordDisposition(
+    lease: WriterLease,
+    key: OperationKey,
+    disposition: OperationDisposition
+  ): OperationReceipt {
+    return this.write(lease, () => {
+      this.conversation(key);
+      return this.applyDisposition(key, disposition);
+    });
+  }
+  private applyDisposition(
+    key: OperationKey,
+    disposition: OperationDisposition
+  ): OperationReceipt {
+    const row = this.operationRow(key);
+    if (!row) fail("operation_not_found", "Unknown operation");
+    const before = this.receipt(row);
+    const after: OperationReceipt = { ...before, ...disposition };
+    delete (after as OperationReceipt & { evidence?: string }).evidence;
+    if (
+      !["queued", "dispatching", "accepted", "rejected", "unknown"].includes(
+        after.delivery
+      ) ||
+      ![
+        "not_started",
+        "running",
+        "waiting_for_input",
+        "cancel_requested",
+        "ended",
+        "failed",
+        "cancelled",
+        "interrupted",
+        "unknown",
+      ].includes(after.execution) ||
+      !["complete", "live_gap", "reconciliation_required"].includes(
+        after.observation
+      )
+    )
+      fail("invalid_state", "Unknown operation state");
+    if (after.delivery === "queued" && before.delivery !== "queued")
+      fail(
+        "unsafe_retry",
+        "An operation cannot return to the native submission queue"
+      );
+    if (after.delivery === "dispatching" && before.delivery !== "dispatching")
+      fail(
+        "unreserved_dispatch",
+        "Use reserveNext before crossing the native boundary"
+      );
+    if (
+      before.delivery === "queued" &&
+      after.delivery !== "queued" &&
+      after.delivery !== "rejected"
+    )
+      fail(
+        "unreserved_dispatch",
+        "Native disposition requires a durable dispatch reservation"
+      );
+    if (
+      before.delivery === "accepted" &&
+      !["accepted", "unknown"].includes(after.delivery)
+    )
+      fail(
+        "invalid_transition",
+        "Native acceptance cannot become unsubmitted or rejected"
+      );
+    if (before.delivery === "rejected" && after.delivery !== "rejected")
+      fail("invalid_transition", "A rejected identity is retained permanently");
+    if (
+      terminalExecutions.has(before.execution) &&
+      after.execution !== before.execution
+    )
+      fail("invalid_transition", "Terminal execution cannot regress");
+    if (
+      ((before.delivery === "unknown" && after.delivery !== "unknown") ||
+        (before.execution === "unknown" && after.execution !== "unknown") ||
+        (before.observation !== "complete" &&
+          after.observation === "complete")) &&
+      !disposition.evidence?.trim()
+    )
+      fail(
+        "evidence_required",
+        "Ambiguity requires correlated native evidence, not elapsed time or absence"
+      );
+    if (after.delivery === "queued" && after.execution !== "not_started")
+      fail("invalid_state", "Queued work has not executed");
+    if (
+      after.delivery === "rejected" &&
+      !["not_started", "failed", "cancelled"].includes(after.execution)
+    )
+      fail("invalid_state", "Rejected work cannot be running");
+    if (
+      disposition.result &&
+      before.result &&
+      canonicalJson(disposition.result) !== canonicalJson(before.result)
+    )
+      fail("result_conflict", "An operation result is immutable");
+    this.prepare(
+      "UPDATE operations SET delivery=?,execution=?,observation=?,result_json=? WHERE ordinal=?"
+    ).run(
+      after.delivery,
+      after.execution,
+      after.observation,
+      after.result ? canonicalJson(after.result) : null,
+      Number(row.ordinal)
+    );
+    return after;
+  }
+  /** A startup recovery marker, never an automatic replay authorization. */
+  recoverInterrupted(lease: WriterLease): number {
+    return this.write(lease, () =>
+      Number(
+        this.prepare(
+          "UPDATE operations SET delivery='unknown',execution='unknown',observation='reconciliation_required' WHERE delivery IN ('dispatching','accepted') AND execution NOT IN ('ended','failed','cancelled','interrupted')"
+        ).run().changes
+      )
+    );
+  }
+  cancelQueued(lease: WriterLease, key: OperationKey): OperationReceipt {
+    return this.write(lease, () => {
+      this.conversation(key);
+      const row = this.operationRow(key);
+      if (!row || row.delivery !== "queued" || row.lease_generation !== null)
+        fail(
+          "already_dispatched",
+          "Only provably unsubmitted queued work can be cancelled locally"
+        );
+      return this.applyDisposition(key, {
+        delivery: "rejected",
+        execution: "cancelled",
+      });
+    });
+  }
+
+  /** Highest stored source sequence, including buffered gaps; use sourceAck for replay. */
+  maxSourceSequence(bindingId: string): number {
+    return Number(
+      this.prepare(
+        "SELECT COALESCE(MAX(source_sequence),0) AS seq FROM source_events WHERE binding_id=?"
+      ).get(bindingId)!.seq
+    );
+  }
+  sourceAck(bindingId: string): number {
+    const row = this.prepare(
+      "SELECT source_ack FROM conversations WHERE binding_id=?"
+    ).get(bindingId);
+    if (!row) fail("binding_not_found", "Unknown binding");
+    return Number(row.source_ack);
+  }
+  readSourceEvents(
+    bindingId: string,
+    after = 0,
+    limit = 1000
+  ): PluginSourceEvent[] {
+    if (
+      !Number.isSafeInteger(after) ||
+      after < 0 ||
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > 10_000
+    )
+      fail("invalid_cursor", "Invalid source event cursor/limit");
+    return this.prepare(
+      "SELECT event_json FROM source_events WHERE binding_id=? AND source_sequence>? AND applied=1 ORDER BY source_sequence LIMIT ?"
+    )
+      .all(bindingId, after, limit)
+      .map((row) => JSON.parse(String(row.event_json)) as PluginSourceEvent);
+  }
+  commitPluginEvent(
+    lease: WriterLease,
+    event: PluginSourceEvent,
+    projection: EventProjection = {}
+  ): EventCommit {
+    identifier(event.eventId, "event ID");
+    identifier(event.type, "event type");
+    if (!Number.isSafeInteger(event.sourceSequence) || event.sourceSequence < 1)
+      fail(
+        "invalid_sequence",
+        "Source sequence must be a positive safe integer"
+      );
+    // The same persisted event can be re-enveloped by a replacement instance.
+    const { leaseGeneration: _generation, ...identity } = event;
+    const digest = payloadDigest(identity);
+    const eventJson = canonicalJson(event);
+    const projectionJson = canonicalJson(projection);
+    return this.write(lease, () => {
+      if (event.leaseGeneration !== lease.generation)
+        fail("stale_plugin", "Source event came from a stale plugin lease");
+      const binding = this.prepare(
+        "SELECT * FROM conversations WHERE binding_id=?"
+      ).get(event.bindingId);
+      if (!binding || binding.deleted)
+        fail("binding_not_found", "Event targets a missing or deleted binding");
+      if (
+        event.operationId &&
+        !this.operationRow({
+          botId: String(binding.bot_id),
+          conversationId: String(binding.conversation_id),
+          operationId: event.operationId,
+        })
+      )
+        fail("operation_not_found", "Event names an unknown operation");
+      const existing = this.prepare(
+        "SELECT * FROM source_events WHERE binding_id=? AND (source_sequence=? OR event_id=?)"
+      ).all(event.bindingId, event.sourceSequence, event.eventId);
+      if (existing.length) {
+        if (
+          existing.length !== 1 ||
+          existing[0].digest !== digest ||
+          existing[0].source_sequence !== event.sourceSequence ||
+          existing[0].event_id !== event.eventId
+        )
+          fail(
+            "event_conflict",
+            "Source event identity was reused with different content"
+          );
+        return {
+          duplicate: true,
+          ack: Number(binding.source_ack),
+          publicEvents: [],
+        };
+      }
+      if (event.sourceSequence <= Number(binding.source_ack))
+        fail(
+          "event_expired",
+          "Event body expired below the retained source watermark"
+        );
+      this.prepare(
+        "INSERT INTO source_events(binding_id,source_sequence,event_id,digest,event_json,projection_json) VALUES(?,?,?,?,?,?)"
+      ).run(
+        event.bindingId,
+        event.sourceSequence,
+        event.eventId,
+        digest,
+        eventJson,
+        projectionJson
+      );
+      const publicEvents: PublicEvent[] = [];
+      let ack = Number(binding.source_ack);
+      for (;;) {
+        const next = this.prepare(
+          "SELECT * FROM source_events WHERE binding_id=? AND source_sequence=? AND applied=0"
+        ).get(event.bindingId, ack + 1);
+        if (!next) break;
+        const source = JSON.parse(String(next.event_json)) as PluginSourceEvent;
+        const effect = JSON.parse(
+          String(next.projection_json)
+        ) as EventProjection;
+        const scope = {
+          botId: String(binding.bot_id),
+          conversationId: String(binding.conversation_id),
+        };
+        if (effect.operation) {
+          if (!source.operationId)
+            fail(
+              "invalid_projection",
+              "Operation state requires a correlated operation ID"
+            );
+          this.applyDisposition(
+            { ...scope, operationId: source.operationId },
+            {
+              ...effect.operation,
+              evidence: effect.operation.evidence ?? `source:${source.eventId}`,
+            }
+          );
+        }
+        for (const entry of effect.entries ?? [])
+          this.insertEntry(scope, entry, source.operationId);
+        if (effect.completion) {
+          if (!source.operationId)
+            fail(
+              "invalid_projection",
+              "Completion requires a correlated operation ID"
+            );
+          const op = this.operationRow({
+            ...scope,
+            operationId: source.operationId,
+          })!;
+          if (!terminal(this.receipt(op)))
+            fail(
+              "invalid_projection",
+              "Completion cannot precede terminal execution"
+            );
+          this.insertCompletion(
+            { ...scope, operationId: source.operationId },
+            effect.completion
+          );
+        }
+        const messages = effect.publicEvents ?? [
+          {
+            type: source.type,
+            bindingId: source.bindingId,
+            botId: scope.botId,
+            ...(source.operationId ? { operationId: source.operationId } : {}),
+            payload: source.payload,
+          },
+        ];
+        publicEvents.push(
+          ...this.insertPublicEvents(event.bindingId, messages)
+        );
+        ack++;
+        this.prepare(
+          "UPDATE source_events SET applied=1 WHERE binding_id=? AND source_sequence=?"
+        ).run(event.bindingId, ack);
+      }
+      this.prepare(
+        "UPDATE conversations SET source_ack=? WHERE binding_id=?"
+      ).run(ack, event.bindingId);
+      return { duplicate: false, ack, publicEvents };
+    });
+  }
+  private insertEntry(
+    scope: ConversationKey,
+    entry: JsonObject,
+    operationId?: string
+  ): void {
+    if (typeof entry.id !== "string")
+      fail("invalid_entry", "Canonical transcript entry requires an ID");
+    identifier(entry.id, "entry ID");
+    if (
+      operationId &&
+      entry.operationId !== undefined &&
+      entry.operationId !== operationId
+    )
+      fail("entry_conflict", "Entry names a different operation");
+    const canonical = { ...entry, ...(operationId ? { operationId } : {}) };
+    const json = canonicalJson(canonical);
+    const digest = payloadDigest(canonical);
+    const old = this.prepare(
+      "SELECT digest FROM transcript_entries WHERE bot_id=? AND conversation_id=? AND entry_id=?"
+    ).get(scope.botId, scope.conversationId, entry.id);
+    if (old) {
+      if (old.digest !== digest)
+        fail("entry_conflict", "Canonical entry identity is immutable");
+      return;
+    }
+    this.prepare(
+      "INSERT INTO transcript_entries(bot_id,conversation_id,entry_id,operation_id,entry_json,digest) VALUES(?,?,?,?,?,?)"
+    ).run(
+      scope.botId,
+      scope.conversationId,
+      entry.id,
+      operationId ?? null,
+      json,
+      digest
+    );
+  }
+  private insertCompletion(
+    key: OperationKey,
+    delivery: CompletionDelivery
+  ): void {
+    identifier(delivery.dispatchId, "dispatch ID");
+    identifier(delivery.originBotId, "origin bot ID");
+    const digest = payloadDigest({ ...key, ...delivery });
+    const existing = this.prepare(
+      "SELECT digest FROM completion_outbox WHERE dispatch_id=?"
+    ).get(delivery.dispatchId);
+    if (existing) {
+      if (existing.digest !== digest)
+        fail(
+          "completion_conflict",
+          "Completion dispatch identity is immutable"
+        );
+      return;
+    }
+    this.prepare(
+      "INSERT INTO completion_outbox(dispatch_id,origin_bot_id,target_bot_id,conversation_id,operation_id,payload_json,digest) VALUES(?,?,?,?,?,?,?)"
+    ).run(
+      delivery.dispatchId,
+      delivery.originBotId,
+      key.botId,
+      key.conversationId,
+      key.operationId,
+      canonicalJson(delivery.payload),
+      digest
+    );
+  }
+  private insertPublicEvents(
+    bindingId: string,
+    events: JsonObject[]
+  ): PublicEvent[] {
+    return events.map((event) => {
+      const inserted = this.prepare(
+        "INSERT INTO public_events(binding_id,event_json) VALUES(?,?)"
+      ).run(bindingId, canonicalJson(event));
+      const seq = Number(inserted.lastInsertRowid);
+      return { seq, event: { ...event, seq } };
+    });
+  }
+  appendPublicEvents(
+    lease: WriterLease,
+    bindingId: string,
+    events: JsonObject[]
+  ): PublicEvent[] {
+    return this.write(lease, () => {
+      const binding = this.prepare(
+        "SELECT deleted FROM conversations WHERE binding_id=?"
+      ).get(bindingId);
+      if (!binding || binding.deleted)
+        fail(
+          "binding_not_found",
+          "Public event targets a missing or deleted binding"
+        );
+      return this.insertPublicEvents(bindingId, events);
+    });
+  }
+  readTranscript(key: ConversationKey): JsonObject[] {
+    this.conversation(key);
+    return this.prepare(
+      "SELECT entry_json FROM transcript_entries WHERE bot_id=? AND conversation_id=? ORDER BY ordinal"
+    )
+      .all(key.botId, key.conversationId)
+      .map((row) => parseObject(row.entry_json));
+  }
+  readEvents(since = 0, limit = 1000): PublicEvent[] {
+    if (
+      !Number.isSafeInteger(since) ||
+      since < 0 ||
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > 10_000
+    )
+      fail("invalid_cursor", "Invalid public event cursor/limit");
+    return this.prepare(
+      "SELECT seq,event_json FROM public_events WHERE seq>? ORDER BY seq LIMIT ?"
+    )
+      .all(since, limit)
+      .map((row) => ({
+        seq: Number(row.seq),
+        event: { ...parseObject(row.event_json), seq: Number(row.seq) },
+      }));
+  }
+  get publicSequence(): number {
+    return Number(
+      this.prepare(
+        "SELECT COALESCE(MAX(seq),0) AS seq FROM public_events"
+      ).get()!.seq
+    );
+  }
+  readOutbox(limit = 100): OutboxDelivery[] {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10_000)
+      fail("invalid_cursor", "Invalid outbox limit");
+    return this.prepare(
+      "SELECT * FROM completion_outbox WHERE delivered=0 ORDER BY id LIMIT ?"
+    )
+      .all(limit)
+      .map((row) => ({
+        id: Number(row.id),
+        dispatchId: String(row.dispatch_id),
+        originBotId: String(row.origin_bot_id),
+        targetBotId: String(row.target_bot_id),
+        conversationId: String(row.conversation_id),
+        operationId: String(row.operation_id),
+        payload: parseObject(row.payload_json),
+      }));
+  }
+  ackOutbox(lease: WriterLease, id: number): void {
+    this.write(lease, () => {
+      if (!this.prepare("SELECT 1 FROM completion_outbox WHERE id=?").get(id))
+        fail("delivery_not_found", "Unknown outbox delivery");
+      this.prepare("UPDATE completion_outbox SET delivered=1 WHERE id=?").run(
+        id
+      );
+    });
+  }
+
+  expireOperation(lease: WriterLease, key: OperationKey): void {
+    this.write(lease, () => {
+      this.conversation(key);
+      const row = this.operationRow(key);
+      if (!row) fail("operation_not_found", "Unknown operation");
+      if (!resolved(this.receipt(row)))
+        fail(
+          "operation_unresolved",
+          "Unresolved identity and body must be retained"
+        );
+      this.prepare(
+        "UPDATE operations SET payload_json=NULL,expired=1 WHERE ordinal=?"
+      ).run(Number(row.ordinal));
+      this.prepare(
+        "DELETE FROM transcript_entries WHERE bot_id=? AND conversation_id=? AND operation_id=?"
+      ).run(key.botId, key.conversationId, key.operationId);
+    });
+  }
+  tombstoneConversation(lease: WriterLease, key: ConversationKey): void {
+    this.write(lease, () => {
+      const binding = this.conversation(key)!;
+      const unresolved = this.prepare(
+        "SELECT * FROM operations WHERE bot_id=? AND conversation_id=?"
+      )
+        .all(key.botId, key.conversationId)
+        .some((row) => !resolved(this.receipt(row)));
+      if (unresolved)
+        fail(
+          "conversation_unresolved",
+          "Resolve or explicitly abandon native work before deleting its conversation"
+        );
+      this.prepare("UPDATE conversations SET deleted=1 WHERE binding_id=?").run(
+        String(binding.binding_id)
+      );
+      this.prepare(
+        "UPDATE operations SET payload_json=NULL,expired=1 WHERE bot_id=? AND conversation_id=?"
+      ).run(key.botId, key.conversationId);
+      this.prepare(
+        "DELETE FROM transcript_entries WHERE bot_id=? AND conversation_id=?"
+      ).run(key.botId, key.conversationId);
+      // Source identities, operation digests, outbox delivery identities and public seq remain durable.
+    });
+  }
+}

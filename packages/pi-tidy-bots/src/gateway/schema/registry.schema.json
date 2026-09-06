@@ -1,0 +1,41 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://tidy.invalid/backend-protocol/v1/registry.schema.json",
+  "type": "object",
+  "properties": {
+    "registryVersion": {
+      "const": 1
+    },
+    "plugins": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "version": {
+            "type": "string",
+            "minLength": 1
+          },
+          "artifactPath": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": ["id", "version", "artifactPath", "sha256", "enabled"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["registryVersion", "plugins"],
+  "additionalProperties": false
+}

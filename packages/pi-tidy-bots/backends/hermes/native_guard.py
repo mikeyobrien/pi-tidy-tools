@@ -138,7 +138,7 @@ class ApprovalGuard:
             raise ApprovalPolicyUnavailable() from None
 
 
-def guarded_agent(base, guard, prompt_response, worker_type, fleet=None):
+def guarded_agent(base, guard, prompt_response, worker_type, fleet=None, history_proof=None):
     class GuardedHermesACPAgent(base):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
@@ -429,6 +429,15 @@ def guarded_agent(base, guard, prompt_response, worker_type, fleet=None):
                 extra = dict(response.field_meta or {})
                 extra["tidy"] = {"guardVersion": GUARD_VERSION,
                                  "turnEvidence": dict(evidence)}
+                extra["tidy"]["historyCheckpoint"] = {"status": "unavailable"}
+                if history_proof is not None:
+                    try:
+                        checkpoint = history_proof(self.session_manager, state)
+                        extra["tidy"]["historyCheckpoint"] = {"status": "verified", "checkpoint": checkpoint}
+                    except Exception:
+                        # Native execution evidence is independent of persistence.
+                        # Never expose the read error or claim cold-load support.
+                        pass
                 response.field_meta = extra
                 return response
             finally:
@@ -537,7 +546,10 @@ def main():
         fleet_module = module_from_spec(spec)
         spec.loader.exec_module(fleet_module)
         fleet = fleet_module.FleetRegistration(mcp_tool)
-    agent = guarded_agent(HermesACPAgent, guard, PromptResponse, owned.NativeWorkers, fleet)()
+    spec = spec_from_file_location("tidy_hermes_history", Path(__file__).with_name("history.py"))
+    history = module_from_spec(spec)
+    spec.loader.exec_module(history)
+    agent = guarded_agent(HermesACPAgent, guard, PromptResponse, owned.NativeWorkers, fleet, history.history_checkpoint)()
     if fleet is not None:
         fleet_module.install_fleet_identity(mcp_tool, ClientSession, approval, agent._tidy_fleet_scope)
     from tools import process_registry

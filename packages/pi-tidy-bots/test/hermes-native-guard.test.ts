@@ -230,6 +230,7 @@ test("Hermes guard reports authoritative final text without copying history or r
         hermes: { preserved: true },
         tidy: {
           guardVersion: 5,
+          historyCheckpoint: { status: "unavailable" },
           turnEvidence: {
             started: true,
             settled: true,

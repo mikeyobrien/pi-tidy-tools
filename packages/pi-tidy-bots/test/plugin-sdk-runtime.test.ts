@@ -284,6 +284,11 @@ async function until(probe: () => boolean | Promise<boolean>) {
 
 test("SDK ownership service records a real detached launcher before execution and reconciles it on shutdown", async () => {
   const f = await fixture(true);
+  await mkdir(f.dataDir, { recursive: true });
+  await writeFile(
+    join(f.dataDir, "preload.cjs"),
+    `require('node:fs').writeFileSync(${JSON.stringify(join(f.dataDir, "preload-effect"))}, 'unsafe bootstrap');`
+  );
   const journal = new GatewayJournal(join(f.dir, "ownership.sqlite"), {
     fleetId: "ownership-sdk",
   });
@@ -336,6 +341,9 @@ test("SDK ownership service records a real detached launcher before execution an
       }
     });
     const inspected = (await host.request("session.snapshot", {})) as any;
+    await assert.rejects(readFile(join(f.dataDir, "preload-effect")), {
+      code: "ENOENT",
+    });
     assert.equal(inspected.launchId, childId);
     assert.equal(inspected.state, "started");
     assert.equal(journal.getSupervisorRecord()!.launches.length, 2);

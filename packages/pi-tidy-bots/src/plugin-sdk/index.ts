@@ -19,3 +19,8 @@ export {
   type GatewayPluginEvent,
   type ProtocolLimits,
 } from "../gateway/protocol.ts";
+export {
+  spawnOwnedProcess,
+  type OwnedProcessOptions,
+  type OwnedProcessHandle,
+} from "./owned-process.ts";

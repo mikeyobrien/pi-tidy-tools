@@ -4,11 +4,11 @@ import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { runPlugin } from "SDK_INDEX_URL";
+import { runPlugin, spawnOwnedProcess } from "SDK_INDEX_URL";
 
 let ownedChild;
 let ownedLaunchId;
-let ownedControl;
+let ownedHandle;
 const log = (value) => {
   const file = openSync(
     join(process.env.TIDY_DATA_DIR, "native-effects.jsonl"),
@@ -65,7 +65,7 @@ const runtime = runPlugin({
       ownedChild.signalCode === null
     ) {
       const exit = new Promise((resolve) => ownedChild.once("close", resolve));
-      if (ownedControl) ownedControl.end();
+      if (ownedHandle) await ownedHandle.close();
       else ownedChild.kill("SIGTERM");
       await exit;
     }
@@ -77,30 +77,21 @@ const runtime = runPlugin({
       if (ctx.initialization.config.mode === "registered-child") {
         ownedLaunchId = `tidy-launch-${randomUUID()}`;
         log({ ownedLaunchId });
-        const prepared = await ctx.ownedProcess("prepare", {
+        // A caller environment must never preload code in the trusted wrapper.
+        process.env.NODE_OPTIONS = `--require=${join(ctx.initialization.dataDir, "preload.cjs")}`;
+        ownedHandle = await spawnOwnedProcess(ctx, {
           launchId: ownedLaunchId,
-        });
-        ownedChild = spawn(
-          prepared.executable,
-          [
-            prepared.launcherPath,
-            ownedLaunchId,
-            process.execPath,
+          executable: process.execPath,
+          args: [
             "-e",
             `require('node:fs').writeFileSync(${JSON.stringify(join(ctx.initialization.dataDir, "child-effect"))},'started');setInterval(()=>{},1000)`,
           ],
-          { detached: true, stdio: ["ignore", "ignore", "ignore", "pipe"] }
-        );
-        ownedControl = ownedChild.stdio[3];
-        const recorded = await ctx.ownedProcess("record", {
-          launchId: ownedLaunchId,
-          pid: ownedChild.pid,
+          cwd: ctx.initialization.workspace,
+          environment: {},
         });
-        if (recorded.state !== "started")
-          throw new Error("Child identity was not recorded");
-        ownedControl.write(
-          JSON.stringify({ activate: ownedLaunchId, env: {} }) + "\n"
-        );
+        ownedChild = ownedHandle.child;
+        ownedChild.stdout.resume();
+        ownedChild.stderr.resume();
       }
       if (ctx.initialization.config.mode === "crash-open")
         process.kill(process.pid, "SIGKILL");

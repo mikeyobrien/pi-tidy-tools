@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import type { Writable } from "node:stream";
 import { PluginRegistry, digestArtifact } from "../src/gateway/registry.ts";
 import { PluginHost } from "../src/gateway/plugin-host.ts";
+import { GatewayJournal } from "../src/gateway/journal.ts";
 import { startFleet, type FleetHandle } from "../src/daemon.ts";
 import type {
   GatewayPluginEvent,
@@ -556,6 +557,170 @@ test("startFleet HTTP contract admits and projects messages through the shipped 
     assert.equal(
       finalEffects.filter((effect) => effect.command === "abort").length,
       1
+    );
+    const beforeRestart = (await request("/api/bots/pi/transcript")).body
+      .transcript;
+    await handle.stop();
+    handle = await startFleet({
+      dir: f.directory,
+      port: 0,
+      token: "pi-fixture-token",
+      log() {},
+    });
+    const restoredBinding = (await request("/api/bots/pi/capabilities")).body;
+    assert.equal(restoredBinding.bindingId, binding.bindingId);
+    assert.equal(restoredBinding.conversationId, binding.conversationId);
+    assert.equal(restoredBinding.capabilities.sessions.load, true);
+    assert.equal((await request("/api/fleet")).body.bots[0].online, true);
+    assert.deepEqual(
+      (await request("/api/bots/pi/transcript")).body.transcript,
+      beforeRestart
+    );
+    const effectsFile = join(
+      f.directory,
+      ".fleet/plugins",
+      binding.bindingId,
+      "native-effects.jsonl"
+    );
+    const effectsAfter = (await readFile(effectsFile, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.equal(
+      effectsAfter.filter((effect) => effect.command === "prompt").length,
+      finalEffects.filter((effect) => effect.command === "prompt").length
+    );
+    assert.equal(effectsAfter.filter((effect) => effect.launch).length, 2);
+    const afterRestartImage = beforeRestart.find(
+      (entry: any) => entry.images?.length
+    )?.images[0];
+    const download = await fetch(
+      `${handle.url}/api/images/pi/${afterRestartImage.path.split("/").at(-1)}`,
+      { headers: { authorization: "Bearer pi-fixture-token" } }
+    );
+    assert.equal(download.status, 200);
+    assert.deepEqual(
+      Buffer.from(await download.arrayBuffer()),
+      Buffer.from(imageUploads[0].data, "base64")
+    );
+    assert.equal(
+      (
+        await request("/api/bots/pi/message", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            operationId: "after-gateway-restart",
+            clientMessageId: "after-gateway-restart",
+            conversationId: binding.conversationId,
+            text: "after restart",
+          }),
+        })
+      ).status,
+      202
+    );
+    await until(
+      async () =>
+        (await request("/api/bots/pi/operations/after-gateway-restart")).body
+          .execution === "ended"
+    );
+    await handle.stop();
+    const seed = (unknown = false) => {
+      const journal = new GatewayJournal(
+        join(f.directory, ".fleet", "gateway.sqlite")
+      );
+      const lease = journal.acquireWriterLease("fixture-seed");
+      try {
+        const saved = journal.listConversations()[0];
+        if (unknown) {
+          journal.admit(lease, {
+            ...saved,
+            operationId: "uncertain-before-restart",
+            payload: { text: "uncertain" },
+            publicBotName: "pi",
+          });
+          journal.reserveNext(lease, saved);
+          journal.recordDisposition(
+            lease,
+            { ...saved, operationId: "uncertain-before-restart" },
+            {
+              delivery: "unknown",
+              execution: "unknown",
+              observation: "reconciliation_required",
+            }
+          );
+        }
+        journal.admit(lease, {
+          ...saved,
+          operationId: unknown ? "blocked-queued" : "retained-queued",
+          payload: { text: "retained queued intent" },
+          publicBotName: "pi",
+        });
+        if (!unknown)
+          journal.admit(lease, {
+            ...saved,
+            operationId: "stale-queued-load",
+            kind: "session_open",
+            payload: { mode: "load", nativeReference: "pi:fixture-session" },
+          });
+      } finally {
+        journal.releaseWriterLease(lease, { ownershipReconciled: true });
+        journal.close();
+      }
+    };
+    seed();
+    handle = await startFleet({
+      dir: f.directory,
+      port: 0,
+      token: "pi-fixture-token",
+      log() {},
+    });
+    await until(
+      async () =>
+        (await request("/api/bots/pi/operations/retained-queued")).body
+          .execution === "ended"
+    );
+    await handle.stop();
+    const inspect = new GatewayJournal(
+      join(f.directory, ".fleet", "gateway.sqlite")
+    );
+    try {
+      assert.equal(
+        inspect.getOperation({
+          ...inspect.listConversations()[0],
+          operationId: "stale-queued-load",
+        })?.execution,
+        "cancelled"
+      );
+    } finally {
+      inspect.close();
+    }
+    const beforeUncertain = (await readFile(effectsFile, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    seed(true);
+    handle = await startFleet({
+      dir: f.directory,
+      port: 0,
+      token: "pi-fixture-token",
+      log() {},
+    });
+    assert.equal((await request("/api/fleet")).body.bots[0].online, false);
+    assert.equal(
+      (await request("/api/bots/pi/operations/uncertain-before-restart")).body
+        .delivery,
+      "unknown"
+    );
+    assert.equal(
+      (await request("/api/bots/pi/operations/blocked-queued")).body.delivery,
+      "queued"
+    );
+    assert.deepEqual(
+      (await readFile(effectsFile, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line)),
+      beforeUncertain
     );
   } finally {
     await handle?.stop();

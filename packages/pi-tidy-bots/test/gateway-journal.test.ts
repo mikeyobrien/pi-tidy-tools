@@ -1938,6 +1938,58 @@ test("queued fleet cancellation retains one completion atomically with cancellat
   assert.equal(deliveries[0].payload.originBindingId, binding.bindingId);
 });
 
+test("startup session load precedes queued messages but cannot bypass uncertain native work", (t) => {
+  const f = fixture(t);
+  f.journal.admit(f.lease, intent("message"));
+  f.journal.admit(
+    f.lease,
+    intent("restore", {
+      kind: "session_open",
+      payload: { mode: "load", nativeReference: "native:one" },
+    })
+  );
+  assert.equal(
+    f.journal.reserveNext(f.lease, binding, { sessionLoadId: "message" }),
+    null
+  );
+  assert.equal(
+    f.journal.reserveNext(f.lease, binding, { sessionLoadId: "restore" })
+      ?.receipt.operationId,
+    "restore"
+  );
+  assert.equal(f.journal.getOperation(key("message"))?.delivery, "queued");
+  assert.equal(f.journal.reserveNext(f.lease, binding), null);
+  f.journal.recordDisposition(f.lease, key("restore"), {
+    delivery: "accepted",
+    execution: "ended",
+    result: { status: "opened", nativeReference: "native:one" },
+  });
+  assert.equal(
+    f.journal.reserveNext(f.lease, binding)?.receipt.operationId,
+    "message"
+  );
+  f.journal.recordDisposition(f.lease, key("message"), {
+    delivery: "unknown",
+    execution: "unknown",
+    observation: "reconciliation_required",
+  });
+  f.journal.admit(
+    f.lease,
+    intent("restore-again", {
+      kind: "session_open",
+      payload: { mode: "load", nativeReference: "native:one" },
+    })
+  );
+  assert.equal(
+    f.journal.reserveNext(f.lease, binding, { sessionLoadId: "restore-again" }),
+    null
+  );
+  assert.equal(
+    f.journal.getOperation(key("restore-again"))?.delivery,
+    "queued"
+  );
+});
+
 test("artifact bytes commit with intent and survive restart with exact scoped reads", (t) => {
   const f = fixture(t);
   const uploads = [

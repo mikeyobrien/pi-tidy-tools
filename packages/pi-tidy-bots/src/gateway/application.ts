@@ -109,7 +109,14 @@ function effectiveCapabilities(
         ? Math.min(native.input.maxMediaBytes, MAX_PUBLIC_ARTIFACT_BYTES)
         : 0,
     },
-    sessions: { load: false, import: false, continuity: "unverified" },
+    sessions: {
+      load: native.sessions.load && native.sessions.continuity === "verified",
+      import: false,
+      continuity:
+        native.sessions.load && native.sessions.continuity === "verified"
+          ? "verified"
+          : "unverified",
+    },
     output: {
       text: native.output.text,
       tools: native.output.tools,
@@ -292,6 +299,7 @@ export class GatewayApplication {
         await app.bind(config, registry.resolve(config.backend!));
       app.publishRoster();
       app.deliverCompletions();
+      for (const bot of app.bots.values()) void app.pump(bot);
       return app;
     } catch (error) {
       await app.stop();
@@ -465,27 +473,65 @@ export class GatewayApplication {
         bot.fault = host.health;
         return;
       }
-      const openId = `open:${binding.conversationId}`;
+      let openId = `open:${binding.conversationId}`;
       const existing = this.journal.getOperation({
         ...binding,
         operationId: openId,
       });
       if (existing) {
-        // V1 must never turn a lost native creation or unsupported cold load into
-        // another fresh session. Existing receipts/transcripts remain readable.
-        bot.fault =
-          existing.execution === "ended"
-            ? "continuity_unverified"
-            : "creation_unknown";
-        return;
+        if (
+          existing.delivery !== "accepted" ||
+          existing.execution !== "ended" ||
+          existing.observation !== "complete" ||
+          existing.result?.status !== "opened" ||
+          typeof existing.result.nativeReference !== "string"
+        ) {
+          bot.fault = "creation_unknown";
+          return;
+        }
+        if (!capabilities.sessions.load) {
+          bot.fault = "continuity_unverified";
+          return;
+        }
+        // A queued load from a dead owner never entered a native handler. Retire
+        // it so a later message pump cannot dispatch it as ordinary user work.
+        for (const operation of this.journal.listOperationRecords(binding)) {
+          if (
+            operation.receipt.kind === "session_open" &&
+            operation.payload?.mode === "load" &&
+            operation.receipt.delivery === "queued"
+          )
+            this.journal.cancelQueued(this.lease, operation.receipt);
+        }
+        openId = `load:${binding.conversationId}:${host.instanceId}`;
       }
+      const mode = existing ? "load" : "new";
+      const nativeReference = existing?.result?.nativeReference;
+      const payload = {
+        mode,
+        cwd: config.dir,
+        policyRevision,
+        ...(existing ? { nativeReference: nativeReference! } : {}),
+      };
       this.journal.admit(this.lease, {
         ...binding,
         operationId: openId,
         kind: "session_open",
-        payload: { mode: "new", cwd: config.dir, policyRevision },
+        payload,
       });
-      const reserved = this.journal.reserveNext(this.lease, binding)!;
+      const reserved = this.journal.reserveNext(
+        this.lease,
+        binding,
+        existing ? { sessionLoadId: openId } : {}
+      );
+      if (!reserved) {
+        this.journal.cancelQueued(this.lease, {
+          ...binding,
+          operationId: openId,
+        });
+        bot.fault = "reconciliation_required";
+        return;
+      }
       let response: unknown;
       try {
         response = await host.request("session.open", {
@@ -493,9 +539,7 @@ export class GatewayApplication {
           operationId: openId,
           payloadDigest: reserved.payloadDigest,
           conversationId: binding.conversationId,
-          mode: "new",
-          cwd: config.dir,
-          policyRevision,
+          ...payload,
         });
       } catch {
         this.journal.recordDisposition(
@@ -507,14 +551,17 @@ export class GatewayApplication {
             observation: "reconciliation_required",
           }
         );
-        bot.fault = "creation_unknown";
+        bot.fault = existing ? "continuity_unverified" : "creation_unknown";
         return;
       }
       if (
         !object(response) ||
         typeof response.nativeReference !== "string" ||
         !response.nativeReference ||
-        response.status !== "opened"
+        response.status !== "opened" ||
+        (existing &&
+          (response.nativeReference !== nativeReference ||
+            response.continuity !== "verified"))
       ) {
         this.journal.recordDisposition(
           this.lease,
@@ -525,7 +572,7 @@ export class GatewayApplication {
             observation: "reconciliation_required",
           }
         );
-        bot.fault = "creation_unknown";
+        bot.fault = existing ? "continuity_unverified" : "creation_unknown";
         return;
       }
       this.journal.recordDisposition(

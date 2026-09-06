@@ -1904,6 +1904,8 @@ export class GatewayJournal {
     options: {
       interruptKinds?: ("permission" | "question" | "cancel")[];
       onlyInterrupts?: boolean;
+      /** Startup may restore an exact session before queued messages, never before uncertain work. */
+      sessionLoadId?: string;
     } = {}
   ): OperationRecord | null {
     return this.write(lease, () => {
@@ -1919,12 +1921,17 @@ export class GatewayJournal {
         candidate = unresolved.find(
           (row) =>
             row.delivery === "queued" &&
+            (!options.sessionLoadId ||
+              (row.operation_id === options.sessionLoadId &&
+                row.kind === "session_open" &&
+                parseObject(row.payload_json).mode === "load")) &&
             (!options.onlyInterrupts ||
               options.interruptKinds?.includes(
                 row.kind as "permission" | "question" | "cancel"
               ))
         );
       else if (
+        !options.sessionLoadId &&
         options.interruptKinds?.length &&
         active.length === 1 &&
         active[0].delivery === "accepted" &&

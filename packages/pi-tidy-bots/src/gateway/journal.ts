@@ -131,6 +131,14 @@ export interface OperationRecord {
   leaseGeneration: number | null;
   expired: boolean;
 }
+export interface AdmitFleetDispatch {
+  origin: ConversationBinding & { operationId: string };
+  toolCallId: string;
+  actionId: string;
+  target: ConversationBinding;
+  text: string;
+  publicBotName?: string;
+}
 export interface OperationDisposition {
   delivery?: DeliveryState;
   execution?: ExecutionState;
@@ -1144,7 +1152,153 @@ export class GatewayJournal {
   ): { receipt: OperationReceipt; created: boolean } {
     return this.write(lease, () => this.admitOperation(input));
   }
-  private admitOperation(input: AdmitOperation): {
+  /** Route grants and native tool correlation are checked by the host. This
+   * transaction prevents a lost host reply from admitting another target turn.
+   */
+  admitFleetDispatch(
+    lease: WriterLease,
+    input: AdmitFleetDispatch
+  ): {
+    dispatchId: string;
+    receipt: OperationReceipt;
+    created: boolean;
+  } {
+    return this.write(lease, () => {
+      for (const [value, label] of [
+        [input.origin.bindingId, "origin binding"],
+        [input.origin.operationId, "origin operation"],
+        [input.toolCallId, "native tool call"],
+        [input.actionId, "host action"],
+      ])
+        identifier(value, label);
+      if (typeof input.text !== "string" || !input.text.trim())
+        fail("invalid_payload", "Dispatch text is required");
+      const scope = {
+        bindingId: input.origin.bindingId,
+        operationId: input.origin.operationId,
+        toolCallId: input.toolCallId,
+        actionId: input.actionId,
+      };
+      const dispatchId = `dispatch-${payloadDigest(scope).slice(7)}`;
+      const key = `fleet_dispatch_v1:${dispatchId}`;
+      const digest = payloadDigest({
+        ...scope,
+        originBotId: input.origin.botId,
+        originConversationId: input.origin.conversationId,
+        targetBotId: input.target.botId,
+        text: input.text,
+      });
+      const existing = this.prepare(
+        "SELECT value FROM gateway_meta WHERE key=?"
+      ).get(key);
+      if (existing) {
+        let record: JsonObject;
+        try {
+          record = parseObject(existing.value);
+          if (
+            !record ||
+            Array.isArray(record) ||
+            typeof record !== "object" ||
+            typeof record.digest !== "string"
+          )
+            throw new Error();
+        } catch {
+          return fail(
+            "corrupt_storage",
+            "Retained dispatch ledger is unreadable"
+          );
+        }
+        if (record.digest !== digest)
+          fail(
+            "action_conflict",
+            "Fleet action already identifies different immutable intent"
+          );
+        if (
+          !record.receipt ||
+          typeof record.receipt !== "object" ||
+          Array.isArray(record.receipt) ||
+          record.dispatchId !== dispatchId ||
+          record.receipt.operationId !== dispatchId ||
+          record.receipt.botId !== input.target.botId ||
+          record.receipt.fleetId !== this.fleetId ||
+          record.receipt.delivery !== "queued" ||
+          record.receipt.execution !== "not_started" ||
+          record.receipt.observation !== "complete" ||
+          ![
+            "conversationId",
+            "bindingId",
+            "bindingRevision",
+            "userEntryId",
+          ].every(
+            (field) => typeof (record.receipt as JsonObject)[field] === "string"
+          )
+        )
+          fail("corrupt_storage", "Retained dispatch receipt is invalid");
+        return {
+          dispatchId,
+          receipt: record.receipt as unknown as OperationReceipt,
+          created: false,
+        };
+      }
+      const binding = this.conversation(input.origin)!;
+      if (
+        binding.binding_id !== input.origin.bindingId ||
+        binding.binding_revision !== input.origin.bindingRevision ||
+        binding.policy_revision !== input.origin.policyRevision
+      )
+        fail("binding_conflict", "Dispatch origin binding is stale");
+      const origin = this.operationRow(input.origin);
+      if (
+        !origin ||
+        origin.expired ||
+        origin.binding_id !== input.origin.bindingId ||
+        origin.kind !== "message" ||
+        !["dispatching", "accepted"].includes(String(origin.delivery)) ||
+        ["ended", "failed", "cancelled", "interrupted"].includes(
+          String(origin.execution)
+        )
+      )
+        fail(
+          "invalid_origin",
+          "Dispatch requires a live reserved origin operation"
+        );
+      const target = { ...input.target, operationId: dispatchId };
+      if (this.operationRow(target))
+        fail(
+          "action_conflict",
+          "Dispatch target identity was already occupied"
+        );
+      const admitted = this.admitOperation(
+        {
+          ...target,
+          actorId: input.origin.botId,
+          publicBotName: input.publicBotName,
+          payload: {
+            text: input.text,
+            dispatch: {
+              dispatchId,
+              originBotId: input.origin.botId,
+              originConversationId: input.origin.conversationId,
+              originOperationId: input.origin.operationId,
+              originBindingId: input.origin.bindingId,
+              toolCallId: input.toolCallId,
+            },
+          },
+          userEntry: { dispatchId, from: input.origin.botId },
+        },
+        "fleet"
+      );
+      this.prepare("INSERT INTO gateway_meta(key,value) VALUES(?,?)").run(
+        key,
+        canonicalJson({ dispatchId, digest, receipt: admitted.receipt })
+      );
+      return { dispatchId, receipt: admitted.receipt, created: true };
+    });
+  }
+  private admitOperation(
+    input: AdmitOperation,
+    messageOrigin: "operator" | "fleet" = "operator"
+  ): {
     receipt: OperationReceipt;
     created: boolean;
   } {
@@ -1164,6 +1318,7 @@ export class GatewayJournal {
       actorId,
       kind,
       payload: input.payload,
+      ...(messageOrigin === "fleet" ? { messageOrigin } : {}),
       ...(input.userEntry ? { userEntry: input.userEntry } : {}),
     });
     const payload = canonicalJson(input.payload);
@@ -1219,7 +1374,7 @@ export class GatewayJournal {
         operationId: input.operationId,
         clientMessageId: input.operationId,
         role: "user",
-        origin: "operator",
+        origin: messageOrigin,
         text: input.payload.text,
         ts: new Date(this.now()).toISOString(),
       };

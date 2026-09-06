@@ -98,6 +98,140 @@ function accepted(journal: GatewayJournal, lease: WriterLease): void {
   });
 }
 
+test("fleet dispatch atomically retains one target admission across lost replies and restart", (t) => {
+  const f = fixture(t);
+  accepted(f.journal, f.lease);
+  const target = {
+    ...binding,
+    botId: "target",
+    conversationId: "target-conversation",
+    bindingId: "target-binding",
+    bindingRevision: "target-revision",
+  };
+  f.journal.ensureConversation(f.lease, target);
+  const input = {
+    origin: { ...binding, operationId: key().operationId },
+    target,
+    toolCallId: "native-call-1",
+    actionId: "action-1",
+    text: "Review the fixture",
+    publicBotName: "target",
+  };
+  const first = f.journal.admitFleetDispatch(f.lease, input);
+  assert.equal(first.created, true);
+  assert.equal(first.receipt.operationId, first.dispatchId);
+  assert.deepEqual(f.journal.admitFleetDispatch(f.lease, input), {
+    ...first,
+    created: false,
+  });
+  const transcript = f.journal.readTranscript(target);
+  assert.equal(transcript.length, 1);
+  assert.equal(transcript[0].origin, "fleet");
+  assert.equal(transcript[0].from, binding.botId);
+  assert.equal(transcript[0].dispatchId, first.dispatchId);
+  assert.equal(
+    f.journal.readEvents().filter((event) => event.event.bot === "target")
+      .length,
+    1
+  );
+  code(
+    () =>
+      f.journal.admitFleetDispatch(f.lease, {
+        ...input,
+        text: "Changed intent",
+      }),
+    "action_conflict"
+  );
+  f.journal.recordDisposition(f.lease, key(), {
+    execution: "ended",
+    evidence: "fixture_native_ended",
+  });
+  assert.deepEqual(f.journal.admitFleetDispatch(f.lease, input), {
+    ...first,
+    created: false,
+  });
+  code(
+    () =>
+      f.journal.admitFleetDispatch(f.lease, {
+        ...input,
+        actionId: "new-action-after-terminal",
+      }),
+    "invalid_origin"
+  );
+  f.journal.close();
+  const restored = f.open();
+  assert.deepEqual(restored.admitFleetDispatch(f.lease, input), {
+    ...first,
+    created: false,
+  });
+  assert.equal(restored.listOperationRecords(target).length, 1);
+});
+
+test("fleet dispatch rolls back target operation and append if the action ledger fails", (t) => {
+  const f = fixture(t);
+  accepted(f.journal, f.lease);
+  const target = {
+    ...binding,
+    botId: "target",
+    conversationId: "target-conversation",
+    bindingId: "target-binding",
+    bindingRevision: "target-revision",
+  };
+  f.journal.ensureConversation(f.lease, target);
+  const input = {
+    origin: { ...binding, operationId: key().operationId },
+    target,
+    toolCallId: "native-call-1",
+    actionId: "action-1",
+    text: "Review the fixture",
+    publicBotName: "target",
+  };
+  const sql = new DatabaseSync(f.path);
+  try {
+    sql.exec(
+      "CREATE TRIGGER reject_dispatch BEFORE INSERT ON gateway_meta WHEN NEW.key LIKE 'fleet_dispatch_v1:%' BEGIN SELECT RAISE(ABORT, 'fixture storage failure'); END"
+    );
+    assert.throws(() => f.journal.admitFleetDispatch(f.lease, input));
+    assert.equal(f.journal.listOperationRecords(target).length, 0);
+    assert.equal(f.journal.readTranscript(target).length, 0);
+    assert.equal(
+      f.journal.readEvents().filter((event) => event.event.bot === "target")
+        .length,
+      0
+    );
+    sql.exec("DROP TRIGGER reject_dispatch");
+    assert.equal(f.journal.admitFleetDispatch(f.lease, input).created, true);
+  } finally {
+    sql.close();
+  }
+});
+
+test("queued origin cannot admit a target and corrupt dispatch history cannot be replayed", (t) => {
+  const f = fixture(t);
+  f.journal.admit(f.lease, intent());
+  const input = {
+    origin: { ...binding, operationId: key().operationId },
+    target: binding,
+    toolCallId: "tool",
+    actionId: "action",
+    text: "Task",
+  };
+  code(() => f.journal.admitFleetDispatch(f.lease, input), "invalid_origin");
+  assert.equal(f.journal.listOperationRecords(binding).length, 1);
+  f.journal.reserveNext(f.lease, binding);
+  const admitted = f.journal.admitFleetDispatch(f.lease, input);
+  const sql = new DatabaseSync(f.path);
+  try {
+    sql
+      .prepare("UPDATE gateway_meta SET value='null' WHERE key=?")
+      .run(`fleet_dispatch_v1:${admitted.dispatchId}`);
+    code(() => f.journal.admitFleetDispatch(f.lease, input), "corrupt_storage");
+    assert.equal(f.journal.listOperationRecords(binding).length, 2);
+  } finally {
+    sql.close();
+  }
+});
+
 function permissionFixture(t: TestContext) {
   const f = fixture(t);
   accepted(f.journal, f.lease);

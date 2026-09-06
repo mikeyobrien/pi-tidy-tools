@@ -65,7 +65,9 @@ class FakeAgent:
         return self.states.get(session_id)
 
     async def initialize(self, **kwargs):
-        return SimpleNamespace(field_meta={"hermes": {"preserved": True}},
+        return SimpleNamespace(protocolVersion=1,
+                               agentInfo={"name": "hermes-agent", "version": "0.20.5"},
+                               field_meta={"hermes": {"preserved": True}},
                                agent_capabilities=SimpleNamespace(load_session=True,
                                    session_capabilities=SimpleNamespace(fork={}, resume={})))
 

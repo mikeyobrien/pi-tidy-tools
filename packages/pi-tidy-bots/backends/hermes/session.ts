@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { AcpTransport, type AcpTransportOptions } from "./acp-transport.ts";
 import {
@@ -8,6 +9,7 @@ import {
 } from "@mobrienv/pi-tidy-bots/plugin-protocol";
 
 interface Turn {
+  promptId: string;
   operationId: string;
   turnId: string;
   started: boolean;
@@ -204,6 +206,28 @@ export class HermesSession {
     this.sessionId = opened.sessionId;
     return this.sessionId;
   }
+  /** Resolve native MCP identity against the live prompt, never caller-supplied
+   * gateway IDs. A correlated invocation proves native admission before a host
+   * service is allowed to create work for another bot.
+   */
+  fleetScope(
+    sessionId: string,
+    promptId: string
+  ): { operationId: string; turnId: string } {
+    if (
+      this.lost ||
+      this.closing ||
+      !this.active ||
+      sessionId !== this.sessionId ||
+      promptId !== this.active.promptId
+    )
+      throw new ProtocolError(
+        "session_unavailable",
+        "Fleet invocation has no live native prompt"
+      );
+    this.started(this.active);
+    return { operationId: this.active.operationId, turnId: this.active.turnId };
+  }
   private async ownedProcess(
     method: string,
     params: JsonObject
@@ -289,6 +313,7 @@ export class HermesSession {
     )
       return { disposition: "rejected" };
     const turn: Turn = {
+      promptId: randomUUID(),
       operationId,
       turnId,
       started: false,
@@ -302,6 +327,7 @@ export class HermesSession {
         "session/prompt",
         {
           sessionId: this.sessionId,
+          _meta: { tidy: { promptId: turn.promptId } },
           prompt: input.map((part) => ({ type: "text", text: part.text })),
         },
         this.options.promptTimeoutMs

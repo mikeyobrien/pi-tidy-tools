@@ -37,7 +37,7 @@ class FleetIdentityTest(unittest.TestCase):
             return handler
         mcp._make_tool_handler = make_handler
         mcp._run_on_mcp_loop = schedule
-        active = {"sessionId": "acp-one", "nativeSessionId": "native-one"}
+        active = {"sessionId": "acp-one", "nativeSessionId": "native-one", "promptId": "prompt-one"}
         module.install_fleet_identity(mcp, Session, approval, lambda: active)
         return mcp, Session, approval, active, calls, effects
 
@@ -47,7 +47,7 @@ class FleetIdentityTest(unittest.TestCase):
         self.assertEqual(result, {"ok": True})
         self.assertEqual(len(calls), 2)
         self.assertEqual(calls[0], calls[1])
-        self.assertEqual(calls[0]["meta"], {"tidy": {"sessionId": "acp-one", "nativeToolCallId": "native-tool-one", "toolName": "fleet_send"}})
+        self.assertEqual(calls[0]["meta"], {"tidy": {"sessionId": "acp-one", "promptId": "prompt-one", "nativeToolCallId": "native-tool-one", "toolName": "fleet_send"}})
         self.assertEqual(calls[0]["arguments"], {"target": "peer", "text": "task"})
 
     def test_missing_or_foreign_identity_never_enters_native_handler(self):

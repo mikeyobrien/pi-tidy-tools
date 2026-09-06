@@ -9,6 +9,66 @@ import {
 } from "../backends/hermes/session.ts";
 import type { JsonObject } from "../src/gateway/protocol.ts";
 
+test("fleet scope requires the exact live prompt and records admission before dispatch", async (t) => {
+  let prompt: any;
+  const f = fixture(t, (request) => {
+    if (request.method === "session/prompt") prompt = request;
+  });
+  assert.throws(() =>
+    f.session.fleetScope("s1", prompt?.params._meta.tidy.promptId ?? "missing")
+  );
+  await f.session.open("/disposable");
+  assert.throws(() =>
+    f.session.fleetScope("s1", prompt?.params._meta.tidy.promptId ?? "missing")
+  );
+  let admitted = false;
+  const completion = f.session.submit(
+    "op1",
+    "turn1",
+    [{ type: "text", text: "task" }],
+    () => {
+      admitted = true;
+    }
+  );
+  assert.throws(() =>
+    f.session.fleetScope("foreign", prompt.params._meta.tidy.promptId)
+  );
+  assert.equal(admitted, false);
+  assert.deepEqual(
+    f.session.fleetScope("s1", prompt?.params._meta.tidy.promptId ?? "missing"),
+    {
+      operationId: "op1",
+      turnId: "turn1",
+    }
+  );
+  assert.equal(admitted, true);
+  assert.equal(
+    f.events.filter((event) => event.type === "turn.started").length,
+    1
+  );
+  f.session.fleetScope("s1", prompt?.params._meta.tidy.promptId ?? "missing");
+  assert.equal(
+    f.events.filter((event) => event.type === "turn.started").length,
+    1
+  );
+  finish(prompt, f.send);
+  await completion;
+  assert.throws(() =>
+    f.session.fleetScope("s1", prompt?.params._meta.tidy.promptId ?? "missing")
+  );
+  const stalePrompt = prompt.params._meta.tidy.promptId;
+  const next = f.session.submit("op2", "turn2", [
+    { type: "text", text: "next task" },
+  ]);
+  assert.throws(() => f.session.fleetScope("s1", stalePrompt));
+  assert.deepEqual(
+    f.session.fleetScope("s1", prompt.params._meta.tidy.promptId),
+    { operationId: "op2", turnId: "turn2" }
+  );
+  finish(prompt, f.send);
+  await next;
+});
+
 function fixture(
   t: TestContext,
   behavior: (request: any, send: (value: any) => void) => void,

@@ -36,9 +36,9 @@ def install_fleet_identity(mcp_tool, client_session, approval, active):
             native_tool = approval._approval_tool_call_id.get()
             if (not isinstance(session, dict) or not valid(session.get("sessionId"))
                     or not valid(session.get("nativeSessionId")) or native_session != session["nativeSessionId"]
-                    or not valid(native_tool)):
+                    or not valid(session.get("promptId")) or not valid(native_tool)):
                 raise FleetIdentityUnavailable()
-            identity = {"sessionId": session["sessionId"], "nativeToolCallId": native_tool, "toolName": tool_name}
+            identity = {"sessionId": session["sessionId"], "promptId": session["promptId"], "nativeToolCallId": native_tool, "toolName": tool_name}
             token = invocation.set(identity)
             try:
                 return handler(args, **kwargs)

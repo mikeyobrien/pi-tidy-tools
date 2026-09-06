@@ -9,4 +9,5 @@ export const {
   runPlugin,
   ProtocolError,
   spawnOwnedProcess,
+  readArtifact,
 } = sdk;

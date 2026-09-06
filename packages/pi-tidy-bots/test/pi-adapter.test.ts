@@ -66,7 +66,7 @@ async function setup() {
         workspace: "read-write",
         nativeProfile: true,
         network: true,
-        gatewayTools: ["fleet.discover", "fleet.send"],
+        gatewayTools: ["fleet.discover", "fleet.send", "artifact.read"],
       },
     })
   ).resolve("tidy.pi");
@@ -246,7 +246,7 @@ test("startFleet HTTP contract admits and projects messages through the shipped 
         'workspace_access = "read-write"',
         "native_profile = true",
         "network = true",
-        'gateway_tools = ["fleet.discover", "fleet.send"]',
+        'gateway_tools = ["fleet.discover", "fleet.send", "artifact.read"]',
         "[[bot]]",
         'name = "pi"',
         'dir = "."',
@@ -332,6 +332,55 @@ test("startFleet HTTP contract admits and projects messages through the shipped 
       "x-tidy-client-contract": "2",
       "x-tidy-binding-revision": binding.bindingRevision,
     };
+    const attachment = {
+      mediaType: "text/plain",
+      name: "notes.txt",
+      data: Buffer.from("Artifact 🦋 contents").toString("base64"),
+    };
+    const sendAttachment = () =>
+      request("/api/bots/pi/message", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          operationId: "with-file",
+          clientMessageId: "with-file",
+          conversationId: binding.conversationId,
+          text: "Inspect this file",
+          images: [attachment],
+        }),
+      });
+    assert.equal((await sendAttachment()).status, 202);
+    await until(
+      async () =>
+        (await request("/api/bots/pi/operations/with-file")).body.execution ===
+        "ended"
+    );
+    assert.equal((await sendAttachment()).status, 202);
+    const attachmentEffects = (
+      await readFile(
+        join(
+          f.directory,
+          ".fleet/plugins",
+          binding.bindingId,
+          "native-effects.jsonl"
+        ),
+        "utf8"
+      )
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.equal(
+      attachmentEffects.filter((effect) => effect.command === "prompt").length,
+      2
+    );
+    const delivered = attachmentEffects.find((effect) =>
+      effect.text?.includes("Artifact 🦋 contents")
+    );
+    assert.ok(
+      delivered,
+      "native Pi prompt must contain the actual attachment bytes"
+    );
     assert.equal(
       (
         await request("/api/bots/pi/message", {

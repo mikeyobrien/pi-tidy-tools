@@ -94,7 +94,7 @@ async function setup(
         workspace: "read-write",
         nativeProfile: true,
         network: true,
-        gatewayTools: ["fleet.discover", "fleet.send"],
+        gatewayTools: ["fleet.discover", "fleet.send", "artifact.read"],
       },
     })
   ).resolve("tidy.hermes");
@@ -323,7 +323,7 @@ for (const dispatch of [false, true]) {
             'workspace_access = "read-write"',
             "native_profile = true",
             "network = true",
-            'gateway_tools = ["fleet.discover", "fleet.send"]',
+            'gateway_tools = ["fleet.discover", "fleet.send", "artifact.read"]',
             ...Object.entries(configs).flatMap(([name, config]) => [
               "[[bot]]",
               `name = "${name}"`,
@@ -513,6 +513,51 @@ for (const dispatch of [false, true]) {
             assert.equal(completion.from, bindings[peer].botId);
           }
         }
+        if (!dispatch) {
+          const upload = () =>
+            request("/api/bots/hermes/message", {
+              method: "POST",
+              headers: {
+                "content-type": "application/json",
+                "x-tidy-client-contract": "2",
+                "x-tidy-binding-revision": bindings.hermes.bindingRevision,
+              },
+              body: JSON.stringify({
+                operationId: "hermes-artifact",
+                clientMessageId: "hermes-artifact",
+                conversationId: bindings.hermes.conversationId,
+                text: "Read file",
+                images: [
+                  {
+                    name: "notes.txt",
+                    mediaType: "text/plain",
+                    data: Buffer.from("Hermes file 🦋 content").toString(
+                      "base64"
+                    ),
+                  },
+                ],
+              }),
+            });
+          assert.equal((await upload()).status, 202);
+          await until(
+            async () =>
+              (await request("/api/bots/hermes/operations/hermes-artifact"))
+                .body.execution === "ended"
+          );
+          assert.equal((await upload()).status, 202);
+          const effects = (
+            await readFile(join(f.profile, "effects.jsonl"), "utf8")
+          )
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line));
+          const prompts = effects.filter((call) => call.kind === "prompt");
+          assert.equal(prompts.length, 2);
+          assert.ok(prompts[1].text.includes("Hermes file 🦋 content"));
+          retained.hermes = (
+            await request("/api/bots/hermes/transcript")
+          ).body.transcript;
+        }
         ws.terminate();
         await fleet.stop();
         fleet = await startFleet({
@@ -566,7 +611,7 @@ for (const dispatch of [false, true]) {
         );
         assert.equal(
           hermesCalls.filter((call) => call.kind === "prompt").length,
-          dispatch ? 3 : 1
+          dispatch ? 3 : 2
         );
         assert.equal(
           hermesCalls.filter((call) => call.kind === "new").length,

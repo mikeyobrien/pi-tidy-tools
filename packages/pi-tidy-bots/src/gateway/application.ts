@@ -12,7 +12,12 @@ import {
   type OperationRecord,
   type WriterLease,
 } from "./journal.ts";
-import { PluginHost } from "./plugin-host.ts";
+import {
+  decodeArtifactUploads,
+  MAX_PUBLIC_ARTIFACT_BYTES,
+  VALIDATED_MEDIA_TYPES,
+} from "./artifacts.ts";
+import { PluginHost, type HostCall } from "./plugin-host.ts";
 import {
   processIdentity,
   ownerHasExited,
@@ -89,10 +94,21 @@ interface BoundBot {
 
 /** Public policy is deliberately narrowed to routes and projections implemented here. */
 function effectiveCapabilities(
-  native: CapabilityDescriptor
+  native: CapabilityDescriptor,
+  artifactAccess = false
 ): CapabilityDescriptor {
   return {
-    input: { text: true, mediaTypes: [], maxMediaBytes: 0 },
+    input: {
+      text: true,
+      mediaTypes: artifactAccess
+        ? native.input.mediaTypes.filter((type) =>
+            VALIDATED_MEDIA_TYPES.includes(type)
+          )
+        : [],
+      maxMediaBytes: artifactAccess
+        ? Math.min(native.input.maxMediaBytes, MAX_PUBLIC_ARTIFACT_BYTES)
+        : 0,
+    },
     sessions: { load: false, import: false, continuity: "unverified" },
     output: {
       text: native.output.text,
@@ -354,6 +370,8 @@ export class GatewayApplication {
               "not_initialized",
               "Fleet service binding is unavailable"
             );
+          if (call.name === "artifact.read")
+            return this.readPluginArtifact(bot, call);
           if (call.name === "fleet.send") return this.sendFleet(bot, call);
           if (call.name !== "fleet.discover")
             throw new ProtocolError(
@@ -395,7 +413,13 @@ export class GatewayApplication {
           if (bot) this.failBot(bot, error.code);
         },
       });
-      const capabilities = effectiveCapabilities(host.capabilities);
+      const capabilities = effectiveCapabilities(
+        host.capabilities,
+        installation.policy.gatewayTools?.includes("artifact.read") === true &&
+          installation.manifest.requestedAccess.gatewayTools.includes(
+            "artifact.read"
+          )
+      );
       const bindingRevision = payloadDigest({
         bindingId,
         policyRevision,
@@ -755,21 +779,38 @@ export class GatewayApplication {
       )
     )
       throw new ProtocolError("invalid_payload", "Unknown message field");
-    if (
-      body.images !== undefined &&
-      (!Array.isArray(body.images) || body.images.length)
-    )
+    const uploads = decodeArtifactUploads(body.images);
+    if (typeof body.text !== "string" || (!body.text.trim() && !uploads.length))
       throw new ProtocolError(
-        "capability_unavailable",
-        "This binding does not accept media"
+        "invalid_payload",
+        "Message text or an attachment is required"
       );
-    if (typeof body.text !== "string" || !body.text.trim())
-      throw new ProtocolError("invalid_payload", "Message text is required");
     const payload = { text: body.text };
+    const intent = {
+      ...bot.binding,
+      operationId: body.operationId,
+      payload,
+      publicBotName: name,
+    };
+    const artifacts = uploads.length
+      ? this.journal.describeArtifacts(intent, uploads)
+      : [];
     const known = this.journal.getOperation({
       ...bot.binding,
       operationId: body.operationId,
     });
+    if (
+      !known &&
+      uploads.some(
+        (upload) =>
+          !bot.capabilities.input.mediaTypes.includes(upload.mediaType) ||
+          upload.bytes.length > bot.capabilities.input.maxMediaBytes
+      )
+    )
+      throw new ProtocolError(
+        "capability_unavailable",
+        "Attachment exceeds the binding capabilities"
+      );
     if (!known && (this.stopping || !bot.ready || !bot.host?.isReady))
       throw new ProtocolError(
         "session_unavailable",
@@ -784,20 +825,74 @@ export class GatewayApplication {
         conversationId: bot.binding.conversationId,
         turnId: `turn-${randomUUID()}`,
         policyRevision: bot.binding.policyRevision,
-        input: [{ type: "text", text: body.text }],
+        input: [{ type: "text", text: body.text }, ...artifacts],
       });
-    const admitted = this.journal.admit(this.lease, {
-      ...bot.binding,
-      operationId: body.operationId,
-      payload,
-      publicBotName: name,
-    });
+    const admitted = uploads.length
+      ? this.journal.admitMessageArtifacts(this.lease, intent, uploads)
+      : this.journal.admit(this.lease, intent);
     this.publishCommitted(bot, true);
     if (admitted.created)
       queueMicrotask(() => {
         void this.pump(bot);
       });
     return admitted.receipt as unknown as JsonObject;
+  }
+
+  private readPluginArtifact(bot: BoundBot, call: HostCall): JsonObject {
+    const args = call.arguments;
+    if (
+      typeof call.operationId !== "string" ||
+      !object(args) ||
+      typeof args.artifactId !== "string" ||
+      Object.keys(args).some(
+        (key) => !["artifactId", "offset", "limit"].includes(key)
+      )
+    )
+      throw new ProtocolError(
+        "invalid_payload",
+        "Artifact read requires exact operation and range"
+      );
+    const operation = this.journal.getOperation({
+      ...bot.binding,
+      operationId: call.operationId,
+    });
+    if (
+      !operation ||
+      !["dispatching", "accepted"].includes(operation.delivery) ||
+      terminal.has(operation.execution)
+    )
+      throw new ProtocolError(
+        "artifact_unavailable",
+        "Artifact operation is not active"
+      );
+    const maxChunk = Math.min(
+      65536,
+      Math.floor(bot.host!.limits.maxFrameBytes / 8)
+    );
+    const limit = args.limit === undefined ? maxChunk : Number(args.limit);
+    if (
+      maxChunk < 256 ||
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > maxChunk ||
+      (args.offset !== undefined && typeof args.offset !== "number") ||
+      (args.limit !== undefined && typeof args.limit !== "number")
+    )
+      throw new ProtocolError(
+        "resource_limit",
+        "Artifact range exceeds the negotiated frame budget"
+      );
+    const result = this.journal.readArtifact(
+      { ...bot.binding, operationId: call.operationId },
+      args.artifactId,
+      args.offset === undefined ? 0 : Number(args.offset),
+      limit
+    );
+    return {
+      artifact: result.descriptor,
+      data: Buffer.from(result.bytes).toString("base64"),
+      nextOffset: result.nextOffset,
+    };
   }
 
   admitCancellation(
@@ -1000,7 +1095,12 @@ export class GatewayApplication {
             conversationId: bot.binding.conversationId,
             turnId: op.turnId,
             policyRevision: op.policyRevision,
-            input: [{ type: "text", text: op.payload.text }],
+            input: [
+              { type: "text", text: op.payload.text },
+              ...(Array.isArray(op.payload.artifacts)
+                ? op.payload.artifacts
+                : []),
+            ],
           });
         } catch {
           // A lost submit response cannot erase a correlated native acceptance

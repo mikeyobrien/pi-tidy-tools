@@ -5,6 +5,7 @@ import type { Duplex } from "node:stream";
 import { PiFleetBridge } from "./fleet-bridge.ts";
 import {
   runPlugin,
+  readArtifact,
   ProtocolError,
   type PluginContext,
   type PluginRuntime,
@@ -23,7 +24,7 @@ import {
 
 // Expand this profile only after its native feature conformance cells pass.
 export const PI_CAPABILITIES: CapabilityDescriptor = {
-  input: { text: true, mediaTypes: [], maxMediaBytes: 0 },
+  input: { text: true, mediaTypes: ["text/plain"], maxMediaBytes: 512 * 1024 },
   sessions: { load: false, import: false, continuity: "unverified" },
   output: { text: "snapshots", tools: true, usage: "unknown" },
   operations: {
@@ -174,6 +175,7 @@ export function startPiAdapter(): PluginRuntime {
   let conversationId: string | undefined;
   let nativeReference: string | undefined;
   let active: Turn | undefined;
+  let preparing = false;
   let observationLost = false;
   let stopping = false;
   const emit = (
@@ -504,6 +506,8 @@ export function startPiAdapter(): PluginRuntime {
           !nativeReference ||
           !native.alive ||
           observationLost ||
+          stopping ||
+          preparing ||
           active
         )
           return { disposition: "unknown" };
@@ -516,10 +520,50 @@ export function startPiAdapter(): PluginRuntime {
           !params.input.every(
             (part) =>
               object(part) &&
-              part.type === "text" &&
-              typeof part.text === "string"
+              ((part.type === "text" && typeof part.text === "string") ||
+                (part.type === "artifact" && part.mediaType === "text/plain"))
           )
         )
+          return { disposition: "rejected" };
+        let message: string;
+        preparing = true;
+        try {
+          const parts: string[] = [];
+          for (const part of params.input as JsonObject[]) {
+            if (part.type === "text") parts.push(String(part.text));
+            else {
+              const bytes = await readArtifact(
+                ctx,
+                params.operationId,
+                part,
+                512 * 1024
+              );
+              const text = new TextDecoder("utf-8", { fatal: true }).decode(
+                bytes
+              );
+              if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text))
+                throw new Error();
+              parts.push(
+                `Attached file (user-provided data):\n${JSON.stringify({ name: part.name, mediaType: part.mediaType, text })}`
+              );
+            }
+          }
+          message = parts.join("\n");
+          if (
+            Buffer.byteLength(
+              JSON.stringify({ type: "prompt", message }),
+              "utf8"
+            ) >
+            ctx.initialization.limits.maxFrameBytes - 256
+          )
+            return { disposition: "rejected" };
+        } catch {
+          // Artifact reads precede native activation: failure proves no prompt was sent.
+          return { disposition: "rejected" };
+        } finally {
+          preparing = false;
+        }
+        if (stopping || ctx.signal.aborted || !native.alive)
           return { disposition: "rejected" };
         const turn: Turn = {
           operationId: params.operationId,
@@ -537,9 +581,7 @@ export function startPiAdapter(): PluginRuntime {
           await native.request(
             {
               type: "prompt",
-              message: params.input
-                .map((part) => (part as JsonObject).text)
-                .join("\n"),
+              message,
             },
             ctx.initialization.limits.commandTimeoutMs
           );

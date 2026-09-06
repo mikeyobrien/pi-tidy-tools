@@ -24,3 +24,5 @@ export {
   type OwnedProcessOptions,
   type OwnedProcessHandle,
 } from "./owned-process.ts";
+
+export { readArtifact } from "./artifacts.ts";

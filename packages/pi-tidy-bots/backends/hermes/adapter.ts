@@ -2,12 +2,17 @@ import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import {
   runPlugin,
+  readArtifact,
   ProtocolError,
   type PluginContext,
   type PluginRuntime,
   type CapabilityDescriptor,
 } from "@mobrienv/pi-tidy-bots/plugin-sdk";
-import { nonempty } from "@mobrienv/pi-tidy-bots/plugin-protocol";
+import {
+  nonempty,
+  object,
+  type JsonObject,
+} from "@mobrienv/pi-tidy-bots/plugin-protocol";
 import {
   openHermesRuntime,
   validateHermesConfiguration,
@@ -17,7 +22,7 @@ import {
 // Fresh guarded ACP sessions only. Native continuity, media and
 // non-pipe worker profiles require their remaining conformance work.
 export const HERMES_CAPABILITIES: CapabilityDescriptor = {
-  input: { text: true, mediaTypes: [], maxMediaBytes: 0 },
+  input: { text: true, mediaTypes: ["text/plain"], maxMediaBytes: 512 * 1024 },
   sessions: { load: false, import: false, continuity: "unverified" },
   output: { text: "snapshots", tools: true, usage: "unknown" },
   operations: {
@@ -35,6 +40,7 @@ export function startHermesAdapter(): PluginRuntime {
   let native: HermesRuntime | undefined;
   let opening = false;
   let stopping = false;
+  let preparing = false;
   let lost = false;
   let conversationId: string | undefined;
   let active: Promise<unknown> | undefined;
@@ -142,13 +148,55 @@ export function startHermesAdapter(): PluginRuntime {
         };
       },
       async "operation.submit"(params, ctx) {
-        if (!native || active || stopping || lost)
+        if (!native || active || preparing || stopping || lost)
           return { disposition: "unknown" };
         if (
           params.conversationId !== conversationId ||
           !nonempty(params.operationId) ||
           !nonempty(params.turnId)
         )
+          return { disposition: "rejected" };
+        const input: JsonObject[] = [];
+        preparing = true;
+        try {
+          if (!Array.isArray(params.input) || !params.input.length)
+            return { disposition: "rejected" };
+          for (const part of params.input) {
+            if (!object(part)) return { disposition: "rejected" };
+            if (part.type === "text" && typeof part.text === "string")
+              input.push({ type: "text", text: part.text });
+            else if (
+              part.type === "artifact" &&
+              part.mediaType === "text/plain"
+            ) {
+              const bytes = await readArtifact(
+                ctx,
+                params.operationId,
+                part,
+                512 * 1024
+              );
+              const text = new TextDecoder("utf-8", { fatal: true }).decode(
+                bytes
+              );
+              if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text))
+                throw new Error();
+              input.push({
+                type: "text",
+                text: `Attached file (user-provided data):\n${JSON.stringify({ name: part.name, mediaType: part.mediaType, text })}`,
+              });
+            } else return { disposition: "rejected" };
+          }
+          if (
+            Buffer.byteLength(JSON.stringify(input), "utf8") >
+            ctx.initialization.limits.maxFrameBytes - 1024
+          )
+            return { disposition: "rejected" };
+        } catch {
+          return { disposition: "rejected" };
+        } finally {
+          preparing = false;
+        }
+        if (stopping || lost || ctx.signal.aborted)
           return { disposition: "rejected" };
         let admit!: (value: {
           disposition: "accepted" | "rejected" | "unknown";
@@ -161,7 +209,7 @@ export function startHermesAdapter(): PluginRuntime {
         const completion = native.session.submit(
           params.operationId,
           params.turnId,
-          params.input,
+          input,
           () => admit({ disposition: "accepted" })
         );
         active = completion;

@@ -36,7 +36,11 @@ async function waitFor<T>(
     await new Promise((resolve) => setTimeout(resolve, 15));
   }
 }
-async function fixture(permissions = false, discovery = false) {
+async function fixture(
+  permissions = false,
+  discovery = false,
+  artifacts = false
+) {
   const dir = await mkdtemp(join(tmpdir(), "tidy-gateway-application-"));
   const artifact = join(dir, "plugin");
   await mkdir(artifact);
@@ -69,7 +73,11 @@ async function fixture(permissions = false, discovery = false) {
         workspace: "none",
         nativeProfile: false,
         network: false,
-        gatewayTools: discovery ? ["fleet.discover", "fleet.send"] : [],
+        gatewayTools: artifacts
+          ? ["artifact.read"]
+          : discovery
+            ? ["fleet.discover", "fleet.send"]
+            : [],
       },
     })
   );
@@ -81,6 +89,7 @@ async function fixture(permissions = false, discovery = false) {
         health: { type: "string", enum: ["ready", "auth_required"] },
         permissions: { type: "boolean" },
         discovery: { type: "boolean" },
+        artifacts: { type: "boolean" },
       },
       additionalProperties: false,
     })
@@ -109,7 +118,12 @@ async function fixture(permissions = false, discovery = false) {
           'environment = ["PATH"]\ngateway_tools = ["fleet.discover", "fleet.send"]'
         ) +
           'routes = ["allowed"]\n[bot.backend_config]\ndiscovery = true\n[[bot]]\nname = "allowed"\ndir = "."\nbackend = "org.example.independent"\n[[bot]]\nname = "hidden"\ndir = "."\nbackend = "org.example.independent"\n'
-      : manifest +
+      : artifacts
+        ? manifest.replace(
+            'environment = ["PATH"]',
+            'environment = ["PATH"]\ngateway_tools = ["artifact.read"]'
+          ) + "[bot.backend_config]\nartifacts = true\n"
+        : manifest +
           (permissions ? "[bot.backend_config]\npermissions = true\n" : "")
   );
   const handles: FleetHandle[] = [];
@@ -1182,6 +1196,55 @@ test("lost cancellation response survives restart without replay or releasing qu
     );
     assert.equal(
       calls.filter((call) => call.method === "operation.submit").length,
+      1
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("uploaded text reaches the plugin as scoped artifact chunks and durable transcript metadata", async () => {
+  const f = await fixture(false, false, true);
+  try {
+    let handle = await f.start();
+    const binding = await f.binding(handle);
+    const images = [
+      {
+        name: "note.txt",
+        mediaType: "text/plain",
+        data: Buffer.from("Unicode 🦋 attachment").toString("base64"),
+      },
+    ];
+    const send = () =>
+      f.submit(handle, binding, "artifact-message", "Read attachment", {
+        images,
+      });
+    assert.equal((await send()).status, 202);
+    await waitFor(
+      () => f.inspect(handle, "artifact-message"),
+      (value) => value.execution === "ended"
+    );
+    const calls = await f.calls(binding);
+    const chunks = calls
+      .filter((call) => call.artifactRead)
+      .map((call) => Buffer.from(call.artifactRead.data, "base64"));
+    assert.equal(Buffer.concat(chunks).toString(), "Unicode 🦋 attachment");
+    const submitted = calls.find((call) => call.method === "operation.submit")!;
+    assert.equal(submitted.input[1].type, "artifact");
+    assert.equal(JSON.stringify(submitted).includes(images[0].data), false);
+    const transcript = (await f.request(handle, "/api/bots/fixture/transcript"))
+      .body.transcript;
+    assert.equal(
+      transcript[0].attachments[0].artifactId,
+      submitted.input[1].artifactId
+    );
+    await handle.stop();
+    handle = await f.start();
+    assert.equal((await send()).status, 202);
+    assert.equal(
+      (await f.calls(binding)).filter(
+        (call) => call.method === "operation.submit"
+      ).length,
       1
     );
   } finally {

@@ -15,6 +15,7 @@ let init;
 let sequence = 0;
 const permissions = new Map();
 const cancellable = new Map();
+const artifactReads = new Map();
 const discoveries = new Map();
 const dispatches = new Map();
 const dir = process.env.TIDY_DATA_DIR;
@@ -221,6 +222,36 @@ const methods = [
 const input = createInterface({ input: process.stdin });
 input.on("line", (line) => {
   const message = JSON.parse(line);
+  if (artifactReads.has(message.id)) {
+    const pending = artifactReads.get(message.id);
+    artifactReads.delete(message.id);
+    record({ artifactRead: message.result ?? message.error });
+    if (
+      message.result?.nextOffset !== null &&
+      message.result?.nextOffset !== undefined
+    ) {
+      const id = `artifact:${pending.request.operationId}:${message.result.nextOffset}`;
+      artifactReads.set(id, pending);
+      send({
+        jsonrpc: "2.0",
+        id,
+        method: "host.call",
+        params: {
+          bindingId: init.bindingId,
+          leaseGeneration: init.leaseGeneration,
+          name: "artifact.read",
+          callId: id,
+          operationId: pending.request.operationId,
+          arguments: {
+            artifactId: pending.artifactId,
+            offset: message.result.nextOffset,
+            limit: 4,
+          },
+        },
+      });
+    } else void execute(pending.request);
+    return;
+  }
   if (dispatches.has(message.id)) {
     const pending = dispatches.get(message.id);
     dispatches.delete(message.id);
@@ -267,7 +298,11 @@ input.on("line", (line) => {
       methods,
       health: p.config.health ?? "ready",
       capabilities: {
-        input: { text: true, mediaTypes: [], maxMediaBytes: 0 },
+        input: {
+          text: true,
+          mediaTypes: p.config.artifacts ? ["text/plain"] : [],
+          maxMediaBytes: p.config.artifacts ? 524288 : 0,
+        },
         sessions: { load: false, import: false, continuity: "unverified" },
         output: { text: "snapshots", tools: true, usage: "unknown" },
         operations: {
@@ -306,6 +341,26 @@ input.on("line", (line) => {
     });
   } else if (message.method === "operation.submit") {
     record({ method: "operation.submit", ...p });
+    if (p.input[1]?.type === "artifact") {
+      const id = `artifact:${p.operationId}:0`;
+      artifactReads.set(id, { request: p, artifactId: p.input[1].artifactId });
+      send({
+        jsonrpc: "2.0",
+        id,
+        method: "host.call",
+        params: {
+          bindingId: init.bindingId,
+          leaseGeneration: init.leaseGeneration,
+          name: "artifact.read",
+          callId: id,
+          operationId: p.operationId,
+          arguments: { artifactId: p.input[1].artifactId, offset: 0, limit: 4 },
+        },
+      });
+      respond(message, { disposition: "accepted" });
+      return;
+    }
+
     if (["[send]", "[send-forbidden]"].includes(p.input[0].text)) {
       const id = `send:${p.operationId}`;
       const params = {

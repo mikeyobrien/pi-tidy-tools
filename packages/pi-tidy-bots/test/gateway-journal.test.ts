@@ -1937,3 +1937,133 @@ test("queued fleet cancellation retains one completion atomically with cancellat
   assert.equal(deliveries[0].payload.execution, "cancelled");
   assert.equal(deliveries[0].payload.originBindingId, binding.bindingId);
 });
+
+test("artifact bytes commit with intent and survive restart with exact scoped reads", (t) => {
+  const f = fixture(t);
+  const uploads = [
+    {
+      name: "note.txt",
+      mediaType: "text/plain",
+      bytes: Buffer.from("hello world"),
+    },
+  ];
+  const first = f.journal.admitMessageArtifacts(f.lease, intent(), uploads);
+  const descriptor = (
+    f.journal.getOperationRecord(key())!.payload!.artifacts as JsonObject[]
+  )[0];
+  const scope = { ...key(), bindingId: binding.bindingId };
+  const part = f.journal.readArtifact(
+    scope,
+    String(descriptor.artifactId),
+    0,
+    5
+  );
+  assert.equal(Buffer.from(part.bytes).toString(), "hello");
+  assert.equal(part.nextOffset, 5);
+  code(
+    () =>
+      f.journal.readArtifact(
+        { ...scope, bindingId: "other" },
+        String(descriptor.artifactId)
+      ),
+    "artifact_unavailable"
+  );
+  f.journal.admit(f.lease, intent("other"));
+  code(
+    () =>
+      f.journal.readArtifact(
+        { ...scope, operationId: "other" },
+        String(descriptor.artifactId)
+      ),
+    "artifact_unavailable"
+  );
+  f.journal.close();
+  const reopened = f.open();
+  assert.deepEqual(reopened.admitMessageArtifacts(f.lease, intent(), uploads), {
+    ...first,
+    created: false,
+  });
+  assert.equal(
+    Buffer.from(
+      reopened.readArtifact(scope, String(descriptor.artifactId), 5).bytes
+    ).toString(),
+    " world"
+  );
+  code(
+    () =>
+      reopened.admitMessageArtifacts(f.lease, intent(), [
+        { ...uploads[0], bytes: Buffer.from("changed") },
+      ]),
+    "operation_conflict"
+  );
+});
+
+test("artifact storage failure rolls back intent and corruption refuses both access and retry", (t) => {
+  const f = fixture(t);
+  const uploads = [
+    { name: "note.txt", mediaType: "text/plain", bytes: Buffer.from("hello") },
+  ];
+  sql(
+    f.path,
+    "CREATE TRIGGER fail_artifact BEFORE INSERT ON gateway_meta WHEN substr(NEW.key,1,12)='artifact_v1:' BEGIN SELECT RAISE(ABORT, 'injected'); END;"
+  );
+  assert.throws(() =>
+    f.journal.admitMessageArtifacts(f.lease, intent(), uploads)
+  );
+  assert.equal(f.journal.getOperation(key()), null);
+  assert.equal(f.journal.readTranscript(binding).length, 0);
+  sql(f.path, "DROP TRIGGER fail_artifact;");
+  f.journal.admitMessageArtifacts(f.lease, intent(), uploads);
+  const descriptor = (
+    f.journal.getOperationRecord(key())!.payload!.artifacts as JsonObject[]
+  )[0];
+  sql(
+    f.path,
+    "UPDATE gateway_meta SET value=json_set(value,'$.data','YmFk') WHERE substr(key,1,12)='artifact_v1:';"
+  );
+  code(
+    () =>
+      f.journal.readArtifact(
+        { ...key(), bindingId: binding.bindingId },
+        String(descriptor.artifactId)
+      ),
+    "corrupt_storage"
+  );
+  code(
+    () => f.journal.admitMessageArtifacts(f.lease, intent(), uploads),
+    "corrupt_storage"
+  );
+});
+
+test("artifact bytes expire with bodies while retained operation identity rejects reuse", (t) => {
+  const f = fixture(t);
+  const uploads = [
+    {
+      name: "note.txt",
+      mediaType: "text/plain",
+      bytes: Buffer.from("private bytes"),
+    },
+  ];
+  f.journal.admitMessageArtifacts(f.lease, intent(), uploads);
+  f.journal.cancelQueued(f.lease, key());
+  f.journal.expireOperation(f.lease, key());
+  const db = new DatabaseSync(f.path);
+  try {
+    assert.equal(
+      (
+        db
+          .prepare(
+            "SELECT count(*) AS n FROM gateway_meta WHERE substr(key,1,12)='artifact_v1:'"
+          )
+          .get() as { n: number }
+      ).n,
+      0
+    );
+  } finally {
+    db.close();
+  }
+  code(
+    () => f.journal.admitMessageArtifacts(f.lease, intent(), uploads),
+    "operation_expired"
+  );
+});

@@ -21,6 +21,16 @@ export type JsonValue =
 export interface JsonObject {
   [key: string]: JsonValue;
 }
+export interface ArtifactUpload {
+  name: string;
+  mediaType: string;
+  bytes: Uint8Array;
+}
+const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
+function artifactPrefix(key: OperationKey): string {
+  return `artifact_v1:${payloadDigest({ botId: key.botId, conversationId: key.conversationId, operationId: key.operationId })}:`;
+}
+
 export type OperationKind =
   | "message"
   | "model"
@@ -1152,6 +1162,174 @@ export class GatewayJournal {
   ): { receipt: OperationReceipt; created: boolean } {
     return this.write(lease, () => this.admitOperation(input));
   }
+  describeArtifacts(
+    input: AdmitOperation,
+    uploads: ArtifactUpload[]
+  ): JsonObject[] {
+    return this.prepareArtifacts(input, uploads).map((item) => item.descriptor);
+  }
+  private prepareArtifacts(
+    input: AdmitOperation,
+    uploads: ArtifactUpload[]
+  ): Array<{ descriptor: JsonObject; data: string }> {
+    if (
+      (input.kind && input.kind !== "message") ||
+      !uploads.length ||
+      uploads.length > 16
+    )
+      fail(
+        "invalid_payload",
+        "Artifacts require a message with one to sixteen uploads"
+      );
+    let total = 0;
+    return uploads.map((upload, index) => {
+      if (
+        !(upload.bytes instanceof Uint8Array) ||
+        !upload.bytes.byteLength ||
+        (total += upload.bytes.byteLength) > MAX_ARTIFACT_BYTES
+      )
+        fail("resource_limit", "Artifact bytes exceed the admission limit");
+      if (
+        typeof upload.name !== "string" ||
+        !upload.name.trim() ||
+        upload.name.length > 256 ||
+        /[\x00-\x1f\x7f/\\]/.test(upload.name) ||
+        typeof upload.mediaType !== "string" ||
+        !/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/.test(upload.mediaType)
+      )
+        fail("invalid_payload", "Invalid artifact display metadata");
+      const bytes = Buffer.from(upload.bytes);
+      const sha256 = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+      const descriptor: JsonObject = {
+        type: "artifact",
+        artifactId: payloadDigest({
+          botId: input.botId,
+          conversationId: input.conversationId,
+          bindingId: input.bindingId,
+          operationId: input.operationId,
+          index,
+          sha256,
+          name: upload.name,
+          mediaType: upload.mediaType,
+        }),
+        name: upload.name,
+        mediaType: upload.mediaType,
+        sha256,
+        size: bytes.length,
+      };
+      return { descriptor, data: bytes.toString("base64") };
+    });
+  }
+  /** Media decoding and capability checks belong to admission before this transaction. */
+  admitMessageArtifacts(
+    lease: WriterLease,
+    input: AdmitOperation,
+    uploads: ArtifactUpload[]
+  ): { receipt: OperationReceipt; created: boolean } {
+    const retained = this.prepareArtifacts(input, uploads);
+    return this.write(lease, () => {
+      const admitted = this.admitOperation({
+        ...input,
+        payload: {
+          ...input.payload,
+          artifacts: retained.map((item) => item.descriptor),
+        },
+      });
+      for (const item of retained) {
+        const key = artifactPrefix(input) + item.descriptor.artifactId;
+        const encoded = canonicalJson(item);
+        const prior = this.prepare(
+          "SELECT value FROM gateway_meta WHERE key=?"
+        ).get(key);
+        if (prior) {
+          if (prior.value !== encoded)
+            fail(
+              "corrupt_storage",
+              "Retained artifact differs from admitted bytes"
+            );
+        } else {
+          if (!admitted.created)
+            fail("corrupt_storage", "Admitted artifact bytes are missing");
+          this.prepare("INSERT INTO gateway_meta(key,value) VALUES(?,?)").run(
+            key,
+            encoded
+          );
+        }
+      }
+      return admitted;
+    });
+  }
+  /** Caller authenticates the binding; the journal also requires exact operation membership. */
+  readArtifact(
+    key: OperationKey & { bindingId: string },
+    artifactId: string,
+    offset = 0,
+    limit = 65536
+  ): { descriptor: JsonObject; bytes: Uint8Array; nextOffset: number | null } {
+    this.conversation(key);
+    const operation = this.operationRow(key);
+    if (
+      !operation ||
+      operation.binding_id !== key.bindingId ||
+      operation.expired
+    )
+      fail("artifact_unavailable", "Artifact operation is unavailable");
+    const payload = parseObject(operation.payload_json);
+    const descriptor = Array.isArray(payload.artifacts)
+      ? (payload.artifacts.find(
+          (value) =>
+            value &&
+            typeof value === "object" &&
+            !Array.isArray(value) &&
+            value.artifactId === artifactId
+        ) as JsonObject | undefined)
+      : undefined;
+    if (!descriptor)
+      fail("artifact_unavailable", "Artifact is outside this operation");
+    if (
+      !Number.isSafeInteger(offset) ||
+      offset < 0 ||
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > 65536
+    )
+      fail("invalid_cursor", "Invalid artifact read range");
+    const row = this.prepare("SELECT value FROM gateway_meta WHERE key=?").get(
+      artifactPrefix(key) + artifactId
+    );
+    if (!row) fail("corrupt_storage", "Admitted artifact bytes are missing");
+    const stored = parseObject(row.value);
+    if (
+      canonicalJson(stored.descriptor) !== canonicalJson(descriptor) ||
+      typeof stored.data !== "string"
+    )
+      fail("corrupt_storage", "Artifact metadata differs from admission");
+    const bytes = Buffer.from(stored.data as string, "base64");
+    if (
+      bytes.length !== descriptor.size ||
+      bytes.length > MAX_ARTIFACT_BYTES ||
+      bytes.toString("base64") !== stored.data ||
+      `sha256:${createHash("sha256").update(bytes).digest("hex")}` !==
+        descriptor.sha256
+    )
+      fail("corrupt_storage", "Artifact bytes failed integrity verification");
+    if (offset > bytes.length)
+      fail("invalid_cursor", "Artifact offset is past its end");
+    const end = Math.min(bytes.length, offset + limit);
+    return {
+      descriptor,
+      bytes: bytes.subarray(offset, end),
+      nextOffset: end < bytes.length ? end : null,
+    };
+  }
+  private deleteArtifacts(key: OperationKey): void {
+    const prefix = artifactPrefix(key);
+    this.prepare("DELETE FROM gateway_meta WHERE substr(key,1,?)=?").run(
+      prefix.length,
+      prefix
+    );
+  }
+
   /** Route grants and native tool correlation are checked by the host. This
    * transaction prevents a lost host reply from admitting another target turn.
    */
@@ -1427,6 +1605,9 @@ export class GatewayJournal {
         role: "user",
         origin: messageOrigin,
         text: input.payload.text,
+        ...(Array.isArray(input.payload.artifacts)
+          ? { attachments: input.payload.artifacts }
+          : {}),
         ts: new Date(this.now()).toISOString(),
       };
       this.insertEntry(input, entry, input.operationId);
@@ -2433,6 +2614,7 @@ export class GatewayJournal {
           "operation_unresolved",
           "Unresolved identity and body must be retained"
         );
+      this.deleteArtifacts(key);
       this.prepare(
         "UPDATE operations SET payload_json=NULL,expired=1 WHERE ordinal=?"
       ).run(Number(row.ordinal));
@@ -2454,6 +2636,8 @@ export class GatewayJournal {
           "conversation_unresolved",
           "Resolve or explicitly abandon native work before deleting its conversation"
         );
+      for (const operation of this.listOperationRecords(key))
+        this.deleteArtifacts(operation.receipt);
       this.prepare("UPDATE conversations SET deleted=1 WHERE binding_id=?").run(
         String(binding.binding_id)
       );

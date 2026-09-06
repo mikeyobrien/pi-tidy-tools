@@ -19,6 +19,11 @@ import {
 } from "./process-ownership.ts";
 import { PluginRegistry, type PluginInstallation } from "./registry.ts";
 import {
+  permissionRequest,
+  permissionResolution,
+  permissionKey,
+} from "./permissions.ts";
+import {
   object,
   ProtocolError,
   type CapabilityDescriptor,
@@ -65,6 +70,9 @@ interface BoundBot {
   host?: PluginHost;
   ready: boolean;
   pump?: Promise<void>;
+  permissionPump?: Promise<void>;
+  pumpAgain?: boolean;
+  permissionPumpAgain?: boolean;
   fault?: string;
   turns: Map<string, TurnView>;
 }
@@ -78,7 +86,10 @@ function effectiveCapabilities(
     sessions: { load: false, import: false, continuity: "unverified" },
     output: { text: native.output.text, tools: false, usage: "unknown" },
     operations: { ...native.operations, cancel: "unsupported", steer: false },
-    interactions: { permissions: "none", questions: false },
+    interactions: {
+      permissions: native.interactions.permissions,
+      questions: false,
+    },
     configuration: { model: false, thinking: false, compact: false },
     fleetTools: false,
   };
@@ -365,6 +376,12 @@ export class GatewayApplication {
           cursor = event.sourceSequence;
         }
       }
+      this.journal.closePermissions(
+        this.lease,
+        binding,
+        config.name,
+        host.instanceId
+      );
       provisioned();
       if (host.health !== "ready") {
         bot.fault = host.health;
@@ -615,26 +632,122 @@ export class GatewayApplication {
     return admitted.receipt as unknown as JsonObject;
   }
 
-  private pump(bot: BoundBot): Promise<void> {
-    if (bot.pump) return bot.pump;
+  admitPermission(
+    name: string,
+    interactionId: string,
+    body: Record<string, unknown>
+  ): JsonObject {
+    const bot = this.requireBot(name);
+    if (
+      body.kind !== "permission" ||
+      body.conversationId !== bot.binding.conversationId ||
+      body.interactionId !== interactionId ||
+      typeof body.operationId !== "string" ||
+      !body.operationId.trim() ||
+      body.operationId.length > 256
+    )
+      throw new ProtocolError(
+        "invalid_payload",
+        "Permission requires an exact control and conversation identity"
+      );
+    const fields = [
+      "kind",
+      "operationId",
+      "conversationId",
+      "bindingId",
+      "instanceId",
+      "targetOperationId",
+      "turnId",
+      "interactionId",
+      "optionsDigest",
+      "expiresAt",
+      "revision",
+      "optionId",
+    ];
+    if (Object.keys(body).some((key) => !fields.includes(key)))
+      throw new ProtocolError(
+        "invalid_payload",
+        "Unknown permission decision field"
+      );
+    const known = this.journal.getOperation({
+      ...bot.binding,
+      operationId: body.operationId,
+    });
+    if (!known) {
+      if (bot.capabilities.interactions.permissions !== "exact-request")
+        throw new ProtocolError(
+          "capability_unavailable",
+          "Exact permissions are unavailable"
+        );
+      if (this.stopping || !bot.ready || !bot.host?.isReady)
+        throw new ProtocolError(
+          "session_unavailable",
+          "Permission session is unavailable"
+        );
+      bot.host.assertRequestFits("interaction.respond", {
+        ...body,
+        payloadDigest: `sha256:${"0".repeat(64)}`,
+        policyRevision: bot.binding.policyRevision,
+      });
+    }
+    const admitted = this.journal.admitPermission(
+      this.lease,
+      {
+        ...bot.binding,
+        kind: "permission",
+        operationId: body.operationId,
+        payload: body as JsonObject,
+      },
+      bot.host?.instanceId ?? ""
+    );
+    if (admitted.created)
+      queueMicrotask(() => {
+        void this.pump(bot, true);
+      });
+    return admitted.receipt as unknown as JsonObject;
+  }
+
+  private pump(bot: BoundBot, permissionsOnly = false): Promise<void> {
+    const slot = permissionsOnly ? "permissionPump" : "pump";
+    const again = permissionsOnly ? "permissionPumpAgain" : "pumpAgain";
+    if (bot[slot]) {
+      bot[again] = true;
+      return bot[slot]!;
+    }
     if (this.stopping || !bot.ready || !bot.host?.isReady)
       return Promise.resolve();
-    const pump = this.dispatch(bot);
-    bot.pump = pump;
+    const pump = this.dispatch(bot, permissionsOnly);
+    bot[slot] = pump;
     const clear = () => {
-      if (bot.pump === pump) bot.pump = undefined;
+      if (bot[slot] === pump) bot[slot] = undefined;
+      if (bot[again]) {
+        bot[again] = false;
+        queueMicrotask(() => {
+          void this.pump(bot, permissionsOnly);
+        });
+      }
     };
     void pump.then(clear, clear);
     return pump;
   }
-  private async dispatch(bot: BoundBot): Promise<void> {
+  private async dispatch(
+    bot: BoundBot,
+    permissionsOnly = false
+  ): Promise<void> {
     try {
       for (;;) {
         // Closing can start while a native response is outstanding. Never turn
         // the next queued item into an uncertain dispatch after admission stops.
         if (this.stopping || !bot.ready || !bot.host?.isReady) break;
-        const op = this.journal.reserveNext(this.lease, bot.binding);
+        const op = this.journal.reserveNext(this.lease, bot.binding, {
+          interruptKinds: ["permission"],
+          onlyInterrupts: permissionsOnly,
+        });
         if (!op) break;
+        if (op.receipt.kind === "permission") {
+          await this.dispatchPermission(bot, op);
+          continue;
+        }
         if (
           op.receipt.kind ||
           !op.payload ||
@@ -693,6 +806,69 @@ export class GatewayApplication {
       );
     }
   }
+  private async dispatchPermission(
+    bot: BoundBot,
+    op: OperationRecord
+  ): Promise<void> {
+    const payload = op.payload!;
+    const request = this.journal.getPermission(payload);
+    const target = this.journal.getOperation({
+      ...bot.binding,
+      operationId: String(payload.targetOperationId),
+    });
+    if (
+      !request ||
+      request.resolution ||
+      payload.instanceId !== bot.host!.instanceId ||
+      Date.parse(String(payload.expiresAt)) <= Date.now() ||
+      !target ||
+      terminal.has(target.execution)
+    ) {
+      this.journal.recordDisposition(this.lease, op.receipt, {
+        delivery: "rejected",
+        execution: "not_started",
+        result: { status: "expired" },
+        evidence: "permission_no_longer_live",
+      });
+      this.publishCommitted(bot, true);
+      return;
+    }
+    let result: unknown;
+    try {
+      result = await bot.host!.request("interaction.respond", {
+        ...payload,
+        operationId: op.receipt.operationId,
+        payloadDigest: op.payloadDigest,
+        policyRevision: op.policyRevision,
+      });
+    } catch {
+      result = { status: "unknown" };
+    }
+    const latest = this.journal.getOperation(op.receipt)!;
+    if (!terminal.has(latest.execution) && latest.delivery !== "rejected") {
+      if (
+        object(result) &&
+        ["applied", "expired", "stale", "unsupported"].includes(
+          String(result.status)
+        )
+      ) {
+        const status =
+          result.status === "stale"
+            ? "expired"
+            : result.status === "unsupported"
+              ? "failed"
+              : String(result.status);
+        this.journal.recordDisposition(this.lease, op.receipt, {
+          delivery: "accepted",
+          execution: "ended",
+          observation: "complete",
+          result: { status },
+          evidence: "correlated_permission_response",
+        });
+      } else this.markUnknown(bot, op);
+    }
+    this.publishCommitted(bot, true);
+  }
   private markUnknown(bot: BoundBot, op: OperationRecord): void {
     const latest = this.journal.getOperation(op.receipt)!;
     if (terminal.has(latest.execution) || latest.delivery === "rejected")
@@ -717,6 +893,8 @@ export class GatewayApplication {
         )
           this.markUnknown(bot, op);
       }
+      this.journal.closePermissions(this.lease, bot.binding, bot.config.name);
+      this.publishCommitted(bot, false);
       this.publishRoster();
     } catch {
       this.log(
@@ -767,9 +945,10 @@ export class GatewayApplication {
     // Storage committed the projection and source watermark together. A later
     // observer/roster failure cannot roll RAM back or nack that durable event.
     this.publishCommitted(bot, event.type === "turn.terminal");
-    if (event.type === "turn.terminal")
+    if (event.type === "turn.terminal" || event.type === "interaction.resolved")
       queueMicrotask(() => {
         void this.pump(bot);
+        void this.pump(bot, true);
       });
     return committed.ack;
   }
@@ -822,6 +1001,87 @@ export class GatewayApplication {
         phase: "working",
         text: "",
       });
+      return projection;
+    }
+    if (
+      event.type === "interaction.requested" ||
+      event.type === "interaction.resolved"
+    ) {
+      if (
+        bot.capabilities.interactions.permissions !== "exact-request" ||
+        payload.kind !== "permission"
+      )
+        throw new ProtocolError(
+          "capability_unavailable",
+          "Unsupported interaction type"
+        );
+      const requested = event.type === "interaction.requested";
+      const retained = this.journal.getPermission(payload as JsonObject);
+      const descriptor = requested
+        ? permissionRequest(payload as JsonObject)
+        : retained?.descriptor;
+      if (!descriptor || descriptor.interactionId !== event.interactionId)
+        throw new ProtocolError(
+          "invalid_permission",
+          "Permission event requires exact request identity"
+        );
+      const value = requested
+        ? descriptor
+        : permissionResolution(payload as JsonObject, descriptor);
+      if (requested && retained) {
+        if (payloadDigest(descriptor) !== payloadDigest(retained.descriptor))
+          throw new ProtocolError(
+            "permission_conflict",
+            "Permission descriptor changed"
+          );
+        return projection;
+      }
+      if (
+        !requested &&
+        retained?.resolution &&
+        payloadDigest(retained.resolution) === payloadDigest(value)
+      )
+        return projection;
+      const target = this.journal.getOperation({
+        ...bot.binding,
+        operationId: String(event.operationId),
+      });
+      if (
+        requested &&
+        (!turn ||
+          !target ||
+          target.delivery !== "accepted" ||
+          terminal.has(target.execution))
+      )
+        throw new ProtocolError(
+          "invalid_permission",
+          "Permission requires an active accepted turn"
+        );
+      projection.permission = requested
+        ? { request: descriptor }
+        : { resolution: value };
+      const entry = {
+        id: payloadDigest({
+          permission: permissionKey(descriptor),
+          ...(requested ? {} : { resolution: value }),
+        }),
+        operationId: event.operationId!,
+        turnId: event.turnId!,
+        role: "assistant",
+        origin: "bot",
+        text: "",
+        ts: new Date().toISOString(),
+        [requested ? "permission" : "permissionResolved"]: value,
+      };
+      projection.entries = [entry];
+      wire.push({ type: "append", bot: bot.config.name, entry });
+      if (requested)
+        projection.operation = {
+          execution: "waiting_for_input",
+          evidence: "correlated_permission_event",
+        };
+      // A resolved request alone does not prove that all native input waits
+      // ended. Subsequent turn observations establish resumed execution.
       return projection;
     }
     if (!turn)
@@ -1112,9 +1372,17 @@ export class GatewayApplication {
       );
       // Close rejects outstanding requests. Join their continuations before
       // recovery, lease release, or closing the shared SQLite connection.
-      await Promise.allSettled([...this.bots.values()].map((bot) => bot.pump));
+      await Promise.allSettled(
+        [...this.bots.values()].flatMap((bot) => [bot.pump, bot.permissionPump])
+      );
       try {
         this.journal.recoverInterrupted(this.lease);
+        for (const bot of this.bots.values())
+          this.journal.closePermissions(
+            this.lease,
+            bot.binding,
+            bot.config.name
+          );
         this.journal.releaseWriterLease(this.lease, {
           ownershipReconciled: results.every(
             (result) => result.status === "fulfilled"

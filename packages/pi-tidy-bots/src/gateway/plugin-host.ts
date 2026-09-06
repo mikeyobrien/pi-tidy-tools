@@ -708,6 +708,13 @@ export class PluginHost {
     params: JsonObject,
     maxRpcIdLength = this.instanceId.length + 17
   ): void {
+    this.assertRequestFits("operation.submit", params, maxRpcIdLength);
+  }
+  assertRequestFits(
+    method: string,
+    params: JsonObject,
+    maxRpcIdLength = this.instanceId.length + 17
+  ): void {
     if (
       !Number.isSafeInteger(maxRpcIdLength) ||
       maxRpcIdLength < this.instanceId.length + 17 ||
@@ -721,7 +728,7 @@ export class PluginHost {
       {
         jsonrpc: "2.0",
         id: "r".repeat(maxRpcIdLength),
-        method: "operation.submit",
+        method,
         params: {
           ...params,
           bindingId: this.options.bindingId,

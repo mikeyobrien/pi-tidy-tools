@@ -13,6 +13,7 @@ import {
 import { join } from "node:path";
 let init;
 let sequence = 0;
+const permissions = new Map();
 const dir = process.env.TIDY_DATA_DIR;
 const logPath = join(dir, "calls.jsonl");
 function record(value) {
@@ -172,7 +173,10 @@ input.on("line", (line) => {
           cancel: "unsupported",
           steer: false,
         },
-        interactions: { permissions: "none", questions: false },
+        interactions: {
+          permissions: p.config.permissions ? "exact-request" : "none",
+          questions: false,
+        },
         configuration: { model: false, thinking: false, compact: false },
         fleetTools: false,
       },
@@ -199,6 +203,35 @@ input.on("line", (line) => {
     });
   } else if (message.method === "operation.submit") {
     record({ method: "operation.submit", ...p });
+    if (p.input[0].text === "[permission]") {
+      const descriptor = {
+        kind: "permission",
+        bindingId: init.bindingId,
+        instanceId: init.instanceId,
+        operationId: p.operationId,
+        turnId: p.turnId,
+        interactionId: `permission:${p.operationId}`,
+        optionsDigest: "sha256:fixture-options",
+        expiresAt: new Date(Date.now() + 60000).toISOString(),
+        revision: "1",
+        options: [
+          { id: "once-17", label: "Allow once", kind: "allow-once" },
+          { id: "deny-17", label: "Deny", kind: "deny" },
+        ],
+      };
+      permissions.set(descriptor.interactionId, {
+        descriptor,
+        request: p,
+        submit: message,
+      });
+      event(p, "turn.started", {});
+      event(p, "interaction.requested", descriptor, {
+        interactionId: descriptor.interactionId,
+      });
+      // Acceptance is already observed, but the submit RPC intentionally stays
+      // pending to exercise the gateway's independent permission dispatch path.
+      return;
+    }
     if (p.input[0].text === "[exit-after-native]") {
       process.exit(0);
       return;
@@ -209,6 +242,31 @@ input.on("line", (line) => {
     }
     respond(message, { disposition: "accepted" });
     void execute(p);
+  } else if (message.method === "interaction.respond") {
+    record({ method: "interaction.respond", ...p });
+    const pending = permissions.get(p.interactionId);
+    if (!pending) {
+      respond(message, { status: "expired" });
+      return;
+    }
+    const resolution = {
+      ...pending.descriptor,
+      status: "applied",
+      optionId: p.optionId,
+    };
+    event(pending.request, "turn.terminal", {
+      execution: "ended",
+      observation: "complete",
+    });
+    event(pending.request, "interaction.resolved", resolution, {
+      interactionId: p.interactionId,
+    });
+    event(pending.request, "interaction.resolved", resolution, {
+      interactionId: p.interactionId,
+    });
+    respond(message, { status: "applied" });
+    respond(pending.submit, { disposition: "accepted" });
+    permissions.delete(p.interactionId);
   } else if (message.method === "events.ack") {
     record({ method: "events.ack", sequence: p.sourceSequence });
   } else if (message.method === "shutdown") {

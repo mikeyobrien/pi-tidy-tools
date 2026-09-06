@@ -36,7 +36,7 @@ async function waitFor<T>(
     await new Promise((resolve) => setTimeout(resolve, 15));
   }
 }
-async function fixture() {
+async function fixture(permissions = false) {
   const dir = await mkdtemp(join(tmpdir(), "tidy-gateway-application-"));
   const artifact = join(dir, "plugin");
   await mkdir(artifact);
@@ -79,6 +79,7 @@ async function fixture() {
       type: "object",
       properties: {
         health: { type: "string", enum: ["ready", "auth_required"] },
+        permissions: { type: "boolean" },
       },
       additionalProperties: false,
     })
@@ -99,7 +100,10 @@ async function fixture() {
     })
   );
   const manifest = `[gateway]\nregistry = "registry.json"\nenvironment = ["PATH"]\n[[bot]]\nname = "fixture"\ndir = "."\nbackend = "org.example.independent"\n`;
-  await writeFile(join(dir, "bots.toml"), manifest);
+  await writeFile(
+    join(dir, "bots.toml"),
+    manifest + (permissions ? "[bot.backend_config]\npermissions = true\n" : "")
+  );
   const handles: FleetHandle[] = [];
   let fleetToken = "disposable-test-token";
   const start = async () => {
@@ -207,6 +211,89 @@ async function fixture() {
     },
   };
 }
+
+test("HTTP permissions interrupt a pending submit and retain one late resolution and decision", async () => {
+  const f = await fixture(true);
+  try {
+    const handle = await f.start();
+    const binding = await f.binding(handle);
+    const { ws, events } = await f.socket(handle);
+    try {
+      assert.equal(
+        (await f.submit(handle, binding, "permission-target", "[permission]"))
+          .status,
+        202
+      );
+      const request = await waitFor<ObjectValue>(
+        () => events.find((e) => e.entry?.permission)?.entry.permission,
+        Boolean
+      );
+      const decision = {
+        kind: "permission",
+        operationId: "permission-decision",
+        conversationId: binding.conversationId,
+        bindingId: request.bindingId,
+        instanceId: request.instanceId,
+        targetOperationId: request.operationId,
+        turnId: request.turnId,
+        interactionId: request.interactionId,
+        optionsDigest: request.optionsDigest,
+        expiresAt: request.expiresAt,
+        revision: request.revision,
+        optionId: "once-17",
+      };
+      const decide = (body = decision) =>
+        f.request(
+          handle,
+          `/api/bots/fixture/permissions/${encodeURIComponent(request.interactionId)}`,
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-tidy-client-contract": "2",
+              "x-tidy-binding-revision": binding.bindingRevision,
+            },
+            body: JSON.stringify(body),
+          }
+        );
+      assert.equal(
+        (await decide({ ...decision, revision: "wrong" })).status,
+        409
+      );
+      assert.equal((await decide()).status, 202);
+      const receipt = await waitFor(
+        () => f.inspect(handle, decision.operationId),
+        (v) => v.execution === "ended"
+      );
+      assert.deepEqual(receipt.result, { status: "applied" });
+      await waitFor(
+        () => events.filter((e) => e.entry?.permissionResolved),
+        (v) => v.length === 1
+      );
+      assert.deepEqual((await decide()).body, receipt);
+      assert.equal(
+        (await decide({ ...decision, optionId: "deny-17" })).status,
+        409
+      );
+      assert.equal(
+        (await f.inspect(handle, "permission-target")).execution,
+        "ended"
+      );
+      assert.equal(
+        (await f.calls(binding)).filter(
+          (c) => c.method === "interaction.respond"
+        ).length,
+        1
+      );
+      assert.equal(events.filter((e) => e.entry?.permissionResolved).length, 1);
+      assert.equal(events.filter((e) => e.entry?.role === "user").length, 1);
+    } finally {
+      ws.close();
+    }
+  } finally {
+    await f.cleanup();
+  }
+});
 
 test("hard gateway crash recovers expired ownership without repeating native admission", async () => {
   const f = await fixture();

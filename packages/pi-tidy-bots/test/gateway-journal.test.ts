@@ -15,6 +15,7 @@ import {
   type ConversationBinding,
   type PluginSourceEvent,
   type WriterLease,
+  type JsonObject,
 } from "../src/gateway/journal.ts";
 
 const binding: ConversationBinding = {
@@ -96,6 +97,201 @@ function accepted(journal: GatewayJournal, lease: WriterLease): void {
     execution: "running",
   });
 }
+
+function permissionFixture(t: TestContext) {
+  const f = fixture(t);
+  accepted(f.journal, f.lease);
+  const turnId = f.journal.getOperationRecord(key())!.turnId!;
+  const descriptor: JsonObject = {
+    bindingId: binding.bindingId,
+    instanceId: "instance-1",
+    operationId: key().operationId,
+    turnId,
+    interactionId: "permission-1",
+    optionsDigest: "sha256:original-options",
+    revision: "request-1",
+    expiresAt: new Date(1050).toISOString(),
+    options: [
+      { id: "yes-17", label: "Allow once", kind: "allow-once" },
+      { id: "no-17", label: "Deny", kind: "deny" },
+    ],
+  };
+  const event = source(f.lease, 1, {
+    type: "interaction.requested",
+    turnId,
+    payload: descriptor,
+  });
+  f.journal.commitPluginEvent(f.lease, event, {
+    permission: { request: descriptor },
+  });
+  const decision = intent("decision-1", {
+    kind: "permission",
+    payload: {
+      ...descriptor,
+      kind: "permission",
+      operationId: "decision-1",
+      targetOperationId: descriptor.operationId,
+      optionId: "yes-17",
+    },
+  });
+  return { ...f, descriptor, decision, event, turnId };
+}
+
+test("permission admission retains one exact choice across expiry and reopen", (t) => {
+  const f = permissionFixture(t);
+  const first = f.journal.admitPermission(f.lease, f.decision, "instance-1");
+  assert.equal(first.created, true);
+  code(
+    () =>
+      f.journal.admitPermission(
+        f.lease,
+        {
+          ...f.decision,
+          operationId: "decision-2",
+        },
+        "instance-1"
+      ),
+    "operation_conflict"
+  );
+  code(
+    () =>
+      f.journal.admitPermission(
+        f.lease,
+        {
+          ...f.decision,
+          payload: { ...f.decision.payload, optionId: "no-17" },
+        },
+        "instance-1"
+      ),
+    "operation_conflict"
+  );
+  f.clock.value = 1060;
+  const reopened = f.open();
+  assert.deepEqual(
+    reopened.admitPermission(f.lease, f.decision, "replacement"),
+    {
+      receipt: first.receipt,
+      created: false,
+    }
+  );
+  assert.equal(
+    reopened.getPermission(f.descriptor)?.decisionOperationId,
+    "decision-1"
+  );
+});
+
+test("permission interrupt bypasses queued text and resolves unknown delivery atomically", (t) => {
+  const f = permissionFixture(t);
+  f.journal.admit(f.lease, intent("next-message"));
+  f.journal.admitPermission(f.lease, f.decision, "instance-1");
+  const reserved = f.journal.reserveNext(f.lease, binding, {
+    interruptKinds: ["permission"],
+  });
+  assert.equal(reserved?.receipt.operationId, "decision-1");
+  f.journal.recordDisposition(f.lease, key("decision-1"), {
+    delivery: "unknown",
+    execution: "unknown",
+    observation: "reconciliation_required",
+  });
+  const resolution = { ...f.descriptor, status: "applied", optionId: "no-17" };
+  const event = source(f.lease, 2, {
+    type: "interaction.resolved",
+    turnId: f.turnId,
+    payload: resolution,
+  });
+  code(
+    () =>
+      f.journal.commitPluginEvent(f.lease, event, {
+        permission: { resolution },
+      }),
+    "permission_conflict"
+  );
+  assert.equal(f.journal.sourceAck(binding.bindingId), 1);
+  assert.equal(f.journal.getPermission(f.descriptor)?.resolution, undefined);
+  resolution.optionId = "yes-17";
+  assert.equal(
+    f.journal.commitPluginEvent(
+      f.lease,
+      {
+        ...event,
+        payload: resolution,
+      },
+      { permission: { resolution } }
+    ).ack,
+    2
+  );
+  const receipt = f.journal.getOperation(key("decision-1"))!;
+  assert.equal(receipt.delivery, "accepted");
+  assert.equal(receipt.execution, "ended");
+  assert.deepEqual(receipt.result, { status: "applied" });
+  code(
+    () => f.journal.expireOperation(f.lease, key("decision-1")),
+    "operation_retained"
+  );
+  assert.ok(f.journal.getOperationRecord(key("decision-1"))!.payload);
+});
+
+test("permission descriptor conflicts and expired decisions leave no admitted operation", (t) => {
+  const f = permissionFixture(t);
+  code(
+    () =>
+      f.journal.commitPluginEvent(
+        f.lease,
+        {
+          ...f.event,
+          eventId: "changed-request",
+          sourceSequence: 2,
+        },
+        { permission: { request: { ...f.descriptor, revision: "changed" } } }
+      ),
+    "permission_conflict"
+  );
+  assert.equal(f.journal.sourceAck(binding.bindingId), 1);
+  f.clock.value = 1050;
+  code(
+    () => f.journal.admitPermission(f.lease, f.decision, "instance-1"),
+    "interaction_expired"
+  );
+  assert.equal(f.journal.getOperation(key("decision-1")), null);
+});
+
+test("lost permission instances expire queued decisions and preserve ambiguous dispatched choices", (t) => {
+  const f = permissionFixture(t);
+  f.journal.admitPermission(f.lease, f.decision, "instance-1");
+  f.journal.closePermissions(f.lease, binding, "renamed-bot", "instance-1");
+  assert.equal(f.journal.getPermission(f.descriptor)?.resolution, undefined);
+  f.journal.closePermissions(f.lease, binding, "renamed-bot", "replacement");
+  assert.equal(
+    f.journal.getPermission(f.descriptor)?.resolution?.status,
+    "expired"
+  );
+  assert.equal(f.journal.getOperation(key("decision-1"))?.delivery, "rejected");
+  const transcript = f.journal.readTranscript(binding);
+  assert.equal(
+    transcript.filter((entry) => entry.permissionResolved).length,
+    1
+  );
+  f.journal.closePermissions(f.lease, binding, "renamed-bot");
+  assert.deepEqual(f.journal.readTranscript(binding), transcript);
+
+  const g = permissionFixture(t);
+  g.journal.admitPermission(g.lease, g.decision, "instance-1");
+  g.journal.reserveNext(g.lease, binding, { interruptKinds: ["permission"] });
+  g.journal.closePermissions(g.lease, binding, "fixture");
+  assert.equal(
+    g.journal.getPermission(g.descriptor)?.resolution?.status,
+    "unknown"
+  );
+  // Losing the future is not proof the chosen native response was consumed.
+  assert.equal(
+    g.journal.getOperation(key("decision-1"))?.delivery,
+    "dispatching"
+  );
+  assert.equal(
+    g.journal.admitPermission(g.lease, g.decision, "replacement").created,
+    false
+  );
+});
 
 test("gateway storage pins the real engine, WAL and FULL synchronous durability", (t) => {
   const { journal, path } = fixture(t);

@@ -84,6 +84,10 @@ const statuses: Record<string, number> = {
   bot_not_found: 404,
   operation_not_found: 404,
   invalid_payload: 400,
+  invalid_permission: 400,
+  permission_not_found: 404,
+  permission_conflict: 409,
+  interaction_expired: 410,
   invalid_identity: 400,
   invalid_cursor: 400,
   client_upgrade_required: 426,
@@ -310,6 +314,19 @@ export async function startGatewayFleet(
             String(request.headers["x-tidy-binding-revision"])
           );
           json(response, 202, receipt);
+          return;
+        }
+        const permission = /^permissions\/([^/]+)$/.exec(action);
+        if (request.method === "POST" && permission) {
+          json(
+            response,
+            202,
+            application.admitPermission(
+              name,
+              decodeURIComponent(permission[1]),
+              await body(request)
+            )
+          );
           return;
         }
         throw new ProtocolError(

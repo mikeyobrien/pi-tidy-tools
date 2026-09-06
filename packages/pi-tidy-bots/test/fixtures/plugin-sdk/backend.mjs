@@ -5,10 +5,12 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { runPlugin, spawnOwnedProcess } from "SDK_INDEX_URL";
+const { HermesInteractions } = await import("HERMES_INTERACTIONS_URL");
 
 let ownedChild;
 let ownedLaunchId;
 let ownedHandle;
+let interactions;
 const log = (value) => {
   const file = openSync(
     join(process.env.TIDY_DATA_DIR, "native-effects.jsonl"),
@@ -41,6 +43,15 @@ const runtime = runPlugin({
   capabilities,
   ownership: process.env.FIXTURE_OWNERSHIP ?? "owned",
   onInitialize(ctx) {
+    if (ctx.initialization.config.mode?.startsWith("hermes-")) {
+      interactions = new HermesInteractions(ctx, {
+        timeoutMs:
+          ctx.initialization.config.mode === "hermes-lost-receipt" ? 150 : 3000,
+        onFailure: () => {
+          void runtime.close("permission_observation_gap");
+        },
+      });
+    }
     if (ctx.initialization.config.mode === "owned-child") {
       ownedChild = spawn(
         process.execPath,
@@ -51,6 +62,7 @@ const runtime = runPlugin({
     }
   },
   async onClose(info, ctx) {
+    interactions?.close();
     log({
       close: info.reason,
       ownership: info.ownership,
@@ -138,7 +150,42 @@ const runtime = runPlugin({
         operationId: params.operationId,
         turnId: params.turnId,
       };
+      if (interactions)
+        ctx.emit({
+          ...identity,
+          type: "operation.disposition",
+          payload: { disposition: "accepted" },
+        });
       ctx.emit({ ...identity, type: "turn.started", payload: {} });
+      if (interactions) {
+        const permissionId = "native-permission-1";
+        const response = await interactions.onPermission(
+          {
+            _meta: { tidy: { permissionId } },
+            options: [
+              {
+                optionId: "allow_once",
+                kind: "allow_once",
+                name: "Allow once",
+              },
+              { optionId: "deny", kind: "reject_once", name: "Deny" },
+            ],
+          },
+          17,
+          identity,
+          ctx.signal
+        );
+        log({ nativePermissionResponse: response });
+        if (
+          response.outcome.outcome === "selected" &&
+          ctx.initialization.config.mode === "hermes-confirmed"
+        )
+          interactions.onPermissionConsumed({
+            ...identity,
+            permissionId,
+            optionId: response.outcome.optionId,
+          });
+      }
       ctx.emit({
         ...identity,
         messageId: `message:${params.operationId}`,
@@ -181,6 +228,7 @@ const runtime = runPlugin({
     },
     "interaction.respond"(params) {
       log({ method: "interaction.respond", operationId: params.operationId });
+      if (interactions) return interactions.respond(params);
       return { status: "applied" };
     },
     "session.configure"(params) {

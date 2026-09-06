@@ -128,7 +128,6 @@ async function fixture(version = "0.20.5") {
     environment_keys: [],
   };
   const hooks = {
-    onPermission: async () => ({ outcome: { outcome: "cancelled" } }),
     onFailure: (error: { code: string }) => {
       failures.push(error.code);
     },
@@ -208,6 +207,65 @@ test("guarded Hermes ACP runs through the reserved SDK launcher and normalizes n
       openHermesRuntime(f.ctx, f.launchId, f.config, f.hooks),
       { code: "launch_already_reserved" }
     );
+  } finally {
+    await runtime?.close();
+    await f.cleanup();
+  }
+});
+
+test("guarded Hermes permission round trip resolves through the SDK store only after native callback receipt", async () => {
+  const f = await fixture();
+  let runtime: HermesRuntime | undefined;
+  try {
+    runtime = await openHermesRuntime(f.ctx, f.launchId, f.config, f.hooks);
+    f.store.reserve("operation:target", "operation.submit", "target-intent", {
+      operationId: "target",
+      turnId: "turn",
+      conversationId: "c",
+    });
+    const prompt = runtime.session.submit("target", "turn", [
+      { type: "text", text: "[permission-callback]" },
+    ]);
+    const deadline = Date.now() + 3000;
+    while (!f.events.some((event) => event.type === "interaction.requested")) {
+      if (Date.now() >= deadline)
+        throw new Error("Permission fixture did not request input");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const descriptor = f.events.find(
+      (event) => event.type === "interaction.requested"
+    )!.payload;
+    assert.equal(
+      f.events.some((event) => event.type === "interaction.resolved"),
+      false
+    );
+    const decision = {
+      ...descriptor,
+      operationId: "control",
+      targetOperationId: "target",
+      optionId: "allow_once",
+      payloadDigest: "decision-intent",
+    };
+    f.store.reserve(
+      "operation:control",
+      "interaction.respond",
+      decision.payloadDigest,
+      decision
+    );
+    assert.deepEqual(await runtime.respond(decision), { status: "applied" });
+    assert.deepEqual(await prompt, { disposition: "accepted" });
+    const resolution = f.events.find(
+      (event) => event.type === "interaction.resolved"
+    )!;
+    assert.equal(resolution.payload.status, "applied");
+    assert.equal(resolution.payload.optionId, "allow_once");
+    assert.equal(resolution.interactionId, descriptor.interactionId);
+    assert.deepEqual(f.store.inspect("target"), {
+      disposition: "accepted",
+      execution: "ended",
+      observation: "complete",
+    });
+    assert.deepEqual(f.failures, []);
   } finally {
     await runtime?.close();
     await f.cleanup();

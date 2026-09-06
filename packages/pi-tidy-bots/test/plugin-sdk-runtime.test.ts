@@ -39,10 +39,15 @@ async function fixture(nativeProfile = false) {
       new URL("./fixtures/plugin-sdk/backend.mjs", import.meta.url),
       "utf8"
     )
-  ).replace(
-    "SDK_INDEX_URL",
-    new URL("../src/plugin-sdk/index.ts", import.meta.url).href
-  );
+  )
+    .replace(
+      "HERMES_INTERACTIONS_URL",
+      new URL("../backends/hermes/interactions.ts", import.meta.url).href
+    )
+    .replace(
+      "SDK_INDEX_URL",
+      new URL("../src/plugin-sdk/index.mjs", import.meta.url).href
+    );
   await writeFile(
     join(artifact, "backend.mjs"),
     nativeProfile
@@ -785,6 +790,64 @@ test("incoming negotiated frame limit counts whitespace before any native invoca
     await f.cleanup();
   }
 });
+
+for (const mode of ["hermes-confirmed", "hermes-lost-receipt"]) {
+  test(`Hermes SDK controls retain ${mode} without dispatching a duplicate native decision`, async () => {
+    const f = await fixture();
+    try {
+      const host = await f.start({ mode });
+      await host.request("session.open", open);
+      const prompt = host.request("operation.submit", submit());
+      await until(() =>
+        f.events.some((event) => event.type === "interaction.requested")
+      );
+      const event = f.events.find(
+        (event) => event.type === "interaction.requested"
+      )!;
+      const decision = {
+        ...event.payload,
+        operationId: "control-1",
+        targetOperationId: "op-one",
+        optionId: "allow_once",
+        payloadDigest: "control-digest",
+      };
+      const result = await host.request("interaction.respond", decision);
+      assert.deepEqual(result, {
+        status: mode === "hermes-confirmed" ? "applied" : "unknown",
+      });
+      assert.deepEqual(
+        await host.request("interaction.respond", decision),
+        result
+      );
+      await prompt;
+      await until(() =>
+        f.events.some((event) => event.type === "interaction.resolved")
+      );
+      assert.equal(
+        f.events.filter((event) => event.type === "interaction.resolved")
+          .length,
+        1
+      );
+      assert.equal(
+        f.events.find((event) => event.type === "interaction.resolved")!.payload
+          .status,
+        (result as any).status
+      );
+      const effects = await f.effects();
+      assert.equal(
+        effects.filter((entry) => entry.method === "interaction.respond")
+          .length,
+        1
+      );
+      assert.equal(
+        effects.filter((entry) => entry.nativePermissionResponse).length,
+        1
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+}
 
 test("permission decisions fence the exact current instance and immutable offered option", async () => {
   const f = await fixture();

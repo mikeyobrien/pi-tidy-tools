@@ -13,6 +13,7 @@ import {
   type JsonObject,
 } from "@mobrienv/pi-tidy-bots/plugin-protocol";
 import { HermesSession, type HermesSessionOptions } from "./session.ts";
+import { HermesInteractions } from "./interactions.ts";
 
 export interface HermesConfiguration {
   executable: string;
@@ -102,6 +103,8 @@ export interface HermesRuntime {
   /** Wrapper exit is not proof that separately launched tools were reconciled. */
   closed: Promise<void>;
   close(): Promise<void>;
+  /** SDK interaction.respond handler; requires its existing durable reservation. */
+  respond(params: JsonObject): Promise<unknown>;
 }
 
 /** The caller's session.open reservation must precede this fresh native launch.
@@ -112,10 +115,7 @@ export async function openHermesRuntime(
   ctx: PluginContext,
   launchId: string,
   config: JsonObject,
-  hooks: Pick<
-    HermesSessionOptions,
-    "onPermission" | "onFailure" | "onPermissionConsumed"
-  >
+  hooks: Pick<HermesSessionOptions, "onFailure">
 ): Promise<HermesRuntime> {
   const configuration = await validateHermesConfiguration(config);
   const process = await spawnOwnedProcess(ctx, {
@@ -138,15 +138,27 @@ export async function openHermesRuntime(
   // Drain private native diagnostics without storing or forwarding their contents.
   process.child.stderr!.resume();
   let session: HermesSession | undefined;
+  let interactions: HermesInteractions | undefined;
   let closing: Promise<void> | undefined;
   const close = (): Promise<void> => {
     if (!closing) {
-      session?.close();
-      closing = process.close();
+      closing = Promise.resolve().then(async () => {
+        try {
+          session?.close();
+          interactions?.close();
+        } finally {
+          await process.close();
+        }
+      });
     }
     return closing;
   };
   try {
+    const onFailure = (error: ProtocolError) => {
+      void close();
+      hooks.onFailure(error);
+    };
+    interactions = new HermesInteractions(ctx, { onFailure });
     session = new HermesSession({
       input: process.child.stdin!,
       output: process.child.stdout!,
@@ -154,12 +166,9 @@ export async function openHermesRuntime(
       maxPendingRequests: ctx.initialization.limits.maxPendingRequests,
       requestTimeoutMs: ctx.initialization.limits.commandTimeoutMs,
       emit: (event) => ctx.emit(event as EventInput),
-      onPermission: hooks.onPermission,
-      onPermissionConsumed: hooks.onPermissionConsumed,
-      onFailure: (error) => {
-        void close();
-        hooks.onFailure(error);
-      },
+      onPermission: interactions.onPermission,
+      onPermissionConsumed: interactions.onPermissionConsumed,
+      onFailure,
     });
     const nativeReference = await session.open(ctx.initialization.workspace);
     ctx.signal.throwIfAborted();
@@ -169,6 +178,7 @@ export async function openHermesRuntime(
       launchId,
       closed: process.closed,
       close,
+      respond: (params) => interactions!.respond(params),
     };
   } catch (error) {
     await close();

@@ -91,6 +91,12 @@ class FakeAgent:
             self.states[session_id].agent.run_conversation(user_message=text)
         except Exception:
             pass  # Pinned Hermes can return end_turn after an executor error.
+        if text == "[permission-callback]":
+            self.connection.use_permission_bridge()
+            factory = sys.modules["acp_adapter.permissions"].make_approval_callback
+            callback = factory(self.connection.request_permission, asyncio.get_running_loop(), session_id)
+            result = await asyncio.to_thread(callback)
+            record("prompt_permission", nativeResult=result)
         if text == "[update-error]":
             try:
                 await self.connection.session_update(session_id, {"fail": True})
@@ -123,6 +129,10 @@ async def run_agent(agent, **kwargs):
     class Connection:
         choice = "allow_once"
         fail_receipts = False
+        permission_bridge = False
+
+        def use_permission_bridge(self):
+            self.permission_bridge = True
 
         async def ext_notification(self, method, params):
             if self.fail_receipts:
@@ -137,6 +147,16 @@ async def run_agent(agent, **kwargs):
         async def request_permission(self, session_id, tool_call, options, **kwargs):
             record("permission_options", options=[option.option_id for option in options])
             record("permission_identity", tidy=kwargs.get("tidy"))
+            if self.permission_bridge:
+                print(json.dumps({"jsonrpc": "2.0", "id": 701, "method": "session/request_permission", "params": {
+                    "sessionId": session_id, "toolCall": tool_call, "_meta": kwargs,
+                    "options": [{"optionId": option.option_id, "kind": option.kind, "name": option.option_id} for option in options],
+                }}), flush=True)
+                response = json.loads(sys.stdin.readline())
+                if response.get("id") != 701 or "result" not in response:
+                    raise ValueError("Uncorrelated permission fixture response")
+                outcome = response["result"]["outcome"]
+                return SimpleNamespace(outcome=SimpleNamespace(outcome=outcome["outcome"], option_id=outcome.get("optionId")))
             return SimpleNamespace(outcome=SimpleNamespace(outcome="selected", option_id=self.choice))
 
     connection = Connection()

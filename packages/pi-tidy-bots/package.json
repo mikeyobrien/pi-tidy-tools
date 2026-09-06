@@ -46,6 +46,8 @@
     "backends/pi/*",
     "backends/hermes/*.py",
     "backends/hermes/*.ts",
+    "backends/hermes/*.mjs",
+    "backends/hermes/*.json",
     "vendor/**/*.ts",
     "public/**",
     "README.md",

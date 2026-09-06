@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { existsSync } from "node:fs";
 import {
@@ -8,6 +9,7 @@ import {
   mkdtemp,
   readFile,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { WebSocket } from "ws";
@@ -25,7 +27,9 @@ const python =
   process.env.TIDY_TEST_PYTHON ??
   (existsSync(candidate) ? candidate : "/usr/bin/python3");
 
-async function setup() {
+async function setup(
+  artifact = fileURLToPath(new URL("../backends/hermes", import.meta.url))
+) {
   const dir = await mkdtemp(join(tmpdir(), "tidy-hermes-adapter-"));
   const source = join(dir, "source"),
     home = join(dir, "home"),
@@ -62,9 +66,6 @@ async function setup() {
   await writeFile(
     join(profile, "config.yaml"),
     JSON.stringify({ approvals: { mode: "manual" } })
-  );
-  const artifact = fileURLToPath(
-    new URL("../backends/hermes", import.meta.url)
   );
   const registry = join(dir, "registry.json");
   await writeFile(
@@ -150,6 +151,76 @@ async function setup() {
     },
   };
 }
+
+test("packed Hermes artifact contains its executable contract and runs after extraction", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "tidy-hermes-package-"));
+  let f: Awaited<ReturnType<typeof setup>> | undefined;
+  try {
+    const packed = spawnSync(
+      "npm",
+      ["pack", "--json", "--ignore-scripts", "--pack-destination", dir],
+      {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        encoding: "utf8",
+        timeout: 30000,
+      }
+    );
+    assert.equal(packed.status, 0, packed.stderr);
+    const metadata = JSON.parse(packed.stdout)[0];
+    for (const path of [
+      "backend.mjs",
+      "backend.json",
+      "config.schema.json",
+      "adapter.ts",
+      "native_guard.py",
+      "native_owned.py",
+    ])
+      assert.ok(
+        metadata.files.some(
+          (file: { path: string }) => file.path === `backends/hermes/${path}`
+        ),
+        `Package omitted ${path}`
+      );
+    const extracted = spawnSync(
+      "tar",
+      ["-xzf", join(dir, metadata.filename), "-C", dir],
+      { encoding: "utf8", timeout: 30000 }
+    );
+    assert.equal(extracted.status, 0, extracted.stderr);
+    // Reuse already installed dependencies without a network install. All
+    // package-owned source, manifests and entrypoints come from the tarball.
+    await symlink(
+      fileURLToPath(new URL("../../../node_modules", import.meta.url)),
+      join(dir, "package/node_modules"),
+      "dir"
+    );
+    f = await setup(join(dir, "package/backends/hermes"));
+    assert.equal(
+      ((await f.host.request("session.open", f.open)) as any).nativeReference,
+      "hermes:native-one"
+    );
+    assert.equal(
+      (
+        (await f.host.request(
+          "operation.submit",
+          f.submit("packed artifact")
+        )) as any
+      ).disposition,
+      "accepted"
+    );
+    await until(() =>
+      f!.events.some((event) => event.type === "turn.terminal")
+    );
+    assert.equal(
+      f.events.find((event) => event.type === "turn.terminal")!.payload
+        .execution,
+      "ended"
+    );
+  } finally {
+    await f?.cleanup();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 async function until(probe: () => boolean | Promise<boolean>) {
   const deadline = Date.now() + 5000;

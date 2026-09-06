@@ -382,6 +382,299 @@ test("releasing a lease is not proof its native process stopped", (t) => {
   assert.equal(journal.acquireWriterLease("third").generation, 3);
 });
 
+function ownedFixture(t: TestContext) {
+  const f = fixture(t);
+  f.journal.releaseWriterLease(f.lease, { ownershipReconciled: true });
+  const ownerProcess = { pid: 1001, startedAt: "boot-1:owner-birth-1" };
+  const lease = f.journal.acquireWriterLease("tracked-writer", {
+    ttlMs: 100,
+    ownerProcess,
+  });
+  return { ...f, lease, ownerProcess };
+}
+
+test("legacy writer state remains readable without fabricating supervisor proof", (t) => {
+  const { journal, lease } = fixture(t);
+  assert.equal(journal.getSupervisorRecord(), null);
+  assert.deepEqual(journal.getWriterState(), { ...lease, reconciled: false });
+  code(
+    () =>
+      journal.prepareOwnedLaunch(lease, {
+        launchId: "launch-1",
+        bindingId: binding.bindingId,
+      }),
+    "ownership_missing"
+  );
+  assert.equal(journal.getSupervisorRecord(), null);
+});
+
+test("process ownership and prepared/started/stopped launch boundaries persist across reopen", (t) => {
+  const { journal, lease, ownerProcess, open } = ownedFixture(t);
+  assert.deepEqual(journal.getSupervisorRecord(), {
+    version: 1,
+    generation: lease.generation,
+    ownerProcess,
+    launches: [],
+  });
+  const prepared = journal.prepareOwnedLaunch(lease, {
+    launchId: "launch-1",
+    bindingId: binding.bindingId,
+  });
+  assert.equal(prepared.state, "prepared");
+  assert.deepEqual(
+    journal.prepareOwnedLaunch(lease, {
+      launchId: "launch-1",
+      bindingId: binding.bindingId,
+    }),
+    prepared
+  );
+  journal.close();
+  const reopened = open();
+  assert.deepEqual(reopened.getSupervisorRecord()!.launches, [prepared]);
+  const process = {
+    pid: 2002,
+    startedAt: "boot-1:wrapper-birth-1",
+    token: "unguessable-launch-token",
+  };
+  const started = reopened.recordOwnedLaunch(lease, "launch-1", process);
+  assert.deepEqual(
+    reopened.recordOwnedLaunch(lease, "launch-1", process),
+    started
+  );
+  code(
+    () => reopened.releaseWriterLease(lease, { ownershipReconciled: true }),
+    "ownership_unreconciled"
+  );
+  reopened.close();
+  const again = open();
+  assert.deepEqual(again.getSupervisorRecord()!.launches, [started]);
+  const stopped = again.completeOwnedLaunch(lease, "launch-1");
+  assert.deepEqual(stopped, { ...started, state: "stopped" });
+  assert.deepEqual(again.completeOwnedLaunch(lease, "launch-1"), stopped);
+  again.releaseWriterLease(lease, { ownershipReconciled: true });
+  assert.equal(again.getWriterState()!.reconciled, true);
+  assert.deepEqual(again.getSupervisorRecord()!.launches, [stopped]);
+});
+
+test("launch identities cannot change, revive, or concurrently own one binding", (t) => {
+  const { journal, lease } = ownedFixture(t);
+  code(
+    () =>
+      journal.recordOwnedLaunch(lease, "absent", {
+        pid: 2002,
+        startedAt: "birth",
+        token: "token",
+      }),
+    "launch_not_prepared"
+  );
+  journal.prepareOwnedLaunch(lease, {
+    launchId: "one",
+    bindingId: binding.bindingId,
+  });
+  code(
+    () =>
+      journal.prepareOwnedLaunch(lease, {
+        launchId: "two",
+        bindingId: binding.bindingId,
+      }),
+    "binding_owned"
+  );
+  code(
+    () =>
+      journal.prepareOwnedLaunch(lease, {
+        launchId: "one",
+        bindingId: "different-binding",
+      }),
+    "launch_conflict"
+  );
+  journal.recordOwnedLaunch(lease, "one", {
+    pid: 2002,
+    startedAt: "birth",
+    token: "token",
+  });
+  for (const changed of [
+    { pid: 2003, startedAt: "birth", token: "token" },
+    { pid: 2002, startedAt: "reused-pid-birth", token: "token" },
+    { pid: 2002, startedAt: "birth", token: "new-token" },
+  ])
+    code(
+      () => journal.recordOwnedLaunch(lease, "one", changed),
+      "launch_conflict"
+    );
+  journal.completeOwnedLaunch(lease, "one");
+  code(
+    () =>
+      journal.prepareOwnedLaunch(lease, {
+        launchId: "one",
+        bindingId: binding.bindingId,
+      }),
+    "launch_conflict"
+  );
+  code(
+    () =>
+      journal.recordOwnedLaunch(lease, "one", {
+        pid: 2002,
+        startedAt: "birth",
+        token: "token",
+      }),
+    "launch_conflict"
+  );
+  journal.prepareOwnedLaunch(lease, {
+    launchId: "two",
+    bindingId: binding.bindingId,
+  });
+  // A wrapper that never activated may be completed after the supervisor proves its absence.
+  assert.equal(journal.completeOwnedLaunch(lease, "two").state, "stopped");
+});
+
+test("ownership metadata failure rolls back lease acquisition and preserves a closed activation gate", (t) => {
+  const { journal, lease, path } = fixture(t);
+  journal.releaseWriterLease(lease, { ownershipReconciled: true });
+  const before = journal.getWriterState();
+  sql(
+    path,
+    "CREATE TRIGGER reject_ownership BEFORE INSERT ON gateway_meta WHEN NEW.key='supervisor_ownership_v1' BEGIN SELECT RAISE(ABORT, 'ownership storage failed'); END"
+  );
+  assert.throws(
+    () =>
+      journal.acquireWriterLease("tracked", {
+        ownerProcess: { pid: 1001, startedAt: "birth" },
+      }),
+    /ownership storage failed/
+  );
+  assert.deepEqual(journal.getWriterState(), before);
+  assert.equal(journal.getSupervisorRecord(), null);
+  sql(path, "DROP TRIGGER reject_ownership");
+  const tracked = journal.acquireWriterLease("tracked", {
+    ownerProcess: { pid: 1001, startedAt: "birth" },
+  });
+  journal.prepareOwnedLaunch(tracked, {
+    launchId: "launch",
+    bindingId: binding.bindingId,
+  });
+  sql(
+    path,
+    "CREATE TRIGGER reject_recording BEFORE UPDATE ON gateway_meta WHEN NEW.key='supervisor_ownership_v1' BEGIN SELECT RAISE(ABORT, 'recording unavailable'); END"
+  );
+  assert.throws(
+    () =>
+      journal.recordOwnedLaunch(tracked, "launch", {
+        pid: 2002,
+        startedAt: "wrapper-birth",
+        token: "token",
+      }),
+    /recording unavailable/
+  );
+  assert.equal(journal.getSupervisorRecord()!.launches[0].state, "prepared");
+});
+
+test("replacement ownership proof is bound to the inspected generation and stale launch writers are fenced", (t) => {
+  const { journal, lease, clock } = ownedFixture(t);
+  journal.prepareOwnedLaunch(lease, {
+    launchId: "old",
+    bindingId: binding.bindingId,
+  });
+  journal.recordOwnedLaunch(lease, "old", {
+    pid: 2002,
+    startedAt: "birth",
+    token: "token",
+  });
+  clock.value += 101;
+  const ownerProcess = { pid: 3003, startedAt: "boot-1:replacement-birth" };
+  code(
+    () =>
+      journal.acquireWriterLease("replacement", {
+        ownerProcess,
+        previousGeneration: lease.generation,
+      }),
+    "ownership_unreconciled"
+  );
+  const replacement = journal.acquireWriterLease("replacement", {
+    ownerProcess,
+    previousOwnerReconciled: true,
+    previousGeneration: lease.generation,
+  });
+  assert.deepEqual(journal.getSupervisorRecord(), {
+    version: 1,
+    generation: replacement.generation,
+    ownerProcess,
+    launches: [],
+  });
+  code(
+    () =>
+      journal.acquireWriterLease("third", {
+        ownerProcess,
+        previousOwnerReconciled: true,
+        previousGeneration: lease.generation,
+      }),
+    "ownership_changed"
+  );
+  code(() => journal.completeOwnedLaunch(lease, "old"), "stale_writer");
+  code(
+    () =>
+      journal.prepareOwnedLaunch(lease, {
+        launchId: "stale",
+        bindingId: binding.bindingId,
+      }),
+    "stale_writer"
+  );
+  code(
+    () =>
+      journal.acquireWriterLease("replacement", {
+        ownerProcess: { ...ownerProcess, pid: 4004 },
+      }),
+    "owner_process_conflict"
+  );
+});
+
+test("malformed, duplicate and mismatched ownership metadata never become empty recovery evidence", (t) => {
+  const { journal, lease, ownerProcess, path } = ownedFixture(t);
+  const valid = {
+    version: 1,
+    generation: lease.generation,
+    ownerProcess,
+    launches: [],
+  };
+  function replace(value: unknown) {
+    const db = new DatabaseSync(path);
+    try {
+      db.prepare(
+        "UPDATE gateway_meta SET value=? WHERE key='supervisor_ownership_v1'"
+      ).run(JSON.stringify(value));
+    } finally {
+      db.close();
+    }
+  }
+  const launch = {
+    launchId: "one",
+    bindingId: binding.bindingId,
+    state: "prepared",
+  };
+  for (const invalid of [
+    null,
+    {},
+    { ...valid, version: 2 },
+    { ...valid, ownerProcess: { pid: 0, startedAt: "birth" } },
+    { ...valid, launches: [launch, launch] },
+    { ...valid, launches: [{ ...launch, state: "started" }] },
+    {
+      ...valid,
+      launches: [{ ...launch, pid: 20, startedAt: "birth", token: "token" }],
+    },
+  ]) {
+    replace(invalid);
+    code(() => journal.getSupervisorRecord(), "invalid_ownership");
+  }
+  replace({ ...valid, generation: lease.generation + 1 });
+  code(() => journal.getSupervisorRecord(), "ownership_changed");
+  code(
+    () => journal.acquireWriterLease("same", { previousOwnerReconciled: true }),
+    "writer_busy"
+  );
+  replace(valid);
+  assert.deepEqual(journal.getSupervisorRecord(), valid);
+});
+
 test("FIFO reservation precedes native dispatch; unknown blocks the conversation without retries", (t) => {
   const { journal, lease } = fixture(t);
   journal.admit(lease, intent("first"));
@@ -453,6 +746,23 @@ test("terminal output with an observation gap still blocks subsequent work", (t)
     journal.reserveNext(lease, binding)!.receipt.operationId,
     "second"
   );
+});
+
+test("host crash preserves a durable native acceptance while execution and observation become unknown", (t) => {
+  const { journal, lease, open } = fixture(t);
+  accepted(journal, lease);
+  journal.admit(lease, intent("next"));
+  assert.equal(journal.recoverInterrupted(lease), 1);
+  const recovered = journal.getOperation(key())!;
+  assert.equal(recovered.delivery, "accepted");
+  assert.equal(recovered.execution, "unknown");
+  assert.equal(recovered.observation, "reconciliation_required");
+  assert.equal(journal.reserveNext(lease, binding), null);
+  journal.close();
+  const reopened = open();
+  assert.deepEqual(reopened.getOperation(key()), recovered);
+  assert.equal(reopened.admit(lease, intent()).receipt.delivery, "accepted");
+  assert.equal(reopened.reserveNext(lease, binding), null);
 });
 
 test("queue cancellation requires proof dispatch never started", (t) => {

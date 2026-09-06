@@ -22,13 +22,27 @@
     "operator"
   ],
   "type": "module",
+  "exports": {
+    "./plugin-sdk": {
+      "types": "./src/plugin-sdk/index.ts",
+      "default": "./src/plugin-sdk/index.mjs"
+    },
+    "./plugin-protocol": {
+      "types": "./src/gateway/protocol.ts",
+      "default": "./src/plugin-sdk/protocol.mjs"
+    },
+    "./*": "./*"
+  },
   "bin": {
     "pi-tidy-bots": "./bin/pi-tidy-bots.mjs"
   },
   "files": [
     "bin/*.mjs",
     "src/**/*.ts",
+    "src/gateway/*.mjs",
+    "src/plugin-sdk/*.mjs",
     "src/gateway/schema/*.json",
+    "sdk/python/**/*.py",
     "vendor/**/*.ts",
     "public/**",
     "README.md",

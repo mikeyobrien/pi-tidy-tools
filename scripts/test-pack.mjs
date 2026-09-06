@@ -50,6 +50,24 @@ try {
     });
     if (!listing.includes("package/vendor/pi-tidy-core/index.ts"))
       throw new Error(`${name} omitted its bundled tidy core`);
+    if (name === "@mobrienv/pi-tidy-bots") {
+      for (const file of [
+        "src/gateway/owned-launcher.mjs",
+        "src/plugin-sdk/index.mjs",
+        "src/plugin-sdk/index.ts",
+        "src/plugin-sdk/runtime.ts",
+        "src/plugin-sdk/store.ts",
+        "sdk/python/tidy_backend_sdk/__init__.py",
+        "sdk/python/tidy_backend_sdk/runtime.py",
+        "sdk/python/tidy_backend_sdk/store.py",
+        "sdk/python/tidy_backend_sdk/protocol.py",
+      ]) {
+        if (!listing.includes(`package/${file}`))
+          throw new Error(`${name} omitted shipped plugin runtime ${file}`);
+      }
+      if (listing.includes("__pycache__") || listing.includes("package/test/"))
+        throw new Error(`${name} shipped generated Python state or fixtures`);
+    }
     if (name === "@mobrienv/pi-tidy-tools") {
       for (const file of [
         "package/tool-composition.ts",
@@ -175,6 +193,21 @@ try {
     );
     if (!readFileSync(installedCore, "utf8").includes("summarizeToolActivity"))
       throw new Error(`${name} installed without a usable tidy core`);
+    if (name === "@mobrienv/pi-tidy-bots") {
+      execFileSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "--eval",
+          "import {PluginStore,PluginRuntime,runPlugin} from '@mobrienv/pi-tidy-bots/plugin-sdk'; import {DEFAULT_LIMITS,FrameDecoder} from '@mobrienv/pi-tidy-bots/plugin-protocol'; if(typeof PluginStore!=='function'||typeof PluginRuntime!=='function'||typeof runPlugin!=='function'||typeof FrameDecoder!=='function'||DEFAULT_LIMITS.maxFrameBytes!==1048576)process.exit(1)",
+        ],
+        {
+          cwd: installDir,
+          env: { PATH: process.env.PATH ?? "" },
+          stdio: "pipe",
+        }
+      );
+    }
     if (name === "@mobrienv/pi-tidy-memory") {
       execFileSync(
         "npm",

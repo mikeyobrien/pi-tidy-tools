@@ -54,6 +54,39 @@ export interface WriterLease {
   generation: number;
   expiresAt: number;
 }
+export interface OwnerProcessIdentity {
+  pid: number;
+  /** Opaque platform birth identity, compared exactly by the supervisor. */
+  startedAt: string;
+}
+export interface WriterState {
+  ownerId: string | null;
+  generation: number;
+  expiresAt: number;
+  reconciled: boolean;
+}
+interface OwnedLaunchIdentity {
+  launchId: string;
+  bindingId: string;
+}
+export type OwnedLaunchRecord = OwnedLaunchIdentity &
+  (
+    | {
+        state: "prepared";
+        pid?: undefined;
+        startedAt?: undefined;
+        token?: undefined;
+      }
+    | { state: "started"; pid: number; startedAt: string; token: string }
+    | { state: "stopped"; pid?: number; startedAt?: string; token?: string }
+  );
+export interface SupervisorOwnershipRecord {
+  version: 1;
+  generation: number;
+  ownerProcess: OwnerProcessIdentity;
+  launches: OwnedLaunchRecord[];
+}
+const SUPERVISOR_META_KEY = "supervisor_ownership_v1";
 export interface OperationReceipt extends OperationKey {
   fleetId: string;
   bindingId: string;
@@ -467,20 +500,319 @@ export class GatewayJournal {
         "Writer lease is stale, expired, or owned by another process"
       );
   }
+  getWriterState(): WriterState | null {
+    const row = this.prepare(
+      "SELECT * FROM writer_lease WHERE singleton=1"
+    ).get();
+    if (!row) return null;
+    if (
+      (row.owner_id !== null &&
+        (typeof row.owner_id !== "string" || !row.owner_id.trim())) ||
+      !Number.isSafeInteger(row.generation) ||
+      Number(row.generation) < 1 ||
+      !Number.isSafeInteger(row.expires_at) ||
+      Number(row.expires_at) < 0 ||
+      (row.reconciled !== 0 && row.reconciled !== 1) ||
+      (row.reconciled === 1 && row.owner_id !== null)
+    )
+      fail("invalid_ownership", "Stored writer ownership is malformed");
+    return {
+      ownerId: row.owner_id as string | null,
+      generation: Number(row.generation),
+      expiresAt: Number(row.expires_at),
+      reconciled: row.reconciled === 1,
+    };
+  }
+  private validateOwnerProcess(value: unknown): OwnerProcessIdentity {
+    if (typeof value !== "object" || value === null || Array.isArray(value))
+      fail("invalid_ownership", "Missing process identity");
+    const record = value as Record<string, unknown>;
+    if (
+      Object.keys(record).some((key) => !["pid", "startedAt"].includes(key)) ||
+      !Number.isSafeInteger(record.pid) ||
+      Number(record.pid) <= 0 ||
+      Number(record.pid) > 2_147_483_647 ||
+      typeof record.startedAt !== "string" ||
+      !record.startedAt.trim() ||
+      record.startedAt.length > 1024 ||
+      record.startedAt.includes("\0")
+    )
+      fail("invalid_ownership", "Malformed process birth identity");
+    return { pid: Number(record.pid), startedAt: record.startedAt };
+  }
+  /** Missing metadata remains missing; callers must never infer an empty owned set. */
+  getSupervisorRecord(): SupervisorOwnershipRecord | null {
+    const stored = this.prepare(
+      "SELECT value FROM gateway_meta WHERE key=?"
+    ).get(SUPERVISOR_META_KEY);
+    if (!stored) return null;
+    let value: unknown;
+    try {
+      value = JSON.parse(String(stored.value));
+    } catch {
+      fail(
+        "invalid_ownership",
+        "Stored supervisor ownership is not valid JSON"
+      );
+    }
+    if (typeof value !== "object" || value === null || Array.isArray(value))
+      fail(
+        "invalid_ownership",
+        "Stored supervisor ownership must be an object"
+      );
+    const record = value as Record<string, unknown>;
+    if (
+      Object.keys(record).some(
+        (key) =>
+          !["version", "generation", "ownerProcess", "launches"].includes(key)
+      ) ||
+      record.version !== 1 ||
+      !Number.isSafeInteger(record.generation) ||
+      Number(record.generation) < 1 ||
+      !Array.isArray(record.launches)
+    )
+      fail(
+        "invalid_ownership",
+        "Stored supervisor ownership has an unsupported shape"
+      );
+    const ownerProcess = this.validateOwnerProcess(record.ownerProcess);
+    const ids = new Set<string>();
+    const launches: OwnedLaunchRecord[] = record.launches.map((value) => {
+      if (typeof value !== "object" || value === null || Array.isArray(value))
+        fail("invalid_ownership", "Malformed owned launch");
+      const launch = value as Record<string, unknown>;
+      if (
+        Object.keys(launch).some(
+          (key) =>
+            ![
+              "launchId",
+              "bindingId",
+              "state",
+              "pid",
+              "startedAt",
+              "token",
+            ].includes(key)
+        ) ||
+        !["prepared", "started", "stopped"].includes(String(launch.state)) ||
+        typeof launch.launchId !== "string" ||
+        typeof launch.bindingId !== "string"
+      )
+        fail("invalid_ownership", "Malformed owned launch identity/state");
+      identifier(launch.launchId, "launch ID");
+      identifier(launch.bindingId, "binding ID");
+      if (ids.has(launch.launchId))
+        fail("invalid_ownership", "Duplicate owned launch identity");
+      ids.add(launch.launchId);
+      const hasProcess =
+        launch.pid !== undefined ||
+        launch.startedAt !== undefined ||
+        launch.token !== undefined;
+      if (
+        (launch.state === "prepared" && hasProcess) ||
+        (launch.state === "started" && !hasProcess)
+      )
+        fail(
+          "invalid_ownership",
+          "Launch state disagrees with persisted process identity"
+        );
+      if (hasProcess) {
+        this.validateOwnerProcess({
+          pid: launch.pid,
+          startedAt: launch.startedAt,
+        });
+        if (typeof launch.token !== "string" || !launch.token.trim())
+          fail("invalid_ownership", "Owned launch token is missing");
+        identifier(launch.token, "launch token");
+      }
+      return {
+        launchId: launch.launchId,
+        bindingId: launch.bindingId,
+        state: launch.state,
+        ...(hasProcess
+          ? {
+              pid: Number(launch.pid),
+              startedAt: String(launch.startedAt),
+              token: String(launch.token),
+            }
+          : {}),
+      } as OwnedLaunchRecord;
+    });
+    const writer = this.getWriterState();
+    if (!writer || writer.generation !== record.generation)
+      fail(
+        "ownership_changed",
+        "Supervisor ownership does not match the current writer generation"
+      );
+    return {
+      version: 1,
+      generation: Number(record.generation),
+      ownerProcess,
+      launches,
+    };
+  }
+  private saveSupervisorRecord(record: SupervisorOwnershipRecord): void {
+    this.prepare(
+      "INSERT INTO gateway_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+    ).run(SUPERVISOR_META_KEY, canonicalJson(record));
+  }
+  private ownedRecord(lease: WriterLease): SupervisorOwnershipRecord {
+    const record = this.getSupervisorRecord();
+    if (!record || record.generation !== lease.generation)
+      fail(
+        "ownership_missing",
+        "This writer has no durable supervisor identity"
+      );
+    return record;
+  }
+  /** Commit before spawn; a prepared launch is not proof that a process exists or exited. */
+  prepareOwnedLaunch(
+    lease: WriterLease,
+    launch: { launchId: string; bindingId: string }
+  ): OwnedLaunchRecord {
+    identifier(launch.launchId, "launch ID");
+    identifier(launch.bindingId, "binding ID");
+    return this.write(lease, () => {
+      const record = this.ownedRecord(lease);
+      const existing = record.launches.find(
+        (value) => value.launchId === launch.launchId
+      );
+      if (existing) {
+        if (
+          existing.bindingId !== launch.bindingId ||
+          existing.state !== "prepared"
+        )
+          fail(
+            "launch_conflict",
+            "Launch identity cannot be replaced or returned to prepared"
+          );
+        return existing;
+      }
+      if (
+        record.launches.some(
+          (value) =>
+            value.bindingId === launch.bindingId && value.state !== "stopped"
+        )
+      )
+        fail("binding_owned", "Binding already has an unresolved owned launch");
+      const prepared: OwnedLaunchRecord = {
+        launchId: launch.launchId,
+        bindingId: launch.bindingId,
+        state: "prepared",
+      };
+      record.launches.push(prepared);
+      this.saveSupervisorRecord(record);
+      return prepared;
+    });
+  }
+  /** Commit exact wrapper identity before releasing its native-execution gate. */
+  recordOwnedLaunch(
+    lease: WriterLease,
+    launchId: string,
+    process: OwnerProcessIdentity & { token: string }
+  ): OwnedLaunchRecord {
+    const identity = this.validateOwnerProcess({
+      pid: process.pid,
+      startedAt: process.startedAt,
+    });
+    identifier(process.token, "launch token");
+    return this.write(lease, () => {
+      const record = this.ownedRecord(lease);
+      const launch = record.launches.find(
+        (value) => value.launchId === launchId
+      );
+      if (!launch)
+        fail(
+          "launch_not_prepared",
+          "Native wrapper requires a durable launch reservation"
+        );
+      if (launch.state === "stopped")
+        fail(
+          "launch_conflict",
+          "A stopped launch identity cannot be activated again"
+        );
+      const started: OwnedLaunchRecord = {
+        launchId,
+        bindingId: launch.bindingId,
+        state: "started",
+        ...identity,
+        token: process.token,
+      };
+      if (launch.state === "started") {
+        if (canonicalJson(launch) !== canonicalJson(started))
+          fail("launch_conflict", "Owned launch process identity is immutable");
+        return launch;
+      }
+      record.launches[record.launches.indexOf(launch)] = started;
+      this.saveSupervisorRecord(record);
+      return started;
+    });
+  }
+  /** Caller must have proved no owned group remains; this does not cancel native work. */
+  completeOwnedLaunch(lease: WriterLease, launchId: string): OwnedLaunchRecord {
+    return this.write(lease, () => {
+      const record = this.ownedRecord(lease);
+      const launch = record.launches.find(
+        (value) => value.launchId === launchId
+      );
+      if (!launch) fail("launch_not_prepared", "Unknown owned launch");
+      if (launch.state === "stopped") return launch;
+      const stopped: OwnedLaunchRecord = { ...launch, state: "stopped" };
+      record.launches[record.launches.indexOf(launch)] = stopped;
+      this.saveSupervisorRecord(record);
+      return stopped;
+    });
+  }
   acquireWriterLease(
     ownerId: string,
-    options: { ttlMs?: number; previousOwnerReconciled?: boolean } = {}
+    options: {
+      ttlMs?: number;
+      previousOwnerReconciled?: boolean;
+      previousGeneration?: number;
+      ownerProcess?: OwnerProcessIdentity;
+    } = {}
   ): WriterLease {
     identifier(ownerId, "writer ID");
     const ttl = options.ttlMs ?? 30_000;
     if (!Number.isSafeInteger(ttl) || ttl < 1 || ttl > 86_400_000)
       fail("invalid_lease", "Lease TTL must be between 1 ms and one day");
+    const ownerProcess =
+      options.ownerProcess === undefined
+        ? undefined
+        : this.validateOwnerProcess(options.ownerProcess);
+    if (
+      options.previousGeneration !== undefined &&
+      (!Number.isSafeInteger(options.previousGeneration) ||
+        options.previousGeneration < 1)
+    )
+      fail(
+        "invalid_ownership",
+        "Reconciled writer generation must be a positive integer"
+      );
     return this.transaction(() => {
       const row = this.prepare(
         "SELECT * FROM writer_lease WHERE singleton=1"
       ).get();
       const now = this.now();
+      if (
+        options.previousGeneration !== undefined &&
+        row?.generation !== options.previousGeneration
+      )
+        fail(
+          "ownership_changed",
+          "Recovery proof refers to a different writer generation"
+        );
       if (row && row.owner_id === ownerId && Number(row.expires_at) > now) {
+        if (ownerProcess) {
+          const existing = this.getSupervisorRecord();
+          if (
+            !existing ||
+            canonicalJson(existing.ownerProcess) !== canonicalJson(ownerProcess)
+          )
+            fail(
+              "owner_process_conflict",
+              "A live writer identity cannot be replaced"
+            );
+        }
         const lease = {
           ownerId,
           generation: Number(row.generation),
@@ -498,6 +830,15 @@ export class GatewayJournal {
           "ownership_unreconciled",
           "Expired lease does not prove old native ownership ended"
         );
+      const previousSupervisor = this.getSupervisorRecord();
+      if (previousSupervisor) {
+        this.prepare(
+          "INSERT INTO gateway_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+        ).run(
+          `supervisor_previous_v1:${previousSupervisor.generation}`,
+          canonicalJson(previousSupervisor)
+        );
+      }
       const lease = {
         ownerId,
         generation: Number(row?.generation ?? 0) + 1,
@@ -506,6 +847,17 @@ export class GatewayJournal {
       this.prepare(
         "INSERT INTO writer_lease VALUES(1,?,?,?,0) ON CONFLICT(singleton) DO UPDATE SET owner_id=excluded.owner_id,generation=excluded.generation,expires_at=excluded.expires_at,reconciled=0"
       ).run(ownerId, lease.generation, lease.expiresAt);
+      if (ownerProcess)
+        this.saveSupervisorRecord({
+          version: 1,
+          generation: lease.generation,
+          ownerProcess,
+          launches: [],
+        });
+      else
+        this.prepare("DELETE FROM gateway_meta WHERE key=?").run(
+          SUPERVISOR_META_KEY
+        );
       return lease;
     });
   }
@@ -525,11 +877,19 @@ export class GatewayJournal {
     lease: WriterLease,
     options: { ownershipReconciled?: boolean } = {}
   ): void {
-    this.write(lease, () =>
+    this.write(lease, () => {
+      if (options.ownershipReconciled) {
+        const owned = this.getSupervisorRecord();
+        if (owned?.launches.some((launch) => launch.state !== "stopped"))
+          fail(
+            "ownership_unreconciled",
+            "Owned launches must be proven stopped before clean release"
+          );
+      }
       this.prepare(
         "UPDATE writer_lease SET owner_id=NULL,expires_at=0,reconciled=? WHERE singleton=1"
-      ).run(options.ownershipReconciled ? 1 : 0)
-    );
+      ).run(options.ownershipReconciled ? 1 : 0);
+    });
   }
 
   ensureBot(lease: WriterLease, name: string): { botId: string; name: string } {
@@ -952,7 +1312,7 @@ export class GatewayJournal {
     return this.write(lease, () =>
       Number(
         this.prepare(
-          "UPDATE operations SET delivery='unknown',execution='unknown',observation='reconciliation_required' WHERE delivery IN ('dispatching','accepted') AND execution NOT IN ('ended','failed','cancelled','interrupted')"
+          "UPDATE operations SET delivery=CASE WHEN delivery='accepted' THEN 'accepted' ELSE 'unknown' END,execution='unknown',observation='reconciliation_required' WHERE delivery IN ('dispatching','accepted') AND execution NOT IN ('ended','failed','cancelled','interrupted')"
         ).run().changes
       )
     );

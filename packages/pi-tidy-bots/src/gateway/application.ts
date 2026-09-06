@@ -12,6 +12,11 @@ import {
   type WriterLease,
 } from "./journal.ts";
 import { PluginHost } from "./plugin-host.ts";
+import {
+  processIdentity,
+  ownerHasExited,
+  reconcileOwnedProcess,
+} from "./process-ownership.ts";
 import { PluginRegistry, type PluginInstallation } from "./registry.ts";
 import {
   object,
@@ -27,6 +32,17 @@ export const GATEWAY_CAPABILITIES = [
   "backend-capabilities-v1",
   "operation-receipts-v1",
 ];
+/** Startup could not establish enough ownership evidence to permit legacy takeover. */
+export class GatewayStartupOwnershipError extends ProtocolError {
+  constructor(error: unknown) {
+    super(
+      object(error) && typeof error.code === "string"
+        ? error.code
+        : "ownership_unreconciled",
+      "Gateway startup ownership requires reconciliation"
+    );
+  }
+}
 const terminal = new Set(["ended", "failed", "cancelled", "interrupted"]);
 interface MessageView {
   id: string;
@@ -103,17 +119,18 @@ export class GatewayApplication {
   readonly fleet: FleetConfig;
   private readonly log: (line: string) => void;
 
-  private constructor(fleet: FleetConfig, log: (line: string) => void) {
+  private constructor(
+    fleet: FleetConfig,
+    log: (line: string) => void,
+    journal: GatewayJournal,
+    lease: WriterLease
+  ) {
     this.fleet = fleet;
     this.log = log;
-    this.journal = new GatewayJournal(
-      join(fleet.dir, ".fleet", "gateway.sqlite")
-    );
+    this.journal = journal;
     let acquired: WriterLease | undefined;
     try {
-      this.lease = acquired = this.journal.acquireWriterLease(
-        `gateway-${randomUUID()}`
-      );
+      this.lease = acquired = lease;
       this.emitted = this.journal.publicSequence;
       this.journal.recoverInterrupted(this.lease);
     } catch (error) {
@@ -149,7 +166,8 @@ export class GatewayApplication {
 
   static async start(
     fleet: FleetConfig,
-    log: (line: string) => void = () => {}
+    log: (line: string) => void = () => {},
+    onCreated?: (application: GatewayApplication) => void
   ): Promise<GatewayApplication> {
     if (!fleet.gateway)
       throw new ProtocolError("invalid_config", "Gateway registry is required");
@@ -170,8 +188,43 @@ export class GatewayApplication {
           "Gateway routine dispatch is not yet available; remove routines before enabling gateway mode"
         );
     }
-    const app = new GatewayApplication(fleet, log);
+    let journal: GatewayJournal | undefined;
+    let app: GatewayApplication;
     try {
+      journal = new GatewayJournal(join(fleet.dir, ".fleet", "gateway.sqlite"));
+      const previous = journal.getWriterState();
+      let reconciled = false;
+      if (previous && !previous.reconciled) {
+        if (previous.ownerId && previous.expiresAt > Date.now())
+          throw new ProtocolError(
+            "writer_busy",
+            "Previous gateway writer lease has not expired"
+          );
+        const ownership = journal.getSupervisorRecord();
+        if (!ownership || !(await ownerHasExited(ownership.ownerProcess)))
+          throw new ProtocolError(
+            "ownership_unreconciled",
+            "Previous gateway process ownership is unverified"
+          );
+        for (const launch of ownership.launches) {
+          // Prepared launches cannot pass the private activation gate. Stopped
+          // launches were already proven empty before their durable transition.
+          if (launch.state === "started") await reconcileOwnedProcess(launch);
+        }
+        reconciled = true;
+      }
+      const lease = journal.acquireWriterLease(`gateway-${randomUUID()}`, {
+        ownerProcess: await processIdentity(process.pid),
+        previousOwnerReconciled: reconciled,
+        ...(previous ? { previousGeneration: previous.generation } : {}),
+      });
+      app = new GatewayApplication(fleet, log, journal, lease);
+    } catch (error) {
+      journal?.close();
+      throw new GatewayStartupOwnershipError(error);
+    }
+    try {
+      onCreated?.(app);
       // A later invalid binding must not discover its conflict after earlier
       // bots have already crossed a native session creation boundary.
       for (const config of fleet.bots) {
@@ -239,7 +292,17 @@ export class GatewayApplication {
         config: config.backendConfig ?? {},
         workspace: config.dir,
         dataDir: join(this.fleet.dir, ".fleet", "plugins", bindingId),
+        requireExistingData: !!prior[0],
         allowedEnv,
+        onLaunchPrepared: (launchId) => {
+          this.journal.prepareOwnedLaunch(this.lease, { launchId, bindingId });
+        },
+        onLaunchRecorded: (launchId, identity) => {
+          this.journal.recordOwnedLaunch(this.lease, launchId, identity);
+        },
+        onLaunchStopped: (launchId) => {
+          this.journal.completeOwnedLaunch(this.lease, launchId);
+        },
         lastAcknowledgedSequence: prior[0]
           ? this.journal.sourceAck(bindingId)
           : 0,
@@ -1057,6 +1120,11 @@ export class GatewayApplication {
             (result) => result.status === "fulfilled"
           ),
         });
+        if (results.some((result) => result.status === "rejected"))
+          throw new ProtocolError(
+            "ownership_unreconciled",
+            "Plugin ownership could not be confirmed during shutdown"
+          );
       } finally {
         this.subscribers.clear();
         this.journal.close();

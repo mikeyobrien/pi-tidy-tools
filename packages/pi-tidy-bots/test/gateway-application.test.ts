@@ -17,6 +17,7 @@ import { WebSocket } from "ws";
 import { startFleet, type FleetHandle } from "../src/daemon.ts";
 import { loadFleetConfig } from "../src/config.ts";
 import { digestArtifact } from "../src/gateway/registry.ts";
+import { GatewayJournal } from "../src/gateway/journal.ts";
 
 type ObjectValue = Record<string, any>;
 async function waitFor<T>(
@@ -206,6 +207,108 @@ async function fixture() {
     },
   };
 }
+
+test("hard gateway crash recovers expired ownership without repeating native admission", async () => {
+  const f = await fixture();
+  const readyPath = join(f.dir, "ready.json");
+  const source = new URL("../src/daemon.ts", import.meta.url).href;
+  const driver = spawn(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      "--input-type=module",
+      "--eval",
+      `import {startFleet} from ${JSON.stringify(source)}; import {writeFileSync} from 'node:fs'; const h=await startFleet({dir:${JSON.stringify(f.dir)},port:0,token:'disposable-test-token',log:()=>{}}); writeFileSync(${JSON.stringify(readyPath)},JSON.stringify({url:h.url,port:h.port}));`,
+    ],
+    { stdio: "ignore" }
+  );
+  try {
+    const running = (await waitFor(
+      async () => {
+        try {
+          return JSON.parse(await readFile(readyPath, "utf8"));
+        } catch {
+          return null;
+        }
+      },
+      Boolean,
+      "child gateway readiness"
+    )) as FleetHandle;
+    const binding = await f.binding(running);
+    assert.equal(
+      (await f.submit(running, binding, "parent-crash", "[hold]")).status,
+      202
+    );
+    await waitFor(
+      () => f.inspect(running, "parent-crash"),
+      (value) => value.execution === "running"
+    );
+    const childExit = new Promise<void>((resolve) =>
+      driver.once("exit", () => resolve())
+    );
+    driver.kill("SIGKILL");
+    await childExit;
+    const journal = new GatewayJournal(join(f.dir, ".fleet/gateway.sqlite"));
+    const previous = journal.getWriterState()!;
+    assert.equal(previous.reconciled, false);
+    assert.ok(
+      journal
+        .getSupervisorRecord()!
+        .launches.some((launch) => launch.state === "started")
+    );
+    journal.close();
+    await assert.rejects(f.start(), { code: "writer_busy" });
+    // Lease expiry is necessary but not sufficient: startup also checks the old
+    // controller and every recorded owned group. This uses the real TTL.
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.max(0, previous.expiresAt - Date.now()) + 10)
+    );
+    const restarted = await f.start();
+    const receipt = await f.inspect(restarted, "parent-crash");
+    assert.equal(receipt.delivery, "accepted");
+    assert.equal(receipt.execution, "unknown");
+    assert.equal(receipt.observation, "reconciliation_required");
+    const calls = await f.calls(binding);
+    assert.equal(
+      calls.filter((call) => call.method === "operation.submit").length,
+      1
+    );
+    assert.equal(
+      calls.filter((call) => call.method === "session.open").length,
+      1
+    );
+  } finally {
+    if (driver.exitCode === null && driver.signalCode === null) {
+      const childExit = new Promise<void>((resolve) =>
+        driver.once("exit", () => resolve())
+      );
+      driver.kill("SIGKILL");
+      await childExit;
+    }
+    await f.cleanup();
+  }
+});
+
+test("established binding refuses erased plugin storage before starting a replacement", async () => {
+  const f = await fixture();
+  try {
+    const handle = await f.start();
+    const binding = await f.binding(handle);
+    await handle.stop();
+    const dataDir = join(f.dir, ".fleet/plugins", binding.bindingId);
+    await rm(dataDir, { recursive: true });
+    await assert.rejects(f.start(), { code: "corrupt_storage" });
+    await assert.rejects(readFile(join(dataDir, "calls.jsonl")), {
+      code: "ENOENT",
+    });
+    await assert.rejects(readFile(join(dataDir, ".gateway-namespace.json")), {
+      code: "ENOENT",
+    });
+  } finally {
+    await f.cleanup();
+  }
+});
 
 test("real startFleet gateway advertises only implemented capabilities and requires HTTP/WS auth and contract revision", async () => {
   const f = await fixture();

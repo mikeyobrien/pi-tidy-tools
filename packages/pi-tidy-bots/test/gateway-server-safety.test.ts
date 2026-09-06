@@ -9,6 +9,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -20,7 +21,11 @@ import { acquireFleetLock } from "../src/lock.ts";
 
 const token = "gateway-server-safety-token";
 const headers = { authorization: `Bearer ${token}` };
-async function fixture(delayInitialize = false, delayShutdown = false) {
+async function fixture(
+  delayInitialize = false,
+  delayShutdown = false,
+  failInitialize = false
+) {
   const dir = await mkdtemp(join(tmpdir(), "tidy-gateway-server-safety-"));
   const artifact = join(dir, "plugin");
   await mkdir(artifact);
@@ -32,6 +37,11 @@ async function fixture(delayInitialize = false, delayShutdown = false) {
     new URL("./fixtures/gateway-application/backend.mjs", import.meta.url),
     "utf8"
   );
+  if (failInitialize)
+    script = script.replace(
+      "version: p.expectedPlugin.version",
+      'version: "invalid"'
+    );
   if (delayInitialize)
     script = script.replace(
       "const input = createInterface",
@@ -158,6 +168,21 @@ test("gateway refuses missing loopback credentials before opening storage or spa
       );
       assert.equal(existsSync(join(f.dir, ".fleet")), false);
     }
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("failed initialization retains shared ownership when durable cleanup cannot be confirmed", async () => {
+  const f = await fixture(false, false, true);
+  try {
+    const script = `import assert from 'node:assert/strict'; import {startFleet} from ${JSON.stringify(new URL("../src/daemon.ts", import.meta.url).href)}; import {GatewayJournal} from ${JSON.stringify(new URL("../src/gateway/journal.ts", import.meta.url).href)}; import {acquireFleetLock} from ${JSON.stringify(new URL("../src/lock.ts", import.meta.url).href)}; GatewayJournal.prototype.completeOwnedLaunch=function(){throw new Error('Injected durable cleanup failure')}; await assert.rejects(startFleet({dir:${JSON.stringify(f.dir)},port:0,token:${JSON.stringify(token)},log:()=>{}})); const competing=acquireFleetLock(${JSON.stringify(f.dir)}); if(competing.ok) competing.lock.release(); assert.equal(competing.ok,false,'Startup cleanup failure released the cross-mode ownership guard'); process.exit(0);`;
+    const child = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "--input-type=module", "--eval", script],
+      { encoding: "utf8", timeout: 15_000 }
+    );
+    assert.equal(child.status, 0, `${child.stderr}\n${child.error ?? ""}`);
   } finally {
     await f.cleanup();
   }

@@ -1,6 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdir, realpath } from "node:fs/promises";
+import { mkdir, open, readFile, realpath } from "node:fs/promises";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import type { Writable } from "node:stream";
+import {
+  ownedProcessIdentity,
+  ownedGroupHasExited,
+  type OwnedProcessIdentity,
+} from "./process-ownership.ts";
 import {
   CORE_METHODS,
   DEFAULT_LIMITS,
@@ -34,6 +42,7 @@ export interface PluginHostOptions {
   config: JsonObject;
   workspace: string;
   dataDir: string;
+  requireExistingData?: boolean;
   allowedEnv?: Record<string, string>;
   limits?: Partial<ProtocolLimits>;
   lastAcknowledgedSequence?: number;
@@ -41,6 +50,12 @@ export interface PluginHostOptions {
   onEvent: (event: GatewayPluginEvent) => Promise<number>;
   onHostCall?: (call: HostCall) => Promise<unknown>;
   onFailure?: (error: ProtocolError) => void;
+  onLaunchPrepared?: (launchId: string) => void | Promise<void>;
+  onLaunchRecorded?: (
+    launchId: string,
+    identity: OwnedProcessIdentity
+  ) => void | Promise<void>;
+  onLaunchStopped?: (launchId: string) => void | Promise<void>;
 }
 interface Pending {
   method: string;
@@ -57,6 +72,9 @@ export class PluginHost {
   health!: string;
   private child!: ChildProcessWithoutNullStreams;
   private endClosed!: () => void;
+  private failClosed!: (error: unknown) => void;
+  private readonly launchId = `tidy-launch-${randomUUID()}`;
+  private control?: Writable;
   private state: "starting" | "ready" | "closing" | "closed" = "starting";
   private readonly pending = new Map<string, Pending>();
   private readonly reverseIds = new Set<string>();
@@ -71,7 +89,6 @@ export class PluginHost {
   private highestSeen: number;
   private failure?: ProtocolError;
   private stderrBytes = 0;
-  private killTimer?: ReturnType<typeof setTimeout>;
   private readonly options: PluginHostOptions;
   private constructor(options: PluginHostOptions) {
     this.options = options;
@@ -89,9 +106,11 @@ export class PluginHost {
         "invalid_config",
         "Invalid binding identity or sequence watermark"
       );
-    this.closed = new Promise((resolve) => {
+    this.closed = new Promise((resolve, reject) => {
       this.endClosed = resolve;
+      this.failClosed = reject;
     });
+    void this.closed.catch(() => {});
   }
   static async start(options: PluginHostOptions): Promise<PluginHost> {
     // Revalidate the pin immediately before process creation, not only registry loading.
@@ -113,8 +132,55 @@ export class PluginHost {
       );
     const host = new PluginHost(options);
     const workspace = await realpath(options.workspace);
+    const namespaceFile = join(options.dataDir, ".gateway-namespace.json");
+    let namespacePresent = false;
+    try {
+      const namespace = JSON.parse(await readFile(namespaceFile, "utf8"));
+      if (
+        !object(namespace) ||
+        namespace.version !== 1 ||
+        namespace.bindingId !== options.bindingId
+      )
+        throw new ProtocolError(
+          "corrupt_storage",
+          "Plugin storage namespace differs from its binding"
+        );
+      namespacePresent = true;
+    } catch (error) {
+      if (!(object(error) && error.code === "ENOENT"))
+        throw new ProtocolError(
+          "corrupt_storage",
+          "Plugin storage namespace is invalid"
+        );
+      if (options.requireExistingData)
+        throw new ProtocolError(
+          "corrupt_storage",
+          "Established plugin storage namespace is missing"
+        );
+    }
     await mkdir(options.dataDir, { recursive: true, mode: 0o700 });
     const dataDir = await realpath(options.dataDir);
+    if (!namespacePresent) {
+      const marker = await open(
+        join(dataDir, ".gateway-namespace.json"),
+        "wx",
+        0o600
+      );
+      try {
+        await marker.writeFile(
+          JSON.stringify({ version: 1, bindingId: options.bindingId })
+        );
+        await marker.sync();
+      } finally {
+        await marker.close();
+      }
+      const directory = await open(dataDir, "r");
+      try {
+        await directory.sync();
+      } finally {
+        await directory.close();
+      }
+    }
     const env: Record<string, string> = {};
     for (const [name, value] of Object.entries(options.allowedEnv ?? {})) {
       if (
@@ -136,19 +202,67 @@ export class PluginHost {
       TIDY_WORKSPACE: workspace,
       TIDY_DATA_DIR: dataDir,
     });
-    host.child = spawn(
-      options.installation.executable,
-      [...options.installation.args],
-      {
-        cwd: workspace,
-        env,
-        shell: false,
-        detached: process.platform !== "win32",
-        stdio: ["pipe", "pipe", "pipe"],
-      }
-    );
+    const activation = `${JSON.stringify({ activate: host.launchId, env })}\n`;
+    if (Buffer.byteLength(activation) > 1024 * 1024)
+      throw new ProtocolError(
+        "resource_limit",
+        "Plugin environment exceeds the activation frame limit"
+      );
+    await options.onLaunchPrepared?.(host.launchId);
+    try {
+      host.child = spawn(
+        process.execPath,
+        [
+          fileURLToPath(new URL("./owned-launcher.mjs", import.meta.url)),
+          host.launchId,
+          options.installation.executable,
+          ...options.installation.args,
+        ],
+        {
+          cwd: workspace,
+          // Plugin loader/preload variables cannot execute code inside the trusted
+          // launcher before its identity has been durably recorded.
+          env: { PATH: "/usr/bin:/bin" },
+          shell: false,
+          detached: process.platform !== "win32",
+          stdio: ["pipe", "pipe", "pipe", "pipe"],
+        }
+      ) as ChildProcessWithoutNullStreams;
+    } catch (error) {
+      await options.onLaunchStopped?.(host.launchId);
+      throw error;
+    }
     host.observe();
     try {
+      host.control = host.child.stdio[3] as Writable | undefined;
+      if (
+        !host.control ||
+        !host.child.stdin ||
+        !host.child.stdout ||
+        !host.child.stderr
+      )
+        throw new ProtocolError(
+          "plugin_spawn",
+          "Supervisor pipes could not be opened"
+        );
+      host.control.on("error", () =>
+        host.isolate(
+          new ProtocolError("plugin_pipe", "Supervisor control pipe failed")
+        )
+      );
+      if (!host.child.pid)
+        throw new ProtocolError("plugin_spawn", "Supervisor could not start");
+      const identity = await ownedProcessIdentity(
+        host.child.pid,
+        host.launchId
+      );
+      await options.onLaunchRecorded?.(host.launchId, identity);
+      if (host.state !== "starting")
+        throw new ProtocolError(
+          "plugin_spawn",
+          "Supervisor stopped before activation"
+        );
+      host.control.write(activation);
       const result = await host.sendRequest(
         "initialize",
         {
@@ -168,7 +282,7 @@ export class PluginHost {
         },
         host.limits.initializeTimeoutMs
       );
-      if (host.state !== "ready")
+      if (!host.isReady)
         throw new ProtocolError(
           "initialize_failed",
           "Plugin became unavailable during initialization"
@@ -250,7 +364,7 @@ export class PluginHost {
   }
   private observe(): void {
     const parser = new FrameDecoder(this.limits.maxFrameBytes);
-    this.child.stdout.on("data", (chunk: Buffer) => {
+    this.child.stdout?.on("data", (chunk: Buffer) => {
       if (this.state === "closed") return;
       try {
         parser.push(chunk, (message) => this.receive(message));
@@ -262,7 +376,7 @@ export class PluginHost {
         );
       }
     });
-    this.child.stdout.on("end", () => {
+    this.child.stdout?.on("end", () => {
       try {
         parser.finish();
       } catch (error) {
@@ -273,13 +387,13 @@ export class PluginHost {
           new ProtocolError("plugin_eof", "Plugin protocol pipe closed")
         );
     });
-    this.child.stderr.on("data", (chunk: Buffer) => {
+    this.child.stderr?.on("data", (chunk: Buffer) => {
       this.stderrBytes = Math.min(
         Number.MAX_SAFE_INTEGER,
         this.stderrBytes + chunk.length
       );
     });
-    this.child.stdin.on("error", () =>
+    this.child.stdin?.on("error", () =>
       this.isolate(new ProtocolError("plugin_pipe", "Plugin input pipe failed"))
     );
     this.child.on("error", () =>
@@ -287,26 +401,27 @@ export class PluginHost {
         new ProtocolError("plugin_spawn", "Plugin process could not start")
       )
     );
-    this.child.on("exit", () => {
-      // A surviving descendant can hold stdout open; do not wait for close to reap it.
-      this.signal("SIGKILL");
-    });
+    this.child.on("exit", () => this.control?.destroy());
     this.child.on("close", () => {
       if (this.state !== "closing" && !this.failure)
         this.isolate(new ProtocolError("plugin_exit", "Plugin process exited"));
       this.state = "closed";
-      if (this.killTimer) clearTimeout(this.killTimer);
-      // Reap descendants even when the direct child exited before its grace timer.
-      this.signal("SIGKILL");
       this.rejectPending(
         this.failure ??
           new ProtocolError("plugin_closed", "Plugin connection closed")
       );
       // An entered durable callback may still own the journal after process exit.
       // Callers can close storage only once all such callbacks have settled.
-      void Promise.allSettled([this.eventChain, ...this.reverseTasks]).then(
-        () => this.endClosed()
-      );
+      void Promise.allSettled([this.eventChain, ...this.reverseTasks])
+        .then(async () => {
+          if (this.child.pid && !(await ownedGroupHasExited(this.child.pid)))
+            throw new ProtocolError(
+              "ownership_unreconciled",
+              "Owned descendants survived supervisor shutdown"
+            );
+          await this.options.onLaunchStopped?.(this.launchId);
+        })
+        .then(this.endClosed, this.failClosed);
     });
   }
   private receive(message: RpcMessage): void {
@@ -692,14 +807,13 @@ export class PluginHost {
     }
     this.pending.clear();
   }
-  private signal(signal: NodeJS.Signals): void {
-    if (!this.child.pid) return;
-    try {
-      if (process.platform === "win32") this.child.kill(signal);
-      else process.kill(-this.child.pid, signal);
-    } catch {
-      /* already reaped */
-    }
+  private stopSupervisor(): void {
+    // Only a live private pipe requests signalling. The trusted group leader
+    // signals itself; historical/reused numeric PIDs are never killed here.
+    if (this.control?.writable)
+      this.control.end(
+        `shutdown:${Math.min(1_000, this.limits.shutdownTimeoutMs)}\n`
+      );
   }
   private isolate(error: ProtocolError): void {
     if (this.failure || this.state === "closed") return;
@@ -711,12 +825,8 @@ export class PluginHost {
     } catch {
       /* failure observers do not own supervision */
     }
-    this.child.stdin.destroy();
-    this.signal("SIGTERM");
-    this.killTimer = setTimeout(
-      () => this.signal("SIGKILL"),
-      Math.min(1_000, this.limits.shutdownTimeoutMs)
-    );
+    this.child.stdin?.destroy();
+    this.stopSupervisor();
   }
   async close(): Promise<void> {
     if (this.state === "closed" || this.state === "closing") return this.closed;
@@ -735,11 +845,7 @@ export class PluginHost {
       /* EOF and reaping still apply */
     }
     this.child.stdin.end();
-    this.signal("SIGTERM");
-    this.killTimer = setTimeout(
-      () => this.signal("SIGKILL"),
-      Math.min(1_000, this.limits.shutdownTimeoutMs)
-    );
+    this.stopSupervisor();
     await this.closed;
   }
 }

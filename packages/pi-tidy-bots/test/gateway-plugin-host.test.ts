@@ -151,6 +151,38 @@ test("real executable initializes with pinned identity and only allowed environm
   assert.throws(() => process.kill(host.pid!, 0), { code: "ESRCH" });
 });
 
+test("allowlisted runtime preload cannot execute before supervisor identity is durably recorded", async () => {
+  const fixture = await setup();
+  const preload = join(fixture.dir, "preload.cjs");
+  const marker = join(fixture.dir, "preload-effect");
+  await writeFile(
+    preload,
+    `require('node:fs').writeFileSync(${JSON.stringify(marker)},'loaded')`
+  );
+  const allowedEnv = {
+    PATH: dirname(process.execPath),
+    NODE_OPTIONS: `--require=${JSON.stringify(preload)}`,
+  };
+  try {
+    await assert.rejects(
+      fixture.start({
+        allowedEnv,
+        onLaunchRecorded: async () => {
+          await assert.rejects(readFile(marker), { code: "ENOENT" });
+          throw new Error("Durable identity write failed");
+        },
+      }),
+      /Durable identity write failed/
+    );
+    await assert.rejects(readFile(marker), { code: "ENOENT" });
+    const host = await fixture.start({ allowedEnv });
+    assert.equal(await readFile(marker, "utf8"), "loaded");
+    await host.close();
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("registry refuses disabled, changed, mismatched, escaping and excessive-access artifacts before spawn", async () => {
   const fixture = await setup();
   try {

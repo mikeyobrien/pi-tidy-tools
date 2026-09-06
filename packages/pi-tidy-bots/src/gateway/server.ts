@@ -12,7 +12,11 @@ import type { FleetConfig } from "../config.ts";
 import type { FleetHandle, StartFleetOptions } from "../daemon.ts";
 import { DAEMON_VERSION } from "../contract.ts";
 import { acquireFleetLock } from "../lock.ts";
-import { GatewayApplication, GATEWAY_CAPABILITIES } from "./application.ts";
+import {
+  GatewayApplication,
+  GatewayStartupOwnershipError,
+  GATEWAY_CAPABILITIES,
+} from "./application.ts";
 import { GatewayJournalError, type JsonObject } from "./journal.ts";
 import { DEFAULT_LIMITS, object, ProtocolError } from "./protocol.ts";
 
@@ -180,6 +184,8 @@ export async function startGatewayFleet(
       `Fleet lock held by pid ${ownership.holder.pid}; only one daemon may own a fleet directory`
     );
   let application: GatewayApplication | undefined;
+  let ownedApplication: GatewayApplication | undefined;
+  let recoveryUnconfirmed = false;
   const sockets = new Set<WebSocket>();
   const replaying = new Set<WebSocket>();
   let stopping = false;
@@ -406,10 +412,13 @@ export async function startGatewayFleet(
         http.close(() => resolve());
         http.closeIdleConnections();
       });
-      let shutdownConfirmed = application === undefined;
+      let shutdownConfirmed =
+        ownedApplication === undefined && !recoveryUnconfirmed;
       try {
-        await application?.stop();
-        shutdownConfirmed = true;
+        if (ownedApplication) {
+          await ownedApplication.stop();
+          shutdownConfirmed = true;
+        }
       } finally {
         http.closeAllConnections();
         await closed;
@@ -427,12 +436,20 @@ export async function startGatewayFleet(
     });
     // Reserve the actual listener before any plugin/session creation. A failed
     // bind must not leave a durable native session in a fleet that never started.
-    application = await GatewayApplication.start(fleet, options.log);
+    application = await GatewayApplication.start(
+      fleet,
+      options.log,
+      (created) => {
+        ownedApplication = created;
+      }
+    );
     unsubscribe = application.subscribe((event) => {
       for (const socket of sockets)
         if (!replaying.has(socket)) send(socket, event);
     });
   } catch (error) {
+    if (error instanceof GatewayStartupOwnershipError)
+      recoveryUnconfirmed = true;
     await stop();
     throw error;
   }

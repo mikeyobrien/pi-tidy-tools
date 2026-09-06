@@ -45,6 +45,7 @@
     "sdk/python/**/*.py",
     "backends/pi/*",
     "backends/hermes/*.py",
+    "backends/hermes/*.ts",
     "vendor/**/*.ts",
     "public/**",
     "README.md",

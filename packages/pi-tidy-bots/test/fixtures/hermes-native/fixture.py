@@ -39,6 +39,9 @@ class FakeAgent:
         self.session_manager = SimpleNamespace(get_session=self.get_session,
                                                _sessions=self.states, _lock=Lock())
 
+    def on_connect(self, connection):
+        self.connection = connection
+
     def get_session(self, session_id):
         if session_id not in self.states:
             record("implicit_restore", session_id=session_id)
@@ -85,6 +88,15 @@ def wire(value):
 
 
 async def run_agent(agent, **kwargs):
+    class Connection:
+        choice = "allow_once"
+
+        async def request_permission(self, session_id, tool_call, options, **kwargs):
+            record("permission_options", options=[option.option_id for option in options])
+            return SimpleNamespace(outcome=SimpleNamespace(outcome="selected", option_id=self.choice))
+
+    connection = Connection()
+    agent.on_connect(connection)
     for line in sys.stdin:
         request = json.loads(line)
         method, params = request["method"], request.get("params", {})
@@ -116,6 +128,13 @@ async def run_agent(agent, **kwargs):
                 result = {}
             elif method == "fixture/environment":
                 result = {"keys": sorted(os.environ)}
+            elif method == "fixture/permission":
+                connection.choice = params["choice"]
+                options = [SimpleNamespace(option_id=key, kind=kind) for key, kind in (
+                    ("allow_once", "allow_once"), ("allow_session", "allow_always"),
+                    ("allow_always", "allow_always"), ("deny", "reject_once"))]
+                result = await agent.connection.request_permission(session_id="native-one", tool_call={}, options=options)
+                record("permission_consumed", choice=result.outcome.option_id)
             else:
                 raise ValueError("fixture_unknown_method")
             response = {"jsonrpc": "2.0", "id": request["id"], "result": wire(result)}

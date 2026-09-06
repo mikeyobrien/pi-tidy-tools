@@ -90,6 +90,47 @@ def guarded_agent(base, guard, prompt_response):
             with self.session_manager._lock:
                 return self.session_manager._sessions.get(session_id)
 
+        def on_connect(self, connection):
+            owner = self
+
+            class ExactPermissionClient:
+                def __getattr__(self, name):
+                    return getattr(connection, name)
+
+                async def request_permission(self, session_id, tool_call, options, **kwargs):
+                    def check_live():
+                        if session_id not in owner._tidy_created_sessions:
+                            raise ApprovalPolicyUnavailable()
+                        state = owner._tidy_live_state(session_id)
+                        if state is None:
+                            raise ApprovalPolicyUnavailable()
+                        guard.check(state, owner)
+
+                    check_live()
+                    allowed = []
+                    seen = set()
+                    for option in options:
+                        if option.option_id in seen:
+                            raise ApprovalPolicyUnavailable()
+                        seen.add(option.option_id)
+                        if (option.option_id, option.kind) in (("allow_once", "allow_once"), ("deny", "reject_once")):
+                            allowed.append(option)
+                    allowed_ids = frozenset(option.option_id for option in allowed)
+                    if "deny" not in allowed_ids:
+                        raise ApprovalPolicyUnavailable()
+                    result = await connection.request_permission(session_id=session_id, tool_call=tool_call, options=allowed, **kwargs)
+                    check_live()
+                    outcome = result.outcome
+                    if outcome.outcome == "cancelled":
+                        return result
+                    if outcome.outcome != "selected" or outcome.option_id not in allowed_ids:
+                        # Let Hermes' native callback observe failure. Never
+                        # synthesize a broader choice or apply a mismatched one.
+                        raise ApprovalPolicyUnavailable()
+                    return result
+
+            return super().on_connect(ExactPermissionClient())
+
         async def initialize(self, *args, **kwargs):
             guard.check()
             result = await super().initialize(*args, **kwargs)

@@ -59,6 +59,7 @@ try {
         "backends/pi/adapter.ts",
         "backends/pi/empty-extension.mjs",
         "backends/hermes/native_guard.py",
+        "backends/hermes/permissions.ts",
         "src/plugin-sdk/index.mjs",
         "src/plugin-sdk/index.ts",
         "src/plugin-sdk/runtime.ts",

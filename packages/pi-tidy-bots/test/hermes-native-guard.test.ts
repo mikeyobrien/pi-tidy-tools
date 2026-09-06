@@ -358,3 +358,36 @@ test("Hermes guard refuses unknown session references and cold-load methods with
     await f.cleanup();
   }
 });
+
+test("native Hermes permission bridge exposes only one-time options and rejects a broader returned choice", async () => {
+  const f = await fixture();
+  try {
+    await f.ready();
+    await assert.rejects(
+      f.request("fixture/permission", { choice: "allow_session" })
+    );
+    await assert.rejects(
+      f.request("fixture/permission", { choice: "allow_always" })
+    );
+    await f.request("fixture/permission", { choice: "allow_once" });
+    await f.request("fixture/permission", { choice: "deny" });
+    const effects = await f.effects();
+    assert.deepEqual(
+      effects
+        .filter((effect) => effect.kind === "permission_consumed")
+        .map((effect) => effect.choice),
+      ["allow_once", "deny"]
+    );
+    assert.ok(
+      effects
+        .filter((effect) => effect.kind === "permission_options")
+        .every(
+          (effect) =>
+            JSON.stringify(effect.options) ===
+            JSON.stringify(["allow_once", "deny"])
+        )
+    );
+  } finally {
+    await f.cleanup();
+  }
+});

@@ -9,6 +9,8 @@ export interface RpcSpawnOptions {
   cwd: string;
   sessionDir: string;
   resume: boolean;
+  /** Exact previously verified history file; never combine with latest-session resume. */
+  sessionFile?: string;
   model?: string;
   approve: boolean;
   /** Issue 92: trust the fleet-owned bot dir's project-local settings so
@@ -55,6 +57,7 @@ export function rpcSpawnArgs(
     | "name"
     | "sessionDir"
     | "resume"
+    | "sessionFile"
     | "model"
     | "approve"
     | "trustProject"
@@ -66,6 +69,15 @@ export function rpcSpawnArgs(
     | "noSkills"
   >
 ): string[] {
+  if (
+    options.sessionFile !== undefined &&
+    (!isAbsolute(options.sessionFile) ||
+      options.sessionFile.includes("\0") ||
+      options.resume)
+  )
+    throw new Error(
+      "Exact native session requires an absolute file and no latest-session resume"
+    );
   return [
     "--mode",
     "rpc",
@@ -74,6 +86,7 @@ export function rpcSpawnArgs(
     "--session-dir",
     options.sessionDir,
     ...(options.resume ? ["--continue"] : []),
+    ...(options.sessionFile ? ["--session", options.sessionFile] : []),
     ...(options.model ? ["--model", options.model] : []),
     ...(options.approve ? ["--approve"] : []),
     ...(options.trustProject ? ["--approve"] : []),

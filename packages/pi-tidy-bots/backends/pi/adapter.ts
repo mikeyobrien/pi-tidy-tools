@@ -24,7 +24,11 @@ import {
 
 // Expand this profile only after its native feature conformance cells pass.
 export const PI_CAPABILITIES: CapabilityDescriptor = {
-  input: { text: true, mediaTypes: ["text/plain"], maxMediaBytes: 512 * 1024 },
+  input: {
+    text: true,
+    mediaTypes: ["text/plain", "image/png", "image/jpeg"],
+    maxMediaBytes: 512 * 1024,
+  },
   sessions: { load: false, import: false, continuity: "unverified" },
   output: { text: "snapshots", tools: true, usage: "unknown" },
   operations: {
@@ -521,11 +525,16 @@ export function startPiAdapter(): PluginRuntime {
             (part) =>
               object(part) &&
               ((part.type === "text" && typeof part.text === "string") ||
-                (part.type === "artifact" && part.mediaType === "text/plain"))
+                (part.type === "artifact" &&
+                  ["text/plain", "image/png", "image/jpeg"].includes(
+                    String(part.mediaType)
+                  )))
           )
         )
           return { disposition: "rejected" };
         let message: string;
+        const images: Array<{ type: "image"; data: string; mimeType: string }> =
+          [];
         preparing = true;
         try {
           const parts: string[] = [];
@@ -538,6 +547,14 @@ export function startPiAdapter(): PluginRuntime {
                 part,
                 512 * 1024
               );
+              if (part.mediaType !== "text/plain") {
+                images.push({
+                  type: "image",
+                  data: Buffer.from(bytes).toString("base64"),
+                  mimeType: String(part.mediaType),
+                });
+                continue;
+              }
               const text = new TextDecoder("utf-8", { fatal: true }).decode(
                 bytes
               );
@@ -551,7 +568,11 @@ export function startPiAdapter(): PluginRuntime {
           message = parts.join("\n");
           if (
             Buffer.byteLength(
-              JSON.stringify({ type: "prompt", message }),
+              JSON.stringify({
+                type: "prompt",
+                message,
+                ...(images.length ? { images } : {}),
+              }),
               "utf8"
             ) >
             ctx.initialization.limits.maxFrameBytes - 256
@@ -582,6 +603,7 @@ export function startPiAdapter(): PluginRuntime {
             {
               type: "prompt",
               message,
+              ...(images.length ? { images } : {}),
             },
             ctx.initialization.limits.commandTimeoutMs
           );

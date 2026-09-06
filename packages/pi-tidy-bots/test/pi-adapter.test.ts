@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createRequire } from "node:module";
 import {
   chmod,
   copyFile,
@@ -381,6 +382,89 @@ test("startFleet HTTP contract admits and projects messages through the shipped 
       delivered,
       "native Pi prompt must contain the actual attachment bytes"
     );
+    const require = createRequire(import.meta.url);
+    const pixel = {
+      width: 1,
+      height: 1,
+      data: Buffer.from([0, 128, 255, 255]),
+    };
+    const imageUploads = [
+      {
+        mediaType: "image/png",
+        data: require("pngjs").PNG.sync.write(pixel).toString("base64"),
+      },
+      {
+        mediaType: "image/jpeg",
+        data: require("jpeg-js").encode(pixel, 80).data.toString("base64"),
+      },
+    ];
+    for (const [index, image] of imageUploads.entries()) {
+      const sendImage = () =>
+        request("/api/bots/pi/message", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            operationId: `image-${index}`,
+            clientMessageId: `image-${index}`,
+            conversationId: binding.conversationId,
+            text: "Describe image",
+            images: [image],
+          }),
+        });
+      assert.equal((await sendImage()).status, 202);
+      await until(
+        async () =>
+          (await request(`/api/bots/pi/operations/image-${index}`)).body
+            .execution === "ended"
+      );
+      assert.equal((await sendImage()).status, 202);
+    }
+    const imageEffects = (
+      await readFile(
+        join(
+          f.directory,
+          ".fleet/plugins",
+          binding.bindingId,
+          "native-effects.jsonl"
+        ),
+        "utf8"
+      )
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .filter((effect) => effect.images);
+    assert.equal(imageEffects.length, 2);
+    for (const [index, effect] of imageEffects.entries())
+      assert.deepEqual(effect.images, [
+        {
+          type: "image",
+          data: imageUploads[index].data,
+          mimeType: imageUploads[index].mediaType,
+        },
+      ]);
+    const invalid = await request("/api/bots/pi/message", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        operationId: "invalid-image",
+        clientMessageId: "invalid-image",
+        conversationId: binding.conversationId,
+        text: "bad",
+        images: [
+          {
+            mediaType: "image/png",
+            data: Buffer.from("not an image").toString("base64"),
+          },
+        ],
+      }),
+    });
+    assert.equal(invalid.status, 400);
+    assert.equal(
+      (await request("/api/bots/pi/operations/invalid-image")).status,
+      404
+    );
+
     assert.equal(
       (
         await request("/api/bots/pi/message", {

@@ -99,6 +99,7 @@ const statuses: Record<string, number> = {
   operation_expired: 410,
   conversation_deleted: 410,
   resource_limit: 413,
+  media_busy: 503,
   capability_unavailable: 422,
   session_unavailable: 503,
   writer_busy: 503,
@@ -308,7 +309,7 @@ export async function startGatewayFleet(
             "Refresh binding capabilities"
           );
         if (request.method === "POST" && action === "message") {
-          const receipt = application.admit(
+          const receipt = await application.admit(
             name,
             await body(request),
             "2",

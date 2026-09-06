@@ -60,7 +60,12 @@ const settle = () => {
 let held = false;
 for await (const line of createInterface({ input: process.stdin })) {
   const request = JSON.parse(line);
-  log({ command: request.type, id: request.id, text: request.message });
+  log({
+    command: request.type,
+    id: request.id,
+    text: request.message,
+    ...(request.images ? { images: request.images } : {}),
+  });
   if (request.type === "get_state") {
     response(request, {
       sessionId: "fixture-session",

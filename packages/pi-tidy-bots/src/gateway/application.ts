@@ -736,12 +736,12 @@ export class GatewayApplication {
       ? null
       : (receipt as unknown as JsonObject | null);
   }
-  admit(
+  async admit(
     name: string,
     body: Record<string, unknown>,
     contract: string | undefined,
     revision: string | undefined
-  ): JsonObject {
+  ): Promise<JsonObject> {
     const bot = this.requireBot(name);
     if (contract !== "2")
       throw new ProtocolError(
@@ -779,7 +779,25 @@ export class GatewayApplication {
       )
     )
       throw new ProtocolError("invalid_payload", "Unknown message field");
-    const uploads = decodeArtifactUploads(body.images);
+    const known = this.journal.getOperation({
+      ...bot.binding,
+      operationId: body.operationId,
+    });
+    if (
+      !known &&
+      Array.isArray(body.images) &&
+      body.images.some(
+        (item) =>
+          object(item) &&
+          typeof item.mediaType === "string" &&
+          !bot.capabilities.input.mediaTypes.includes(item.mediaType)
+      )
+    )
+      throw new ProtocolError(
+        "capability_unavailable",
+        "Attachment type is unavailable for this binding"
+      );
+    const uploads = await decodeArtifactUploads(body.images);
     if (typeof body.text !== "string" || (!body.text.trim() && !uploads.length))
       throw new ProtocolError(
         "invalid_payload",
@@ -795,10 +813,6 @@ export class GatewayApplication {
     const artifacts = uploads.length
       ? this.journal.describeArtifacts(intent, uploads)
       : [];
-    const known = this.journal.getOperation({
-      ...bot.binding,
-      operationId: body.operationId,
-    });
     if (
       !known &&
       uploads.some(

@@ -5,9 +5,9 @@ import {
   MAX_PUBLIC_ARTIFACT_BYTES,
 } from "../src/gateway/artifacts.ts";
 
-test("text uploads preserve Unicode bytes and a supplied filename", () => {
+test("text uploads preserve Unicode bytes and a supplied filename", async () => {
   const bytes = Buffer.from("🦋 café\n");
-  const [upload] = decodeArtifactUploads([
+  const [upload] = await decodeArtifactUploads([
     {
       mediaType: "text/plain",
       name: "note.txt",
@@ -27,7 +27,7 @@ for (const [name, upload] of Object.entries({
     mediaType: "text/plain",
     data: Buffer.from([0xff]).toString("base64"),
   },
-  "unvalidated format": { mediaType: "image/png", data: "YQ==" },
+  "unvalidated format": { mediaType: "image/gif", data: "YQ==" },
   "path override": {
     mediaType: "text/plain",
     data: "YQ==",
@@ -40,5 +40,5 @@ for (const [name, upload] of Object.entries({
   },
 })) {
   test(`upload admission rejects ${name}`, () =>
-    assert.throws(() => decodeArtifactUploads([upload])));
+    assert.rejects(() => decodeArtifactUploads([upload])));
 }

@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sdk" / "python"))
-from tidy_backend_sdk import DurableStore, SDKError
+from tidy_backend_sdk import DurableStore, SDKError, PluginRuntime
 from tidy_backend_sdk.protocol import encode_frame, parse_frame, validate_capabilities
 
 
@@ -215,6 +215,52 @@ class DurableSDKTests(unittest.TestCase):
         self.store = DurableStore(self.path, "org.example.python", "binding", 2)
         self.assertEqual(self.store.inspect("op-1"), {"disposition": "accepted", "execution": "unknown", "observation": "reconciliation_required"})
         self.assertEqual(self.store.inspect("finished"), {"disposition": "accepted", "execution": "ended", "observation": "complete"})
+
+
+class OwnershipSDKTests(unittest.IsolatedAsyncioTestCase):
+    def runtime(self):
+        runtime = PluginRuntime(identity={"id": "org.example.python", "version": "1"}, runtime={"name": "fixture", "version": "1"},
+            capabilities={"input": {"text": True, "mediaTypes": [], "maxMediaBytes": 0},
+                "sessions": {"load": False, "import": False, "continuity": "unverified"},
+                "output": {"text": "snapshots", "tools": False, "usage": "unknown"},
+                "operations": {"nativeDedupe": "none", "nativeReplay": "none", "cancel": "unsupported", "steer": False},
+                "interactions": {"permissions": "none", "questions": False},
+                "configuration": {"model": False, "thinking": False, "compact": False}, "fleetTools": False}, handlers={})
+        runtime.state = "ready"
+        runtime.initialization = {"bindingId": "binding", "instanceId": "instance", "leaseGeneration": 7,
+                                  "ownershipServices": ["ownership.prepare", "ownership.record", "ownership.inspect", "ownership.stopped"]}
+        return runtime
+
+    async def test_lifecycle_services_use_negotiated_lease_without_fleet_tool_grant(self):
+        runtime = self.runtime()
+        frames = []
+        async def write(frame):
+            frames.append(frame)
+            runtime._reverse[frame["id"]].set_result({"state": "prepared"})
+        runtime._write = write
+        result = await runtime.owned_process("prepare", {"launchId": "launch", "bindingId": "forged", "leaseGeneration": 1})
+        self.assertEqual(result, {"state": "prepared"})
+        self.assertEqual(frames[0]["method"], "ownership.prepare")
+        self.assertEqual(frames[0]["params"], {"launchId": "launch", "bindingId": "binding", "leaseGeneration": 7})
+        self.assertEqual(runtime._reverse, {})
+        runtime.initialization["ownershipServices"] = []
+        with self.assertRaises(SDKError) as caught:
+            await runtime.owned_process("prepare", {"launchId": "another"})
+        self.assertEqual(caught.exception.code, "capability_unavailable")
+        self.assertEqual(len(frames), 1)
+
+    async def test_ownership_timeout_does_not_return_an_activation_receipt(self):
+        runtime = self.runtime()
+        runtime.limits["commandTimeoutMs"] = 10
+        frames = []
+        async def write(frame):
+            frames.append(frame)
+        runtime._write = write
+        with self.assertRaises(SDKError) as caught:
+            await runtime.owned_process("record", {"launchId": "launch", "pid": 123})
+        self.assertEqual(caught.exception.code, "request_timeout")
+        self.assertEqual(runtime._reverse, {})
+        self.assertEqual(len(frames), 1)
 
 
 if __name__ == "__main__":

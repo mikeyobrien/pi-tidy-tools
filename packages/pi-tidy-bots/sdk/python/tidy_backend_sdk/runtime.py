@@ -208,6 +208,37 @@ class PluginRuntime:
         if self.on_gap:
             await self._deadline(self.on_gap, {"reason": safe}, self.limits["shutdownTimeoutMs"])
 
+    async def owned_process(self, method, params):
+        """Lifecycle metadata only; record must return started before activation.
+
+        Persist the launch ID before spawn. A lost response requires inspection,
+        never an assumption that native execution was authorized.
+        """
+        if self.state != "ready" or self.initialization is None:
+            raise SDKError("plugin_closed")
+        service = "ownership." + str(method)
+        services = self.initialization.get("ownershipServices", [])
+        if method not in ("prepare", "record", "inspect", "stopped") or not isinstance(services, list) or service not in services:
+            raise SDKError("capability_unavailable")
+        if not isinstance(params, dict):
+            raise SDKError("invalid_request")
+        if len(self._reverse) >= self.limits["maxPendingRequests"]:
+            raise SDKError("resource_limit")
+        self._counter += 1
+        rpc_id = self.initialization["instanceId"] + ":ownership:" + str(self._counter)
+        future = asyncio.get_running_loop().create_future()
+        self._reverse[rpc_id] = future
+        try:
+            await self._write({"jsonrpc": "2.0", "id": rpc_id, "method": service, "params": {
+                **params, "bindingId": self.initialization["bindingId"],
+                "leaseGeneration": self.initialization["leaseGeneration"],
+            }})
+            return await asyncio.wait_for(future, self.limits["commandTimeoutMs"] / 1000)
+        except asyncio.TimeoutError:
+            raise SDKError("request_timeout", "Child ownership requires inspection; do not activate") from None
+        finally:
+            self._reverse.pop(rpc_id, None)
+
     async def host_call(self, name, arguments, *, operation_id=None, tool_call_id=None,
                         action_id=None, payload_digest=None, call_id=None):
         if self.state != "ready":

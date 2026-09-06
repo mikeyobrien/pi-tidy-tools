@@ -305,8 +305,12 @@ export class GatewayApplication {
         dataDir: join(this.fleet.dir, ".fleet", "plugins", bindingId),
         requireExistingData: !!prior[0],
         allowedEnv,
-        onLaunchPrepared: (launchId) => {
-          this.journal.prepareOwnedLaunch(this.lease, { launchId, bindingId });
+        onLaunchPrepared: (launchId, parentLaunchId) => {
+          this.journal.prepareOwnedLaunch(this.lease, {
+            launchId,
+            bindingId,
+            ...(parentLaunchId ? { parentLaunchId } : {}),
+          });
         },
         onLaunchRecorded: (launchId, identity) => {
           this.journal.recordOwnedLaunch(this.lease, launchId, identity);

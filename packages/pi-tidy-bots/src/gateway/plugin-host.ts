@@ -27,6 +27,7 @@ import {
   type RpcMessage,
 } from "./protocol.ts";
 import { digestArtifact, type PluginInstallation } from "./registry.ts";
+import { OwnedLaunchBroker, OWNERSHIP_METHODS } from "./owned-launch-broker.ts";
 
 export interface HostCall extends JsonObject {
   name: string;
@@ -50,7 +51,10 @@ export interface PluginHostOptions {
   onEvent: (event: GatewayPluginEvent) => Promise<number>;
   onHostCall?: (call: HostCall) => Promise<unknown>;
   onFailure?: (error: ProtocolError) => void;
-  onLaunchPrepared?: (launchId: string) => void | Promise<void>;
+  onLaunchPrepared?: (
+    launchId: string,
+    parentLaunchId?: string
+  ) => void | Promise<void>;
   onLaunchRecorded?: (
     launchId: string,
     identity: OwnedProcessIdentity
@@ -75,6 +79,7 @@ export class PluginHost {
   private failClosed!: (error: unknown) => void;
   private readonly launchId = `tidy-launch-${randomUUID()}`;
   private control?: Writable;
+  private ownership?: OwnedLaunchBroker;
   private state: "starting" | "ready" | "closing" | "closed" = "starting";
   private readonly pending = new Map<string, Pending>();
   private readonly reverseIds = new Set<string>();
@@ -257,6 +262,21 @@ export class PluginHost {
         host.launchId
       );
       await options.onLaunchRecorded?.(host.launchId, identity);
+      if (
+        options.installation.policy.nativeProfile === true &&
+        options.installation.manifest.requestedAccess.nativeProfile &&
+        options.onLaunchPrepared &&
+        options.onLaunchRecorded &&
+        options.onLaunchStopped
+      )
+        host.ownership = new OwnedLaunchBroker(
+          { launchId: host.launchId, ...identity },
+          {
+            prepare: options.onLaunchPrepared,
+            record: options.onLaunchRecorded,
+            stopped: options.onLaunchStopped,
+          }
+        );
       if (host.state !== "starting")
         throw new ProtocolError(
           "plugin_spawn",
@@ -279,6 +299,7 @@ export class PluginHost {
           workspace,
           dataDir,
           limits: host.limits,
+          ownershipServices: host.ownership ? [...OWNERSHIP_METHODS] : [],
         },
         host.limits.initializeTimeoutMs
       );
@@ -419,6 +440,7 @@ export class PluginHost {
               "ownership_unreconciled",
               "Owned descendants survived supervisor shutdown"
             );
+          await this.ownership?.reconcile();
           await this.options.onLaunchStopped?.(this.launchId);
         })
         .then(this.endClosed, this.failClosed);
@@ -518,7 +540,13 @@ export class PluginHost {
         });
       return;
     }
-    if (message.method === "host.call" && message.id !== undefined) {
+    if (
+      (message.method === "host.call" ||
+        OWNERSHIP_METHODS.includes(
+          message.method as (typeof OWNERSHIP_METHODS)[number]
+        )) &&
+      message.id !== undefined
+    ) {
       const task = this.handleCall(message);
       this.reverseTasks.add(task);
       void task.then(
@@ -583,26 +611,36 @@ export class PluginHost {
           "Missing host call parameters"
         );
       this.assertBinding(value);
+      const ownership = message.method !== "host.call";
+      const name = typeof value.name === "string" ? value.name : "";
+      if (ownership && !this.ownership)
+        throw new ProtocolError(
+          "capability_unavailable",
+          "Native ownership services are not granted"
+        );
       if (
-        !nonempty(value.name) ||
-        !nonempty(value.callId) ||
-        !object(value.arguments)
+        !ownership &&
+        (!nonempty(value.name) ||
+          !nonempty(value.callId) ||
+          !object(value.arguments))
       )
         throw new ProtocolError("invalid_frame", "Malformed host service call");
       if (
-        !this.options.onHostCall ||
-        !this.options.installation.policy.gatewayTools?.includes(value.name) ||
-        !this.options.installation.manifest.requestedAccess.gatewayTools.includes(
-          value.name
-        ) ||
-        (value.name.startsWith("fleet.") && !this.capabilities.fleetTools)
+        !ownership &&
+        (!this.options.onHostCall ||
+          !this.options.installation.policy.gatewayTools?.includes(name) ||
+          !this.options.installation.manifest.requestedAccess.gatewayTools.includes(
+            name
+          ) ||
+          (name.startsWith("fleet.") && !this.capabilities.fleetTools))
       )
         throw new ProtocolError(
           "capability_unavailable",
           "Host service is not permitted for this binding"
         );
       if (
-        ["fleet.send", "operator.enqueue"].includes(value.name) &&
+        !ownership &&
+        ["fleet.send", "operator.enqueue"].includes(name) &&
         (!nonempty(value.actionId) ||
           !nonempty(value.payloadDigest) ||
           !nonempty(value.operationId) ||
@@ -625,7 +663,14 @@ export class PluginHost {
           ),
         this.limits.commandTimeoutMs
       );
-      const result = await this.options.onHostCall(value as HostCall);
+      const {
+        bindingId: _binding,
+        leaseGeneration: _lease,
+        ...ownershipParams
+      } = value;
+      const result = ownership
+        ? await this.ownership!.call(message.method!, ownershipParams)
+        : await this.options.onHostCall!(value as HostCall);
       if (this.state === "ready") this.write({ jsonrpc: "2.0", id, result });
     } catch (error) {
       if (this.state === "ready") {

@@ -12,7 +12,15 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
-import { PluginHost } from "../src/gateway/plugin-host.ts";
+import {
+  PluginHost,
+  type PluginHostOptions,
+} from "../src/gateway/plugin-host.ts";
+import { GatewayJournal } from "../src/gateway/journal.ts";
+import {
+  processIdentity,
+  ownedGroupHasExited,
+} from "../src/gateway/process-ownership.ts";
 import { digestArtifact, PluginRegistry } from "../src/gateway/registry.ts";
 import {
   DEFAULT_LIMITS,
@@ -22,7 +30,7 @@ import {
   type RpcMessage,
 } from "../src/gateway/protocol.ts";
 
-async function fixture() {
+async function fixture(nativeProfile = false) {
   const dir = await mkdtemp(join(tmpdir(), "tidy-sdk-runtime-"));
   const artifact = join(dir, "artifact");
   await mkdir(artifact);
@@ -35,7 +43,12 @@ async function fixture() {
     "SDK_INDEX_URL",
     new URL("../src/plugin-sdk/index.ts", import.meta.url).href
   );
-  await writeFile(join(artifact, "backend.mjs"), script);
+  await writeFile(
+    join(artifact, "backend.mjs"),
+    nativeProfile
+      ? script.replace("fleetTools: true", "fleetTools: false")
+      : script
+  );
   await chmod(join(artifact, "backend.mjs"), 0o755);
   await writeFile(
     join(artifact, "backend.json"),
@@ -53,7 +66,7 @@ async function fixture() {
       },
       requestedAccess: {
         workspace: "none",
-        nativeProfile: false,
+        nativeProfile,
         network: false,
         gatewayTools: ["fleet.send"],
       },
@@ -85,7 +98,7 @@ async function fixture() {
   );
   const installation = (
     await PluginRegistry.load(registryPath, {
-      policy: { gatewayTools: ["fleet.send"] },
+      policy: { gatewayTools: ["fleet.send"], nativeProfile },
     })
   ).resolve("org.example.sdk-fixture");
   const hosts: PluginHost[] = [];
@@ -181,6 +194,10 @@ async function fixture() {
         event?: (event: GatewayPluginEvent) => Promise<number>;
         hostCall?: () => Promise<unknown>;
         ownership?: string;
+        lifecycle?: Pick<
+          PluginHostOptions,
+          "onLaunchPrepared" | "onLaunchRecorded" | "onLaunchStopped"
+        >;
       } = {}
     ) {
       const host = await PluginHost.start({
@@ -205,6 +222,7 @@ async function fixture() {
           }),
         onHostCall:
           overrides.hostCall ?? (async () => ({ disposition: "accepted" })),
+        ...overrides.lifecycle,
       });
       hosts.push(host);
       return host;
@@ -263,6 +281,129 @@ async function until(probe: () => boolean | Promise<boolean>) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
+
+test("SDK ownership service records a real detached launcher before execution and reconciles it on shutdown", async () => {
+  const f = await fixture(true);
+  const journal = new GatewayJournal(join(f.dir, "ownership.sqlite"), {
+    fleetId: "ownership-sdk",
+  });
+  const lease = journal.acquireWriterLease("test-owner", {
+    ownerProcess: await processIdentity(process.pid),
+  });
+  let rootId: string | undefined;
+  let childId: string | undefined;
+  try {
+    const host = await f.start({
+      mode: "registered-child",
+      lease: lease.generation,
+      lifecycle: {
+        onLaunchPrepared: (launchId, parentLaunchId) => {
+          journal.prepareOwnedLaunch(lease, {
+            launchId,
+            bindingId: "sdk-binding",
+            ...(parentLaunchId ? { parentLaunchId } : {}),
+          });
+          if (parentLaunchId) {
+            assert.equal(parentLaunchId, rootId);
+            childId = launchId;
+          } else rootId = launchId;
+        },
+        onLaunchRecorded: async (launchId, identity) => {
+          if (launchId === childId)
+            await assert.rejects(readFile(join(f.dataDir, "child-effect")), {
+              code: "ENOENT",
+            });
+          journal.recordOwnedLaunch(lease, launchId, identity);
+        },
+        onLaunchStopped: (launchId) => {
+          journal.completeOwnedLaunch(lease, launchId);
+        },
+      },
+    });
+    assert.equal(host.capabilities.fleetTools, false);
+    assert.equal(
+      ((await host.request("session.open", open)) as any).status,
+      "opened"
+    );
+    await until(async () => {
+      try {
+        return (
+          (await readFile(join(f.dataDir, "child-effect"), "utf8")) ===
+          "started"
+        );
+      } catch {
+        return false;
+      }
+    });
+    const inspected = (await host.request("session.snapshot", {})) as any;
+    assert.equal(inspected.launchId, childId);
+    assert.equal(inspected.state, "started");
+    assert.equal(journal.getSupervisorRecord()!.launches.length, 2);
+    assert.throws(() => journal.completeOwnedLaunch(lease, rootId!), {
+      code: "ownership_unreconciled",
+    });
+    await host.close();
+    assert.ok(
+      journal
+        .getSupervisorRecord()!
+        .launches.every((launch) => launch.state === "stopped")
+    );
+    assert.equal(await ownedGroupHasExited(inspected.identity.pid), true);
+    journal.releaseWriterLease(lease, { ownershipReconciled: true });
+  } finally {
+    await f.cleanup();
+    journal.close();
+  }
+});
+
+test("SDK cannot activate a child when durable registration fails", async () => {
+  const f = await fixture(true);
+  const childIds = new Set<string>();
+  const stopped = new Set<string>();
+  try {
+    const host = await f.start({
+      mode: "registered-child",
+      lifecycle: {
+        onLaunchPrepared: (id, parent) => {
+          if (parent) childIds.add(id);
+        },
+        onLaunchRecorded: (id) => {
+          if (childIds.has(id))
+            throw new Error("simulated durable write failure");
+        },
+        onLaunchStopped: (id) => {
+          stopped.add(id);
+        },
+      },
+    });
+    await assert.rejects(host.request("session.open", open), {
+      code: "host_failure",
+    });
+    assert.equal(childIds.size, 1);
+    await host.close();
+    await assert.rejects(readFile(join(f.dataDir, "child-effect")), {
+      code: "ENOENT",
+    });
+    assert.ok([...childIds].every((id) => stopped.has(id)));
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("SDK ownership calls without a native-profile grant stop before spawning", async () => {
+  const f = await fixture();
+  try {
+    const host = await f.start({ mode: "registered-child" });
+    await assert.rejects(host.request("session.open", open), {
+      code: "capability_unavailable",
+    });
+    await assert.rejects(readFile(join(f.dataDir, "child-effect")), {
+      code: "ENOENT",
+    });
+  } finally {
+    await f.cleanup();
+  }
+});
 
 test("SDK real process reserves opens, prompts and controls, preserves immutable conflicts and streams canonical events", async () => {
   const f = await fixture();

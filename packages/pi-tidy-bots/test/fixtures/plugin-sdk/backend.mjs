@@ -2,10 +2,13 @@
 import { appendFileSync, openSync, fsyncSync, closeSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { runPlugin } from "SDK_INDEX_URL";
 
 let ownedChild;
+let ownedLaunchId;
+let ownedControl;
 const log = (value) => {
   const file = openSync(
     join(process.env.TIDY_DATA_DIR, "native-effects.jsonl"),
@@ -62,17 +65,57 @@ const runtime = runPlugin({
       ownedChild.signalCode === null
     ) {
       const exit = new Promise((resolve) => ownedChild.once("close", resolve));
-      ownedChild.kill("SIGTERM");
+      if (ownedControl) ownedControl.end();
+      else ownedChild.kill("SIGTERM");
       await exit;
     }
     return { ownedResourcesStopped: true };
   },
   handlers: {
-    "session.open"(params, ctx) {
+    async "session.open"(params, ctx) {
       log({ method: "session.open", openId: params.openId });
+      if (ctx.initialization.config.mode === "registered-child") {
+        ownedLaunchId = `tidy-launch-${randomUUID()}`;
+        log({ ownedLaunchId });
+        const prepared = await ctx.ownedProcess("prepare", {
+          launchId: ownedLaunchId,
+        });
+        ownedChild = spawn(
+          prepared.executable,
+          [
+            prepared.launcherPath,
+            ownedLaunchId,
+            process.execPath,
+            "-e",
+            `require('node:fs').writeFileSync(${JSON.stringify(join(ctx.initialization.dataDir, "child-effect"))},'started');setInterval(()=>{},1000)`,
+          ],
+          { detached: true, stdio: ["ignore", "ignore", "ignore", "pipe"] }
+        );
+        ownedControl = ownedChild.stdio[3];
+        const recorded = await ctx.ownedProcess("record", {
+          launchId: ownedLaunchId,
+          pid: ownedChild.pid,
+        });
+        if (recorded.state !== "started")
+          throw new Error("Child identity was not recorded");
+        ownedControl.write(
+          JSON.stringify({ activate: ownedLaunchId, env: {} }) + "\n"
+        );
+      }
       if (ctx.initialization.config.mode === "crash-open")
         process.kill(process.pid, "SIGKILL");
       return { status: "opened", nativeReference: `native:${params.openId}` };
+    },
+    async "session.snapshot"(_params, ctx) {
+      if (ownedLaunchId)
+        return ctx.ownedProcess("inspect", { launchId: ownedLaunchId });
+      return {
+        disposition: "unknown",
+        observation: ctx.store.observationGap
+          ? "reconciliation_required"
+          : "complete",
+        lastSourceSequence: ctx.store.watermark,
+      };
     },
     async "operation.submit"(params, ctx) {
       log({ method: "operation.submit", operationId: params.operationId });

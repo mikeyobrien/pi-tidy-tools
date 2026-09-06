@@ -12,6 +12,7 @@ import {
   reconcileOwnedProcess,
   ownedGroupHasExited,
   processIdentity,
+  ownedChildIdentity,
 } from "../src/gateway/process-ownership.ts";
 import { GatewayJournal } from "../src/gateway/journal.ts";
 
@@ -204,6 +205,61 @@ test("a surviving separately supervised child prevents reconciliation after its 
     await Promise.all(children.map(exited));
     journal.close();
     reopened?.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("child adoption verifies the live parent birth, token and trusted launcher image", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "tidy-child-adoption-"));
+  const marker = join(dir, "child.json");
+  const parentToken = `tidy-launch-${randomUUID()}`;
+  const childToken = `tidy-launch-${randomUUID()}`;
+  const script = `const {spawn}=require('node:child_process'); const {writeFileSync}=require('node:fs');
+    const child=spawn(process.execPath,${JSON.stringify([launcher, childToken, process.execPath, "-e", "setInterval(()=>{},1000)"])},
+      {detached:true,stdio:['ignore','ignore','ignore','pipe']});
+    writeFileSync(${JSON.stringify(marker)},JSON.stringify({pid:child.pid})); setInterval(()=>{},1000);`;
+  const parent = spawn(
+    process.execPath,
+    [launcher, parentToken, process.execPath, "-e", script],
+    {
+      detached: true,
+      stdio: ["pipe", "ignore", "ignore", "pipe"],
+    }
+  );
+  let childPid: number | undefined;
+  try {
+    const identity = await ownedProcessIdentity(parent.pid!, parentToken);
+    (parent.stdio[3] as Writable).write(
+      JSON.stringify({ activate: parentToken, env: {} }) + "\n"
+    );
+    await until(() => exists(marker));
+    childPid = JSON.parse(await readFile(marker, "utf8")).pid;
+    const child = await ownedChildIdentity(childPid!, childToken, launcher, [
+      identity,
+    ]);
+    assert.equal(child.pid, childPid);
+    for (const changed of [
+      { ...identity, startedAt: "different-birth" },
+      { ...identity, token: `tidy-launch-${randomUUID()}` },
+    ])
+      await assert.rejects(
+        ownedChildIdentity(childPid!, childToken, launcher, [changed]),
+        { code: "ownership_unreconciled" }
+      );
+    await assert.rejects(
+      ownedChildIdentity(childPid!, childToken, launcher + ".untrusted", [
+        identity,
+      ]),
+      { code: "ownership_unreconciled" }
+    );
+    await assert.rejects(
+      ownedChildIdentity(childPid!, childToken, launcher, []),
+      { code: "ownership_unreconciled" }
+    );
+  } finally {
+    (parent.stdio[3] as Writable).end();
+    await exited(parent);
+    if (childPid) await until(() => ownedGroupHasExited(childPid!));
     await rm(dir, { recursive: true, force: true });
   }
 });

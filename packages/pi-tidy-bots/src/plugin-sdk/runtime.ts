@@ -38,6 +38,13 @@ export interface PluginContext {
   signal: AbortSignal;
   emit(event: EventInput): void;
   hostCall(call: HostCallInput): Promise<unknown>;
+  /** Lifecycle metadata only. Never activate a child until record returns started.
+   * Retain the launch ID before spawning; lost responses require inspection.
+   */
+  ownedProcess(
+    method: "prepare" | "record" | "inspect" | "stopped",
+    params: JsonObject
+  ): Promise<unknown>;
 }
 export type NativeHandler = (
   params: JsonObject,
@@ -396,6 +403,7 @@ export class PluginRuntime {
         signal: this.abort.signal,
         emit: (event) => this.emit(event),
         hostCall: (call) => this.hostCall(call),
+        ownedProcess: (method, params) => this.ownedProcess(method, params),
       };
       if (this.options.onInitialize) {
         const task = Promise.resolve().then(() =>
@@ -728,6 +736,61 @@ export class PluginRuntime {
       this.store.markSent(event.sourceSequence);
       this.write({ jsonrpc: "2.0", method: "event", params: event });
     }
+  }
+  private async ownedProcess(
+    method: string,
+    params: JsonObject
+  ): Promise<unknown> {
+    const service = `ownership.${method}`;
+    const init = this.context?.initialization;
+    if (this.state !== "ready" || !init)
+      throw new ProtocolError(
+        "parent_eof",
+        "Ownership service admission is closed"
+      );
+    if (
+      !["prepare", "record", "inspect", "stopped"].includes(method) ||
+      !Array.isArray(init.ownershipServices) ||
+      !init.ownershipServices.includes(service)
+    )
+      throw new ProtocolError(
+        "capability_unavailable",
+        "Host did not grant this ownership service"
+      );
+    if (this.pending.size >= this.limits.maxPendingRequests)
+      throw new ProtocolError(
+        "resource_limit",
+        "Too many pending ownership requests"
+      );
+    const id = `${init.instanceId}:ownership:${++this.rpcCounter}`;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(
+          new ProtocolError(
+            "request_timeout",
+            "Child ownership requires inspection; do not activate"
+          )
+        );
+      }, this.limits.commandTimeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
+      try {
+        this.write({
+          jsonrpc: "2.0",
+          id,
+          method: service,
+          params: {
+            ...params,
+            bindingId: init.bindingId,
+            leaseGeneration: init.leaseGeneration,
+          },
+        });
+      } catch (error) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(error);
+      }
+    });
   }
   private async hostCall(call: HostCallInput): Promise<unknown> {
     if (this.state !== "ready")

@@ -197,7 +197,7 @@ test("owned Hermes guard preserves ACP negotiation and suppresses implicit nativ
     assert.equal(result.agentCapabilities.sessionCapabilities.resume, null);
     assert.deepEqual(result._meta, {
       hermes: { preserved: true },
-      tidy: { guardVersion: 2, approvalPolicy: "ask", environment: "explicit" },
+      tidy: { guardVersion: 3, approvalPolicy: "ask", environment: "explicit" },
     });
     assert.equal((await f.prompt()).stopReason, "end_turn");
     assert.deepEqual(
@@ -223,7 +223,7 @@ test("Hermes guard reports authoritative final text without copying history or r
       assert.deepEqual(result._meta, {
         hermes: { preserved: true },
         tidy: {
-          guardVersion: 2,
+          guardVersion: 3,
           turnEvidence: {
             started: true,
             settled: true,
@@ -447,6 +447,82 @@ test("Hermes guard refuses unknown session references and cold-load methods with
     assert.deepEqual(
       (await f.effects()).map((effect) => effect.kind),
       ["new"]
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("native callback receipts correlate exact command and edit decisions after consumption", async () => {
+  const f = await fixture();
+  try {
+    await f.ready();
+    for (const edit of [false, true])
+      for (const choice of ["allow_once", "deny"]) {
+        const result = await f.request("fixture/callback", { edit, choice });
+        assert.equal(
+          result.nativeResult,
+          edit
+            ? choice === "allow_once"
+            : choice === "allow_once"
+              ? "once"
+              : "deny"
+        );
+      }
+    const effects = await f.effects();
+    const identities = effects
+      .filter((effect) => effect.kind === "permission_identity")
+      .map((effect) => (effect.tidy as any).permissionId);
+    const receipts = effects.filter(
+      (effect) => effect.kind === "permission_receipt"
+    );
+    assert.equal(new Set(identities).size, 4);
+    assert.deepEqual(
+      receipts.map((receipt) => receipt.permissionId),
+      identities
+    );
+    assert.deepEqual(
+      receipts.map((receipt) => receipt.optionId),
+      ["allow_once", "deny", "allow_once", "deny"]
+    );
+    assert.ok(
+      receipts.every(
+        (receipt) =>
+          receipt.sessionId === "native-one" &&
+          receipt.evidence === "native_callback_returned"
+      )
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("native permission timeout and failed receipt delivery cannot produce applied evidence or leak an allow", async () => {
+  const f = await fixture();
+  try {
+    await f.ready();
+    for (const edit of [false, true]) {
+      // A response exists, but the worker never reads it after timing out.
+      for (const choice of ["allow_once", "deny"])
+        await f.request("fixture/callback", { edit, choice, mode: "timeout" });
+      await assert.rejects(
+        f.request("fixture/callback", { edit, mode: "automatic" })
+      );
+      await assert.rejects(
+        f.request("fixture/callback", { edit, failReceipts: true })
+      );
+    }
+    const effects = await f.effects();
+    assert.equal(
+      effects.filter((effect) => effect.kind === "permission_receipt").length,
+      0
+    );
+    assert.ok(
+      effects
+        .filter((effect) => effect.kind === "callback_returned")
+        .every((effect) =>
+          [false, "timeout"].includes(effect.nativeResult as any)
+        )
     );
   } finally {
     await f.cleanup();

@@ -8,15 +8,70 @@ import os
 from pathlib import Path
 import sys
 from threading import Lock
+from uuid import uuid4
 
 
 HERMES_VERSION = "0.20.5"
 ACP_VERSION = "0.9.0"
-GUARD_VERSION = 2
+GUARD_VERSION = 3
 
 
 class ApprovalPolicyUnavailable(Exception):
     """Safe diagnostic: never include native configuration or secret values."""
+
+
+def receipt_permission_factory(factory, *, edit=False):
+    """Observe the pinned synchronous callback, not merely its ACP response.
+
+    Each invocation gets its own closure, including when native workers overlap.
+    A timeout, failed mapping or automatic approval never produces an applied
+    receipt. Failure to deliver evidence prevents an allow result escaping.
+    """
+    def create(request_permission_fn, loop, session_id, *args, **kwargs):
+        owner = getattr(request_permission_fn, "__self__", None)
+        if not callable(getattr(owner, "tidy_permission_consumed", None)):
+            raise ApprovalPolicyUnavailable()
+
+        def callback(*call_args, **call_kwargs):
+            permission_id = str(uuid4())
+            observed = {}
+
+            async def request(*request_args, **request_kwargs):
+                request_kwargs["tidy"] = {"permissionId": permission_id}
+                response = await request_permission_fn(*request_args, **request_kwargs)
+                # Both pinned callbacks read only response.outcome after their
+                # future.result(). A response arriving after the worker timeout
+                # must not count as consumption, even when its choice is deny.
+                class ConsumedResponse:
+                    @property
+                    def outcome(self):
+                        outcome = response.outcome
+                        if getattr(outcome, "outcome", None) == "selected":
+                            observed["choice"] = getattr(outcome, "option_id", None)
+                        return outcome
+                return ConsumedResponse()
+
+            native = factory(request, loop, session_id, *args, **kwargs)
+            result = native(*call_args, **call_kwargs)
+            if (edit and type(result) is not bool) or (not edit and result not in ("once", "deny", "timeout")):
+                raise ApprovalPolicyUnavailable()
+            choice = observed.get("choice")
+            expected = ((True if choice == "allow_once" else False) if edit
+                        else ("once" if choice == "allow_once" else "deny"))
+            if choice in ("allow_once", "deny") and type(result) is type(expected) and result == expected:
+                future = asyncio.run_coroutine_threadsafe(
+                    owner.tidy_permission_consumed(session_id, permission_id, choice), loop)
+                try:
+                    future.result(timeout=5)
+                except BaseException:
+                    future.cancel()
+                    raise ApprovalPolicyUnavailable()
+            elif result is True or result in ("once", "session", "always"):
+                raise ApprovalPolicyUnavailable()
+            return result
+
+        return callback
+    return create
 
 
 def directory(value):
@@ -102,6 +157,18 @@ def guarded_agent(base, guard, prompt_response):
             class ExactPermissionClient:
                 def __getattr__(self, name):
                     return getattr(connection, name)
+
+                async def tidy_permission_consumed(self, session_id, permission_id, option_id):
+                    if session_id not in owner._tidy_created_sessions:
+                        raise ApprovalPolicyUnavailable()
+                    state = owner._tidy_live_state(session_id)
+                    if state is None:
+                        raise ApprovalPolicyUnavailable()
+                    guard.check(state, owner)
+                    await connection.ext_notification("tidy/permission_consumed", {
+                        "sessionId": session_id, "permissionId": permission_id,
+                        "optionId": option_id, "evidence": "native_callback_returned",
+                    })
 
                 def session_update(self, *args, **kwargs):
                     # Native worker callbacks swallow update-send failures.
@@ -368,7 +435,15 @@ def main():
     guard.check()
     import acp
     from acp.schema import PromptResponse
-    from acp_adapter.server import HermesACPAgent
+    # Patch the factories before server.py captures its direct import. Edits
+    # import the module factory at prompt time. Both remain pinned to 0.20.5.
+    from acp_adapter import permissions, edit_approval
+    permissions.make_approval_callback = receipt_permission_factory(permissions.make_approval_callback)
+    edit_approval.make_acp_edit_approval_requester = receipt_permission_factory(
+        edit_approval.make_acp_edit_approval_requester, edit=True)
+    from acp_adapter import server
+    server.make_approval_callback = permissions.make_approval_callback
+    HermesACPAgent = server.HermesACPAgent
     # Do not call entry.main(): it performs implicit environment loading and
     # configured MCP discovery. Fleet MCP registration belongs to the adapter.
     guard.check()

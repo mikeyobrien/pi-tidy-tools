@@ -35,6 +35,13 @@ export interface HermesSessionOptions extends Pick<
     },
     signal: AbortSignal
   ) => Promise<unknown>;
+  /** Must synchronously persist the exact native decision receipt. */
+  onPermissionConsumed?: (receipt: {
+    permissionId: string;
+    optionId: string;
+    operationId: string;
+    turnId: string;
+  }) => void;
 }
 const metadataUpdates = new Set([
   "session_info_update",
@@ -66,6 +73,15 @@ export class HermesSession {
   private active?: Turn;
   private lost = false;
   private closing = false;
+  private readonly permissions = new Map<
+    string,
+    {
+      operationId: string;
+      turnId: string;
+      optionId?: string;
+    }
+  >();
+  private readonly permissionIds = new Set<string>();
   constructor(private readonly options: HermesSessionOptions) {
     this.transport = new AcpTransport({
       ...options,
@@ -80,8 +96,28 @@ export class HermesSession {
             "native_protocol_error",
             "Uncorrelated native permission request"
           );
+        const tidy = object(params._meta) ? params._meta.tidy : undefined;
+        if (
+          !object(tidy) ||
+          !nonempty(tidy.permissionId) ||
+          tidy.permissionId.length > 128 ||
+          this.permissionIds.has(tidy.permissionId) ||
+          this.permissions.size >= 256 ||
+          this.permissionIds.size >= 4096
+        )
+          throw new ProtocolError(
+            "native_protocol_error",
+            "Missing or reused native permission identity"
+          );
         this.started(this.active);
-        return options.onPermission(
+        const permission = {
+          operationId: this.active.operationId,
+          turnId: this.active.turnId,
+          optionId: undefined as string | undefined,
+        };
+        this.permissions.set(tidy.permissionId, permission);
+        this.permissionIds.add(tidy.permissionId);
+        const result = await options.onPermission(
           params,
           id,
           {
@@ -90,6 +126,16 @@ export class HermesSession {
           },
           signal
         );
+        if (!object(result) || !object(result.outcome)) throw new Error();
+        if (result.outcome.outcome === "cancelled")
+          this.permissions.delete(tidy.permissionId);
+        else if (
+          result.outcome.outcome === "selected" &&
+          ["allow_once", "deny"].includes(String(result.outcome.optionId))
+        )
+          permission.optionId = String(result.outcome.optionId);
+        else throw new Error();
+        return result;
       },
       onFailure: (error) => this.fail(error),
     });
@@ -117,7 +163,7 @@ export class HermesSession {
       initialized.agentInfo.version !== "0.20.5" ||
       !object(initialized._meta) ||
       !object(initialized._meta.tidy) ||
-      initialized._meta.tidy.guardVersion !== 2 ||
+      initialized._meta.tidy.guardVersion !== 3 ||
       initialized._meta.tidy.approvalPolicy !== "ask" ||
       initialized._meta.tidy.environment !== "explicit" ||
       !object(initialized.agentCapabilities) ||
@@ -188,7 +234,7 @@ export class HermesSession {
       }
       const evidence = tidy.turnEvidence;
       if (
-        tidy.guardVersion !== 2 ||
+        tidy.guardVersion !== 3 ||
         !object(evidence) ||
         evidence.started !== true ||
         evidence.settled !== true ||
@@ -214,6 +260,7 @@ export class HermesSession {
       this.finishMessage(turn);
       const complete =
         evidence.observationsComplete === true &&
+        this.permissions.size === 0 &&
         [...turn.tools.values()].every((tool) => tool.finished);
       const execution = evidence.failed
         ? "failed"
@@ -250,6 +297,7 @@ export class HermesSession {
   }
   close(): void {
     this.closing = true;
+    this.permissions.clear();
     this.transport.close();
   }
   private emit(
@@ -321,6 +369,34 @@ export class HermesSession {
     turn.message = undefined;
   }
   private notification(method: string, params: JsonObject): void {
+    if (method === "_tidy/permission_consumed") {
+      const permission = nonempty(params.permissionId)
+        ? this.permissions.get(params.permissionId)
+        : undefined;
+      if (
+        !permission ||
+        !this.active ||
+        params.sessionId !== this.sessionId ||
+        params.evidence !== "native_callback_returned" ||
+        !permission.optionId ||
+        params.optionId !== permission.optionId ||
+        permission.operationId !== this.active.operationId ||
+        permission.turnId !== this.active.turnId ||
+        !this.options.onPermissionConsumed
+      )
+        throw new Error();
+      const result: unknown = this.options.onPermissionConsumed({
+        ...permission,
+        permissionId: String(params.permissionId),
+        optionId: permission.optionId,
+      });
+      if (result !== undefined) {
+        void Promise.resolve(result).catch(() => {});
+        throw new Error();
+      }
+      this.permissions.delete(String(params.permissionId));
+      return;
+    }
     if (method !== "session/update" || !object(params.update))
       throw new Error();
     const update = params.update;
@@ -380,6 +456,7 @@ export class HermesSession {
   private fail(error: ProtocolError): void {
     if (this.lost) return;
     this.lost = true;
+    this.permissions.clear();
     try {
       if (this.active)
         this.emit(this.active, "observation.gap", {

@@ -112,7 +112,10 @@ export async function openHermesRuntime(
   ctx: PluginContext,
   launchId: string,
   config: JsonObject,
-  hooks: Pick<HermesSessionOptions, "onPermission" | "onFailure">
+  hooks: Pick<
+    HermesSessionOptions,
+    "onPermission" | "onFailure" | "onPermissionConsumed"
+  >
 ): Promise<HermesRuntime> {
   const configuration = await validateHermesConfiguration(config);
   const process = await spawnOwnedProcess(ctx, {
@@ -152,6 +155,7 @@ export async function openHermesRuntime(
       requestTimeoutMs: ctx.initialization.limits.commandTimeoutMs,
       emit: (event) => ctx.emit(event as EventInput),
       onPermission: hooks.onPermission,
+      onPermissionConsumed: hooks.onPermissionConsumed,
       onFailure: (error) => {
         void close();
         hooks.onFailure(error);

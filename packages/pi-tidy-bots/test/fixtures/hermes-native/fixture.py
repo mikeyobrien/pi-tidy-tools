@@ -1,5 +1,6 @@
 """Deterministic native modules used only by guarded-launcher subprocess tests."""
 import json
+import asyncio
 import os
 from pathlib import Path
 import sys
@@ -121,6 +122,13 @@ def wire(value):
 async def run_agent(agent, **kwargs):
     class Connection:
         choice = "allow_once"
+        fail_receipts = False
+
+        async def ext_notification(self, method, params):
+            if self.fail_receipts:
+                raise RuntimeError("private receipt write failure")
+            record("permission_receipt", **params)
+            print(json.dumps({"jsonrpc": "2.0", "method": "_" + method, "params": params}), flush=True)
 
         async def session_update(self, session_id, update):
             if update.get("fail"):
@@ -128,6 +136,7 @@ async def run_agent(agent, **kwargs):
 
         async def request_permission(self, session_id, tool_call, options, **kwargs):
             record("permission_options", options=[option.option_id for option in options])
+            record("permission_identity", tidy=kwargs.get("tidy"))
             return SimpleNamespace(outcome=SimpleNamespace(outcome="selected", option_id=self.choice))
 
     connection = Connection()
@@ -163,6 +172,16 @@ async def run_agent(agent, **kwargs):
                 result = {}
             elif method == "fixture/environment":
                 result = {"keys": sorted(os.environ)}
+            elif method == "fixture/callback":
+                connection.choice = params.get("choice", "allow_once")
+                connection.fail_receipts = params.get("failReceipts", False)
+                edit = params.get("edit", False)
+                factory = (sys.modules["acp_adapter.edit_approval"].make_acp_edit_approval_requester if edit
+                           else sys.modules["acp_adapter.permissions"].make_approval_callback)
+                callback = factory(agent.connection.request_permission, asyncio.get_running_loop(), "native-one",
+                                   mode=params.get("mode", "normal"))
+                result = {"nativeResult": await asyncio.to_thread(callback)}
+                record("callback_returned", **result)
             elif method == "fixture/permission":
                 connection.choice = params["choice"]
                 options = [SimpleNamespace(option_id=key, kind=kind) for key, kind in (
@@ -190,3 +209,17 @@ def install():
     module("tools", approval=approval)
     module("acp", run_agent=run_agent)
     module("acp.schema", PromptResponse=SimpleNamespace)
+    def fake_factory(request, loop, session_id, *, edit=False, mode="normal"):
+        def callback():
+            if mode == "automatic":
+                return True if edit else "once"
+            options = [SimpleNamespace(option_id=key, kind=kind) for key, kind in
+                       (("allow_once", "allow_once"), ("deny", "reject_once"))]
+            response = asyncio.run_coroutine_threadsafe(request(session_id=session_id, tool_call={}, options=options), loop).result(timeout=2)
+            if mode == "timeout":
+                return False if edit else "timeout"
+            choice = response.outcome.option_id
+            return (choice == "allow_once") if edit else ("once" if choice == "allow_once" else "deny")
+        return callback
+    module("acp_adapter.permissions", make_approval_callback=fake_factory)
+    module("acp_adapter.edit_approval", make_acp_edit_approval_requester=lambda *args, **kwargs: fake_factory(*args, **kwargs, edit=True))

@@ -32,7 +32,7 @@ function fixture(
           agentCapabilities: { loadSession: false },
           _meta: {
             tidy: {
-              guardVersion: 2,
+              guardVersion: 3,
               approvalPolicy: "ask",
               environment: "explicit",
             },
@@ -88,7 +88,7 @@ function finish(
       stopReason: "end_turn",
       _meta: {
         tidy: {
-          guardVersion: 2,
+          guardVersion: 3,
           turnEvidence: {
             started: true,
             settled: true,
@@ -275,6 +275,7 @@ test("Hermes swallowed notification failures cannot claim complete observation",
 
 test("Hermes permission callback carries the active operation and can finish the pending native prompt", async (t) => {
   let prompt: any;
+  const receipts: unknown[] = [];
   const f = fixture(
     t,
     (request, send) => {
@@ -284,17 +285,34 @@ test("Hermes permission callback carries the active operation and can finish the
           jsonrpc: "2.0",
           id: 17,
           method: "session/request_permission",
-          params: { sessionId: "s1" },
+          params: {
+            sessionId: "s1",
+            _meta: { tidy: { permissionId: "permission-1" } },
+          },
         });
       } else {
         assert.equal(request.id, 17);
         assert.deepEqual(request.result, {
           outcome: { outcome: "selected", optionId: "allow_once" },
         });
+        assert.deepEqual(receipts, []);
+        send({
+          jsonrpc: "2.0",
+          method: "_tidy/permission_consumed",
+          params: {
+            sessionId: "s1",
+            permissionId: "permission-1",
+            optionId: "allow_once",
+            evidence: "native_callback_returned",
+          },
+        });
         finish(prompt, send);
       }
     },
     {
+      onPermissionConsumed: (receipt) => {
+        receipts.push(receipt);
+      },
       onPermission: async (_params, id, turn, signal) => {
         assert.equal(id, 17);
         assert.deepEqual(turn, { operationId: "op1", turnId: "turn1" });
@@ -309,4 +327,92 @@ test("Hermes permission callback carries the active operation and can finish the
     "accepted"
   );
   assert.equal(f.events.at(-1).payload.execution, "ended");
+  assert.deepEqual(receipts, [
+    {
+      permissionId: "permission-1",
+      optionId: "allow_once",
+      operationId: "op1",
+      turnId: "turn1",
+    },
+  ]);
 });
+
+for (const mode of [
+  "missing",
+  "wrong-option",
+  "wrong-session",
+  "duplicate",
+  "persist-failed",
+  "async-persist",
+  "reused-identity",
+]) {
+  test(`Hermes permission receipt ${mode} prevents complete observation`, async (t) => {
+    let prompt: any;
+    const receipts: unknown[] = [];
+    const f = fixture(
+      t,
+      (request, send) => {
+        if (request.method === "session/prompt") {
+          prompt = request;
+          send({
+            jsonrpc: "2.0",
+            id: 17,
+            method: "session/request_permission",
+            params: {
+              sessionId: "s1",
+              _meta: { tidy: { permissionId: "permission-1" } },
+            },
+          });
+        } else {
+          const receipt = {
+            jsonrpc: "2.0",
+            method: "_tidy/permission_consumed",
+            params: {
+              sessionId: mode === "wrong-session" ? "stale" : "s1",
+              permissionId: "permission-1",
+              optionId: mode === "wrong-option" ? "deny" : "allow_once",
+              evidence: "native_callback_returned",
+            },
+          };
+          if (mode !== "missing") send(receipt);
+          if (mode === "duplicate") send(receipt);
+          if (mode === "reused-identity")
+            send({
+              jsonrpc: "2.0",
+              id: 18,
+              method: "session/request_permission",
+              params: {
+                sessionId: "s1",
+                _meta: { tidy: { permissionId: "permission-1" } },
+              },
+            });
+          finish(prompt, send);
+        }
+      },
+      {
+        onPermission: async () => ({
+          outcome: { outcome: "selected", optionId: "allow_once" },
+        }),
+        onPermissionConsumed: (receipt) => {
+          if (mode === "async-persist")
+            return Promise.reject(
+              new Error("Unsupported asynchronous receipt append")
+            );
+          if (mode === "persist-failed")
+            throw new Error("Durable receipt append failed");
+          receipts.push(receipt);
+        },
+      }
+    );
+    await f.session.open("/disposable");
+    await f.session.submit("op1", "turn1", input);
+    assert.ok(f.failures.length > 0);
+    assert.equal(
+      (await f.session.submit("op2", "turn2", input)).disposition,
+      "unknown"
+    );
+    if (!["duplicate", "reused-identity"].includes(mode))
+      assert.deepEqual(receipts, []);
+    else assert.equal(receipts.length, 1);
+  });
+}

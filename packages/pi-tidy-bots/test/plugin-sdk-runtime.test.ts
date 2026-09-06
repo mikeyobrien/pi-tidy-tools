@@ -30,11 +30,11 @@ import {
   type RpcMessage,
 } from "../src/gateway/protocol.ts";
 
-async function fixture(nativeProfile = false) {
+async function fixture(nativeProfile = false, sessionLoad = false) {
   const dir = await mkdtemp(join(tmpdir(), "tidy-sdk-runtime-"));
   const artifact = join(dir, "artifact");
   await mkdir(artifact);
-  const script = (
+  let script = (
     await readFile(
       new URL("./fixtures/plugin-sdk/backend.mjs", import.meta.url),
       "utf8"
@@ -47,6 +47,11 @@ async function fixture(nativeProfile = false) {
     .replace(
       "SDK_INDEX_URL",
       new URL("../src/plugin-sdk/index.mjs", import.meta.url).href
+    );
+  if (sessionLoad)
+    script = script.replace(
+      'sessions: { load: false, import: false, continuity: "unverified" }',
+      'sessions: { load: true, import: false, continuity: "verified" }'
     );
   await writeFile(
     join(artifact, "backend.mjs"),
@@ -431,6 +436,50 @@ test("SDK ownership calls without a native-profile grant stop before spawning", 
     await assert.rejects(readFile(join(f.dataDir, "child-effect")), {
       code: "ENOENT",
     });
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("SDK refuses unidentified session loads before reservation or native execution", async () => {
+  const f = await fixture(false, true);
+  try {
+    const host = await f.start();
+    for (const nativeReference of [undefined, null, "", 42, {}]) {
+      await assert.rejects(
+        host.request("session.open", {
+          ...open,
+          mode: "load",
+          nativeReference,
+        }),
+        { code: "session_not_found" }
+      );
+    }
+    assert.equal(
+      (await f.effects()).filter((entry) => entry.method === "session.open")
+        .length,
+      0
+    );
+    // Invalid requests must not poison this open identity with an unknown reservation.
+    const valid = {
+      ...open,
+      mode: "load",
+      nativeReference: "fixture:retained-session",
+    };
+    const result = await host.request("session.open", valid);
+    assert.deepEqual(await host.request("session.open", valid), result);
+    assert.equal(
+      (await f.effects()).filter((entry) => entry.method === "session.open")
+        .length,
+      1
+    );
+    await assert.rejects(
+      host.request("session.open", {
+        ...valid,
+        nativeReference: "fixture:other",
+      }),
+      { code: "payload_conflict" }
+    );
   } finally {
     await f.cleanup();
   }

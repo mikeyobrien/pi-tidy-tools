@@ -589,6 +589,15 @@ export class PluginRuntime {
               "invalid_request",
               "Session open requires explicit new/load mode"
             );
+          if (
+            method === "session.open" &&
+            params.mode === "load" &&
+            !nonempty(params.nativeReference)
+          )
+            throw new ProtocolError(
+              "session_not_found",
+              "Session load requires an exact native reference"
+            );
           if (mutationMethods.has(method))
             result = await this.mutate(method, params, handler);
           else {

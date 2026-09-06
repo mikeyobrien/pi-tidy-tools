@@ -76,6 +76,8 @@ export interface WriterState {
 interface OwnedLaunchIdentity {
   launchId: string;
   bindingId: string;
+  /** Independently supervised group owned by a started launch in this binding. */
+  parentLaunchId?: string;
 }
 export type OwnedLaunchRecord = OwnedLaunchIdentity &
   (
@@ -95,6 +97,8 @@ export interface SupervisorOwnershipRecord {
   launches: OwnedLaunchRecord[];
 }
 const SUPERVISOR_META_KEY = "supervisor_ownership_v1";
+const MAX_OWNED_LAUNCHES = 16384;
+const MAX_OWNERSHIP_DEPTH = 64;
 export interface OperationReceipt extends OperationKey {
   fleetId: string;
   bindingId: string;
@@ -578,7 +582,8 @@ export class GatewayJournal {
       record.version !== 1 ||
       !Number.isSafeInteger(record.generation) ||
       Number(record.generation) < 1 ||
-      !Array.isArray(record.launches)
+      !Array.isArray(record.launches) ||
+      record.launches.length > MAX_OWNED_LAUNCHES
     )
       fail(
         "invalid_ownership",
@@ -596,6 +601,7 @@ export class GatewayJournal {
             ![
               "launchId",
               "bindingId",
+              "parentLaunchId",
               "state",
               "pid",
               "startedAt",
@@ -609,6 +615,11 @@ export class GatewayJournal {
         fail("invalid_ownership", "Malformed owned launch identity/state");
       identifier(launch.launchId, "launch ID");
       identifier(launch.bindingId, "binding ID");
+      if (launch.parentLaunchId !== undefined) {
+        if (typeof launch.parentLaunchId !== "string")
+          fail("invalid_ownership", "Malformed parent launch identity");
+        identifier(launch.parentLaunchId, "parent launch ID");
+      }
       if (ids.has(launch.launchId))
         fail("invalid_ownership", "Duplicate owned launch identity");
       ids.add(launch.launchId);
@@ -636,6 +647,9 @@ export class GatewayJournal {
       return {
         launchId: launch.launchId,
         bindingId: launch.bindingId,
+        ...(launch.parentLaunchId !== undefined
+          ? { parentLaunchId: String(launch.parentLaunchId) }
+          : {}),
         state: launch.state,
         ...(hasProcess
           ? {
@@ -646,6 +660,45 @@ export class GatewayJournal {
           : {}),
       } as OwnedLaunchRecord;
     });
+    const byId = new Map(launches.map((launch) => [launch.launchId, launch]));
+    const liveRoots = new Set<string>();
+    const livePids = new Set<number>();
+    const liveTokens = new Set<string>();
+    for (const launch of launches) {
+      const ancestors = new Set([launch.launchId]);
+      let child = launch;
+      while (child.parentLaunchId !== undefined) {
+        const parent = byId.get(child.parentLaunchId);
+        if (
+          !parent ||
+          parent.bindingId !== launch.bindingId ||
+          ancestors.has(parent.launchId) ||
+          ancestors.size >= MAX_OWNERSHIP_DEPTH ||
+          parent.state === "prepared" ||
+          (parent.state === "stopped" && child.state !== "stopped")
+        )
+          fail(
+            "invalid_ownership",
+            "Owned launch ancestry is missing, cyclic, or inconsistent"
+          );
+        ancestors.add(parent.launchId);
+        child = parent;
+      }
+      if (launch.state !== "stopped" && launch.parentLaunchId === undefined) {
+        if (liveRoots.has(launch.bindingId))
+          fail("invalid_ownership", "Binding has competing root launches");
+        liveRoots.add(launch.bindingId);
+      }
+      if (launch.state === "started") {
+        if (livePids.has(launch.pid) || liveTokens.has(launch.token))
+          fail(
+            "invalid_ownership",
+            "Owned launches share a live process identity"
+          );
+        livePids.add(launch.pid);
+        liveTokens.add(launch.token);
+      }
+    }
     const writer = this.getWriterState();
     if (!writer || writer.generation !== record.generation)
       fail(
@@ -676,10 +729,12 @@ export class GatewayJournal {
   /** Commit before spawn; a prepared launch is not proof that a process exists or exited. */
   prepareOwnedLaunch(
     lease: WriterLease,
-    launch: { launchId: string; bindingId: string }
+    launch: OwnedLaunchIdentity
   ): OwnedLaunchRecord {
     identifier(launch.launchId, "launch ID");
     identifier(launch.bindingId, "binding ID");
+    if (launch.parentLaunchId !== undefined)
+      identifier(launch.parentLaunchId, "parent launch ID");
     return this.write(lease, () => {
       const record = this.ownedRecord(lease);
       const existing = record.launches.find(
@@ -688,6 +743,7 @@ export class GatewayJournal {
       if (existing) {
         if (
           existing.bindingId !== launch.bindingId ||
+          existing.parentLaunchId !== launch.parentLaunchId ||
           existing.state !== "prepared"
         )
           fail(
@@ -696,7 +752,35 @@ export class GatewayJournal {
           );
         return existing;
       }
-      if (
+      if (record.launches.length >= MAX_OWNED_LAUNCHES)
+        fail(
+          "resource_limit",
+          "Supervisor launch history capacity is exhausted"
+        );
+      if (launch.parentLaunchId !== undefined) {
+        const parent = record.launches.find(
+          (value) => value.launchId === launch.parentLaunchId
+        );
+        if (
+          !parent ||
+          parent.state !== "started" ||
+          parent.bindingId !== launch.bindingId
+        )
+          fail(
+            "parent_not_owned",
+            "Child launch requires a started parent in this binding"
+          );
+        const byId = new Map(
+          record.launches.map((value) => [value.launchId, value])
+        );
+        let ancestor: OwnedLaunchRecord = parent;
+        let depth = 2;
+        while (ancestor.parentLaunchId !== undefined) {
+          ancestor = byId.get(ancestor.parentLaunchId)!;
+          if (++depth > MAX_OWNERSHIP_DEPTH)
+            fail("resource_limit", "Supervisor ownership depth is exhausted");
+        }
+      } else if (
         record.launches.some(
           (value) =>
             value.bindingId === launch.bindingId && value.state !== "stopped"
@@ -706,6 +790,9 @@ export class GatewayJournal {
       const prepared: OwnedLaunchRecord = {
         launchId: launch.launchId,
         bindingId: launch.bindingId,
+        ...(launch.parentLaunchId !== undefined
+          ? { parentLaunchId: launch.parentLaunchId }
+          : {}),
         state: "prepared",
       };
       record.launches.push(prepared);
@@ -742,6 +829,9 @@ export class GatewayJournal {
       const started: OwnedLaunchRecord = {
         launchId,
         bindingId: launch.bindingId,
+        ...(launch.parentLaunchId !== undefined
+          ? { parentLaunchId: launch.parentLaunchId }
+          : {}),
         state: "started",
         ...identity,
         token: process.token,
@@ -751,6 +841,30 @@ export class GatewayJournal {
           fail("launch_conflict", "Owned launch process identity is immutable");
         return launch;
       }
+      if (
+        launch.parentLaunchId !== undefined &&
+        !record.launches.some(
+          (parent) =>
+            parent.launchId === launch.parentLaunchId &&
+            parent.state === "started" &&
+            parent.bindingId === launch.bindingId
+        )
+      )
+        fail(
+          "parent_not_owned",
+          "Child activation requires its original live parent"
+        );
+      if (
+        record.launches.some(
+          (other) =>
+            other.state === "started" &&
+            (other.pid === identity.pid || other.token === process.token)
+        )
+      )
+        fail(
+          "launch_conflict",
+          "A process group cannot satisfy two launch identities"
+        );
       record.launches[record.launches.indexOf(launch)] = started;
       this.saveSupervisorRecord(record);
       return started;
@@ -765,6 +879,16 @@ export class GatewayJournal {
       );
       if (!launch) fail("launch_not_prepared", "Unknown owned launch");
       if (launch.state === "stopped") return launch;
+      if (
+        record.launches.some(
+          (child) =>
+            child.parentLaunchId === launchId && child.state !== "stopped"
+        )
+      )
+        fail(
+          "ownership_unreconciled",
+          "Owned child launches must be reconciled before their parent"
+        );
       const stopped: OwnedLaunchRecord = { ...launch, state: "stopped" };
       record.launches[record.launches.indexOf(launch)] = stopped;
       this.saveSupervisorRecord(record);

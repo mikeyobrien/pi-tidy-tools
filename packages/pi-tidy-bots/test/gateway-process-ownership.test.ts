@@ -11,7 +11,9 @@ import {
   ownedProcessIdentity,
   reconcileOwnedProcess,
   ownedGroupHasExited,
+  processIdentity,
 } from "../src/gateway/process-ownership.ts";
+import { GatewayJournal } from "../src/gateway/journal.ts";
 
 const launcher = fileURLToPath(
   new URL("../src/gateway/owned-launcher.mjs", import.meta.url)
@@ -132,6 +134,76 @@ test("SIGKILL of parent closes private pipe and owned launcher reaps plugin plus
       driver.kill("SIGKILL");
     await exited(driver);
     if (ownedPid) await until(() => ownedGroupHasExited(ownedPid!), 15_000);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a surviving separately supervised child prevents reconciliation after its parent group exits", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "tidy-child-ownership-"));
+  const path = join(dir, "gateway.sqlite");
+  const journal = new GatewayJournal(path, {
+    fleetId: "child-ownership-fixture",
+  });
+  const lease = journal.acquireWriterLease("owner", {
+    ownerProcess: await processIdentity(process.pid),
+  });
+  const children: ChildProcess[] = [];
+  let reopened: GatewayJournal | undefined;
+  try {
+    for (const [launchId, parentLaunchId] of [
+      ["parent", undefined],
+      ["worker", "parent"],
+    ] as const) {
+      journal.prepareOwnedLaunch(lease, {
+        launchId,
+        bindingId: "binding",
+        ...(parentLaunchId ? { parentLaunchId } : {}),
+      });
+      const token = `tidy-launch-${randomUUID()}`;
+      const child = spawn(
+        process.execPath,
+        [launcher, token, process.execPath, "-e", "setInterval(()=>{},1000)"],
+        {
+          detached: true,
+          stdio: ["pipe", "pipe", "pipe", "pipe"],
+        }
+      );
+      children.push(child);
+      const identity = await ownedProcessIdentity(child.pid!, token);
+      journal.recordOwnedLaunch(lease, launchId, identity);
+      (child.stdio[3] as Writable).write(
+        JSON.stringify({ activate: token, env: {} }) + "\n"
+      );
+    }
+    (children[0].stdio[3] as Writable).end();
+    await exited(children[0]);
+    assert.equal(await ownedGroupHasExited(children[0].pid!), true);
+    journal.close();
+    reopened = new GatewayJournal(path, { fleetId: "child-ownership-fixture" });
+    const retained = reopened.getSupervisorRecord()!.launches;
+    const worker = retained.find((launch) => launch.launchId === "worker")!;
+    assert.equal(worker.parentLaunchId, "parent");
+    assert.equal(worker.state, "started");
+    if (worker.state !== "started")
+      throw new Error("Expected retained worker identity");
+    await assert.rejects(reconcileOwnedProcess(worker, 50), {
+      code: "ownership_unreconciled",
+    });
+    assert.throws(() => reopened!.completeOwnedLaunch(lease, "parent"), {
+      code: "ownership_unreconciled",
+    });
+    (children[1].stdio[3] as Writable).end();
+    await exited(children[1]);
+    await reconcileOwnedProcess(worker);
+    reopened.completeOwnedLaunch(lease, "worker");
+    reopened.completeOwnedLaunch(lease, "parent");
+    reopened.releaseWriterLease(lease, { ownershipReconciled: true });
+    assert.equal(reopened.getWriterState()!.reconciled, true);
+  } finally {
+    for (const child of children) (child.stdio[3] as Writable).destroy();
+    await Promise.all(children.map(exited));
+    journal.close();
+    reopened?.close();
     await rm(dir, { recursive: true, force: true });
   }
 });

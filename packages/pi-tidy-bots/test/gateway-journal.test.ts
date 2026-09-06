@@ -723,6 +723,193 @@ test("launch identities cannot change, revive, or concurrently own one binding",
   assert.equal(journal.completeOwnedLaunch(lease, "two").state, "stopped");
 });
 
+test("independent child groups retain ancestry and prevent premature parent reconciliation", (t) => {
+  const { journal, lease, open } = ownedFixture(t);
+  journal.prepareOwnedLaunch(lease, {
+    launchId: "root",
+    bindingId: binding.bindingId,
+  });
+  const child = {
+    launchId: "worker",
+    bindingId: binding.bindingId,
+    parentLaunchId: "root",
+  };
+  code(() => journal.prepareOwnedLaunch(lease, child), "parent_not_owned");
+  const identity = {
+    pid: 2002,
+    startedAt: "parent-birth",
+    token: "parent-token",
+  };
+  journal.recordOwnedLaunch(lease, "root", identity);
+  journal.prepareOwnedLaunch(lease, child);
+  code(
+    () => journal.completeOwnedLaunch(lease, "root"),
+    "ownership_unreconciled"
+  );
+  code(
+    () => journal.recordOwnedLaunch(lease, "worker", identity),
+    "launch_conflict"
+  );
+  code(
+    () =>
+      journal.recordOwnedLaunch(lease, "worker", { ...identity, pid: 2003 }),
+    "launch_conflict"
+  );
+  journal.recordOwnedLaunch(lease, "worker", {
+    pid: 2003,
+    startedAt: "child-birth",
+    token: "child-token",
+  });
+  journal.close();
+  const reopened = open();
+  assert.equal(
+    reopened.getSupervisorRecord()!.launches[1].parentLaunchId,
+    "root"
+  );
+  code(
+    () => reopened.completeOwnedLaunch(lease, "root"),
+    "ownership_unreconciled"
+  );
+  code(
+    () => reopened.releaseWriterLease(lease, { ownershipReconciled: true }),
+    "ownership_unreconciled"
+  );
+  reopened.completeOwnedLaunch(lease, "worker");
+  reopened.completeOwnedLaunch(lease, "root");
+  reopened.releaseWriterLease(lease, { ownershipReconciled: true });
+  assert.equal(reopened.getWriterState()!.reconciled, true);
+});
+
+test("child launch identity cannot change parent or bind to another bot", (t) => {
+  const { journal, lease } = ownedFixture(t);
+  for (const [launchId, bindingId, pid] of [
+    ["root", binding.bindingId, 2001],
+    ["other", "other-binding", 2002],
+  ] as const) {
+    journal.prepareOwnedLaunch(lease, { launchId, bindingId });
+    journal.recordOwnedLaunch(lease, launchId, {
+      pid,
+      startedAt: "birth",
+      token: `token-${pid}`,
+    });
+  }
+  code(
+    () =>
+      journal.prepareOwnedLaunch(lease, {
+        launchId: "child",
+        bindingId: binding.bindingId,
+        parentLaunchId: "other",
+      }),
+    "parent_not_owned"
+  );
+  journal.prepareOwnedLaunch(lease, {
+    launchId: "child",
+    bindingId: binding.bindingId,
+    parentLaunchId: "root",
+  });
+  code(
+    () =>
+      journal.prepareOwnedLaunch(lease, {
+        launchId: "child",
+        bindingId: binding.bindingId,
+      }),
+    "launch_conflict"
+  );
+  code(
+    () =>
+      journal.prepareOwnedLaunch(lease, {
+        launchId: "child",
+        bindingId: binding.bindingId,
+        parentLaunchId: "child",
+      }),
+    "launch_conflict"
+  );
+  assert.equal(journal.getSupervisorRecord()!.launches.length, 3);
+});
+
+test("child ancestry validation refuses orphaned, cyclic and falsely stopped evidence on reopen", (t) => {
+  const { journal, lease, path } = ownedFixture(t);
+  journal.prepareOwnedLaunch(lease, {
+    launchId: "root",
+    bindingId: binding.bindingId,
+  });
+  journal.recordOwnedLaunch(lease, "root", {
+    pid: 2001,
+    startedAt: "birth",
+    token: "root-token",
+  });
+  journal.prepareOwnedLaunch(lease, {
+    launchId: "child",
+    bindingId: binding.bindingId,
+    parentLaunchId: "root",
+  });
+  journal.recordOwnedLaunch(lease, "child", {
+    pid: 2002,
+    startedAt: "birth",
+    token: "child-token",
+  });
+  const valid = journal.getSupervisorRecord()!;
+  for (const mutate of [
+    (v: typeof valid) => {
+      v.launches[1].parentLaunchId = "missing";
+    },
+    (v: typeof valid) => {
+      v.launches[0].parentLaunchId = "child";
+    },
+    (v: typeof valid) => {
+      v.launches[0] = { ...v.launches[0], state: "stopped" };
+    },
+    (v: typeof valid) => {
+      v.launches[1].bindingId = "other-binding";
+    },
+    (v: typeof valid) => {
+      v.launches[1] = {
+        ...v.launches[1],
+        state: "started",
+        pid: 2001,
+        startedAt: "birth",
+        token: "child-token",
+      };
+    },
+  ]) {
+    const invalid = structuredClone(valid);
+    mutate(invalid);
+    const db = new DatabaseSync(path);
+    db.prepare(
+      "UPDATE gateway_meta SET value=? WHERE key='supervisor_ownership_v1'"
+    ).run(JSON.stringify(invalid));
+    db.close();
+    code(() => journal.getSupervisorRecord(), "invalid_ownership");
+  }
+});
+
+test("ownership depth exhaustion refuses admission without corrupting retained ancestry", (t) => {
+  const { journal, lease } = ownedFixture(t);
+  for (let depth = 0; depth < 64; depth++) {
+    const launchId = `node-${depth}`;
+    journal.prepareOwnedLaunch(lease, {
+      launchId,
+      bindingId: binding.bindingId,
+      ...(depth ? { parentLaunchId: `node-${depth - 1}` } : {}),
+    });
+    journal.recordOwnedLaunch(lease, launchId, {
+      pid: 2000 + depth,
+      startedAt: "birth",
+      token: `token-${depth}`,
+    });
+  }
+  code(
+    () =>
+      journal.prepareOwnedLaunch(lease, {
+        launchId: "overflow",
+        bindingId: binding.bindingId,
+        parentLaunchId: "node-63",
+      }),
+    "resource_limit"
+  );
+  assert.equal(journal.getSupervisorRecord()!.launches.length, 64);
+});
+
 test("ownership metadata failure rolls back lease acquisition and preserves a closed activation gate", (t) => {
   const { journal, lease, path } = fixture(t);
   journal.releaseWriterLease(lease, { ownershipReconciled: true });

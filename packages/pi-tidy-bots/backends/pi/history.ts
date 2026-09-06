@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
-import { open, realpath, lstat } from "node:fs/promises";
-import { createHash } from "node:crypto";
-import { isAbsolute, relative, sep } from "node:path";
+import { open, realpath, lstat, rename, rm } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { isAbsolute, relative, sep, join } from "node:path";
 import { ProtocolError } from "@mobrienv/pi-tidy-bots/plugin-sdk";
 
 export interface PiHistoryIdentity {
@@ -48,7 +48,7 @@ export async function inspectPiHistory(
       throw unavailable();
     const handle = await open(
       actual,
-      constants.O_RDONLY | constants.O_NOFOLLOW
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
     );
     try {
       const before = await handle.stat();
@@ -59,6 +59,7 @@ export async function inspectPiHistory(
         before.size > MAX_HISTORY_BYTES
       )
         throw unavailable();
+      await handle.sync();
       const bytes = Buffer.alloc(before.size);
       let offset = 0;
       while (offset < bytes.length) {
@@ -125,6 +126,97 @@ export async function inspectPiHistory(
     } finally {
       await handle.close();
     }
+  } catch {
+    throw unavailable();
+  }
+}
+
+export interface PiHistoryCheckpoint {
+  version: 1;
+  bindingId: string;
+  conversationId: string;
+  messageCount: number;
+  history: PiHistoryIdentity;
+}
+
+/** Publish only after the native history has been inspected and synced. */
+export async function savePiCheckpoint(
+  dataDir: string,
+  checkpoint: PiHistoryCheckpoint
+): Promise<void> {
+  const temporary = join(dataDir, `.pi-history-${randomUUID()}.tmp`);
+  try {
+    const handle = await open(temporary, "wx", 0o600);
+    try {
+      await handle.writeFile(JSON.stringify(checkpoint));
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename(temporary, join(dataDir, "pi-history.json"));
+    const dir = await open(dataDir, constants.O_RDONLY);
+    try {
+      await dir.sync();
+    } finally {
+      await dir.close();
+    }
+  } finally {
+    await rm(temporary, { force: true });
+  }
+}
+
+export async function loadPiCheckpoint(
+  dataDir: string,
+  bindingId: string,
+  conversationId: string,
+  nativeReference: unknown,
+  workspace: string
+): Promise<PiHistoryCheckpoint> {
+  try {
+    const handle = await open(
+      join(dataDir, "pi-history.json"),
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+    );
+    let checkpoint: PiHistoryCheckpoint;
+    try {
+      const stat = await handle.stat();
+      if (
+        !stat.isFile() ||
+        stat.nlink !== 1 ||
+        stat.size < 1 ||
+        stat.size > 16384
+      )
+        throw unavailable();
+      const buffer = Buffer.alloc(16385);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      if (bytesRead !== stat.size) throw unavailable();
+      checkpoint = JSON.parse(
+        new TextDecoder("utf-8", { fatal: true }).decode(
+          buffer.subarray(0, bytesRead)
+        )
+      );
+    } finally {
+      await handle.close();
+    }
+    if (
+      !checkpoint ||
+      checkpoint.version !== 1 ||
+      checkpoint.bindingId !== bindingId ||
+      checkpoint.conversationId !== conversationId ||
+      !Number.isSafeInteger(checkpoint.messageCount) ||
+      checkpoint.messageCount < 1 ||
+      !checkpoint.history ||
+      nativeReference !== `pi:${checkpoint.history.sessionId}`
+    )
+      throw unavailable();
+    await inspectPiHistory(
+      join(dataDir, "native-sessions"),
+      checkpoint.history.file,
+      checkpoint.history.sessionId,
+      workspace,
+      checkpoint.history
+    );
+    return checkpoint;
   } catch {
     throw unavailable();
   }

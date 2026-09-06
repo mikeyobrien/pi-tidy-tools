@@ -710,6 +710,157 @@ test("Pi uncertain submission survives adapter restart without opening or prompt
   }
 });
 
+test("Pi cold load restores exact checkpoint across process replacement without replaying prompts", async () => {
+  const f = await setup();
+  try {
+    const first = await f.start();
+    const opened = (await f.open(first)) as JsonObject;
+    await f.submit(first, "before restart");
+    await until(() => f.events.some((event) => event.type === "turn.terminal"));
+    const checkpoint = JSON.parse(
+      await readFile(join(f.dataDir, "pi-history.json"), "utf8")
+    );
+    assert.equal(checkpoint.messageCount, 1);
+    assert.equal(checkpoint.conversationId, "conversation");
+    await first.close();
+    const second = await f.start({}, 2);
+    const load = {
+      openId: "load-two",
+      payloadDigest: "load-two",
+      conversationId: "conversation",
+      mode: "load",
+      cwd: f.directory,
+      nativeReference: opened.nativeReference,
+    };
+    const restored = (await second.request("session.open", load)) as JsonObject;
+    assert.equal(restored.continuity, "verified");
+    assert.equal(restored.nativeReference, opened.nativeReference);
+    assert.deepEqual(await second.request("session.open", load), restored);
+    let effects = await f.effects();
+    assert.equal(
+      effects.filter((effect) => effect.command === "prompt").length,
+      1
+    );
+    const launches = effects.filter((effect) => effect.launch);
+    assert.equal(launches.length, 2);
+    const argv = launches[1].argv as string[];
+    assert.equal(argv.includes("--continue"), false);
+    assert.equal(argv[argv.indexOf("--session") + 1], checkpoint.history.file);
+    await f.submit(second, "after restart", "operation-two");
+    await until(() =>
+      f.events.some(
+        (event) =>
+          event.type === "turn.terminal" &&
+          event.operationId === "operation-two"
+      )
+    );
+    effects = await f.effects();
+    assert.equal(
+      effects.filter((effect) => effect.command === "prompt").length,
+      2
+    );
+    assert.equal(
+      JSON.parse(await readFile(join(f.dataDir, "pi-history.json"), "utf8"))
+        .messageCount,
+      2
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("Pi cold load refuses changed history before launching a replacement native process", async () => {
+  const f = await setup();
+  try {
+    const first = await f.start();
+    const opened = (await f.open(first)) as JsonObject;
+    await f.submit(first, "before restart");
+    await until(() => f.events.some((event) => event.type === "turn.terminal"));
+    await first.close();
+    const checkpoint = JSON.parse(
+      await readFile(join(f.dataDir, "pi-history.json"), "utf8")
+    );
+    await writeFile(checkpoint.history.file, "");
+    const second = await f.start({}, 2);
+    await assert.rejects(
+      second.request("session.open", {
+        openId: "load-two",
+        payloadDigest: "load-two",
+        conversationId: "conversation",
+        mode: "load",
+        cwd: f.directory,
+        nativeReference: opened.nativeReference,
+      }),
+      { code: "continuity_unverified" }
+    );
+    assert.equal(
+      (await f.effects()).filter((effect) => effect.launch).length,
+      1
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("Pi checkpoint write failure cannot publish a complete terminal receipt", async () => {
+  const f = await setup();
+  try {
+    const host = await f.start();
+    await f.open(host);
+    await mkdir(join(f.dataDir, "pi-history.json"));
+    await f.submit(host, "checkpoint failure");
+    await until(() =>
+      f.events.some((event) => event.type === "observation.gap")
+    );
+    assert.equal(
+      f.events.some((event) => event.type === "turn.terminal"),
+      false
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("Pi load refuses a native message-count mismatch without sending another prompt", async () => {
+  const f = await setup();
+  try {
+    const first = await f.start();
+    const opened = (await f.open(first)) as JsonObject;
+    await f.submit(first, "before restart");
+    await until(() => f.events.some((event) => event.type === "turn.terminal"));
+    await first.close();
+    const executable = join(f.directory, "native", "native.mjs");
+    const original = await readFile(executable, "utf8");
+    assert.ok(original.includes("      messageCount,"));
+    await writeFile(
+      executable,
+      original.replace(
+        "      messageCount,",
+        "      messageCount: messageCount + 1,"
+      )
+    );
+    const second = await f.start({}, 2);
+    await assert.rejects(
+      second.request("session.open", {
+        openId: "load-two",
+        payloadDigest: "load-two",
+        conversationId: "conversation",
+        mode: "load",
+        cwd: f.directory,
+        nativeReference: opened.nativeReference,
+      }),
+      { code: "continuity_unverified" }
+    );
+    assert.equal(
+      (await f.effects()).filter((effect) => effect.command === "prompt")
+        .length,
+      1
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
 test("Pi configuration and cold-load failures cannot start native execution", async () => {
   const f = await setup();
   try {

@@ -1,5 +1,10 @@
 #!/usr/bin/env node
-import { appendFileSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  writeFileSync,
+  readFileSync,
+  realpathSync,
+} from "node:fs";
 import { join, dirname } from "node:path";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
@@ -17,7 +22,25 @@ if (extensionPath?.endsWith("fleet-extension.mjs")) {
   });
   await handlers.get("session_start")({}, ctx);
 }
-const sessionDir = process.argv[process.argv.indexOf("--session-dir") + 1];
+const sessionDir = realpathSync(
+  process.argv[process.argv.indexOf("--session-dir") + 1]
+);
+const sessionFile = process.argv.includes("--session")
+  ? process.argv[process.argv.indexOf("--session") + 1]
+  : join(sessionDir, "history.jsonl");
+let messageCount = process.argv.includes("--session")
+  ? readFileSync(sessionFile, "utf8").trim().split("\n").length - 1
+  : 0;
+if (!process.argv.includes("--session"))
+  writeFileSync(
+    sessionFile,
+    JSON.stringify({
+      type: "session",
+      version: 3,
+      id: "fixture-session",
+      cwd: process.cwd(),
+    }) + "\n"
+  );
 const logPath = join(dirname(sessionDir), "native-effects.jsonl");
 const log = (record) => appendFileSync(logPath, JSON.stringify(record) + "\n");
 log({
@@ -53,6 +76,14 @@ const delta = (text) =>
     assistantMessageEvent: { type: "text_delta", delta: text },
   });
 const settle = () => {
+  appendFileSync(
+    sessionFile,
+    JSON.stringify({
+      type: "message",
+      id: `message-${messageCount++}`,
+      message: { role: "assistant", content: [] },
+    }) + "\n"
+  );
   handlers.get("agent_end")?.({}, ctx);
   send({ type: "agent_end" });
   send({ type: "agent_settled" });
@@ -69,9 +100,9 @@ for await (const line of createInterface({ input: process.stdin })) {
   if (request.type === "get_state") {
     response(request, {
       sessionId: "fixture-session",
-      sessionFile: join(sessionDir, "history.jsonl"),
+      sessionFile,
       isStreaming: false,
-      messageCount: 0,
+      messageCount,
       pendingMessageCount: 0,
     });
   } else if (request.type === "prompt") {

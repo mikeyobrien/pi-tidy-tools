@@ -4,6 +4,11 @@ import { fileURLToPath } from "node:url";
 import type { Duplex } from "node:stream";
 import { PiFleetBridge } from "./fleet-bridge.ts";
 import {
+  inspectPiHistory,
+  loadPiCheckpoint,
+  savePiCheckpoint,
+} from "./history.ts";
+import {
   runPlugin,
   readArtifact,
   ProtocolError,
@@ -29,7 +34,7 @@ export const PI_CAPABILITIES: CapabilityDescriptor = {
     mediaTypes: ["text/plain", "image/png", "image/jpeg"],
     maxMediaBytes: 512 * 1024,
   },
-  sessions: { load: false, import: false, continuity: "unverified" },
+  sessions: { load: true, import: false, continuity: "verified" },
   output: { text: "snapshots", tools: true, usage: "unknown" },
   operations: {
     nativeDedupe: "none",
@@ -180,6 +185,7 @@ export function startPiAdapter(): PluginRuntime {
   let nativeReference: string | undefined;
   let active: Turn | undefined;
   let preparing = false;
+  let settling = false;
   let observationLost = false;
   let stopping = false;
   const emit = (
@@ -347,6 +353,7 @@ export function startPiAdapter(): PluginRuntime {
         active.message = undefined;
       } else if (event.kind === "agent_settled") {
         if (
+          settling ||
           !active.started ||
           !active.nativeStarted ||
           active.message ||
@@ -354,13 +361,47 @@ export function startPiAdapter(): PluginRuntime {
           [...active.invoked].some((id) => active!.tools.get(id) !== true)
         )
           throw new Error("Incomplete native turn observation");
-        emit("turn.terminal", {
-          execution: active.execution,
-          observation: "complete",
-          evidence: "native_agent_settled",
-        });
-        fleet?.finishPrompt(active.operationId);
-        active = undefined;
+        settling = true;
+        const turn = active;
+        void (async () => {
+          const response = await native!.request<JsonObject>(
+            { type: "get_state" },
+            context.initialization.limits.inspectTimeoutMs
+          );
+          const state = response.data;
+          if (
+            !object(state) ||
+            `pi:${state.sessionId}` !== nativeReference ||
+            !nonempty(state.sessionFile) ||
+            state.isStreaming !== false ||
+            state.pendingMessageCount !== 0 ||
+            !Number.isSafeInteger(state.messageCount) ||
+            Number(state.messageCount) < 1
+          )
+            throw new Error("Native history not settled");
+          const history = await inspectPiHistory(
+            join(context.initialization.dataDir, "native-sessions"),
+            state.sessionFile,
+            String(state.sessionId),
+            context.initialization.workspace
+          );
+          await savePiCheckpoint(context.initialization.dataDir, {
+            version: 1,
+            bindingId: context.initialization.bindingId,
+            conversationId: conversationId!,
+            messageCount: Number(state.messageCount),
+            history,
+          });
+          if (stopping || observationLost || active !== turn) return;
+          emit("turn.terminal", {
+            execution: turn.execution,
+            observation: "complete",
+            evidence: "native_agent_settled",
+          });
+          fleet?.finishPrompt(turn.operationId);
+          active = undefined;
+          settling = false;
+        })().catch(loseObservation);
       }
     } catch {
       loseObservation();
@@ -401,10 +442,10 @@ export function startPiAdapter(): PluginRuntime {
     },
     handlers: {
       async "session.open"(params, ctx) {
-        if (params.mode !== "new")
+        if (params.mode !== "new" && params.mode !== "load")
           throw new ProtocolError(
             "continuity_unverified",
-            "Pi cold load is not verified"
+            "Pi requires explicit new or load mode"
           );
         if (
           native ||
@@ -420,13 +461,24 @@ export function startPiAdapter(): PluginRuntime {
         const sessionDir = join(ctx.initialization.dataDir, "native-sessions");
         // A new native session never adopts a pre-existing directory or symlink.
         // After an interrupted creation, the SDK reservation remains unknown.
-        await mkdir(sessionDir, { mode: 0o700 });
+        const checkpoint =
+          params.mode === "load"
+            ? await loadPiCheckpoint(
+                ctx.initialization.dataDir,
+                ctx.initialization.bindingId,
+                params.conversationId,
+                params.nativeReference,
+                ctx.initialization.workspace
+              )
+            : undefined;
+        if (!checkpoint) await mkdir(sessionDir, { mode: 0o700 });
         native = RpcSession.spawn({
           name: ctx.initialization.bindingId,
           piBin: configuration.executable,
           cwd: ctx.initialization.workspace,
           sessionDir,
           resume: false,
+          sessionFile: checkpoint?.history.file,
           approve: false,
           model: configuration.model,
           noBuiltinTools: true,
@@ -478,11 +530,14 @@ export function startPiAdapter(): PluginRuntime {
           response.data.sessionId !== fleetSessionId ||
           response.data.isStreaming !== false ||
           response.data.pendingMessageCount !== 0 ||
-          response.data.messageCount !== 0
+          response.data.messageCount !== (checkpoint?.messageCount ?? 0) ||
+          (checkpoint &&
+            (response.data.sessionId !== checkpoint.history.sessionId ||
+              response.data.sessionFile !== checkpoint.history.file))
         )
           throw new ProtocolError(
             "continuity_unverified",
-            "Pi did not open an empty idle native session"
+            "Pi did not open the expected idle native session"
           );
         if (response.data.sessionFile !== undefined) {
           if (
@@ -501,8 +556,20 @@ export function startPiAdapter(): PluginRuntime {
             );
         }
         conversationId = params.conversationId;
+        if (checkpoint)
+          await inspectPiHistory(
+            sessionDir,
+            checkpoint.history.file,
+            checkpoint.history.sessionId,
+            ctx.initialization.workspace,
+            checkpoint.history
+          );
         nativeReference = `pi:${response.data.sessionId}`;
-        return { status: "opened", nativeReference, continuity: "unverified" };
+        return {
+          status: "opened",
+          nativeReference,
+          continuity: checkpoint ? "verified" : "unverified",
+        };
       },
       async "operation.submit"(params, ctx) {
         if (

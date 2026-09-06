@@ -22,7 +22,11 @@ import {
 // Fresh guarded ACP sessions only. Native continuity, media and
 // non-pipe worker profiles require their remaining conformance work.
 export const HERMES_CAPABILITIES: CapabilityDescriptor = {
-  input: { text: true, mediaTypes: ["text/plain"], maxMediaBytes: 512 * 1024 },
+  input: {
+    text: true,
+    mediaTypes: ["text/plain", "image/png", "image/jpeg"],
+    maxMediaBytes: 512 * 1024,
+  },
   sessions: { load: false, import: false, continuity: "unverified" },
   output: { text: "snapshots", tools: true, usage: "unknown" },
   operations: {
@@ -167,7 +171,9 @@ export function startHermesAdapter(): PluginRuntime {
               input.push({ type: "text", text: part.text });
             else if (
               part.type === "artifact" &&
-              part.mediaType === "text/plain"
+              ["text/plain", "image/png", "image/jpeg"].includes(
+                String(part.mediaType)
+              )
             ) {
               const bytes = await readArtifact(
                 ctx,
@@ -175,6 +181,14 @@ export function startHermesAdapter(): PluginRuntime {
                 part,
                 512 * 1024
               );
+              if (part.mediaType !== "text/plain") {
+                input.push({
+                  type: "image",
+                  mimeType: part.mediaType,
+                  data: Buffer.from(bytes).toString("base64"),
+                });
+                continue;
+              }
               const text = new TextDecoder("utf-8", { fatal: true }).decode(
                 bytes
               );

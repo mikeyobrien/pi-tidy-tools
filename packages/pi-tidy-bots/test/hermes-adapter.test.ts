@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import {
   chmod,
@@ -554,6 +555,67 @@ for (const dispatch of [false, true]) {
           const prompts = effects.filter((call) => call.kind === "prompt");
           assert.equal(prompts.length, 2);
           assert.ok(prompts[1].text.includes("Hermes file 🦋 content"));
+          const require = createRequire(import.meta.url);
+          const pixels = {
+            width: 1,
+            height: 1,
+            data: Buffer.from([1, 2, 3, 255]),
+          };
+          const images = [
+            {
+              mediaType: "image/png",
+              data: require("pngjs").PNG.sync.write(pixels).toString("base64"),
+            },
+            {
+              mediaType: "image/jpeg",
+              data: require("jpeg-js")
+                .encode(pixels, 80)
+                .data.toString("base64"),
+            },
+          ];
+          for (const [index, image] of images.entries()) {
+            const uploadImage = () =>
+              request("/api/bots/hermes/message", {
+                method: "POST",
+                headers: {
+                  "content-type": "application/json",
+                  "x-tidy-client-contract": "2",
+                  "x-tidy-binding-revision": bindings.hermes.bindingRevision,
+                },
+                body: JSON.stringify({
+                  operationId: `hermes-image-${index}`,
+                  clientMessageId: `hermes-image-${index}`,
+                  conversationId: bindings.hermes.conversationId,
+                  text: "",
+                  images: [image],
+                }),
+              });
+            assert.equal((await uploadImage()).status, 202);
+            await until(
+              async () =>
+                (
+                  await request(
+                    `/api/bots/hermes/operations/hermes-image-${index}`
+                  )
+                ).body.execution === "ended"
+            );
+            assert.equal((await uploadImage()).status, 202);
+          }
+          const nativeImages = (
+            await readFile(join(f.profile, "effects.jsonl"), "utf8")
+          )
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line))
+            .filter((call) => call.kind === "native_image_input");
+          assert.equal(nativeImages.length, 2);
+          for (const [index, call] of nativeImages.entries())
+            assert.deepEqual(call.content[1], {
+              type: "image_url",
+              image_url: {
+                url: `data:${images[index].mediaType};base64,${images[index].data}`,
+              },
+            });
           retained.hermes = (
             await request("/api/bots/hermes/transcript")
           ).body.transcript;
@@ -611,7 +673,7 @@ for (const dispatch of [false, true]) {
         );
         assert.equal(
           hermesCalls.filter((call) => call.kind === "prompt").length,
-          dispatch ? 3 : 2
+          dispatch ? 3 : 4
         );
         assert.equal(
           hermesCalls.filter((call) => call.kind === "new").length,

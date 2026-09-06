@@ -183,13 +183,15 @@ export class HermesSession {
       initialized.agentInfo.version !== "0.20.5" ||
       !object(initialized._meta) ||
       !object(initialized._meta.tidy) ||
-      initialized._meta.tidy.guardVersion !== 4 ||
+      initialized._meta.tidy.guardVersion !== 5 ||
       initialized._meta.tidy.ownedWorkers !== "local-pipe-v1" ||
       initialized._meta.tidy.approvalPolicy !== "ask" ||
       initialized._meta.tidy.environment !== "explicit" ||
       (fleetServer !== undefined &&
         initialized._meta.tidy.fleetTools !== "native-mcp-v1") ||
       !object(initialized.agentCapabilities) ||
+      !object(initialized.agentCapabilities.promptCapabilities) ||
+      initialized.agentCapabilities.promptCapabilities.image !== true ||
       initialized.agentCapabilities.loadSession !== false
     )
       throw new ProtocolError(
@@ -319,9 +321,18 @@ export class HermesSession {
       !input.length ||
       !input.every(
         (part) =>
-          object(part) && part.type === "text" && typeof part.text === "string"
+          object(part) &&
+          ((part.type === "text" && typeof part.text === "string") ||
+            (part.type === "image" &&
+              ["image/png", "image/jpeg"].includes(String(part.mimeType)) &&
+              typeof part.data === "string" &&
+              part.data.length > 0 &&
+              part.data.length <= 699052 &&
+              !Object.keys(part).some(
+                (key) => !["type", "mimeType", "data"].includes(key)
+              )))
       ) ||
-      !input.some((part) => part.text.trim())
+      !input.some((part) => part.type === "image" || part.text.trim())
     )
       return { disposition: "rejected" };
     const turn: Turn = {
@@ -340,7 +351,11 @@ export class HermesSession {
         {
           sessionId: this.sessionId,
           _meta: { tidy: { promptId: turn.promptId } },
-          prompt: input.map((part) => ({ type: "text", text: part.text })),
+          prompt: input.map((part) =>
+            part.type === "image"
+              ? { type: "image", mimeType: part.mimeType, data: part.data }
+              : { type: "text", text: part.text }
+          ),
         },
         this.options.promptTimeoutMs
       );
@@ -361,7 +376,7 @@ export class HermesSession {
       }
       const evidence = tidy.turnEvidence;
       if (
-        tidy.guardVersion !== 4 ||
+        tidy.guardVersion !== 5 ||
         !object(evidence) ||
         evidence.started !== true ||
         evidence.settled !== true ||

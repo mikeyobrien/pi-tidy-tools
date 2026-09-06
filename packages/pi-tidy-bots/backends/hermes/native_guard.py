@@ -1,6 +1,8 @@
 """Owned ACP entry point with explicit profile and per-prompt approval checks."""
 
 import argparse
+import base64
+import binascii
 import asyncio
 from concurrent.futures import Future
 from importlib import metadata
@@ -14,7 +16,7 @@ from uuid import uuid4
 
 HERMES_VERSION = "0.20.5"
 ACP_VERSION = "0.9.0"
-GUARD_VERSION = 4
+GUARD_VERSION = 5
 
 
 class ApprovalPolicyUnavailable(Exception):
@@ -326,10 +328,33 @@ def guarded_agent(base, guard, prompt_response, worker_type, fleet=None):
                 guard.check(state, self)
                 # Native slash commands include policy/session mutations.
                 # These must use separately negotiated gateway controls.
-                if any(getattr(block, "type", None) != "text" for block in prompt):
-                    return refuse("capability_unavailable")
-                text = "\n".join(block.text for block in prompt).strip()
-                if not text:
+                images = []
+                texts = []
+                for block in prompt:
+                    kind = getattr(block, "type", None)
+                    if kind == "text" and isinstance(getattr(block, "text", None), str):
+                        texts.append(block.text)
+                    elif kind == "image":
+                        data = getattr(block, "data", None)
+                        mime = getattr(block, "mime_type", None)
+                        if (getattr(block, "uri", None) is not None or mime not in ("image/png", "image/jpeg")
+                                or not isinstance(data, str) or not data or len(data) > 699052 or images):
+                            return refuse("capability_unavailable")
+                        try:
+                            raw = base64.b64decode(data, validate=True)
+                        except (ValueError, binascii.Error):
+                            return refuse("invalid_payload")
+                        if not raw or len(raw) > 524288 or base64.b64encode(raw).decode("ascii") != data:
+                            return refuse("invalid_payload")
+                        if mime == "image/png" and (not raw.startswith(b"\x89PNG\r\n\x1a\n") or raw[-12:-4] != b"\0\0\0\0IEND"):
+                            return refuse("invalid_payload")
+                        if mime == "image/jpeg" and (not raw.startswith(b"\xff\xd8") or not raw.endswith(b"\xff\xd9")):
+                            return refuse("invalid_payload")
+                        images.append(block)
+                    else:
+                        return refuse("capability_unavailable")
+                text = "\n".join(texts).strip()
+                if not text and not images:
                     return refuse("invalid_payload")
                 if text.startswith("/"):
                     return refuse("capability_unavailable")

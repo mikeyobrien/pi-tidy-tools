@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import {
@@ -198,7 +199,7 @@ test("owned Hermes guard preserves ACP negotiation and suppresses implicit nativ
     assert.deepEqual(result._meta, {
       hermes: { preserved: true },
       tidy: {
-        guardVersion: 4,
+        guardVersion: 5,
         approvalPolicy: "ask",
         environment: "explicit",
         ownedWorkers: "local-pipe-v1",
@@ -228,7 +229,7 @@ test("Hermes guard reports authoritative final text without copying history or r
       assert.deepEqual(result._meta, {
         hermes: { preserved: true },
         tidy: {
-          guardVersion: 4,
+          guardVersion: 5,
           turnEvidence: {
             started: true,
             settled: true,
@@ -578,6 +579,50 @@ test("native Hermes permission bridge exposes only one-time options and rejects 
             JSON.stringify(["allow_once", "deny"])
         )
     );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("Hermes guard passes inline image-only prompts to the native boundary and refuses URI or malformed images", async () => {
+  const f = await fixture();
+  try {
+    await f.ready();
+    const { PNG } = createRequire(import.meta.url)("pngjs");
+    const data = PNG.sync
+      .write({ width: 1, height: 1, data: Buffer.from([1, 2, 3, 255]) })
+      .toString("base64");
+    const image = { type: "image", mimeType: "image/png", data };
+    const accepted = await f.request("session/prompt", { prompt: [image] });
+    assert.equal(accepted.stopReason, "end_turn");
+    assert.equal(accepted._meta.tidy.turnEvidence.started, true);
+    for (const prompt of [
+      [{ ...image, uri: "https://example.invalid/private" }],
+      [{ ...image, data: "!" }],
+      [{ ...image, mimeType: "image/svg+xml" }],
+      [{ ...image, data: Buffer.from("bad").toString("base64") }],
+      [image, image],
+      [{ type: "text", text: "/reset" }, image],
+    ]) {
+      const rejected = await f.request("session/prompt", { prompt });
+      assert.equal(rejected.stopReason, "refusal");
+      assert.equal(rejected._meta.tidy.rejectedBeforePrompt, true);
+    }
+    const effects = await f.effects();
+    assert.equal(
+      effects.filter((effect) => effect.kind === "prompt").length,
+      1
+    );
+    const native = effects.find(
+      (effect) => effect.kind === "native_image_input"
+    )!;
+    assert.deepEqual(native.content, [
+      { type: "text", text: "" },
+      {
+        type: "image_url",
+        image_url: { url: `data:image/png;base64,${data}` },
+      },
+    ]);
   } finally {
     await f.cleanup();
   }

@@ -111,6 +111,8 @@ function fixture(
   behavior: (request: any, send: (value: any) => void) => void,
   options: Partial<HermesSessionOptions> & {
     fleetProof?: { initialize?: boolean; opened?: boolean };
+    nativeImages?: boolean;
+    guardVersion?: number;
   } = {}
 ) {
   const input = new PassThrough(),
@@ -130,10 +132,13 @@ function fixture(
         result: {
           protocolVersion: 1,
           agentInfo: { name: "hermes-agent", version: "0.20.5" },
-          agentCapabilities: { loadSession: false },
+          agentCapabilities: {
+            loadSession: false,
+            promptCapabilities: { image: options.nativeImages ?? true },
+          },
           _meta: {
             tidy: {
-              guardVersion: 4,
+              guardVersion: options.guardVersion ?? 5,
               approvalPolicy: "ask",
               environment: "explicit",
               ownedWorkers: "local-pipe-v1",
@@ -202,7 +207,7 @@ function finish(
       stopReason: "end_turn",
       _meta: {
         tidy: {
-          guardVersion: 4,
+          guardVersion: 5,
           turnEvidence: {
             started: true,
             settled: true,
@@ -772,5 +777,19 @@ for (const mode of [
     if (!["duplicate", "reused-identity"].includes(mode))
       assert.deepEqual(receipts, []);
     else assert.equal(receipts.length, 1);
+  });
+}
+
+for (const options of [{ nativeImages: false }, { guardVersion: 4 }]) {
+  test(`Hermes image profile refuses incomplete native negotiation ${JSON.stringify(options)}`, async (t) => {
+    const f = fixture(t, () => {}, options);
+    await assert.rejects(f.session.open("/disposable"));
+    assert.equal(
+      f.calls.some(
+        (call) =>
+          call.method === "session/new" || call.method === "session/prompt"
+      ),
+      false
+    );
   });
 }

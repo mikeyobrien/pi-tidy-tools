@@ -42,6 +42,8 @@ class FakeConversation:
     session_id = "internal-one"
 
     def run_conversation(self, user_message, **kwargs):
+        if isinstance(user_message, list):
+            record("native_image_input", content=user_message)
         if user_message == "[executor-error]":
             raise RuntimeError("private native exception")
         if user_message == "[result-error]":
@@ -73,7 +75,7 @@ class FakeAgent:
         return SimpleNamespace(protocolVersion=1,
                                agentInfo={"name": "hermes-agent", "version": "0.20.5"},
                                field_meta={"hermes": {"preserved": True}},
-                               agent_capabilities=SimpleNamespace(load_session=True,
+                               agent_capabilities=SimpleNamespace(load_session=True, prompt_capabilities=SimpleNamespace(image=True),
                                    session_capabilities=SimpleNamespace(fork={}, resume={})))
 
     async def new_session(self, cwd, **kwargs):
@@ -102,12 +104,14 @@ class FakeAgent:
         return ("ask" if state.mode == "default" else "session", state.cwd)
 
     async def prompt(self, prompt, session_id, **kwargs):
-        text = "\n".join(part.text for part in prompt)
+        text = "\n".join(part.text for part in prompt if part.type == "text")
+        images = [part for part in prompt if part.type == "image"]
         record("prompt", session_id=session_id, text=text)
+        content = ([{"type": "text", "text": text}] + [{"type": "image_url", "image_url": {"url": "data:" + part.mime_type + ";base64," + part.data}} for part in images]) if images else text
         if text == "[executor-not-started]":
             return SimpleNamespace(stop_reason="end_turn", field_meta={})
         try:
-            self.states[session_id].agent.run_conversation(user_message=text)
+            self.states[session_id].agent.run_conversation(user_message=content)
         except Exception:
             pass  # Pinned Hermes can return end_turn after an executor error.
         if text in ("[fleet-send]", "[fleet-send:pi]"):
@@ -178,7 +182,7 @@ def wire(value):
     if isinstance(value, dict):
         aliases = {"field_meta": "_meta", "stop_reason": "stopReason", "session_id": "sessionId",
                    "agent_capabilities": "agentCapabilities", "load_session": "loadSession",
-                   "session_capabilities": "sessionCapabilities"}
+                   "session_capabilities": "sessionCapabilities", "prompt_capabilities": "promptCapabilities"}
         return {aliases.get(key, key): wire(item) for key, item in value.items()}
     return value
 
@@ -237,7 +241,7 @@ async def run_agent(agent, **kwargs):
                 servers = [SimpleNamespace(**{**server, "headers": [SimpleNamespace(**header) for header in server.get("headers", [])]}) for server in params.get("mcpServers", [])]
                 result = await agent.new_session(cwd=params["cwd"], mcp_servers=servers)
             elif method == "session/prompt":
-                result = await agent.prompt(session_id=params.get("sessionId", "native-one"), prompt=[SimpleNamespace(**part) for part in params["prompt"]], **params.get("_meta", {}))
+                result = await agent.prompt(session_id=params.get("sessionId", "native-one"), prompt=[SimpleNamespace(**{("mime_type" if key == "mimeType" else key): value for key, value in part.items()}) for part in params["prompt"]], **params.get("_meta", {}))
                 child = getattr(agent, "_fixture_buffered_worker", None)
                 if child is not None:
                     record("worker_result", code=child.returncode, output=child.stdout.read(), error=child.stderr.read())

@@ -1,6 +1,7 @@
 """Deterministic native modules used only by guarded-launcher subprocess tests."""
 import json
 import asyncio
+from uuid import uuid4
 import os
 from pathlib import Path
 import sys
@@ -97,6 +98,14 @@ class FakeAgent:
             callback = factory(self.connection.request_permission, asyncio.get_running_loop(), session_id)
             result = await asyncio.to_thread(callback)
             record("prompt_permission", nativeResult=result)
+        if text == "[ownership-bridge]":
+            params = {"sessionId": session_id, "launchId": "tidy-launch-" + str(uuid4())}
+            prepared = await self.connection.ext_method("tidy/ownership.prepare", params)
+            if prepared.get("launcherProtocol") != 2:
+                raise ValueError("Unsupported native launcher protocol")
+            await self.connection.ext_method("tidy/ownership.inspect", params)
+            await self.connection.ext_method("tidy/ownership.stopped", params)
+            record("ownership_reconciled", launchId=params["launchId"])
         if text == "[update-error]":
             try:
                 await self.connection.session_update(session_id, {"fail": True})
@@ -139,6 +148,14 @@ async def run_agent(agent, **kwargs):
                 raise RuntimeError("private receipt write failure")
             record("permission_receipt", **params)
             print(json.dumps({"jsonrpc": "2.0", "method": "_" + method, "params": params}), flush=True)
+
+        async def ext_method(self, method, params):
+            request_id = "native-" + str(uuid4())
+            print(json.dumps({"jsonrpc": "2.0", "id": request_id, "method": "_" + method, "params": params}), flush=True)
+            response = json.loads(sys.stdin.readline())
+            if response.get("id") != request_id or "result" not in response:
+                raise ValueError("Native lifecycle request failed")
+            return response["result"]
 
         async def session_update(self, session_id, update):
             if update.get("fail"):

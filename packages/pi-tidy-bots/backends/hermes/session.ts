@@ -23,6 +23,11 @@ export interface HermesSessionOptions extends Pick<
   | "maxPendingRequests"
   | "requestTimeoutMs"
 > {
+  /** Private lifecycle service; never exposed as an agent fleet tool. */
+  onOwnedProcess?: (
+    method: "prepare" | "record" | "inspect" | "stopped",
+    params: JsonObject
+  ) => Promise<unknown>;
   /** Must durably append synchronously. The SDK supplies source IDs and sequence. */
   emit: (event: JsonObject) => void;
   onFailure: (error: ProtocolError) => void;
@@ -82,11 +87,20 @@ export class HermesSession {
     }
   >();
   private readonly permissionIds = new Set<string>();
+  private readonly ownedLaunches = new Map<
+    string,
+    { operationId: string; turnId: string }
+  >();
   constructor(private readonly options: HermesSessionOptions) {
     this.transport = new AcpTransport({
       ...options,
       onNotification: (method, params) => this.notification(method, params),
       onRequest: async (method, params, id, signal) => {
+        if (method.startsWith("_tidy/ownership."))
+          return this.ownedProcess(
+            method.slice("_tidy/ownership.".length),
+            params
+          );
         if (
           method !== "session/request_permission" ||
           !this.active ||
@@ -184,6 +198,70 @@ export class HermesSession {
       );
     this.sessionId = opened.sessionId;
     return this.sessionId;
+  }
+  private async ownedProcess(
+    method: string,
+    params: JsonObject
+  ): Promise<unknown> {
+    if (
+      !this.options.onOwnedProcess ||
+      this.closing ||
+      this.lost ||
+      !this.sessionId ||
+      params.sessionId !== this.sessionId ||
+      !["prepare", "record", "inspect", "stopped"].includes(method) ||
+      !nonempty(params.launchId) ||
+      !/^tidy-launch-[a-f0-9-]{36}$/.test(params.launchId) ||
+      Object.keys(params).some(
+        (key) =>
+          ![
+            "sessionId",
+            "launchId",
+            ...(method === "record" ? ["pid"] : []),
+          ].includes(key)
+      ) ||
+      (method === "record" &&
+        (!Number.isSafeInteger(params.pid) || Number(params.pid) < 1))
+    )
+      throw new ProtocolError(
+        "invalid_ownership",
+        "Invalid native ownership request"
+      );
+    const creates = method === "prepare" || method === "record";
+    const existing = this.ownedLaunches.get(params.launchId);
+    if (
+      (creates && !this.active) ||
+      (method !== "prepare" && !existing) ||
+      (creates &&
+        existing &&
+        (existing.operationId !== this.active!.operationId ||
+          existing.turnId !== this.active!.turnId))
+    )
+      throw new ProtocolError(
+        "invalid_ownership",
+        "Native launch does not belong to the active operation"
+      );
+    if (!existing) {
+      if (this.ownedLaunches.size >= 4096)
+        throw new ProtocolError(
+          "resource_limit",
+          "Native ownership history is full"
+        );
+      // Retain intent before awaiting the host: its durable write may commit
+      // even when the response is lost. A retry may inspect, never invent proof.
+      this.ownedLaunches.set(params.launchId, {
+        operationId: this.active!.operationId,
+        turnId: this.active!.turnId,
+      });
+    }
+    if (creates) this.started(this.active!);
+    return this.options.onOwnedProcess(
+      method as "prepare" | "record" | "inspect" | "stopped",
+      {
+        launchId: params.launchId,
+        ...(method === "record" ? { pid: params.pid } : {}),
+      }
+    );
   }
   async submit(
     operationId: string,

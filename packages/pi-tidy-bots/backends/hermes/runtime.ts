@@ -168,6 +168,7 @@ export async function openHermesRuntime(
       emit: (event) => ctx.emit(event as EventInput),
       onPermission: interactions.onPermission,
       onPermissionConsumed: interactions.onPermissionConsumed,
+      onOwnedProcess: (method, params) => ctx.ownedProcess(method, params),
       onFailure,
     });
     const nativeReference = await session.open(ctx.initialization.workspace);

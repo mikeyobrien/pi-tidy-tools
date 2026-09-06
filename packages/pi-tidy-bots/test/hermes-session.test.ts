@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { PassThrough } from "node:stream";
+import { randomUUID } from "node:crypto";
+import { setImmediate } from "node:timers/promises";
 import {
   HermesSession,
   type HermesSessionOptions,
@@ -57,7 +59,7 @@ function fixture(
     input.destroy();
     output.destroy();
   });
-  return { session, events, calls, failures };
+  return { session, events, calls, failures, send };
 }
 function update(
   send: (value: any) => void,
@@ -336,6 +338,141 @@ test("Hermes permission callback carries the active operation and can finish the
     },
   ]);
 });
+
+test("Hermes ownership bridge forwards only scoped lifecycle fields and permits later reconciliation", async (t) => {
+  const launchId = `tidy-launch-${randomUUID()}`;
+  const ownership: unknown[] = [];
+  let prompt: any;
+  const f = fixture(
+    t,
+    (request, send) => {
+      if (request.method === "session/prompt") {
+        prompt = request;
+        send({
+          jsonrpc: "2.0",
+          id: 80,
+          method: "_tidy/ownership.prepare",
+          params: { sessionId: "s1", launchId },
+        });
+      } else if (request.id === 80) {
+        send({
+          jsonrpc: "2.0",
+          id: 81,
+          method: "_tidy/ownership.record",
+          params: { sessionId: "s1", launchId, pid: 123 },
+        });
+      } else if (request.id === 81) finish(prompt, send);
+    },
+    {
+      onOwnedProcess: async (method, params) => {
+        ownership.push({ method, params });
+        return {
+          launchId,
+          state: method === "prepare" ? "prepared" : "started",
+        };
+      },
+    }
+  );
+  await f.session.open("/disposable");
+  await f.session.submit("op", "turn", input);
+  f.send({
+    jsonrpc: "2.0",
+    id: 82,
+    method: "_tidy/ownership.stopped",
+    params: { sessionId: "s1", launchId },
+  });
+  await setImmediate();
+  assert.deepEqual(ownership, [
+    { method: "prepare", params: { launchId } },
+    { method: "record", params: { launchId, pid: 123 } },
+    { method: "stopped", params: { launchId } },
+  ]);
+  assert.deepEqual(f.failures, []);
+});
+
+test("Hermes cannot reassign a retained worker launch to a later operation", async (t) => {
+  const launchId = `tidy-launch-${randomUUID()}`;
+  let prompt: any,
+    sequence = 80,
+    admissions = 0;
+  const f = fixture(
+    t,
+    (request, send) => {
+      if (request.method === "session/prompt") {
+        prompt = request;
+        send({
+          jsonrpc: "2.0",
+          id: sequence++,
+          method: "_tidy/ownership.prepare",
+          params: { sessionId: "s1", launchId },
+        });
+      } else finish(prompt, send);
+    },
+    {
+      onOwnedProcess: async () => {
+        admissions++;
+        return { launchId, state: "prepared" };
+      },
+    }
+  );
+  await f.session.open("/disposable");
+  await f.session.submit("op1", "turn1", input);
+  assert.deepEqual(await f.session.submit("op2", "turn2", input), {
+    disposition: "unknown",
+  });
+  assert.equal(admissions, 1);
+  assert.ok(f.failures.length > 0);
+});
+
+for (const mode of [
+  "idle",
+  "foreign-session",
+  "unknown-launch",
+  "injected-binding",
+  "ungranted",
+  "invalid-method",
+]) {
+  test(`Hermes ownership ${mode} never reaches the host service`, async (t) => {
+    const launchId = `tidy-launch-${randomUUID()}`;
+    const ownership: unknown[] = [];
+    const sendRequest = (send: (message: any) => void) =>
+      send({
+        jsonrpc: "2.0",
+        id: 80,
+        method:
+          mode === "unknown-launch"
+            ? "_tidy/ownership.record"
+            : mode === "invalid-method"
+              ? "_tidy/ownership.kill"
+              : "_tidy/ownership.prepare",
+        params: {
+          sessionId: mode === "foreign-session" ? "stale" : "s1",
+          launchId,
+          ...(mode === "unknown-launch" ? { pid: 123 } : {}),
+          ...(mode === "injected-binding"
+            ? { bindingId: "other-binding" }
+            : {}),
+        },
+      });
+    const f = fixture(t, (_request, send) => sendRequest(send), {
+      ...(mode === "ungranted"
+        ? {}
+        : {
+            onOwnedProcess: async (_method: string, params: unknown) => {
+              ownership.push(params);
+              return {};
+            },
+          }),
+    });
+    await f.session.open("/disposable");
+    if (mode === "idle") {
+      sendRequest(f.send);
+      await setImmediate();
+    } else await f.session.submit("op", "turn", input);
+    assert.deepEqual(ownership, []);
+    assert.ok(f.failures.length > 0);
+  });
+}
 
 for (const mode of [
   "missing",

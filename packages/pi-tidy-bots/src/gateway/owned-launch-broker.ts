@@ -94,6 +94,7 @@ export class OwnedLaunchBroker {
           state: launch.state,
           launcherPath: this.launcherPath,
           executable: process.execPath,
+          launcherProtocol: 2,
         };
       }
       if (!launch)

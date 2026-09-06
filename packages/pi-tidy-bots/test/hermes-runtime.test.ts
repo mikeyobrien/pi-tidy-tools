@@ -272,6 +272,50 @@ test("guarded Hermes permission round trip resolves through the SDK store only a
   }
 });
 
+test("Hermes native lifecycle requests traverse ACP to the binding-scoped SDK service", async () => {
+  const f = await fixture();
+  let runtime: HermesRuntime | undefined;
+  const calls: unknown[] = [];
+  try {
+    const owned = f.ctx.ownedProcess;
+    f.ctx.ownedProcess = async (method, params) => {
+      if (params.launchId === f.launchId) return owned(method, params);
+      calls.push({ method, params });
+      return {
+        launchId: params.launchId,
+        state: method === "stopped" ? "stopped" : "prepared",
+        launcherProtocol: 2,
+      };
+    };
+    runtime = await openHermesRuntime(f.ctx, f.launchId, f.config, f.hooks);
+    f.store.reserve("operation:target", "operation.submit", "target", {
+      operationId: "target",
+      turnId: "turn",
+      conversationId: "c",
+    });
+    assert.deepEqual(
+      await runtime.session.submit("target", "turn", [
+        { type: "text", text: "[ownership-bridge]" },
+      ]),
+      { disposition: "accepted" }
+    );
+    assert.equal(calls.length, 3);
+    const launchId = (calls[0] as any).params.launchId;
+    assert.notEqual(launchId, f.launchId);
+    assert.deepEqual(
+      calls,
+      ["prepare", "inspect", "stopped"].map((method) => ({
+        method,
+        params: { launchId },
+      }))
+    );
+    assert.deepEqual(f.failures, []);
+  } finally {
+    await runtime?.close();
+    await f.cleanup();
+  }
+});
+
 test("unsupported native version fails opening and joins the registered process group", async () => {
   const f = await fixture("wrong-version");
   try {

@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { isAbsolute } from "node:path";
 
 export interface RpcSpawnOptions {
   name: string;
@@ -27,6 +28,10 @@ export interface RpcSpawnOptions {
   noSkills?: boolean;
   /** Issue 132: extra child env (image provider id, fleet dir for outputs). */
   env?: Record<string, string>;
+  /** Exact environment for an owned gateway child. When supplied, neither
+   * the parent environment nor legacy daemon credentials are injected.
+   * The caller owns HOME/profile/provider configuration and extension scope. */
+  isolatedEnv?: Record<string, string>;
   daemonUrl: string;
   childSecret: string;
   onEvent: (event: RpcEvent) => void;
@@ -348,16 +353,33 @@ export class RpcSession {
   }
 
   static spawn(options: RpcSpawnOptions): RpcSession {
+    if (options.isolatedEnv !== undefined) {
+      if (options.env !== undefined)
+        throw new Error(
+          "isolatedEnv cannot be combined with inherited env overrides"
+        );
+      if (
+        !options.piBin ||
+        !isAbsolute(options.piBin) ||
+        !isAbsolute(options.cwd) ||
+        !isAbsolute(options.sessionDir)
+      )
+        throw new Error(
+          "isolated RPC requires absolute executable, workspace and session paths"
+        );
+    }
     const args = rpcSpawnArgs(options);
     const child = spawn(options.piBin ?? "pi", args, {
       cwd: options.cwd,
       env: {
-        ...process.env,
-        PI_TIDY_BOTS_CHILD: "1",
-        PI_TIDY_BOTS_NAME: options.name,
-        PI_TIDY_BOTS_DAEMON_URL: options.daemonUrl,
-        PI_TIDY_BOTS_CHILD_SECRET: options.childSecret,
-        ...(options.env ?? {}),
+        ...(options.isolatedEnv ?? {
+          ...process.env,
+          PI_TIDY_BOTS_CHILD: "1",
+          PI_TIDY_BOTS_NAME: options.name,
+          PI_TIDY_BOTS_DAEMON_URL: options.daemonUrl,
+          PI_TIDY_BOTS_CHILD_SECRET: options.childSecret,
+          ...(options.env ?? {}),
+        }),
       },
       stdio: ["pipe", "pipe", "pipe"],
     });

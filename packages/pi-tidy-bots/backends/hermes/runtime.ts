@@ -105,6 +105,8 @@ export interface HermesRuntime {
   close(): Promise<void>;
   /** SDK interaction.respond handler; requires its existing durable reservation. */
   respond(params: JsonObject): Promise<unknown>;
+  /** SDK operation.cancel handler; requires its existing durable reservation. */
+  cancel(params: JsonObject): unknown;
 }
 
 /** The caller's session.open reservation must precede this fresh native launch.
@@ -180,6 +182,31 @@ export async function openHermesRuntime(
       closed: process.closed,
       close,
       respond: (params) => interactions!.respond(params),
+      cancel: (params) => {
+        if (
+          !nonempty(params.operationId) ||
+          !nonempty(params.payloadDigest) ||
+          !nonempty(params.targetOperationId)
+        )
+          throw new ProtocolError(
+            "invalid_request",
+            "Cancellation requires a durable control and target identity"
+          );
+        const key = `operation:${params.operationId}`;
+        if (ctx.store.reservation(key)?.method !== "operation.cancel")
+          throw new ProtocolError(
+            "durability_required",
+            "SDK must reserve cancellation before native dispatch"
+          );
+        const reservation = ctx.store.reserve(
+          key,
+          "operation.cancel",
+          params.payloadDigest,
+          params
+        );
+        if (reservation.settled) return reservation.result;
+        return session!.cancel(params.targetOperationId);
+      },
     };
   } catch (error) {
     await close();

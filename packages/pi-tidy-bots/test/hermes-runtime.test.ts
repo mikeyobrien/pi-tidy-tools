@@ -159,6 +159,63 @@ async function fixture(version = "0.20.5") {
   };
 }
 
+test("Hermes cancellation requires immutable SDK reservation and waits for native terminal evidence", async () => {
+  const f = await fixture();
+  let runtime: HermesRuntime | undefined;
+  try {
+    runtime = await openHermesRuntime(f.ctx, f.launchId, f.config, f.hooks);
+    const params = {
+      operationId: "cancel-1",
+      payloadDigest: "cancel-intent",
+      targetOperationId: "op1",
+    };
+    assert.throws(() => runtime!.cancel(params), {
+      code: "durability_required",
+    });
+    f.store.reserve(
+      "operation:cancel-1",
+      "operation.cancel",
+      params.payloadDigest,
+      params
+    );
+    assert.throws(
+      () => runtime!.cancel({ ...params, targetOperationId: "foreign" }),
+      { code: "payload_conflict" }
+    );
+    f.store.reserve("operation:op1", "operation.submit", "intent", {
+      operationId: "op1",
+      turnId: "turn1",
+    });
+    const submitted = runtime.session.submit("op1", "turn1", [
+      { type: "text", text: "[cancel-wait]" },
+    ]);
+    assert.deepEqual(runtime.cancel(params), { status: "requested" });
+    assert.deepEqual(runtime.cancel(params), { status: "requested" });
+    assert.equal(
+      f.events.some((event) => event.type === "turn.terminal"),
+      false
+    );
+    assert.deepEqual(await submitted, { disposition: "accepted" });
+    assert.equal(
+      f.events.find((event) => event.type === "turn.terminal").payload
+        .execution,
+      "cancelled"
+    );
+    const effects = (await readFile(join(f.profile, "effects.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.equal(
+      effects.filter((effect) => effect.kind === "cancel").length,
+      1
+    );
+    assert.deepEqual(f.failures, []);
+  } finally {
+    await runtime?.close();
+    await f.cleanup();
+  }
+});
+
 test("guarded Hermes ACP runs through the reserved SDK launcher and normalizes native evidence", async () => {
   const f = await fixture();
   let runtime: HermesRuntime | undefined;

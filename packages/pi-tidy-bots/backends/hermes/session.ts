@@ -11,6 +11,7 @@ interface Turn {
   operationId: string;
   turnId: string;
   started: boolean;
+  cancelRequested?: boolean;
   order: number;
   message?: { id: string; text: string; revision: number };
   tools: Map<string, { finished: boolean; private: boolean }>;
@@ -372,6 +373,35 @@ export class HermesSession {
         )
       );
       return { disposition: turn.started ? "accepted" : "unknown" };
+    }
+  }
+  /** The composing SDK handler must reserve its control before calling this.
+   * ACP cancel is a notification: requested never proves terminal execution.
+   */
+  cancel(targetOperationId: string): { status: "requested" | "unknown" } {
+    const turn = this.active;
+    if (
+      !turn ||
+      turn.operationId !== targetOperationId ||
+      !this.sessionId ||
+      this.lost ||
+      this.closing
+    )
+      return { status: "unknown" };
+    if (turn.cancelRequested) return { status: "requested" };
+    // Retain intent before writing; a partial/lost write is never replayed.
+    turn.cancelRequested = true;
+    try {
+      this.transport.notify("session/cancel", { sessionId: this.sessionId });
+      return { status: this.lost ? "unknown" : "requested" };
+    } catch {
+      this.fail(
+        new ProtocolError(
+          "native_observation_gap",
+          "Native cancellation requires reconciliation"
+        )
+      );
+      return { status: "unknown" };
     }
   }
   close(): void {

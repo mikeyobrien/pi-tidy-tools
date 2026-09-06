@@ -108,6 +108,87 @@ function finish(
 }
 const input = [{ type: "text", text: "Inspect the fixture" }];
 
+for (const stopReason of ["end_turn", "cancelled"]) {
+  test(`Hermes cancellation requests once and preserves native ${stopReason} evidence`, async (t) => {
+    let prompt: any;
+    const f = fixture(t, (request) => {
+      if (request.method === "session/prompt") prompt = request;
+    });
+    await f.session.open("/disposable");
+    assert.deepEqual(f.session.cancel("op1"), { status: "unknown" });
+    const submitted = f.session.submit("op1", "turn1", input);
+    assert.deepEqual(f.session.cancel("foreign"), { status: "unknown" });
+    assert.deepEqual(f.session.cancel("op1"), { status: "requested" });
+    assert.deepEqual(f.session.cancel("op1"), { status: "requested" });
+    const cancels = f.calls.filter((call) => call.method === "session/cancel");
+    assert.equal(cancels.length, 1);
+    assert.equal(cancels[0].id, undefined);
+    assert.deepEqual(cancels[0].params, { sessionId: "s1" });
+    assert.equal(
+      f.events.some((event) => event.type === "turn.terminal"),
+      false
+    );
+    finish(prompt, (response) => {
+      response.result.stopReason = stopReason;
+      f.send(response);
+    });
+    await submitted;
+    assert.equal(
+      f.events.find((event) => event.type === "turn.terminal").payload
+        .execution,
+      stopReason === "cancelled" ? "cancelled" : "ended"
+    );
+    assert.deepEqual(f.session.cancel("op1"), { status: "unknown" });
+    assert.equal(
+      f.calls.filter((call) => call.method === "session/cancel").length,
+      1
+    );
+  });
+}
+
+test("Hermes cancellation cannot cross a settled turn into a new operation", async (t) => {
+  let prompt: any;
+  const f = fixture(t, (request) => {
+    if (request.method === "session/prompt") prompt = request;
+  });
+  await f.session.open("/disposable");
+  const first = f.session.submit("op1", "turn1", input);
+  f.session.cancel("op1");
+  finish(prompt, f.send);
+  await first;
+  const second = f.session.submit("op2", "turn2", input);
+  assert.deepEqual(f.session.cancel("op1"), { status: "unknown" });
+  assert.equal(
+    f.calls.filter((call) => call.method === "session/cancel").length,
+    1
+  );
+  assert.deepEqual(f.session.cancel("op2"), { status: "requested" });
+  finish(prompt, f.send);
+  await second;
+  assert.equal(
+    f.calls.filter((call) => call.method === "session/cancel").length,
+    2
+  );
+});
+
+test("Hermes lost cancellation remains unknown without fabricating a terminal event", async (t) => {
+  const f = fixture(t, () => {});
+  await f.session.open("/disposable");
+  const submitted = f.session.submit("op1", "turn1", input);
+  assert.deepEqual(f.session.cancel("op1"), { status: "requested" });
+  f.session.transport.close();
+  assert.deepEqual(f.session.cancel("op1"), { status: "unknown" });
+  await submitted;
+  assert.equal(
+    f.events.some((event) => event.type === "turn.terminal"),
+    false
+  );
+  assert.equal(
+    f.calls.filter((call) => call.method === "session/cancel").length,
+    1
+  );
+});
+
 test("Hermes session replaces transformed final chunks and omits raw reasoning", async (t) => {
   const f = fixture(t, (request, send) => {
     update(send, {

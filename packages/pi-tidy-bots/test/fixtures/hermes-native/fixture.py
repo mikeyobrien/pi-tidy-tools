@@ -93,6 +93,13 @@ class FakeAgent:
             self.states[session_id].agent.run_conversation(user_message=text)
         except Exception:
             pass  # Pinned Hermes can return end_turn after an executor error.
+        if text == "[cancel-wait]":
+            cancellation = json.loads(sys.stdin.readline())
+            if (cancellation.get("method") != "session/cancel" or "id" in cancellation
+                    or cancellation.get("params") != {"sessionId": session_id}):
+                raise ValueError("Uncorrelated fixture cancellation")
+            record("cancel", session_id=session_id)
+            return SimpleNamespace(stop_reason="cancelled", field_meta={})
         if text == "[permission-callback]":
             self.connection.use_permission_bridge()
             factory = sys.modules["acp_adapter.permissions"].make_approval_callback

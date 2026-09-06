@@ -356,6 +356,24 @@ test("SDK ownership service records a real detached launcher before execution an
       code: "ownership_unreconciled",
     });
     await host.close();
+    const cleanupEffects = (
+      await readFile(join(f.dataDir, "native-effects.jsonl"), "utf8")
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.deepEqual(
+      cleanupEffects
+        .filter((entry) => entry.cleanupDenied)
+        .map((entry) => entry.cleanupDenied),
+      ["prepare", "record"]
+    );
+    assert.ok(
+      cleanupEffects.some(
+        (entry) =>
+          entry.cleanupInspected === childId && entry.cleanupStopped === childId
+      )
+    );
     assert.ok(
       journal
         .getSupervisorRecord()!
@@ -658,6 +676,32 @@ for (const stop of ["eof", "signal"])
           (entry) =>
             entry.close === (stop === "eof" ? "parent_eof" : "signal_sigterm")
         )
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+for (const stop of ["eof", "signal"])
+  test(`SDK ${stop} does not reopen ownership RPC during cleanup`, async () => {
+    const f = await fixture();
+    try {
+      const raw = await f.raw("cleanup-probe", { shutdownTimeoutMs: 1000 });
+      await raw.initialize();
+      if (stop === "eof") raw.child.stdin!.end();
+      else raw.child.kill("SIGTERM");
+      assert.deepEqual(await raw.closed, { code: 0, signal: null });
+      assert.deepEqual(
+        (await f.effects())
+          .filter((entry) => entry.cleanupDenied)
+          .map((entry) => entry.cleanupDenied),
+        ["prepare", "record", "inspect", "stopped"]
+      );
+      assert.equal(
+        raw.messages.some((message) =>
+          message.method?.startsWith("ownership.")
+        ),
+        false
       );
     } finally {
       await f.cleanup();

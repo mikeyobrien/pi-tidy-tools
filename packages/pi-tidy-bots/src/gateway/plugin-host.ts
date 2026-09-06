@@ -589,10 +589,17 @@ export class PluginHost {
   }
   private async handleCall(message: RpcMessage): Promise<void> {
     const id = message.id!;
+    const canReply = () =>
+      this.state === "ready" || (this.state === "closing" && !this.failure);
     let ownsId = false;
     let deadline: ReturnType<typeof setTimeout> | undefined;
     try {
-      if (this.state !== "ready")
+      const cleanup =
+        this.state === "closing" &&
+        !this.failure &&
+        (message.method === "ownership.inspect" ||
+          message.method === "ownership.stopped");
+      if (this.state !== "ready" && !cleanup)
         throw new ProtocolError(
           "plugin_closed",
           "Host service admission is closed"
@@ -671,9 +678,9 @@ export class PluginHost {
       const result = ownership
         ? await this.ownership!.call(message.method!, ownershipParams)
         : await this.options.onHostCall!(value as HostCall);
-      if (this.state === "ready") this.write({ jsonrpc: "2.0", id, result });
+      if (canReply()) this.write({ jsonrpc: "2.0", id, result });
     } catch (error) {
-      if (this.state === "ready") {
+      if (canReply()) {
         const code =
           error instanceof ProtocolError ? error.code : "host_failure";
         this.write({

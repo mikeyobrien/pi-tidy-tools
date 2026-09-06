@@ -107,6 +107,7 @@ export class PluginRuntime {
   private readonly abort = new AbortController();
   private state: "waiting" | "initializing" | "ready" | "closing" | "closed" =
     "waiting";
+  private cleanupOwnershipOpen = false;
   private context?: PluginContext;
   private store?: PluginStore;
   private limits: ProtocolLimits = DEFAULT_LIMITS;
@@ -206,6 +207,7 @@ export class PluginRuntime {
       }
     });
     this.input.on("end", () => {
+      this.cleanupOwnershipOpen = false;
       try {
         parser.finish();
       } catch {
@@ -214,6 +216,7 @@ export class PluginRuntime {
       void this.close("parent_eof");
     });
     this.input.on("error", () => {
+      this.cleanupOwnershipOpen = false;
       void this.close("parent_pipe_error");
     });
     this.output.on("error", () => {
@@ -743,7 +746,11 @@ export class PluginRuntime {
   ): Promise<unknown> {
     const service = `ownership.${method}`;
     const init = this.context?.initialization;
-    if (this.state !== "ready" || !init)
+    const cleanup =
+      this.state === "closing" &&
+      this.cleanupOwnershipOpen &&
+      (method === "inspect" || method === "stopped");
+    if ((this.state !== "ready" && !cleanup) || !init)
       throw new ProtocolError(
         "parent_eof",
         "Ownership service admission is closed"
@@ -903,15 +910,21 @@ export class PluginRuntime {
     responseId?: string,
     drain = false
   ): Promise<void> {
+    if (responseId === undefined) this.cleanupOwnershipOpen = false;
     return (this.closing ??= (async () => {
       this.state = "closing";
       this.draining = drain;
+      // Only an orderly host request retains a live reply channel. Signals,
+      // protocol failures and EOF still rely on independent host reconciliation.
+      this.cleanupOwnershipOpen =
+        responseId !== undefined &&
+        (reason === "shutdown" || reason === "session_close");
       let clean = true;
       const deadline = Date.now() + this.limits.shutdownTimeoutMs;
       const stop = () => {
         this.draining = false;
         this.abort.abort(reason);
-        this.input.pause();
+        if (!this.cleanupOwnershipOpen) this.input.pause();
         for (const pending of this.pending.values()) {
           clearTimeout(pending.timer);
           pending.reject(
@@ -964,6 +977,7 @@ export class PluginRuntime {
       } catch {
         clean = false;
       }
+      this.cleanupOwnershipOpen = false;
       stop();
       if (responseId) {
         try {

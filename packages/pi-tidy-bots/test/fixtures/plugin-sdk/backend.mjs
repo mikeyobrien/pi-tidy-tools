@@ -71,6 +71,19 @@ const runtime = runPlugin({
     });
     if (ctx.initialization.config.mode === "stuck-cleanup")
       await new Promise(() => {});
+    if (ctx.initialization.config.mode === "cleanup-probe") {
+      for (const method of ["prepare", "record", "inspect", "stopped"]) {
+        try {
+          await ctx.ownedProcess(method, {
+            launchId: `tidy-launch-${randomUUID()}`,
+          });
+          throw new Error("Unexpected cleanup service admission");
+        } catch (error) {
+          if (error.code !== "parent_eof") throw error;
+          log({ cleanupDenied: method });
+        }
+      }
+    }
     if (
       ownedChild &&
       ownedChild.exitCode === null &&
@@ -80,6 +93,32 @@ const runtime = runPlugin({
       if (ownedHandle) await ownedHandle.close();
       else ownedChild.kill("SIGTERM");
       await exit;
+    }
+    if (ownedLaunchId) {
+      for (const method of ["prepare", "record"]) {
+        try {
+          await ctx.ownedProcess(method, {
+            launchId: ownedLaunchId,
+            ...(method === "record" ? { pid: ownedChild.pid } : {}),
+          });
+          throw new Error("Cleanup admitted a native launch");
+        } catch (error) {
+          if (error.code !== "parent_eof") throw error;
+          log({ cleanupDenied: method });
+        }
+      }
+      const inspected = await ctx.ownedProcess("inspect", {
+        launchId: ownedLaunchId,
+      });
+      const stopped = await ctx.ownedProcess("stopped", {
+        launchId: ownedLaunchId,
+      });
+      if (stopped.state !== "stopped")
+        throw new Error("Cleanup lacks ownership proof");
+      log({
+        cleanupInspected: inspected.launchId,
+        cleanupStopped: stopped.launchId,
+      });
     }
     return { ownedResourcesStopped: true };
   },

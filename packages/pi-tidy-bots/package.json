@@ -44,6 +44,7 @@
     "src/gateway/schema/*.json",
     "sdk/python/**/*.py",
     "backends/pi/*",
+    "backends/hermes/*.py",
     "vendor/**/*.ts",
     "public/**",
     "README.md",

@@ -43,6 +43,7 @@
     "src/plugin-sdk/*.mjs",
     "src/gateway/schema/*.json",
     "sdk/python/**/*.py",
+    "backends/pi/*",
     "vendor/**/*.ts",
     "public/**",
     "README.md",

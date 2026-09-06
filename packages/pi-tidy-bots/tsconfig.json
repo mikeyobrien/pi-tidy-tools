@@ -10,5 +10,10 @@
     "allowImportingTsExtensions": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "bridge/**/*.ts"]
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "bridge/**/*.ts",
+    "backends/**/*.ts"
+  ]
 }

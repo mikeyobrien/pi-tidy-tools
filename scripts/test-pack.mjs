@@ -53,6 +53,11 @@ try {
     if (name === "@mobrienv/pi-tidy-bots") {
       for (const file of [
         "src/gateway/owned-launcher.mjs",
+        "backends/pi/backend.json",
+        "backends/pi/backend.mjs",
+        "backends/pi/config.schema.json",
+        "backends/pi/adapter.ts",
+        "backends/pi/empty-extension.mjs",
         "src/plugin-sdk/index.mjs",
         "src/plugin-sdk/index.ts",
         "src/plugin-sdk/runtime.ts",
@@ -199,7 +204,7 @@ try {
         [
           "--input-type=module",
           "--eval",
-          "import {PluginStore,PluginRuntime,runPlugin} from '@mobrienv/pi-tidy-bots/plugin-sdk'; import {DEFAULT_LIMITS,FrameDecoder} from '@mobrienv/pi-tidy-bots/plugin-protocol'; if(typeof PluginStore!=='function'||typeof PluginRuntime!=='function'||typeof runPlugin!=='function'||typeof FrameDecoder!=='function'||DEFAULT_LIMITS.maxFrameBytes!==1048576)process.exit(1)",
+          "import {PluginStore,PluginRuntime,runPlugin} from '@mobrienv/pi-tidy-bots/plugin-sdk'; import {DEFAULT_LIMITS,FrameDecoder} from '@mobrienv/pi-tidy-bots/plugin-protocol'; const {startPiAdapter}=await import('@mobrienv/pi-tidy-bots/backends/pi/adapter.ts'); if(typeof startPiAdapter!=='function'||typeof PluginStore!=='function'||typeof PluginRuntime!=='function'||typeof runPlugin!=='function'||typeof FrameDecoder!=='function'||DEFAULT_LIMITS.maxFrameBytes!==1048576)process.exit(1)",
         ],
         {
           cwd: installDir,

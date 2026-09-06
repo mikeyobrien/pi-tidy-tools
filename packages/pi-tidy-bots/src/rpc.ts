@@ -32,6 +32,8 @@ export interface RpcSpawnOptions {
    * the parent environment nor legacy daemon credentials are injected.
    * The caller owns HOME/profile/provider configuration and extension scope. */
   isolatedEnv?: Record<string, string>;
+  /** Gateway-native transport limits; legacy transport behavior is unchanged. */
+  nativeProtocol?: { maxFrameBytes: number; onError: () => void };
   daemonUrl: string;
   childSecret: string;
   onEvent: (event: RpcEvent) => void;
@@ -295,6 +297,13 @@ const toolResultText = (result: unknown): string => {
  * a wedged-alive child can hit this, and the timeout means UNKNOWN. */
 export const PROMPT_CLASS_TIMEOUT_MS = 10 * 60_000;
 
+/** Correlated native refusal, distinct from transport loss or a timeout. */
+export class RpcCommandRejected extends Error {
+  constructor() {
+    super("Native RPC command was rejected");
+  }
+}
+
 export class RpcSession {
   readonly process: ChildProcess;
   private buffer = "";
@@ -316,8 +325,28 @@ export class RpcSession {
   private constructor(options: RpcSpawnOptions, process_: ChildProcess) {
     this.options = options;
     this.process = process_;
-    this.process.stdout?.setEncoding("utf8");
-    this.process.stdout?.on("data", (chunk: string) => this.ingest(chunk));
+    if (options.nativeProtocol) {
+      const decoder = new TextDecoder("utf-8", { fatal: true });
+      this.process.stdout?.on("data", (chunk: Buffer) => {
+        try {
+          if (!this.closed)
+            this.ingest(decoder.decode(chunk, { stream: true }));
+        } catch {
+          this.protocolFailed();
+        }
+      });
+      this.process.stdout?.on("end", () => {
+        try {
+          decoder.decode();
+          if (this.buffer.length) this.protocolFailed();
+        } catch {
+          this.protocolFailed();
+        }
+      });
+    } else {
+      this.process.stdout?.setEncoding("utf8");
+      this.process.stdout?.on("data", (chunk: string) => this.ingest(chunk));
+    }
     this.process.stderr?.setEncoding("utf8");
     this.process.stderr?.on("data", (chunk: string) => {
       for (const line of chunk.split("\n")) {
@@ -353,6 +382,12 @@ export class RpcSession {
   }
 
   static spawn(options: RpcSpawnOptions): RpcSession {
+    if (
+      options.nativeProtocol &&
+      (!Number.isSafeInteger(options.nativeProtocol.maxFrameBytes) ||
+        options.nativeProtocol.maxFrameBytes < 128)
+    )
+      throw new Error("Invalid native RPC frame limit");
     if (options.isolatedEnv !== undefined) {
       if (options.env !== undefined)
         throw new Error(
@@ -401,7 +436,16 @@ export class RpcSession {
 
   send(payload: Record<string, unknown>): void {
     if (!this.alive) throw new Error("rpc child is not running");
-    this.process.stdin?.write(`${JSON.stringify(payload)}\n`);
+    const frame = `${JSON.stringify(payload)}\n`;
+    const limit = this.options.nativeProtocol?.maxFrameBytes;
+    if (
+      limit &&
+      (Buffer.byteLength(frame) > limit ||
+        (this.process.stdin?.writableLength ?? 0) + Buffer.byteLength(frame) >
+          limit * 2)
+    )
+      throw new Error("Native RPC output limit exceeded");
+    this.process.stdin?.write(frame);
   }
 
   request<T = any>(
@@ -412,6 +456,10 @@ export class RpcSession {
     return new Promise<T>((resolve, reject) => {
       if (!this.alive) {
         reject(new Error("rpc child is not running"));
+        return;
+      }
+      if (this.options.nativeProtocol && this.pending.size >= 256) {
+        reject(new Error("Native RPC pending request limit exceeded"));
         return;
       }
       const id = randomUUID();
@@ -433,7 +481,18 @@ export class RpcSession {
           reject(error);
         },
       });
-      this.send({ ...payload, id });
+      try {
+        this.send({ ...payload, id });
+      } catch (error) {
+        this.pending
+          .get(id)!
+          .reject(
+            error instanceof Error
+              ? error
+              : new Error("Native RPC write failed")
+          );
+        this.pending.delete(id);
+      }
     });
   }
 
@@ -510,10 +569,30 @@ export class RpcSession {
     let index = this.buffer.indexOf("\n");
     while (index !== -1) {
       const line = this.buffer.slice(0, index).replace(/\r$/, "");
+      if (
+        this.options.nativeProtocol &&
+        Buffer.byteLength(line) + 1 > this.options.nativeProtocol.maxFrameBytes
+      )
+        throw new Error("Native RPC frame limit exceeded");
       this.buffer = this.buffer.slice(index + 1);
       if (line.trim().length > 0) this.handleLine(line);
       index = this.buffer.indexOf("\n");
     }
+    if (
+      this.options.nativeProtocol &&
+      Buffer.byteLength(this.buffer) > this.options.nativeProtocol.maxFrameBytes
+    )
+      throw new Error("Native RPC frame limit exceeded");
+  }
+
+  private protocolFailed(): void {
+    if (this.closed) return;
+    this.stop();
+    this.closed = true;
+    for (const pending of this.pending.values())
+      pending.reject(new Error("Native RPC observation lost"));
+    this.pending.clear();
+    this.options.nativeProtocol?.onError();
   }
 
   private handleLine(line: string): void {
@@ -522,18 +601,37 @@ export class RpcSession {
     try {
       parsed = JSON.parse(line) as Record<string, unknown>;
     } catch {
+      if (this.options.nativeProtocol)
+        throw new Error("Invalid native RPC JSON");
       return;
     }
+    if (
+      this.options.nativeProtocol &&
+      (!parsed ||
+        typeof parsed !== "object" ||
+        Array.isArray(parsed) ||
+        typeof parsed.type !== "string")
+    )
+      throw new Error("Invalid native RPC frame");
     const type = String(parsed.type ?? "");
 
     if (type === "response") {
+      if (
+        this.options.nativeProtocol &&
+        (typeof parsed.id !== "string" || typeof parsed.success !== "boolean")
+      )
+        throw new Error("Invalid native RPC response");
       const id = typeof parsed.id === "string" ? parsed.id : undefined;
       if (id) {
         const pending = this.pending.get(id);
         if (pending) {
           this.pending.delete(id);
           if (parsed.success === false) {
-            pending.reject(new Error(`rpc command failed: ${line}`));
+            pending.reject(
+              this.options.nativeProtocol
+                ? new RpcCommandRejected()
+                : new Error(`rpc command failed: ${line}`)
+            );
           } else {
             pending.resolve(parsed);
           }

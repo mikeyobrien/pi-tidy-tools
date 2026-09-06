@@ -167,6 +167,7 @@ export async function openHermesRuntime(
       maxFrameBytes: ctx.initialization.limits.maxFrameBytes,
       maxPendingRequests: ctx.initialization.limits.maxPendingRequests,
       requestTimeoutMs: ctx.initialization.limits.commandTimeoutMs,
+      promptTimeoutMs: 3600000,
       emit: (event) => ctx.emit(event as EventInput),
       onPermission: interactions.onPermission,
       onPermissionConsumed: interactions.onPermissionConsumed,

@@ -12,6 +12,7 @@ interface Turn {
   turnId: string;
   started: boolean;
   cancelRequested?: boolean;
+  onAccepted?: () => void;
   order: number;
   message?: { id: string; text: string; revision: number };
   tools: Map<string, { finished: boolean; private: boolean }>;
@@ -24,6 +25,8 @@ export interface HermesSessionOptions extends Pick<
   | "maxPendingRequests"
   | "requestTimeoutMs"
 > {
+  /** Native prompt settlement can outlive the short plugin admission RPC. */
+  promptTimeoutMs?: number;
   /** Private lifecycle service; never exposed as an agent fleet tool. */
   onOwnedProcess?: (
     method: "prepare" | "record" | "inspect" | "stopped",
@@ -268,7 +271,8 @@ export class HermesSession {
   async submit(
     operationId: string,
     turnId: string,
-    input: unknown
+    input: unknown,
+    onAccepted?: () => void
   ): Promise<{ disposition: "accepted" | "rejected" | "unknown" }> {
     if (!this.sessionId || this.active || this.lost || this.closing)
       return { disposition: "unknown" };
@@ -290,13 +294,18 @@ export class HermesSession {
       started: false,
       order: 0,
       tools: new Map(),
+      onAccepted,
     };
     this.active = turn;
     try {
-      const result = await this.transport.request("session/prompt", {
-        sessionId: this.sessionId,
-        prompt: input.map((part) => ({ type: "text", text: part.text })),
-      });
+      const result = await this.transport.request(
+        "session/prompt",
+        {
+          sessionId: this.sessionId,
+          prompt: input.map((part) => ({ type: "text", text: part.text })),
+        },
+        this.options.promptTimeoutMs
+      );
       if (
         !object(result) ||
         !object(result._meta) ||
@@ -431,6 +440,7 @@ export class HermesSession {
     });
     this.emit(turn, "turn.started", {});
     turn.started = true;
+    turn.onAccepted?.();
   }
   private snapshot(turn: Turn, text: string): void {
     if (Buffer.byteLength(text) > 512 * 1024) throw new Error();

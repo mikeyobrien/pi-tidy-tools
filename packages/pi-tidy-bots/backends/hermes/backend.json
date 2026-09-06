@@ -1,0 +1,19 @@
+{
+  "manifestVersion": 1,
+  "id": "tidy.hermes",
+  "version": "0.1.0-dev",
+  "protocol": { "major": 1, "minMinor": 0, "maxMinor": 0 },
+  "entrypoint": { "path": "backend.mjs", "args": [] },
+  "configSchema": "config.schema.json",
+  "runtime": {
+    "name": "hermes",
+    "testedVersion": "0.20.5",
+    "transport": "acp"
+  },
+  "requestedAccess": {
+    "workspace": "read-write",
+    "nativeProfile": true,
+    "network": true,
+    "gatewayTools": []
+  }
+}

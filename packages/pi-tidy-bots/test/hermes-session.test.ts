@@ -108,6 +108,34 @@ function finish(
 }
 const input = [{ type: "text", text: "Inspect the fixture" }];
 
+test("Hermes prompt settlement outlives short admission and emits acceptance once", async (t) => {
+  let prompt: any;
+  const f = fixture(
+    t,
+    (request, send) => {
+      prompt = request;
+      text(send, "Working");
+      text(send, " on it");
+    },
+    { requestTimeoutMs: 10, promptTimeoutMs: 500 }
+  );
+  await f.session.open("/disposable");
+  let accepted = 0;
+  const submitted = f.session.submit("op1", "turn1", input, () => {
+    accepted++;
+  });
+  assert.equal(accepted, 1);
+  await new Promise((resolve) => setTimeout(resolve, 35));
+  assert.deepEqual(f.failures, []);
+  assert.equal(
+    f.events.some((event) => event.type === "turn.terminal"),
+    false
+  );
+  finish(prompt, f.send);
+  assert.deepEqual(await submitted, { disposition: "accepted" });
+  assert.equal(accepted, 1);
+});
+
 for (const stopReason of ["end_turn", "cancelled"]) {
   test(`Hermes cancellation requests once and preserves native ${stopReason} evidence`, async (t) => {
     let prompt: any;

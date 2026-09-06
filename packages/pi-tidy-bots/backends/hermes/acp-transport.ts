@@ -91,7 +91,19 @@ export class AcpTransport {
     options.input.once("close", this.ended);
   }
 
-  request(method: string, params: JsonObject): Promise<unknown> {
+  request(
+    method: string,
+    params: JsonObject,
+    timeoutMs = this.timeout
+  ): Promise<unknown> {
+    if (
+      !Number.isSafeInteger(timeoutMs) ||
+      timeoutMs < 1 ||
+      timeoutMs > 3600000
+    )
+      return Promise.reject(
+        new ProtocolError("invalid_config", "Invalid ACP request deadline")
+      );
     if (this.failure) return Promise.reject(this.failure);
     if (this.pending.size >= this.maxPending)
       return Promise.reject(
@@ -108,7 +120,7 @@ export class AcpTransport {
       return Promise.reject(error);
     }
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => this.fail("native_timeout"), this.timeout);
+      const timer = setTimeout(() => this.fail("native_timeout"), timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       this.write(frame);
     });

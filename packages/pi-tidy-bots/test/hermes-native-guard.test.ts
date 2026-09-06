@@ -197,7 +197,7 @@ test("owned Hermes guard preserves ACP negotiation and suppresses implicit nativ
     assert.equal(result.agentCapabilities.sessionCapabilities.resume, null);
     assert.deepEqual(result._meta, {
       hermes: { preserved: true },
-      tidy: { guardVersion: 1, approvalPolicy: "ask", environment: "explicit" },
+      tidy: { guardVersion: 2, approvalPolicy: "ask", environment: "explicit" },
     });
     assert.equal((await f.prompt()).stopReason, "end_turn");
     assert.deepEqual(
@@ -208,6 +208,100 @@ test("owned Hermes guard preserves ACP negotiation and suppresses implicit nativ
       !(await f.request("fixture/environment")).keys.includes(
         "UNSCOPED_DOTENV_SECRET"
       )
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("Hermes guard reports authoritative final text without copying history or reasoning", async () => {
+  const f = await fixture();
+  try {
+    await f.ready();
+    for (let turn = 0; turn < 2; turn++) {
+      const result = await f.prompt();
+      assert.deepEqual(result._meta, {
+        hermes: { preserved: true },
+        tidy: {
+          guardVersion: 2,
+          turnEvidence: {
+            started: true,
+            settled: true,
+            failed: false,
+            interrupted: false,
+            observationsComplete: true,
+            finalText: "Transformed final answer",
+          },
+        },
+      });
+      assert.ok(!JSON.stringify(result).includes("private"));
+    }
+  } finally {
+    await f.cleanup();
+  }
+});
+
+for (const text of [
+  "[executor-error]",
+  "[result-error]",
+  "[malformed-result]",
+]) {
+  test(`Hermes guard preserves failed execution despite native end_turn: ${text}`, async () => {
+    const f = await fixture();
+    try {
+      await f.ready();
+      const result = await f.prompt(text);
+      assert.equal(result.stopReason, "end_turn");
+      assert.deepEqual(result._meta.tidy.turnEvidence, {
+        started: true,
+        settled: true,
+        failed: true,
+        interrupted: false,
+        observationsComplete: true,
+      });
+      assert.ok(!JSON.stringify(result).includes("private"));
+      assert.equal((await f.prompt())._meta.tidy.turnEvidence.failed, false);
+    } finally {
+      await f.cleanup();
+    }
+  });
+}
+
+test("Hermes guard detects swallowed native notification failures", async () => {
+  const f = await fixture();
+  try {
+    await f.ready();
+    const result = await f.prompt("[update-error]");
+    assert.equal(result._meta.tidy.turnEvidence.settled, true);
+    assert.equal(result._meta.tidy.turnEvidence.observationsComplete, false);
+    assert.ok(!JSON.stringify(result).includes("private"));
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("Hermes guard retains interrupted native evidence independently of ACP stop reason", async () => {
+  const f = await fixture();
+  try {
+    await f.ready();
+    const result = await f.prompt("[interrupted]");
+    assert.equal(result.stopReason, "end_turn");
+    assert.equal(result._meta.tidy.turnEvidence.interrupted, true);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("Hermes guard refuses another prompt when the executor boundary never settled", async () => {
+  const f = await fixture();
+  try {
+    await f.ready();
+    const result = await f.prompt("[executor-not-started]");
+    assert.equal(result._meta.tidy.turnEvidence.settled, false);
+    assert.equal((await f.prompt())._meta.tidy.code, "session_busy");
+    assert.equal(
+      (await f.effects()).filter((effect) => effect.kind === "prompt").length,
+      1
     );
   } finally {
     await f.cleanup();

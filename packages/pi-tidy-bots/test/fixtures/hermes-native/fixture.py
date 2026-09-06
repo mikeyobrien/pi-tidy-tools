@@ -33,6 +33,23 @@ def load_environment(**kwargs):
     return []
 
 
+class FakeConversation:
+    session_id = "internal-one"
+
+    def run_conversation(self, user_message, **kwargs):
+        if user_message == "[executor-error]":
+            raise RuntimeError("private native exception")
+        if user_message == "[result-error]":
+            return {"error": "private provider error", "final_response": "private provider error",
+                    "messages": [{"role": "assistant", "reasoning": "private thought"}]}
+        if user_message == "[malformed-result]":
+            return {"final_response": {"private": "native data"}}
+        if user_message == "[interrupted]":
+            return {"final_response": "Partial answer", "interrupted": True}
+        return {"final_response": "Transformed final answer", "response_transformed": True,
+                "messages": [{"role": "assistant", "reasoning": "private thought"}]}
+
+
 class FakeAgent:
     def __init__(self):
         self.states = {}
@@ -54,7 +71,7 @@ class FakeAgent:
 
     async def new_session(self, cwd, **kwargs):
         state = SimpleNamespace(session_id="native-one", mode="default", cwd=cwd,
-                                agent=SimpleNamespace(session_id="internal-one"))
+                                agent=FakeConversation())
         self.states[state.session_id] = state
         record("new", cwd=cwd)
         return SimpleNamespace(session_id=state.session_id, field_meta={})
@@ -63,8 +80,20 @@ class FakeAgent:
         return ("ask" if state.mode == "default" else "session", state.cwd)
 
     async def prompt(self, prompt, session_id, **kwargs):
-        record("prompt", session_id=session_id, text="\n".join(part.text for part in prompt))
-        return SimpleNamespace(stop_reason="end_turn", field_meta={})
+        text = "\n".join(part.text for part in prompt)
+        record("prompt", session_id=session_id, text=text)
+        if text == "[executor-not-started]":
+            return SimpleNamespace(stop_reason="end_turn", field_meta={})
+        try:
+            self.states[session_id].agent.run_conversation(user_message=text)
+        except Exception:
+            pass  # Pinned Hermes can return end_turn after an executor error.
+        if text == "[update-error]":
+            try:
+                await self.connection.session_update(session_id, {"fail": True})
+            except Exception:
+                pass  # Native worker callbacks also swallow send failures.
+        return SimpleNamespace(stop_reason="end_turn", field_meta={"hermes": {"preserved": True}})
 
     async def set_session_mode(self, mode_id, session_id, **kwargs):
         self.states[session_id].mode = mode_id
@@ -90,6 +119,10 @@ def wire(value):
 async def run_agent(agent, **kwargs):
     class Connection:
         choice = "allow_once"
+
+        async def session_update(self, session_id, update):
+            if update.get("fail"):
+                raise RuntimeError("private update-send failure")
 
         async def request_permission(self, session_id, tool_call, options, **kwargs):
             record("permission_options", options=[option.option_id for option in options])

@@ -2,15 +2,17 @@
 
 import argparse
 import asyncio
+from concurrent.futures import Future
 from importlib import metadata
 import os
 from pathlib import Path
 import sys
+from threading import Lock
 
 
 HERMES_VERSION = "0.20.5"
 ACP_VERSION = "0.9.0"
-GUARD_VERSION = 1
+GUARD_VERSION = 2
 
 
 class ApprovalPolicyUnavailable(Exception):
@@ -83,6 +85,10 @@ def guarded_agent(base, guard, prompt_response):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
             self._tidy_created_sessions = set()
+            self._tidy_active_prompt = False
+            self._tidy_update_tickets = None
+            self._tidy_update_lock = Lock()
+            self._tidy_update_failed = False
 
         def _tidy_live_state(self, session_id):
             # The pinned SessionManager public getter restores history on a
@@ -96,6 +102,39 @@ def guarded_agent(base, guard, prompt_response):
             class ExactPermissionClient:
                 def __getattr__(self, name):
                     return getattr(connection, name)
+
+                def session_update(self, *args, **kwargs):
+                    # Native worker callbacks swallow update-send failures.
+                    # Register before scheduling so even an unscheduled/dropped
+                    # coroutine prevents a complete-observation claim.
+                    ticket = Future()
+                    with owner._tidy_update_lock:
+                        tickets = owner._tidy_update_tickets
+                        if tickets is not None:
+                            pending = []
+                            for prior in tickets:
+                                if not prior.done():
+                                    pending.append(prior)
+                                elif prior.cancelled() or prior.result() is not True:
+                                    owner._tidy_update_failed = True
+                            tickets[:] = pending
+                            if len(tickets) >= 256:
+                                owner._tidy_update_failed = True
+                                raise ApprovalPolicyUnavailable()
+                            tickets.append(ticket)
+
+                    async def forward():
+                        try:
+                            result = await connection.session_update(*args, **kwargs)
+                        except BaseException:
+                            if not ticket.done():
+                                ticket.set_result(False)
+                            raise
+                        if not ticket.done():
+                            ticket.set_result(True)
+                        return result
+
+                    return forward()
 
                 async def request_permission(self, session_id, tool_call, options, **kwargs):
                     def check_live():
@@ -174,6 +213,8 @@ def guarded_agent(base, guard, prompt_response):
                 # must never turn an unknown reference into an implicit load.
                 if session_id not in self._tidy_created_sessions:
                     return refuse("session_not_found")
+                if self._tidy_active_prompt:
+                    return refuse("session_busy")
                 state = self._tidy_live_state(session_id)
                 if state is None:
                     return refuse("session_not_found")
@@ -189,7 +230,76 @@ def guarded_agent(base, guard, prompt_response):
                     return refuse("capability_unavailable")
             except ApprovalPolicyUnavailable:
                 return refuse("approval_policy_unavailable")
-            return await super().prompt(prompt=prompt, session_id=session_id, **kwargs)
+            # The pinned ACP server catches executor errors and can still return
+            # end_turn. It also sends transformed final text as a plain chunk.
+            # Capture only display text and lifecycle facts at the actual run
+            # boundary; never copy the native history/reasoning or error data.
+            native = state.agent
+            original = getattr(native, "run_conversation", None)
+            if not callable(original):
+                return refuse("native_contract_unavailable")
+            evidence = {"started": False, "settled": False, "failed": False,
+                        "interrupted": False}
+            had_override = "run_conversation" in vars(native)
+            previous = vars(native).get("run_conversation")
+
+            def observed_run(*args, **kwargs):
+                if evidence["started"]:
+                    raise ApprovalPolicyUnavailable()
+                evidence["started"] = True
+                try:
+                    result = original(*args, **kwargs)
+                    if not isinstance(result, dict):
+                        evidence["failed"] = True
+                        return result
+                    evidence["failed"] = bool(result.get("error"))
+                    evidence["interrupted"] = bool(result.get("interrupted"))
+                    final_text = result.get("final_response", "")
+                    if not isinstance(final_text, str):
+                        evidence["failed"] = True
+                    elif not evidence["failed"]:
+                        evidence["finalText"] = final_text
+                    return result
+                except BaseException:
+                    evidence["failed"] = True
+                    raise
+                finally:
+                    evidence["settled"] = True
+
+            self._tidy_active_prompt = True
+            self._tidy_update_tickets = []
+            self._tidy_update_failed = False
+            native.run_conversation = observed_run
+            try:
+                response = await super().prompt(prompt=prompt, session_id=session_id, **kwargs)
+                evidence["observationsComplete"] = False
+                try:
+                    with self._tidy_update_lock:
+                        tickets = list(self._tidy_update_tickets)
+                    sent = await asyncio.wait_for(asyncio.gather(*[
+                        asyncio.wrap_future(ticket) for ticket in tickets
+                    ]), timeout=5)
+                    with self._tidy_update_lock:
+                        evidence["observationsComplete"] = all(sent) and not self._tidy_update_failed and all(
+                            ticket.done() and not ticket.cancelled() and ticket.result() is True
+                            for ticket in self._tidy_update_tickets)
+                except Exception:
+                    pass
+                extra = dict(response.field_meta or {})
+                extra["tidy"] = {"guardVersion": GUARD_VERSION,
+                                 "turnEvidence": dict(evidence)}
+                response.field_meta = extra
+                return response
+            finally:
+                # Cancellation of the asyncio waiter need not stop its executor.
+                # Keep admission latched closed if native settlement is unknown.
+                if evidence["settled"]:
+                    if had_override:
+                        native.run_conversation = previous
+                    else:
+                        del native.run_conversation
+                    self._tidy_active_prompt = False
+                    self._tidy_update_tickets = None
 
         async def set_session_mode(self, mode_id, session_id, **kwargs):
             if mode_id != "default" or session_id not in self._tidy_created_sessions:

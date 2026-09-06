@@ -177,7 +177,8 @@ export class HermesSession {
       initialized.agentInfo.version !== "0.20.5" ||
       !object(initialized._meta) ||
       !object(initialized._meta.tidy) ||
-      initialized._meta.tidy.guardVersion !== 3 ||
+      initialized._meta.tidy.guardVersion !== 4 ||
+      initialized._meta.tidy.ownedWorkers !== "local-pipe-v1" ||
       initialized._meta.tidy.approvalPolicy !== "ask" ||
       initialized._meta.tidy.environment !== "explicit" ||
       !object(initialized.agentCapabilities) ||
@@ -312,7 +313,7 @@ export class HermesSession {
       }
       const evidence = tidy.turnEvidence;
       if (
-        tidy.guardVersion !== 3 ||
+        tidy.guardVersion !== 4 ||
         !object(evidence) ||
         evidence.started !== true ||
         evidence.settled !== true ||

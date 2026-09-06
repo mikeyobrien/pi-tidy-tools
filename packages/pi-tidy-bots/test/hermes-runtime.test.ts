@@ -22,7 +22,11 @@ import {
 import { PluginStore } from "../src/plugin-sdk/store.ts";
 import type { PluginContext } from "../src/plugin-sdk/runtime.ts";
 import { DEFAULT_LIMITS } from "../src/gateway/protocol.ts";
-import { ownedGroupHasExited } from "../src/gateway/process-ownership.ts";
+import {
+  ownedGroupHasExited,
+  ownedProcessIdentity,
+  ownedChildIdentity,
+} from "../src/gateway/process-ownership.ts";
 
 const candidate = "/opt/homebrew/opt/python@3.14/bin/python3.14";
 const python =
@@ -315,6 +319,104 @@ test("Hermes native lifecycle requests traverse ACP to the binding-scoped SDK se
     await f.cleanup();
   }
 });
+
+for (const mode of ["normal", "buffered", "failed-registration"]) {
+  const failRegistration = mode === "failed-registration";
+  test(`Hermes local worker ${mode} preserves gated ownership and native output`, async () => {
+    const f = await fixture();
+    let runtime: HermesRuntime | undefined;
+    const workerIds = new Map<string, number | undefined>();
+    const stopped = new Set<string>();
+    const launcher = fileURLToPath(
+      new URL("../src/gateway/owned-launcher.mjs", import.meta.url)
+    );
+    try {
+      const owned = f.ctx.ownedProcess;
+      f.ctx.ownedProcess = async (method, params) => {
+        if (params.launchId === f.launchId) return owned(method, params);
+        const id = String(params.launchId);
+        if (method === "prepare") {
+          workerIds.set(id, undefined);
+          return {
+            launchId: id,
+            state: "prepared",
+            launcherPath: launcher,
+            executable: process.execPath,
+            launcherProtocol: 2,
+          };
+        }
+        assert.ok(workerIds.has(id));
+        if (method === "record") {
+          workerIds.set(id, Number(params.pid));
+          const identity = await ownedChildIdentity(
+            Number(params.pid),
+            id,
+            launcher,
+            [await ownedProcessIdentity(f.pid()!, f.launchId)]
+          );
+          await assert.rejects(readFile(join(f.profile, "worker-effect")), {
+            code: "ENOENT",
+          });
+          if (failRegistration)
+            throw new Error("simulated lost registration response");
+          return { launchId: id, state: "started", identity };
+        }
+        assert.equal(method, "stopped");
+        assert.equal(await ownedGroupHasExited(workerIds.get(id)!), true);
+        stopped.add(id);
+        return { launchId: id, state: "stopped" };
+      };
+      runtime = await openHermesRuntime(f.ctx, f.launchId, f.config, f.hooks);
+      f.store.reserve("operation:target", "operation.submit", "target", {
+        operationId: "target",
+        turnId: "turn",
+        conversationId: "c",
+      });
+      await runtime.session.submit("target", "turn", [
+        {
+          type: "text",
+          text:
+            mode === "buffered" ? "[owned-worker-buffered]" : "[owned-worker]",
+        },
+      ]);
+      await runtime.close();
+      assert.equal(workerIds.size, 1);
+      for (const pid of workerIds.values())
+        assert.equal(await ownedGroupHasExited(pid!), true);
+      if (failRegistration) {
+        await assert.rejects(readFile(join(f.profile, "worker-effect")), {
+          code: "ENOENT",
+        });
+        assert.ok(f.failures.length > 0);
+      } else {
+        assert.equal(
+          await readFile(join(f.profile, "worker-effect"), "utf8"),
+          "started"
+        );
+        const effects = (
+          await readFile(join(f.profile, "effects.jsonl"), "utf8")
+        )
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line));
+        assert.deepEqual(
+          effects.find((effect) => effect.kind === "worker_result"),
+          {
+            kind: "worker_result",
+            code: 7,
+            output: "worker output\n",
+            error: "",
+          }
+        );
+        assert.deepEqual([...stopped], [...workerIds.keys()]);
+        assert.deepEqual(f.failures, []);
+      }
+    } finally {
+      await runtime?.close();
+      await f.cleanup();
+    }
+  });
+}
 
 test("unsupported native version fails opening and joins the registered process group", async () => {
   const f = await fixture("wrong-version");

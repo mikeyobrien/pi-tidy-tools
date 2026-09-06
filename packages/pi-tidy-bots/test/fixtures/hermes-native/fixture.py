@@ -3,6 +3,7 @@ import json
 import asyncio
 from uuid import uuid4
 import os
+import subprocess
 from pathlib import Path
 import sys
 from types import ModuleType, SimpleNamespace
@@ -106,6 +107,17 @@ class FakeAgent:
             await self.connection.ext_method("tidy/ownership.inspect", params)
             await self.connection.ext_method("tidy/ownership.stopped", params)
             record("ownership_reconciled", launchId=params["launchId"])
+        if text in ("[owned-worker]", "[owned-worker-buffered]"):
+            def worker():
+                registry = sys.modules["tools.process_registry"]
+                child = registry.ProcessRegistry().spawn_local("worker", cwd=self.states[session_id].cwd, env_vars={})
+                if text == "[owned-worker-buffered]":
+                    child.wait(timeout=5)
+                    self._fixture_buffered_worker = child
+                    return
+                output, error = child.communicate(timeout=5)
+                record("worker_result", code=child.returncode, output=output, error=error)
+            await asyncio.to_thread(worker)
         if text == "[update-error]":
             try:
                 await self.connection.session_update(session_id, {"fail": True})
@@ -188,6 +200,12 @@ async def run_agent(agent, **kwargs):
                 result = await agent.new_session(cwd=params["cwd"])
             elif method == "session/prompt":
                 result = await agent.prompt(session_id=params.get("sessionId", "native-one"), prompt=[SimpleNamespace(**part) for part in params["prompt"]])
+                child = getattr(agent, "_fixture_buffered_worker", None)
+                if child is not None:
+                    record("worker_result", code=child.returncode, output=child.stdout.read(), error=child.stderr.read())
+                    child.stdout.close()
+                    child.stderr.close()
+                    del agent._fixture_buffered_worker
             elif method in ("session/load", "session/resume", "session/fork"):
                 handler = {"session/load": agent.load_session, "session/resume": agent.resume_session, "session/fork": agent.fork_session}[method]
                 result = await handler(**params)
@@ -209,6 +227,12 @@ async def run_agent(agent, **kwargs):
                 result = {}
             elif method == "fixture/environment":
                 result = {"keys": sorted(os.environ)}
+            elif method == "fixture/unsupported-worker":
+                registry = sys.modules["tools.process_registry"].ProcessRegistry()
+                if params["mode"] == "pty":
+                    registry.spawn_local("worker", cwd=str(profile()), env_vars={}, use_pty=True)
+                else:
+                    registry.spawn_via_env("worker")
             elif method == "fixture/callback":
                 connection.choice = params.get("choice", "allow_once")
                 connection.fail_receipts = params.get("failReceipts", False)
@@ -246,6 +270,19 @@ def install():
     module("tools", approval=approval)
     module("acp", run_agent=run_agent)
     module("acp.schema", PromptResponse=SimpleNamespace)
+    registry = module("tools.process_registry", subprocess=subprocess)
+    class ProcessRegistry:
+        def spawn_local(self, command, cwd=None, task_id="", session_key="", env_vars=None, use_pty=False):
+            record("registry_spawn", pty=use_pty)
+            program = "from pathlib import Path;import sys;Path(" + repr(str(profile() / "worker-effect")) + ").write_text('started');print('worker output',flush=True);sys.exit(7)"
+            return registry.subprocess.Popen([sys.executable, "-I", "-c", program], cwd=cwd, env=env_vars,
+                                             start_new_session=True, text=True, encoding="utf-8", errors="replace",
+                                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        def spawn_via_env(self, *args, **kwargs):
+            record("unowned_remote")
+    registry.ProcessRegistry = ProcessRegistry
+    sys.modules["tools"].process_registry = registry
     def fake_factory(request, loop, session_id, *, edit=False, mode="normal"):
         def callback():
             if mode == "automatic":

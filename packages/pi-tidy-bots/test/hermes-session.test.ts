@@ -34,9 +34,10 @@ function fixture(
           agentCapabilities: { loadSession: false },
           _meta: {
             tidy: {
-              guardVersion: 3,
+              guardVersion: 4,
               approvalPolicy: "ask",
               environment: "explicit",
+              ownedWorkers: "local-pipe-v1",
             },
           },
         },
@@ -90,7 +91,7 @@ function finish(
       stopReason: "end_turn",
       _meta: {
         tidy: {
-          guardVersion: 3,
+          guardVersion: 4,
           turnEvidence: {
             started: true,
             settled: true,

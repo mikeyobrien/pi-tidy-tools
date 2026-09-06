@@ -4,6 +4,7 @@ import argparse
 import asyncio
 from concurrent.futures import Future
 from importlib import metadata
+from importlib.util import module_from_spec, spec_from_file_location
 import os
 from pathlib import Path
 import sys
@@ -13,7 +14,7 @@ from uuid import uuid4
 
 HERMES_VERSION = "0.20.5"
 ACP_VERSION = "0.9.0"
-GUARD_VERSION = 3
+GUARD_VERSION = 4
 
 
 class ApprovalPolicyUnavailable(Exception):
@@ -135,7 +136,7 @@ class ApprovalGuard:
             raise ApprovalPolicyUnavailable() from None
 
 
-def guarded_agent(base, guard, prompt_response):
+def guarded_agent(base, guard, prompt_response, worker_type):
     class GuardedHermesACPAgent(base):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
@@ -144,6 +145,8 @@ def guarded_agent(base, guard, prompt_response):
             self._tidy_update_tickets = None
             self._tidy_update_lock = Lock()
             self._tidy_update_failed = False
+            self._tidy_workers = None
+            self._tidy_worker_session = None
 
         def _tidy_live_state(self, session_id):
             # The pinned SessionManager public getter restores history on a
@@ -153,6 +156,18 @@ def guarded_agent(base, guard, prompt_response):
 
         def on_connect(self, connection):
             owner = self
+
+            def worker_session():
+                session_id = owner._tidy_worker_session
+                if not owner._tidy_active_prompt or session_id is None:
+                    raise ApprovalPolicyUnavailable()
+                state = owner._tidy_live_state(session_id)
+                if state is None:
+                    raise ApprovalPolicyUnavailable()
+                guard.check(state, owner)
+                return session_id
+
+            self._tidy_workers = worker_type(connection, asyncio.get_running_loop(), worker_session)
 
             class ExactPermissionClient:
                 def __getattr__(self, name):
@@ -250,7 +265,7 @@ def guarded_agent(base, guard, prompt_response):
             extra = dict(result.field_meta or {})
             extra["tidy"] = {"guardVersion": GUARD_VERSION,
                              "approvalPolicy": "ask",
-                             "environment": "explicit"}
+                             "environment": "explicit", "ownedWorkers": "local-pipe-v1"}
             result.field_meta = extra
             return result
 
@@ -282,6 +297,8 @@ def guarded_agent(base, guard, prompt_response):
                     return refuse("session_not_found")
                 if self._tidy_active_prompt:
                     return refuse("session_busy")
+                if self._tidy_workers is None or self._tidy_workers.failed:
+                    return refuse("native_ownership_unavailable")
                 state = self._tidy_live_state(session_id)
                 if state is None:
                     return refuse("session_not_found")
@@ -334,11 +351,16 @@ def guarded_agent(base, guard, prompt_response):
                     evidence["settled"] = True
 
             self._tidy_active_prompt = True
+            self._tidy_worker_session = session_id
             self._tidy_update_tickets = []
             self._tidy_update_failed = False
             native.run_conversation = observed_run
             try:
                 response = await super().prompt(prompt=prompt, session_id=session_id, **kwargs)
+                try:
+                    await self._tidy_workers.reap()
+                except Exception:
+                    self._tidy_update_failed = True
                 evidence["observationsComplete"] = False
                 try:
                     with self._tidy_update_lock:
@@ -347,7 +369,7 @@ def guarded_agent(base, guard, prompt_response):
                         asyncio.wrap_future(ticket) for ticket in tickets
                     ]), timeout=5)
                     with self._tidy_update_lock:
-                        evidence["observationsComplete"] = all(sent) and not self._tidy_update_failed and all(
+                        evidence["observationsComplete"] = all(sent) and not self._tidy_update_failed and not self._tidy_workers.failed and all(
                             ticket.done() and not ticket.cancelled() and ticket.result() is True
                             for ticket in self._tidy_update_tickets)
                 except Exception:
@@ -366,6 +388,7 @@ def guarded_agent(base, guard, prompt_response):
                     else:
                         del native.run_conversation
                     self._tidy_active_prompt = False
+                    self._tidy_worker_session = None
                     self._tidy_update_tickets = None
 
         async def set_session_mode(self, mode_id, session_id, **kwargs):
@@ -447,8 +470,21 @@ def main():
     # Do not call entry.main(): it performs implicit environment loading and
     # configured MCP discovery. Fleet MCP registration belongs to the adapter.
     guard.check()
-    agent = guarded_agent(HermesACPAgent, guard, PromptResponse)()
-    asyncio.run(acp.run_agent(agent, use_unstable_protocol=True))
+    spec = spec_from_file_location("tidy_hermes_native_owned", Path(__file__).with_name("native_owned.py"))
+    owned = module_from_spec(spec)
+    spec.loader.exec_module(owned)
+    agent = guarded_agent(HermesACPAgent, guard, PromptResponse, owned.NativeWorkers)()
+    from tools import process_registry
+    owned.install_workers(process_registry, lambda: agent._tidy_workers)
+
+    async def run():
+        try:
+            await acp.run_agent(agent, use_unstable_protocol=True)
+        finally:
+            if agent._tidy_workers is not None:
+                await agent._tidy_workers.close()
+
+    asyncio.run(run())
 
 
 if __name__ == "__main__":

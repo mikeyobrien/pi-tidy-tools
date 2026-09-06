@@ -197,7 +197,12 @@ test("owned Hermes guard preserves ACP negotiation and suppresses implicit nativ
     assert.equal(result.agentCapabilities.sessionCapabilities.resume, null);
     assert.deepEqual(result._meta, {
       hermes: { preserved: true },
-      tidy: { guardVersion: 3, approvalPolicy: "ask", environment: "explicit" },
+      tidy: {
+        guardVersion: 4,
+        approvalPolicy: "ask",
+        environment: "explicit",
+        ownedWorkers: "local-pipe-v1",
+      },
     });
     assert.equal((await f.prompt()).stopReason, "end_turn");
     assert.deepEqual(
@@ -223,7 +228,7 @@ test("Hermes guard reports authoritative final text without copying history or r
       assert.deepEqual(result._meta, {
         hermes: { preserved: true },
         tidy: {
-          guardVersion: 3,
+          guardVersion: 4,
           turnEvidence: {
             started: true,
             settled: true,
@@ -447,6 +452,22 @@ test("Hermes guard refuses unknown session references and cold-load methods with
     assert.deepEqual(
       (await f.effects()).map((effect) => effect.kind),
       ["new"]
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("unimplemented PTY and remote worker ownership refuse before native registry effects", async () => {
+  const f = await fixture();
+  try {
+    await f.ready();
+    for (const mode of ["pty", "remote"])
+      await assert.rejects(f.request("fixture/unsupported-worker", { mode }));
+    assert.ok(
+      !(await f.effects()).some((entry) =>
+        ["registry_spawn", "unowned_remote"].includes(String(entry.kind))
+      )
     );
   } finally {
     await f.cleanup();

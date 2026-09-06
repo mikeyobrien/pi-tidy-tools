@@ -327,6 +327,72 @@ test("startFleet HTTP contract admits and projects messages through the shipped 
       effects.filter((effect) => effect.command === "prompt").length,
       1
     );
+    const headers = {
+      "content-type": "application/json",
+      "x-tidy-client-contract": "2",
+      "x-tidy-binding-revision": binding.bindingRevision,
+    };
+    assert.equal(
+      (
+        await request("/api/bots/pi/message", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            operationId: "held",
+            clientMessageId: "held",
+            conversationId: binding.conversationId,
+            text: "[hold]",
+          }),
+        })
+      ).status,
+      202
+    );
+    await until(
+      async () =>
+        (await request("/api/bots/pi/operations/held")).body.execution ===
+        "running"
+    );
+    const cancel = () =>
+      request("/api/bots/pi/operations/held/cancel", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          kind: "cancel",
+          operationId: "cancel-held",
+          targetOperationId: "held",
+          conversationId: binding.conversationId,
+        }),
+      });
+    assert.equal((await cancel()).status, 202);
+    await until(
+      async () =>
+        (await request("/api/bots/pi/operations/held")).body.execution ===
+        "cancelled"
+    );
+    await until(
+      async () =>
+        (await request("/api/bots/pi/operations/cancel-held")).body.result
+          ?.status === "requested"
+    );
+    assert.equal((await cancel()).body.result.status, "requested");
+    const finalEffects = (
+      await readFile(
+        join(
+          f.directory,
+          ".fleet/plugins",
+          binding.bindingId,
+          "native-effects.jsonl"
+        ),
+        "utf8"
+      )
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.equal(
+      finalEffects.filter((effect) => effect.command === "abort").length,
+      1
+    );
   } finally {
     await handle?.stop();
     await f.cleanup();

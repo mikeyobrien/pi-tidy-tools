@@ -14,6 +14,7 @@ import { join } from "node:path";
 let init;
 let sequence = 0;
 const permissions = new Map();
+const cancellable = new Map();
 const discoveries = new Map();
 const dispatches = new Map();
 const dir = process.env.TIDY_DATA_DIR;
@@ -272,7 +273,7 @@ input.on("line", (line) => {
         operations: {
           nativeDedupe: "none",
           nativeReplay: "none",
-          cancel: "unsupported",
+          cancel: "cooperative",
           steer: false,
         },
         interactions: {
@@ -345,6 +346,12 @@ input.on("line", (line) => {
       respond(message, { disposition: "accepted" });
       return;
     }
+    if (["[cancel-hold]", "[cancel-lost]"].includes(p.input[0].text)) {
+      cancellable.set(p.operationId, p);
+      event(p, "turn.started", {});
+      respond(message, { disposition: "accepted" });
+      return;
+    }
     if (p.input[0].text === "[permission]") {
       const descriptor = {
         kind: "permission",
@@ -384,6 +391,25 @@ input.on("line", (line) => {
     }
     respond(message, { disposition: "accepted" });
     void execute(p);
+  } else if (message.method === "operation.cancel") {
+    record({ method: "operation.cancel", ...p });
+    const target = cancellable.get(p.targetOperationId);
+    if (target?.input[0].text === "[cancel-lost]") {
+      process.exit(0);
+      return;
+    }
+    respond(message, { status: target ? "requested" : "unknown" });
+    if (target) {
+      const poll = setInterval(() => {
+        if (!existsSync(join(dir, "release-cancel"))) return;
+        clearInterval(poll);
+        event(target, "turn.terminal", {
+          execution: "cancelled",
+          observation: "complete",
+        });
+        cancellable.delete(p.targetOperationId);
+      }, 10);
+    }
   } else if (message.method === "interaction.respond") {
     record({ method: "interaction.respond", ...p });
     const pending = permissions.get(p.interactionId);

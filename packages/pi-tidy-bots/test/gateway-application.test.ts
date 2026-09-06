@@ -1075,3 +1075,116 @@ test("the shipped CLI selects the neutral gateway and awaits journal shutdown be
     await f.cleanup();
   }
 });
+
+test("HTTP cancellation retains identity and waits for terminal evidence before the next prompt", async () => {
+  const f = await fixture();
+  try {
+    const handle = await f.start();
+    const binding = await f.binding(handle);
+    await f.submit(handle, binding, "active", "[cancel-hold]");
+    await waitFor(
+      () => f.inspect(handle, "active"),
+      (value) => value.execution === "running"
+    );
+    await f.submit(handle, binding, "next", "after cancellation");
+    const cancel = () =>
+      f.request(handle, "/api/bots/fixture/operations/active/cancel", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-tidy-client-contract": "2",
+          "x-tidy-binding-revision": binding.bindingRevision,
+        },
+        body: JSON.stringify({
+          kind: "cancel",
+          operationId: "cancel-active",
+          targetOperationId: "active",
+          conversationId: binding.conversationId,
+        }),
+      });
+    assert.equal((await cancel()).status, 202);
+    await waitFor(
+      () => f.inspect(handle, "cancel-active"),
+      (value) => value.result?.status === "requested"
+    );
+    assert.equal(
+      (await f.inspect(handle, "active")).execution,
+      "cancel_requested"
+    );
+    assert.equal((await f.inspect(handle, "next")).delivery, "queued");
+    assert.equal((await cancel()).status, 202);
+    await writeFile(
+      join(f.dir, ".fleet/plugins", binding.bindingId, "release-cancel"),
+      "release"
+    );
+    await waitFor(
+      () => f.inspect(handle, "active"),
+      (value) => value.execution === "cancelled"
+    );
+    await waitFor(
+      () => f.inspect(handle, "next"),
+      (value) => value.execution === "ended"
+    );
+    const calls = await f.calls(binding);
+    assert.equal(
+      calls.filter((call: ObjectValue) => call.method === "operation.cancel")
+        .length,
+      1
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("lost cancellation response survives restart without replay or releasing queued work", async () => {
+  const f = await fixture();
+  try {
+    let handle = await f.start();
+    const binding = await f.binding(handle);
+    await f.submit(handle, binding, "active", "[cancel-lost]");
+    await waitFor(
+      () => f.inspect(handle, "active"),
+      (value) => value.execution === "running"
+    );
+    await f.submit(handle, binding, "next", "must remain queued");
+    const cancel = () =>
+      f.request(handle, "/api/bots/fixture/operations/active/cancel", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-tidy-client-contract": "2",
+          "x-tidy-binding-revision": binding.bindingRevision,
+        },
+        body: JSON.stringify({
+          kind: "cancel",
+          operationId: "cancel-active",
+          targetOperationId: "active",
+          conversationId: binding.conversationId,
+        }),
+      });
+    assert.equal((await cancel()).status, 202);
+    await waitFor(
+      () => f.inspect(handle, "cancel-active"),
+      (value) => value.execution === "unknown"
+    );
+    const saved = await f.inspect(handle, "cancel-active");
+    assert.equal(saved.observation, "reconciliation_required");
+    assert.equal((await f.inspect(handle, "next")).delivery, "queued");
+    await handle.stop();
+    handle = await f.start();
+    assert.deepEqual(await f.inspect(handle, "cancel-active"), saved);
+    assert.deepEqual((await cancel()).body, saved);
+    assert.equal((await f.inspect(handle, "next")).delivery, "queued");
+    const calls = await f.calls(binding);
+    assert.equal(
+      calls.filter((call) => call.method === "operation.cancel").length,
+      1
+    );
+    assert.equal(
+      calls.filter((call) => call.method === "operation.submit").length,
+      1
+    );
+  } finally {
+    await f.cleanup();
+  }
+});

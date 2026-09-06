@@ -1827,6 +1827,91 @@ export class GatewayJournal {
       )
     );
   }
+  /** Admit cancellation and settle unsubmitted targets in one fenced transaction. */
+  admitCancellation(
+    lease: WriterLease,
+    input: AdmitOperation
+  ): { receipt: OperationReceipt; created: boolean } {
+    return this.write(lease, () => {
+      if (input.kind !== "cancel")
+        fail("invalid_kind", "Cancellation requires a cancel control");
+      const targetId = input.payload.targetOperationId;
+      if (
+        typeof targetId !== "string" ||
+        !targetId.trim() ||
+        targetId === input.operationId
+      )
+        fail("invalid_payload", "Cancellation requires a distinct target");
+      // Resolve retained intent first: retries cannot cancel a different target.
+      if (this.operationRow(input)) return this.admitOperation(input);
+      const targetKey = { ...input, operationId: targetId };
+      const target = this.operationRow(targetKey);
+      if (
+        !target ||
+        target.binding_id !== input.bindingId ||
+        target.kind !== "message"
+      )
+        fail(
+          "invalid_target",
+          "Cancellation requires a message in this binding"
+        );
+      const admitted = this.admitOperation(input);
+      if (target.delivery !== "queued" || target.lease_generation !== null)
+        return admitted;
+      this.applyDisposition(targetKey, {
+        delivery: "rejected",
+        execution: "cancelled",
+        evidence: "atomic_cancellation_before_dispatch",
+      });
+      const dispatch = parseObject(target.payload_json).dispatch;
+      if (
+        dispatch &&
+        typeof dispatch === "object" &&
+        !Array.isArray(dispatch)
+      ) {
+        const cause = dispatch as JsonObject;
+        this.insertCompletion(
+          {
+            botId: input.botId,
+            conversationId: input.conversationId,
+            operationId: targetId,
+          },
+          {
+            dispatchId: String(cause.dispatchId),
+            originBotId: String(cause.originBotId),
+            payload: {
+              originConversationId: cause.originConversationId,
+              originBindingId: cause.originBindingId,
+              depth: cause.depth,
+              execution: "cancelled",
+              observation: "complete",
+              text: "",
+            },
+          }
+        );
+      }
+      // The gateway executes this control locally; no native boundary is crossed.
+      this.prepare(
+        "UPDATE operations SET delivery='dispatching',lease_generation=? WHERE bot_id=? AND conversation_id=? AND operation_id=? AND delivery='queued'"
+      ).run(
+        lease.generation,
+        input.botId,
+        input.conversationId,
+        input.operationId
+      );
+      return {
+        created: true,
+        receipt: this.applyDisposition(input, {
+          delivery: "accepted",
+          execution: "ended",
+          observation: "complete",
+          result: { status: "cancelled", targetOperationId: targetId },
+          evidence: "atomic_cancellation_before_dispatch",
+        }),
+      };
+    });
+  }
+
   cancelQueued(lease: WriterLease, key: OperationKey): OperationReceipt {
     return this.write(lease, () => {
       this.conversation(key);

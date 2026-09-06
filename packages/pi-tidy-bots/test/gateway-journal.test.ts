@@ -1826,3 +1826,114 @@ for (const crashPoint of ["queued", "reserved"] as const) {
     }
   });
 }
+
+test("cancel admission atomically settles queued work and retains its receipt across restart", (t) => {
+  const { journal, lease, open } = fixture(t);
+  journal.admit(lease, intent("target"));
+  const cancel = intent("cancel", {
+    kind: "cancel",
+    payload: { targetOperationId: "target" },
+  });
+  const admitted = journal.admitCancellation(lease, cancel);
+  assert.equal(admitted.receipt.result?.status, "cancelled");
+  assert.equal(journal.getOperation(key("target"))!.execution, "cancelled");
+  assert.equal(journal.reserveNext(lease, binding), null);
+  journal.close();
+  const reopened = open();
+  assert.deepEqual(reopened.admitCancellation(lease, cancel), {
+    ...admitted,
+    created: false,
+  });
+  code(
+    () =>
+      reopened.admitCancellation(lease, {
+        ...cancel,
+        payload: { targetOperationId: "different" },
+      }),
+    "operation_conflict"
+  );
+});
+
+test("cancel admission never locally settles dispatched work", (t) => {
+  const { journal, lease } = fixture(t);
+  accepted(journal, lease);
+  const cancel = intent("cancel", {
+    kind: "cancel",
+    payload: { targetOperationId: "op-example-42" },
+  });
+  assert.equal(
+    journal.admitCancellation(lease, cancel).receipt.delivery,
+    "queued"
+  );
+  assert.equal(journal.getOperation(key())!.delivery, "accepted");
+  assert.equal(
+    journal.reserveNext(lease, binding, { interruptKinds: ["cancel"] })!.receipt
+      .operationId,
+    "cancel"
+  );
+});
+
+test("cancel admission rolls back both receipt and target when settlement storage fails", (t) => {
+  const { journal, lease, path } = fixture(t);
+  journal.admit(lease, intent("target"));
+  const cancel = intent("cancel", {
+    kind: "cancel",
+    payload: { targetOperationId: "target" },
+  });
+  sql(
+    path,
+    "CREATE TRIGGER fail_cancel BEFORE UPDATE ON operations WHEN NEW.operation_id='cancel' BEGIN SELECT RAISE(ABORT, 'injected'); END;"
+  );
+  assert.throws(() => journal.admitCancellation(lease, cancel));
+  assert.equal(journal.getOperation(key("cancel")), null);
+  assert.equal(journal.getOperation(key("target"))!.delivery, "queued");
+  sql(path, "DROP TRIGGER fail_cancel;");
+  assert.equal(
+    journal.admitCancellation(lease, cancel).receipt.result?.status,
+    "cancelled"
+  );
+});
+
+test("queued fleet cancellation retains one completion atomically with cancellation", (t) => {
+  const f = fixture(t);
+  accepted(f.journal, f.lease);
+  const target = {
+    ...binding,
+    botId: "target",
+    conversationId: "target-conversation",
+    bindingId: "target-binding",
+    bindingRevision: "target-revision",
+  };
+  f.journal.ensureConversation(f.lease, target);
+  const dispatched = f.journal.admitFleetDispatch(f.lease, {
+    origin: { ...binding, operationId: key().operationId },
+    target,
+    toolCallId: "tool",
+    actionId: "action",
+    text: "Task",
+  });
+  const cancel: AdmitOperation = {
+    ...target,
+    kind: "cancel",
+    operationId: "cancel-target",
+    payload: { targetOperationId: dispatched.dispatchId },
+  };
+  sql(
+    f.path,
+    "CREATE TRIGGER fail_completion BEFORE INSERT ON completion_outbox BEGIN SELECT RAISE(ABORT, 'injected'); END;"
+  );
+  assert.throws(() => f.journal.admitCancellation(f.lease, cancel));
+  assert.equal(
+    f.journal.getOperation({ ...target, operationId: dispatched.dispatchId })!
+      .delivery,
+    "queued"
+  );
+  assert.equal(f.journal.getOperation(cancel), null);
+  sql(f.path, "DROP TRIGGER fail_completion;");
+  f.journal.admitCancellation(f.lease, cancel);
+  f.journal.admitCancellation(f.lease, cancel);
+  const deliveries = f.journal.readOutbox();
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].payload.execution, "cancelled");
+  assert.equal(deliveries[0].payload.originBindingId, binding.bindingId);
+});

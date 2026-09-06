@@ -90,6 +90,7 @@ const statuses: Record<string, number> = {
   interaction_expired: 410,
   invalid_identity: 400,
   invalid_cursor: 400,
+  invalid_target: 400,
   client_upgrade_required: 426,
   capabilities_changed: 409,
   operation_conflict: 409,
@@ -314,6 +315,19 @@ export async function startGatewayFleet(
             String(request.headers["x-tidy-binding-revision"])
           );
           json(response, 202, receipt);
+          return;
+        }
+        const cancellation = /^operations\/([^/]+)\/cancel$/.exec(action);
+        if (request.method === "POST" && cancellation) {
+          json(
+            response,
+            202,
+            application.admitCancellation(
+              name,
+              decodeURIComponent(cancellation[1]),
+              await body(request)
+            )
+          );
           return;
         }
         const permission = /^permissions\/([^/]+)$/.exec(action);

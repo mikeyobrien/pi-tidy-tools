@@ -99,7 +99,7 @@ function effectiveCapabilities(
       tools: native.output.tools,
       usage: "unknown",
     },
-    operations: { ...native.operations, cancel: "unsupported", steer: false },
+    operations: { ...native.operations, steer: false },
     interactions: {
       permissions: native.interactions.permissions,
       questions: false,
@@ -800,6 +800,69 @@ export class GatewayApplication {
     return admitted.receipt as unknown as JsonObject;
   }
 
+  admitCancellation(
+    name: string,
+    targetOperationId: string,
+    body: Record<string, unknown>
+  ): JsonObject {
+    const bot = this.requireBot(name);
+    if (
+      body.kind !== "cancel" ||
+      body.targetOperationId !== targetOperationId ||
+      body.conversationId !== bot.binding.conversationId ||
+      typeof body.operationId !== "string" ||
+      !body.operationId.trim() ||
+      body.operationId.length > 256 ||
+      Object.keys(body).some(
+        (key) =>
+          ![
+            "kind",
+            "operationId",
+            "conversationId",
+            "targetOperationId",
+          ].includes(key)
+      )
+    )
+      throw new ProtocolError(
+        "invalid_payload",
+        "Cancellation requires exact control and target identities"
+      );
+    const known = this.journal.getOperation({
+      ...bot.binding,
+      operationId: body.operationId,
+    });
+    if (!known) {
+      if (bot.capabilities.operations.cancel === "unsupported")
+        throw new ProtocolError(
+          "capability_unavailable",
+          "Cancellation is unavailable"
+        );
+      if (this.stopping || !bot.ready || !bot.host?.isReady)
+        throw new ProtocolError(
+          "session_unavailable",
+          "Cancellation session is unavailable"
+        );
+      bot.host.assertRequestFits("operation.cancel", {
+        ...body,
+        payloadDigest: `sha256:${"0".repeat(64)}`,
+        policyRevision: bot.binding.policyRevision,
+      });
+    }
+    const admitted = this.journal.admitCancellation(this.lease, {
+      ...bot.binding,
+      kind: "cancel",
+      operationId: body.operationId,
+      payload: body as JsonObject,
+    });
+    this.publishCommitted(bot, true);
+    this.deliverCompletions();
+    if (admitted.created)
+      queueMicrotask(() => {
+        void this.pump(bot, true);
+      });
+    return admitted.receipt as unknown as JsonObject;
+  }
+
   admitPermission(
     name: string,
     interactionId: string,
@@ -908,10 +971,14 @@ export class GatewayApplication {
         // the next queued item into an uncertain dispatch after admission stops.
         if (this.stopping || !bot.ready || !bot.host?.isReady) break;
         const op = this.journal.reserveNext(this.lease, bot.binding, {
-          interruptKinds: ["permission"],
+          interruptKinds: ["permission", "cancel"],
           onlyInterrupts: permissionsOnly,
         });
         if (!op) break;
+        if (op.receipt.kind === "cancel") {
+          await this.dispatchCancellation(bot, op);
+          continue;
+        }
         if (op.receipt.kind === "permission") {
           await this.dispatchPermission(bot, op);
           continue;
@@ -974,6 +1041,69 @@ export class GatewayApplication {
       );
     }
   }
+  private async dispatchCancellation(
+    bot: BoundBot,
+    op: OperationRecord
+  ): Promise<void> {
+    const targetKey = {
+      ...bot.binding,
+      operationId: String(op.payload!.targetOperationId),
+    };
+    const target = this.journal.getOperation(targetKey);
+    let result: unknown;
+    if (
+      target &&
+      (terminal.has(target.execution) || target.delivery === "rejected")
+    ) {
+      result = { status: "already_terminal" };
+    } else {
+      try {
+        result = await bot.host!.request("operation.cancel", {
+          ...op.payload,
+          operationId: op.receipt.operationId,
+          payloadDigest: op.payloadDigest,
+          policyRevision: op.policyRevision,
+        });
+      } catch {
+        result = { status: "unknown" };
+      }
+    }
+    if (
+      object(result) &&
+      ["requested", "already_terminal", "unsupported"].includes(
+        String(result.status)
+      )
+    ) {
+      this.journal.recordDisposition(this.lease, op.receipt, {
+        delivery: "accepted",
+        execution: "ended",
+        observation: "complete",
+        result: {
+          status:
+            result.status === "already_terminal"
+              ? "applied"
+              : result.status === "unsupported"
+                ? "failed"
+                : "requested",
+        },
+        evidence: "correlated_cancellation_response",
+      });
+      const latest = this.journal.getOperation(targetKey);
+      if (
+        result.status === "requested" &&
+        latest &&
+        latest.delivery === "accepted" &&
+        ["running", "waiting_for_input"].includes(latest.execution)
+      ) {
+        this.journal.recordDisposition(this.lease, targetKey, {
+          execution: "cancel_requested",
+          evidence: "correlated_cancellation_response",
+        });
+      }
+    } else this.markUnknown(bot, op);
+    this.publishCommitted(bot, true);
+  }
+
   private async dispatchPermission(
     bot: BoundBot,
     op: OperationRecord

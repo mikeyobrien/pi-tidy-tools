@@ -62,7 +62,12 @@ async function setup() {
   );
   const installation = (
     await PluginRegistry.load(registry, {
-      policy: { workspace: "read-write", nativeProfile: true, network: true },
+      policy: {
+        workspace: "read-write",
+        nativeProfile: true,
+        network: true,
+        gatewayTools: ["fleet.discover", "fleet.send"],
+      },
     })
   ).resolve("tidy.pi");
   const config = {
@@ -73,6 +78,7 @@ async function setup() {
     environment_keys: ["PATH"],
   };
   const events: GatewayPluginEvent[] = [];
+  const hostCalls: any[] = [];
   const hosts: PluginHost[] = [];
   const dataDir = join(directory, "data");
   return {
@@ -80,6 +86,7 @@ async function setup() {
     dataDir,
     config,
     events,
+    hostCalls,
     metadata,
     profile,
     async start(overrides: JsonObject = {}, lease = 1) {
@@ -98,6 +105,10 @@ async function setup() {
         onEvent: async (event) => {
           events.push(event);
           return event.sourceSequence;
+        },
+        onHostCall: async (call) => {
+          hostCalls.push(call);
+          return { status: "admitted", dispatchId: "fixture-dispatch" };
         },
       });
       hosts.push(host);
@@ -151,7 +162,7 @@ test("registered Pi artifact negotiates without a native launch and isolates its
   try {
     const host = await f.start();
     assert.equal(host.runtime.version, "0.85.0");
-    assert.equal(host.capabilities.fleetTools, false);
+    assert.equal(host.capabilities.fleetTools, true);
     assert.deepEqual(await f.effects(), []);
     const first = await f.open(host);
     assert.deepEqual(await f.open(host), first);
@@ -174,6 +185,50 @@ test("registered Pi artifact negotiates without a native launch and isolates its
   }
 });
 
+test("shipped Pi fleet tool retries produce one host admission and complete tool evidence", async () => {
+  const f = await setup();
+  try {
+    const host = await f.start();
+    await f.open(host);
+    assert.deepEqual(await f.submit(host, "[fleet-send]"), {
+      disposition: "accepted",
+    });
+    await until(() => f.events.some((event) => event.type === "turn.terminal"));
+    assert.equal(f.hostCalls.length, 1);
+    assert.equal(f.hostCalls[0].name, "fleet.send");
+    assert.equal(f.hostCalls[0].operationId, "operation-one");
+    assert.equal(f.hostCalls[0].toolCallId, "fleet-native-one");
+    assert.deepEqual(f.hostCalls[0].arguments, {
+      target: "peer",
+      text: "fixture task",
+    });
+    assert.equal(
+      f.events.filter((event) => event.type === "tool.started").length,
+      1
+    );
+    assert.equal(
+      f.events.filter((event) => event.type === "tool.finished").length,
+      1
+    );
+    assert.equal(
+      f.events.find((event) => event.type === "turn.terminal")!.payload
+        .observation,
+      "complete"
+    );
+    const results = (await f.effects()).filter(
+      (effect) => effect.fleetResult
+    ) as any[];
+    assert.equal(results.length, 2);
+    assert.deepEqual(
+      JSON.parse(results[0].fleetResult.content[0].text),
+      JSON.parse(results[1].fleetResult.content[0].text)
+    );
+    assert.equal(JSON.stringify(f.hostCalls).includes("promptId"), false);
+  } finally {
+    await f.cleanup();
+  }
+});
+
 test("startFleet HTTP contract admits and projects messages through the shipped Pi artifact", async () => {
   const f = await setup();
   let handle: FleetHandle | undefined;
@@ -191,6 +246,7 @@ test("startFleet HTTP contract admits and projects messages through the shipped 
         'workspace_access = "read-write"',
         "native_profile = true",
         "network = true",
+        'gateway_tools = ["fleet.discover", "fleet.send"]',
         "[[bot]]",
         'name = "pi"',
         'dir = "."',
@@ -372,7 +428,14 @@ test("Pi refusal is distinct from acceptance and exact cancellation does not tar
   }
 });
 
-for (const text of ["[malformed]", "[oversize]", "[invalid-utf8]", "[tool]"]) {
+for (const text of [
+  "[malformed]",
+  "[oversize]",
+  "[invalid-utf8]",
+  "[tool]",
+  "[fleet-unsettled]",
+  "[fleet-no-events]",
+]) {
   test(`Pi ${text} records observation loss and closes owned native execution`, async () => {
     const f = await setup();
     try {

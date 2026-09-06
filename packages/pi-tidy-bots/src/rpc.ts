@@ -33,7 +33,11 @@ export interface RpcSpawnOptions {
    * The caller owns HOME/profile/provider configuration and extension scope. */
   isolatedEnv?: Record<string, string>;
   /** Gateway-native transport limits; legacy transport behavior is unchanged. */
-  nativeProtocol?: { maxFrameBytes: number; onError: () => void };
+  nativeProtocol?: {
+    maxFrameBytes: number;
+    onError: () => void;
+    privateControl?: boolean;
+  };
   daemonUrl: string;
   childSecret: string;
   onEvent: (event: RpcEvent) => void;
@@ -383,6 +387,13 @@ export class RpcSession {
 
   static spawn(options: RpcSpawnOptions): RpcSession {
     if (
+      options.nativeProtocol?.privateControl &&
+      options.isolatedEnv === undefined
+    )
+      throw new Error(
+        "Private native control requires an isolated owned child"
+      );
+    if (
       options.nativeProtocol &&
       (!Number.isSafeInteger(options.nativeProtocol.maxFrameBytes) ||
         options.nativeProtocol.maxFrameBytes < 128)
@@ -416,7 +427,9 @@ export class RpcSession {
           ...(options.env ?? {}),
         }),
       },
-      stdio: ["pipe", "pipe", "pipe"],
+      stdio: options.nativeProtocol?.privateControl
+        ? ["pipe", "pipe", "pipe", "pipe"]
+        : ["pipe", "pipe", "pipe"],
     });
     return new RpcSession(options, child);
   }

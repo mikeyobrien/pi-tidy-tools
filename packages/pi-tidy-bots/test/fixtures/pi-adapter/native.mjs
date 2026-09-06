@@ -2,6 +2,21 @@
 import { appendFileSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { createInterface } from "node:readline";
+import { pathToFileURL } from "node:url";
+const handlers = new Map(),
+  tools = new Map();
+const extensionPath = process.argv[process.argv.indexOf("-e") + 1];
+const ctx = { sessionManager: { getSessionId: () => "fixture-session" } };
+if (extensionPath?.endsWith("fleet-extension.mjs")) {
+  const extension = await import(pathToFileURL(extensionPath).href);
+  extension.default({
+    on: (name, handler) => handlers.set(name, handler),
+    registerTool: (tool) => tools.set(tool.name, tool),
+    getAllTools: () => [...tools.values()],
+    getActiveTools: () => [...tools.keys()],
+  });
+  await handlers.get("session_start")({}, ctx);
+}
 const sessionDir = process.argv[process.argv.indexOf("--session-dir") + 1];
 const logPath = join(dirname(sessionDir), "native-effects.jsonl");
 const log = (record) => appendFileSync(logPath, JSON.stringify(record) + "\n");
@@ -38,6 +53,7 @@ const delta = (text) =>
     assistantMessageEvent: { type: "text_delta", delta: text },
   });
 const settle = () => {
+  handlers.get("agent_end")?.({}, ctx);
   send({ type: "agent_end" });
   send({ type: "agent_settled" });
 };
@@ -61,6 +77,38 @@ for await (const line of createInterface({ input: process.stdin })) {
     if (request.message === "[unknown]") continue;
     response(request);
     send({ type: "agent_start" });
+    await handlers.get("agent_start")?.({}, ctx);
+    if (["[fleet-send]", "[fleet-no-events]"].includes(request.message)) {
+      const args = { target: "peer", text: "fixture task" };
+      if (request.message !== "[fleet-no-events]")
+        send({
+          type: "tool_execution_start",
+          toolCallId: "fleet-native-one",
+          toolName: "fleet_send",
+          args,
+        });
+      let result;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        result = await tools
+          .get("fleet_send")
+          .execute("fleet-native-one", args, undefined, undefined, ctx);
+        log({ fleetResult: result });
+      }
+      if (request.message !== "[fleet-no-events]")
+        send({
+          type: "tool_execution_end",
+          toolCallId: "fleet-native-one",
+          result,
+          isError: false,
+        });
+    }
+    if (request.message === "[fleet-unsettled]")
+      send({
+        type: "tool_execution_start",
+        toolCallId: "unsettled",
+        toolName: "fleet_send",
+        args: {},
+      });
     if (request.message === "[malformed]") {
       process.stdout.write("{bad native json}\n");
       continue;
@@ -118,3 +166,4 @@ for await (const line of createInterface({ input: process.stdin })) {
     response(request);
   }
 }
+handlers.get("session_shutdown")?.({}, ctx);

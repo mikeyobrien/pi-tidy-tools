@@ -117,6 +117,22 @@ export default function fleetExtension(pi) {
           });
           return;
         }
+        if (
+          message.method === "disarm" &&
+          initialized &&
+          armed &&
+          !active &&
+          message.params.promptId === armed &&
+          Object.keys(message.params).length === 1
+        ) {
+          armed = undefined;
+          write({
+            jsonrpc: "2.0",
+            id: message.id,
+            result: { status: "disarmed" },
+          });
+          return;
+        }
         throw unavailable();
       });
     } catch {

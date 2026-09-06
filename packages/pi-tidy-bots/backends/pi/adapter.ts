@@ -1,6 +1,8 @@
 import { readFile, realpath, mkdir, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Duplex } from "node:stream";
+import { PiFleetBridge } from "./fleet-bridge.ts";
 import {
   runPlugin,
   ProtocolError,
@@ -23,7 +25,7 @@ import {
 export const PI_CAPABILITIES: CapabilityDescriptor = {
   input: { text: true, mediaTypes: [], maxMediaBytes: 0 },
   sessions: { load: false, import: false, continuity: "unverified" },
-  output: { text: "snapshots", tools: false, usage: "unknown" },
+  output: { text: "snapshots", tools: true, usage: "unknown" },
   operations: {
     nativeDedupe: "none",
     nativeReplay: "none",
@@ -32,7 +34,7 @@ export const PI_CAPABILITIES: CapabilityDescriptor = {
   },
   interactions: { permissions: "none", questions: false },
   configuration: { model: false, thinking: false, compact: false },
-  fleetTools: false,
+  fleetTools: true,
 };
 export const PI_VERSION = "0.85.0";
 
@@ -154,6 +156,9 @@ interface Turn {
   operationId: string;
   turnId: string;
   started: boolean;
+  nativeStarted: boolean;
+  tools: Map<string, boolean>;
+  invoked: Set<string>;
   execution: "ended" | "failed" | "cancelled";
   order: number;
   message?: { id: string; text: string; revision: number };
@@ -164,6 +169,7 @@ export function startPiAdapter(): PluginRuntime {
   let configuration: Configuration;
   let context: PluginContext;
   let native: RpcSession | undefined;
+  let fleet: PiFleetBridge | undefined;
   let nativeClosed: Promise<void> | undefined;
   let conversationId: string | undefined;
   let nativeReference: string | undefined;
@@ -194,6 +200,16 @@ export function startPiAdapter(): PluginRuntime {
     } finally {
       void runtime.close("native_observation_gap");
     }
+  };
+  const markStarted = () => {
+    if (!active) throw new Error("Uncorrelated native activity");
+    if (active.started) return;
+    emit("operation.disposition", {
+      disposition: "accepted",
+      evidence: "correlated_native_activity",
+    });
+    emit("turn.started", {});
+    active.started = true;
   };
   const ensureMessage = () => {
     if (!active?.started)
@@ -257,21 +273,50 @@ export function startPiAdapter(): PluginRuntime {
         event.kind === "agent_end"
       )
         return;
-      if (event.kind === "ui_request" || event.kind.startsWith("tool_")) {
-        // These are outside this no-tools profile. Never auto-answer native approval/UI.
+      if (event.kind === "ui_request") {
+        // Interactive native UI is outside the granted fleet-tool profile.
         loseObservation();
         return;
       }
       if (!active)
         throw new Error("Native output without an admitted operation");
       if (event.kind === "agent_start") {
-        if (active.started) throw new Error("Unrequested native follow-up");
-        active.started = true;
-        emit("operation.disposition", {
-          disposition: "accepted",
-          evidence: "native_turn_started",
-        });
-        emit("turn.started", {});
+        if (active.nativeStarted)
+          throw new Error("Unrequested native follow-up");
+        active.nativeStarted = true;
+        markStarted();
+      } else if (event.kind === "tool_start") {
+        if (
+          !active.nativeStarted ||
+          !["fleet_send", "fleet_discover"].includes(event.toolName) ||
+          !nonempty(event.toolCallId) ||
+          active.tools.has(event.toolCallId) ||
+          active.tools.size >= 4096
+        )
+          throw new Error("Invalid native tool start");
+        active.tools.set(event.toolCallId, false);
+        emit(
+          "tool.started",
+          {
+            label:
+              event.toolName === "fleet_send"
+                ? "Send fleet task"
+                : "Discover fleet peers",
+            state: "running",
+          },
+          { toolCallId: event.toolCallId }
+        );
+      } else if (event.kind === "tool_end" || event.kind === "tool_output") {
+        if (active.tools.get(event.toolCallId) !== false)
+          throw new Error("Uncorrelated native tool result");
+        if (event.kind === "tool_end") {
+          active.tools.set(event.toolCallId, true);
+          emit(
+            "tool.finished",
+            { state: event.isError ? "error" : "ended" },
+            { toolCallId: event.toolCallId }
+          );
+        }
       } else if (event.kind === "assistant_delta") {
         const message = ensureMessage();
         snapshot(message.text + event.delta);
@@ -295,13 +340,20 @@ export function startPiAdapter(): PluginRuntime {
         );
         active.message = undefined;
       } else if (event.kind === "agent_settled") {
-        if (!active.started || active.message)
+        if (
+          !active.started ||
+          !active.nativeStarted ||
+          active.message ||
+          [...active.tools.values()].some((finished) => !finished) ||
+          [...active.invoked].some((id) => active!.tools.get(id) !== true)
+        )
           throw new Error("Incomplete native turn observation");
         emit("turn.terminal", {
           execution: active.execution,
           observation: "complete",
           evidence: "native_agent_settled",
         });
+        fleet?.finishPrompt(active.operationId);
         active = undefined;
       }
     } catch {
@@ -322,6 +374,7 @@ export function startPiAdapter(): PluginRuntime {
           await new Promise((resolve) => setTimeout(resolve, 10));
       }
       stopping = true;
+      fleet?.close();
       if (!native) return { ownedResourcesStopped: true };
       native.stop();
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -374,14 +427,16 @@ export function startPiAdapter(): PluginRuntime {
           noExtensions: true,
           noSkills: true,
           bridgePath: fileURLToPath(
-            new URL("./empty-extension.mjs", import.meta.url)
+            new URL("./fleet-extension.mjs", import.meta.url)
           ),
+          tools: ["fleet_discover", "fleet_send"],
           isolatedEnv: configuration.environment,
           daemonUrl: "",
           childSecret: "",
           nativeProtocol: {
             maxFrameBytes: ctx.initialization.limits.maxFrameBytes,
             onError: loseObservation,
+            privateControl: true,
           },
           onEvent,
           onExit() {
@@ -391,6 +446,22 @@ export function startPiAdapter(): PluginRuntime {
         nativeClosed = new Promise((resolve) =>
           native!.process.once("close", () => resolve())
         );
+        fleet = new PiFleetBridge(native.process.stdio[3] as Duplex, ctx, {
+          onFailure: loseObservation,
+          onActivity(scope, tool) {
+            if (
+              !active ||
+              observationLost ||
+              stopping ||
+              scope.operationId !== active.operationId ||
+              scope.turnId !== active.turnId
+            )
+              throw new Error("Uncorrelated native fleet call");
+            markStarted();
+            active.invoked.add(tool.toolCallId);
+          },
+        });
+        const fleetSessionId = await fleet.initialize();
         const response = await native.request<JsonObject>(
           { type: "get_state" },
           ctx.initialization.limits.inspectTimeoutMs
@@ -398,6 +469,7 @@ export function startPiAdapter(): PluginRuntime {
         if (
           !object(response.data) ||
           !nonempty(response.data.sessionId) ||
+          response.data.sessionId !== fleetSessionId ||
           response.data.isStreaming !== false ||
           response.data.pendingMessageCount !== 0 ||
           response.data.messageCount !== 0
@@ -453,11 +525,15 @@ export function startPiAdapter(): PluginRuntime {
           operationId: params.operationId,
           turnId: params.turnId,
           started: false,
+          nativeStarted: false,
+          tools: new Map(),
+          invoked: new Set(),
           execution: "ended",
           order: 0,
         };
         active = turn;
         try {
+          await fleet!.activate(turn.operationId, turn.turnId);
           await native.request(
             {
               type: "prompt",
@@ -475,6 +551,7 @@ export function startPiAdapter(): PluginRuntime {
           return { disposition: "accepted" };
         } catch (error) {
           if (error instanceof RpcCommandRejected && !turn.started) {
+            await fleet!.rejectPrompt(turn.operationId);
             active = undefined;
             return { disposition: "rejected" };
           }

@@ -10,6 +10,6 @@
     "workspace": "read-write",
     "nativeProfile": true,
     "network": true,
-    "gatewayTools": []
+    "gatewayTools": ["fleet.discover", "fleet.send"]
   }
 }

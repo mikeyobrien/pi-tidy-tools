@@ -27,6 +27,40 @@ export interface ArtifactUpload {
   bytes: Uint8Array;
 }
 const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
+function imageFile(artifact: JsonValue): string | null {
+  if (!artifact || typeof artifact !== "object" || Array.isArray(artifact))
+    return null;
+  const id = artifact.artifactId;
+  const extension =
+    artifact.mediaType === "image/png"
+      ? "png"
+      : artifact.mediaType === "image/jpeg"
+        ? "jpg"
+        : null;
+  return typeof id === "string" && /^sha256:[a-f0-9]{64}$/.test(id) && extension
+    ? `${id.slice(7)}.${extension}`
+    : null;
+}
+function publicArtifacts(artifacts: JsonValue, bot: string): JsonObject {
+  if (!Array.isArray(artifacts)) return {};
+  const images: JsonValue[] = [],
+    attachments: JsonValue[] = [];
+  for (const artifact of artifacts) {
+    const file = imageFile(artifact);
+    if (file) {
+      const descriptor = artifact as JsonObject;
+      images.push({
+        mediaType: descriptor.mediaType,
+        name: descriptor.name,
+        path: `.fleet/images/${bot}/${file}`,
+      });
+    } else attachments.push(artifact);
+  }
+  return {
+    ...(images.length ? { images } : {}),
+    ...(attachments.length ? { attachments } : {}),
+  };
+}
 function artifactPrefix(key: OperationKey): string {
   return `artifact_v1:${payloadDigest({ botId: key.botId, conversationId: key.conversationId, operationId: key.operationId })}:`;
 }
@@ -1266,6 +1300,28 @@ export class GatewayJournal {
     offset = 0,
     limit = 65536
   ): { descriptor: JsonObject; bytes: Uint8Array; nextOffset: number | null } {
+    if (
+      !Number.isSafeInteger(offset) ||
+      offset < 0 ||
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > 65536
+    )
+      fail("invalid_cursor", "Invalid artifact read range");
+    const { descriptor, bytes } = this.verifiedArtifact(key, artifactId);
+    if (offset > bytes.length)
+      fail("invalid_cursor", "Artifact offset is past its end");
+    const end = Math.min(bytes.length, offset + limit);
+    return {
+      descriptor,
+      bytes: bytes.subarray(offset, end),
+      nextOffset: end < bytes.length ? end : null,
+    };
+  }
+  private verifiedArtifact(
+    key: OperationKey & { bindingId: string },
+    artifactId: string
+  ): { descriptor: JsonObject; bytes: Buffer } {
     this.conversation(key);
     const operation = this.operationRow(key);
     if (
@@ -1286,14 +1342,6 @@ export class GatewayJournal {
       : undefined;
     if (!descriptor)
       fail("artifact_unavailable", "Artifact is outside this operation");
-    if (
-      !Number.isSafeInteger(offset) ||
-      offset < 0 ||
-      !Number.isSafeInteger(limit) ||
-      limit < 1 ||
-      limit > 65536
-    )
-      fail("invalid_cursor", "Invalid artifact read range");
     const row = this.prepare("SELECT value FROM gateway_meta WHERE key=?").get(
       artifactPrefix(key) + artifactId
     );
@@ -1313,14 +1361,27 @@ export class GatewayJournal {
         descriptor.sha256
     )
       fail("corrupt_storage", "Artifact bytes failed integrity verification");
-    if (offset > bytes.length)
-      fail("invalid_cursor", "Artifact offset is past its end");
-    const end = Math.min(bytes.length, offset + limit);
-    return {
-      descriptor,
-      bytes: bytes.subarray(offset, end),
-      nextOffset: end < bytes.length ? end : null,
-    };
+    return { descriptor, bytes };
+  }
+  /** Public image names are opaque IDs, never filesystem paths. */
+  readImage(
+    key: ConversationKey & { bindingId: string },
+    file: string
+  ): { mediaType: string; bytes: Buffer } {
+    const match = /^([a-f0-9]{64})\.(png|jpg)$/.exec(file);
+    if (!match) fail("artifact_unavailable", "Image is unavailable");
+    this.conversation(key);
+    const artifactId = `sha256:${match[1]}`;
+    const mediaType = match[2] === "png" ? "image/png" : "image/jpeg";
+    const rows = this.prepare(
+      `SELECT o.operation_id FROM operations o,
+      json_each(o.payload_json, '$.artifacts') a
+      WHERE o.bot_id=? AND o.conversation_id=? AND o.binding_id=? AND o.expired=0
+      AND json_extract(a.value, '$.artifactId')=? AND json_extract(a.value, '$.mediaType')=? LIMIT 2`
+    ).all(key.botId, key.conversationId, key.bindingId, artifactId, mediaType);
+    if (rows.length !== 1) fail("artifact_unavailable", "Image is unavailable");
+    const scope = { ...key, operationId: String(rows[0].operation_id) };
+    return { mediaType, bytes: this.verifiedArtifact(scope, artifactId).bytes };
   }
   private deleteArtifacts(key: OperationKey): void {
     const prefix = artifactPrefix(key);
@@ -1605,9 +1666,10 @@ export class GatewayJournal {
         role: "user",
         origin: messageOrigin,
         text: input.payload.text,
-        ...(Array.isArray(input.payload.artifacts)
-          ? { attachments: input.payload.artifacts }
-          : {}),
+        ...publicArtifacts(
+          input.payload.artifacts,
+          input.publicBotName ?? input.botId
+        ),
         ts: new Date(this.now()).toISOString(),
       };
       this.insertEntry(input, entry, input.operationId);

@@ -82,6 +82,7 @@ async function body(
 }
 const statuses: Record<string, number> = {
   bot_not_found: 404,
+  artifact_unavailable: 404,
   operation_not_found: 404,
   invalid_payload: 400,
   invalid_permission: 400,
@@ -242,6 +243,20 @@ export async function startGatewayFleet(
       }
       if (request.method === "GET" && url.pathname === "/api/settings") {
         json(response, 200, { toolOutput: "off" });
+        return;
+      }
+      const imageMatch = /^\/api\/images\/([^/]+)\/([^/]+)$/.exec(url.pathname);
+      if (request.method === "GET" && imageMatch) {
+        const result = application.readImage(
+          decodeURIComponent(imageMatch[1]),
+          decodeURIComponent(imageMatch[2])
+        );
+        response.writeHead(200, {
+          "Content-Type": result.mediaType,
+          "Content-Length": result.bytes.length,
+          "Cache-Control": "private, no-store",
+        });
+        response.end(result.bytes);
         return;
       }
       const match = /^\/api\/bots\/([^/]+)\/(.+)$/.exec(url.pathname);

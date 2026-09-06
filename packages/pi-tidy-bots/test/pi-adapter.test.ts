@@ -412,6 +412,37 @@ test("startFleet HTTP contract admits and projects messages through the shipped 
           }),
         });
       assert.equal((await sendImage()).status, 202);
+      const entries = (await request("/api/bots/pi/transcript")).body
+        .transcript;
+      const entry = entries.find(
+        (value: JsonObject) =>
+          value.operationId === `image-${index}` && value.role === "user"
+      );
+      assert.equal(entry.attachments, undefined);
+      assert.equal(entry.images.length, 1);
+      const file = entry.images[0].path.split("/").at(-1);
+      const imageUrl: string = `${handle!.url}/api/images/pi/${file}`;
+      assert.equal((await fetch(imageUrl)).status, 401);
+      assert.equal(
+        (await fetch(`${imageUrl}?token=pi-fixture-token`)).status,
+        401
+      );
+      const downloaded = await fetch(imageUrl, {
+        headers: { authorization: "Bearer pi-fixture-token" },
+      });
+      assert.equal(downloaded.status, 200);
+      assert.equal(downloaded.headers.get("content-type"), image.mediaType);
+      assert.equal(
+        downloaded.headers.get("cache-control"),
+        "private, no-store"
+      );
+      assert.equal(downloaded.headers.get("x-content-type-options"), "nosniff");
+      assert.deepEqual(
+        Buffer.from(await downloaded.arrayBuffer()),
+        Buffer.from(image.data, "base64")
+      );
+      assert.equal((await request(`/api/images/unknown/${file}`)).status, 404);
+      assert.equal((await request(`/api/images/pi/%2F${file}`)).status, 404);
       await until(
         async () =>
           (await request(`/api/bots/pi/operations/image-${index}`)).body

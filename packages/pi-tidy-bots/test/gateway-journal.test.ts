@@ -1998,6 +1998,63 @@ test("artifact bytes commit with intent and survive restart with exact scoped re
   );
 });
 
+test("public images retain scoped byte access across restart and refuse expired or corrupt storage", (t) => {
+  const f = fixture(t);
+  // Journal tests use synthetic bytes; raster validation belongs to HTTP admission.
+  const bytes = Buffer.alloc(130000, 7);
+  f.journal.admitMessageArtifacts(
+    f.lease,
+    intent(undefined, { publicBotName: "researcher" }),
+    [
+      { name: "photo.png", mediaType: "image/png", bytes },
+      { name: "note.txt", mediaType: "text/plain", bytes: Buffer.from("note") },
+    ]
+  );
+  const entry = f.journal.readTranscript(binding)[0];
+  const images = entry.images as JsonObject[];
+  assert.equal(images.length, 1);
+  assert.equal((entry.attachments as JsonObject[]).length, 1);
+  assert.match(
+    String(images[0].path),
+    /^\.fleet\/images\/researcher\/[a-f0-9]{64}\.png$/
+  );
+  const file = String(images[0].path).split("/").at(-1)!;
+  assert.deepEqual(f.journal.readImage(binding, file), {
+    mediaType: "image/png",
+    bytes,
+  });
+  for (const invalid of [
+    "../" + file,
+    file.replace(".png", ".jpg"),
+    "photo.png",
+    file + "/extra",
+  ])
+    code(() => f.journal.readImage(binding, invalid), "artifact_unavailable");
+  code(
+    () => f.journal.readImage({ ...binding, bindingId: "another" }, file),
+    "artifact_unavailable"
+  );
+  const other = {
+    ...binding,
+    botId: "another",
+    conversationId: "another-conversation",
+    bindingId: "another-binding",
+  };
+  f.journal.ensureConversation(f.lease, other);
+  code(() => f.journal.readImage(other, file), "artifact_unavailable");
+  f.journal.cancelQueued(f.lease, key());
+  f.journal.close();
+  const reopened = f.open();
+  assert.deepEqual(reopened.readImage(binding, file).bytes, bytes);
+  sql(
+    f.path,
+    "UPDATE gateway_meta SET value=json_set(value,'$.data','YmFk') WHERE substr(key,1,12)='artifact_v1:';"
+  );
+  code(() => reopened.readImage(binding, file), "corrupt_storage");
+  reopened.expireOperation(f.lease, key());
+  code(() => reopened.readImage(binding, file), "artifact_unavailable");
+});
+
 test("artifact storage failure rolls back intent and corruption refuses both access and retry", (t) => {
   const f = fixture(t);
   const uploads = [

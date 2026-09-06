@@ -603,6 +603,9 @@ export class GatewayApplication {
       },
     };
   }
+  readImage(name: string, file: string): { mediaType: string; bytes: Buffer } {
+    return this.journal.readImage(this.requireBot(name).binding, file);
+  }
   transcript(name: string): JsonObject[] {
     return this.journal.readTranscript(this.requireBot(name).binding);
   }

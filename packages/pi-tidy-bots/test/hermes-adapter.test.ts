@@ -40,6 +40,7 @@ async function setup(
     join(source, "hermes_cli"),
     join(source, "acp_adapter"),
     join(source, "agent_client_protocol-0.9.0.dist-info"),
+    join(source, "mcp-2.0.0.dist-info"),
   ])
     await mkdir(path, { recursive: true });
   await copyFile(
@@ -64,6 +65,10 @@ async function setup(
     "Name: agent-client-protocol\nVersion: 0.9.0\n"
   );
   await writeFile(
+    join(source, "mcp-2.0.0.dist-info/METADATA"),
+    "Name: mcp\nVersion: 2.0.0\n"
+  );
+  await writeFile(
     join(profile, "config.yaml"),
     JSON.stringify({ approvals: { mode: "manual" } })
   );
@@ -85,10 +90,16 @@ async function setup(
   );
   const installation = (
     await PluginRegistry.load(registry, {
-      policy: { workspace: "read-write", nativeProfile: true, network: true },
+      policy: {
+        workspace: "read-write",
+        nativeProfile: true,
+        network: true,
+        gatewayTools: ["fleet.discover", "fleet.send"],
+      },
     })
   ).resolve("tidy.hermes");
   const events: GatewayPluginEvent[] = [];
+  const hostCalls: any[] = [];
   const launches = new Map<string, { pid?: number; stopped?: boolean }>();
   const host = await PluginHost.start({
     installation,
@@ -107,6 +118,10 @@ async function setup(
     onEvent: async (event) => {
       events.push(event);
       return event.sourceSequence;
+    },
+    onHostCall: async (call) => {
+      hostCalls.push(call);
+      return { status: "admitted", dispatchId: "fixture-dispatch" };
     },
     onLaunchPrepared: (id) => {
       launches.set(id, {});
@@ -142,6 +157,7 @@ async function setup(
     profile,
     host,
     events,
+    hostCalls,
     launches,
     open,
     submit,
@@ -302,6 +318,7 @@ test("Pi and Hermes shipped adapters share authenticated HTTP and WS without cro
         'workspace_access = "read-write"',
         "native_profile = true",
         "network = true",
+        'gateway_tools = ["fleet.discover", "fleet.send"]',
         ...Object.entries(configs).flatMap(([name, config]) => [
           "[[bot]]",
           `name = "${name}"`,
@@ -541,7 +558,7 @@ test("installed Hermes adapter separates cancellation from terminal execution", 
   }
 });
 
-for (const text of ["hello", "[owned-worker]"]) {
+for (const text of ["hello", "[owned-worker]", "[fleet-send]"]) {
   test(`installed Hermes adapter preserves durable ${text} and registered cleanup`, async () => {
     const f = await setup();
     try {
@@ -550,7 +567,7 @@ for (const text of ["hello", "[owned-worker]"]) {
         f.host.capabilities.interactions.permissions,
         "exact-request"
       );
-      assert.equal(f.host.capabilities.fleetTools, false);
+      assert.equal(f.host.capabilities.fleetTools, true);
       const opened = await f.host.request("session.open", f.open);
       assert.equal((opened as any).nativeReference, "hermes:native-one");
       assert.deepEqual(await f.host.request("session.open", f.open), opened);
@@ -574,8 +591,26 @@ for (const text of ["hello", "[owned-worker]"]) {
         .map((line) => JSON.parse(line));
       assert.equal(calls.filter((call) => call.kind === "new").length, 1);
       assert.equal(calls.filter((call) => call.kind === "prompt").length, 1);
+      if (text === "[fleet-send]") {
+        assert.equal(f.hostCalls.length, 1);
+        assert.equal(f.hostCalls[0].name, "fleet.send");
+        assert.equal(f.hostCalls[0].operationId, "op1");
+        assert.equal(f.hostCalls[0].toolCallId, "native-tool-one");
+        assert.deepEqual(f.hostCalls[0].arguments, {
+          target: "peer",
+          text: "fixture task",
+        });
+        const results = calls.filter((call) => call.kind === "fleet_result");
+        assert.equal(results.length, 2);
+        // The retained SDK result is canonical JSON, so compare its value,
+        // independently of the host's original object insertion order.
+        assert.deepEqual(
+          JSON.parse(results[0].result.content[0].text),
+          JSON.parse(results[1].result.content[0].text)
+        );
+      }
       await f.host.close();
-      assert.equal(f.launches.size, text === "hello" ? 2 : 3);
+      assert.equal(f.launches.size, text === "[owned-worker]" ? 3 : 2);
       for (const launch of f.launches.values()) {
         assert.equal(launch.stopped, true);
         if (launch.pid)

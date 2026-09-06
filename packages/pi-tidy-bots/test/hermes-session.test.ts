@@ -9,6 +9,43 @@ import {
 } from "../backends/hermes/session.ts";
 import type { JsonObject } from "../src/gateway/protocol.ts";
 
+for (const stage of ["initialize", "opened", "complete"]) {
+  test(`Hermes fleet activation requires registration evidence: ${stage}`, async (t) => {
+    const f = fixture(t, () => {}, {
+      fleetProof: {
+        initialize: stage !== "initialize",
+        opened: stage === "complete",
+      },
+    });
+    const descriptor = {
+      type: "http",
+      name: "tidy-fleet",
+      url: "http://127.0.0.1:1234/mcp",
+      headers: [],
+    };
+    if (stage === "complete") {
+      assert.equal(await f.session.open("/disposable", descriptor), "s1");
+      assert.deepEqual(
+        f.calls.find((call) => call.method === "session/new").params.mcpServers,
+        [descriptor]
+      );
+    } else {
+      await assert.rejects(f.session.open("/disposable", descriptor), {
+        code: "native_contract_unavailable",
+      });
+      assert.equal(
+        f.calls.some((call) => call.method === "session/prompt"),
+        false
+      );
+      if (stage === "initialize")
+        assert.equal(
+          f.calls.some((call) => call.method === "session/new"),
+          false
+        );
+    }
+  });
+}
+
 test("fleet scope requires the exact live prompt and records admission before dispatch", async (t) => {
   let prompt: any;
   const f = fixture(t, (request) => {
@@ -72,7 +109,9 @@ test("fleet scope requires the exact live prompt and records admission before di
 function fixture(
   t: TestContext,
   behavior: (request: any, send: (value: any) => void) => void,
-  options: Partial<HermesSessionOptions> = {}
+  options: Partial<HermesSessionOptions> & {
+    fleetProof?: { initialize?: boolean; opened?: boolean };
+  } = {}
 ) {
   const input = new PassThrough(),
     output = new PassThrough();
@@ -98,12 +137,24 @@ function fixture(
               approvalPolicy: "ask",
               environment: "explicit",
               ownedWorkers: "local-pipe-v1",
+              ...(options.fleetProof?.initialize
+                ? { fleetTools: "native-mcp-v1" }
+                : {}),
             },
           },
         },
       });
     else if (request.method === "session/new")
-      send({ jsonrpc: "2.0", id: request.id, result: { sessionId: "s1" } });
+      send({
+        jsonrpc: "2.0",
+        id: request.id,
+        result: {
+          sessionId: "s1",
+          ...(options.fleetProof?.opened
+            ? { _meta: { tidy: { fleetTools: "native-mcp-v1" } } }
+            : {}),
+        },
+      });
     else behavior(request, send);
   });
   const session = new HermesSession({

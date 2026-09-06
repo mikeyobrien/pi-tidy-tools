@@ -2,10 +2,42 @@
 
 from contextvars import ContextVar
 from inspect import iscoroutine
+from urllib.parse import urlsplit
 
 
 class FleetIdentityUnavailable(Exception):
     """No native arguments or provider diagnostics enter the public error."""
+
+
+class FleetRegistration:
+    """Verify pinned registry provenance after ACP's best-effort registration."""
+    def __init__(self, mcp_tool):
+        self.mcp_tool = mcp_tool
+
+    def validate(self, servers):
+        if not isinstance(servers, list) or len(servers) != 1:
+            raise FleetIdentityUnavailable()
+        server = servers[0]
+        url = urlsplit(getattr(server, "url", ""))
+        headers = getattr(server, "headers", [])
+        if (getattr(server, "type", None) != "http" or getattr(server, "name", None) != "tidy-fleet"
+                or url.scheme != "http" or url.hostname != "127.0.0.1" or not url.port
+                or url.username or url.password or url.path != "/mcp" or url.query or url.fragment
+                or len(headers) != 1 or getattr(headers[0], "name", None) != "Authorization"):
+            raise FleetIdentityUnavailable()
+        value = getattr(headers[0], "value", "")
+        if not isinstance(value, str) or not value.startswith("Bearer ") or len(value) != 71 or any(
+                c not in "0123456789abcdef" for c in value[7:]):
+            raise FleetIdentityUnavailable()
+
+    def verify(self, state):
+        names = {self.mcp_tool.mcp_prefixed_tool_name("tidy-fleet", tool)
+                 for tool in ("fleet_discover", "fleet_send")}
+        with self.mcp_tool._lock:
+            registered = {name for name, server in self.mcp_tool._mcp_tool_server_names.items()
+                          if server == "tidy-fleet"}
+        if registered != names or not names.issubset(getattr(state.agent, "valid_tool_names", set())):
+            raise FleetIdentityUnavailable()
 
 
 def install_fleet_identity(mcp_tool, client_session, approval, active):

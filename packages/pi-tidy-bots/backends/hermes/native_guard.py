@@ -136,7 +136,7 @@ class ApprovalGuard:
             raise ApprovalPolicyUnavailable() from None
 
 
-def guarded_agent(base, guard, prompt_response, worker_type):
+def guarded_agent(base, guard, prompt_response, worker_type, fleet=None):
     class GuardedHermesACPAgent(base):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
@@ -147,6 +147,17 @@ def guarded_agent(base, guard, prompt_response, worker_type):
             self._tidy_update_failed = False
             self._tidy_workers = None
             self._tidy_worker_session = None
+            self._tidy_prompt_id = None
+
+        def _tidy_fleet_scope(self):
+            if not self._tidy_active_prompt or self._tidy_prompt_id is None:
+                raise ApprovalPolicyUnavailable()
+            state = self._tidy_live_state(self._tidy_worker_session)
+            if state is None:
+                raise ApprovalPolicyUnavailable()
+            guard.check(state, self)
+            return {"sessionId": state.session_id, "nativeSessionId": state.agent.session_id,
+                    "promptId": self._tidy_prompt_id}
 
         def _tidy_live_state(self, session_id):
             # The pinned SessionManager public getter restores history on a
@@ -266,16 +277,26 @@ def guarded_agent(base, guard, prompt_response, worker_type):
             extra["tidy"] = {"guardVersion": GUARD_VERSION,
                              "approvalPolicy": "ask",
                              "environment": "explicit", "ownedWorkers": "local-pipe-v1"}
+            if fleet is not None:
+                extra["tidy"]["fleetTools"] = "native-mcp-v1"
             result.field_meta = extra
             return result
 
         async def new_session(self, *args, **kwargs):
             guard.check()
+            servers = kwargs.get("mcp_servers", [])
+            if fleet is not None:
+                fleet.validate(servers)
+            elif servers:
+                raise ApprovalPolicyUnavailable()
             result = await super().new_session(*args, **kwargs)
             state = self._tidy_live_state(result.session_id)
             if state is None:
                 raise ApprovalPolicyUnavailable()
             guard.check(state, self)
+            if fleet is not None:
+                fleet.verify(state)
+                result.field_meta = {**(result.field_meta or {}), "tidy": {"fleetTools": "native-mcp-v1"}}
             modes = getattr(result, "modes", None)
             if modes is not None:
                 if modes.current_mode_id != "default":
@@ -312,6 +333,11 @@ def guarded_agent(base, guard, prompt_response, worker_type):
                     return refuse("invalid_payload")
                 if text.startswith("/"):
                     return refuse("capability_unavailable")
+                prompt_meta = kwargs.get("tidy")
+                prompt_id = prompt_meta.get("promptId") if isinstance(prompt_meta, dict) else None
+                if fleet is not None and (not isinstance(prompt_id, str) or not prompt_id.strip()
+                        or len(prompt_id) > 256 or "\0" in prompt_id):
+                    return refuse("native_contract_unavailable")
             except ApprovalPolicyUnavailable:
                 return refuse("approval_policy_unavailable")
             # The pinned ACP server catches executor errors and can still return
@@ -352,6 +378,7 @@ def guarded_agent(base, guard, prompt_response, worker_type):
 
             self._tidy_active_prompt = True
             self._tidy_worker_session = session_id
+            self._tidy_prompt_id = prompt_id
             self._tidy_update_tickets = []
             self._tidy_update_failed = False
             native.run_conversation = observed_run
@@ -389,6 +416,7 @@ def guarded_agent(base, guard, prompt_response, worker_type):
                         del native.run_conversation
                     self._tidy_active_prompt = False
                     self._tidy_worker_session = None
+                    self._tidy_prompt_id = None
                     self._tidy_update_tickets = None
 
         async def set_session_mode(self, mode_id, session_id, **kwargs):
@@ -426,6 +454,7 @@ def main():
     parser.add_argument("--source", required=True)
     parser.add_argument("--profile", required=True)
     parser.add_argument("--home", required=True)
+    parser.add_argument("--fleet-tools", action="store_true")
     args = parser.parse_args()
     if not sys.flags.isolated:
         raise ApprovalPolicyUnavailable()
@@ -473,7 +502,19 @@ def main():
     spec = spec_from_file_location("tidy_hermes_native_owned", Path(__file__).with_name("native_owned.py"))
     owned = module_from_spec(spec)
     spec.loader.exec_module(owned)
-    agent = guarded_agent(HermesACPAgent, guard, PromptResponse, owned.NativeWorkers)()
+    fleet = None
+    if args.fleet_tools:
+        if metadata.version("mcp") != "2.0.0":
+            raise ApprovalPolicyUnavailable()
+        from mcp import ClientSession
+        from tools import mcp_tool
+        spec = spec_from_file_location("tidy_hermes_native_fleet", Path(__file__).with_name("native_fleet.py"))
+        fleet_module = module_from_spec(spec)
+        spec.loader.exec_module(fleet_module)
+        fleet = fleet_module.FleetRegistration(mcp_tool)
+    agent = guarded_agent(HermesACPAgent, guard, PromptResponse, owned.NativeWorkers, fleet)()
+    if fleet is not None:
+        fleet_module.install_fleet_identity(mcp_tool, ClientSession, approval, agent._tidy_fleet_scope)
     from tools import process_registry
     owned.install_workers(process_registry, lambda: agent._tidy_workers)
 

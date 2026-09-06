@@ -14,7 +14,7 @@ import {
   type HermesRuntime,
 } from "./runtime.ts";
 
-// Fresh guarded ACP sessions only. Native continuity, media, fleet MCP and
+// Fresh guarded ACP sessions only. Native continuity, media and
 // non-pipe worker profiles require their remaining conformance work.
 export const HERMES_CAPABILITIES: CapabilityDescriptor = {
   input: { text: true, mediaTypes: [], maxMediaBytes: 0 },
@@ -28,7 +28,7 @@ export const HERMES_CAPABILITIES: CapabilityDescriptor = {
   },
   interactions: { permissions: "exact-request", questions: false },
   configuration: { model: false, thinking: false, compact: false },
-  fleetTools: false,
+  fleetTools: true,
 };
 
 export function startHermesAdapter(): PluginRuntime {
@@ -119,6 +119,7 @@ export function startHermesAdapter(): PluginRuntime {
           `tidy-launch-${randomUUID()}`,
           ctx.initialization.config,
           {
+            fleetTools: true,
             onFailure() {
               if (lost || stopping) return;
               lost = true;

@@ -14,6 +14,7 @@ import {
 } from "@mobrienv/pi-tidy-bots/plugin-protocol";
 import { HermesSession, type HermesSessionOptions } from "./session.ts";
 import { HermesInteractions } from "./interactions.ts";
+import { openFleetMcp } from "./fleet-mcp.ts";
 
 export interface HermesConfiguration {
   executable: string;
@@ -117,7 +118,7 @@ export async function openHermesRuntime(
   ctx: PluginContext,
   launchId: string,
   config: JsonObject,
-  hooks: Pick<HermesSessionOptions, "onFailure">
+  hooks: Pick<HermesSessionOptions, "onFailure"> & { fleetTools?: boolean }
 ): Promise<HermesRuntime> {
   const configuration = await validateHermesConfiguration(config);
   const process = await spawnOwnedProcess(ctx, {
@@ -133,6 +134,7 @@ export async function openHermesRuntime(
       configuration.profile,
       "--home",
       configuration.home,
+      ...(hooks.fleetTools ? ["--fleet-tools"] : []),
     ],
     cwd: ctx.initialization.workspace,
     environment: configuration.environment,
@@ -141,6 +143,7 @@ export async function openHermesRuntime(
   process.child.stderr!.resume();
   let session: HermesSession | undefined;
   let interactions: HermesInteractions | undefined;
+  let fleet: Awaited<ReturnType<typeof openFleetMcp>> | undefined;
   let closing: Promise<void> | undefined;
   const close = (): Promise<void> => {
     if (!closing) {
@@ -148,6 +151,7 @@ export async function openHermesRuntime(
         try {
           session?.close();
           interactions?.close();
+          await fleet?.close();
         } finally {
           await process.close();
         }
@@ -174,7 +178,23 @@ export async function openHermesRuntime(
       onOwnedProcess: (method, params) => ctx.ownedProcess(method, params),
       onFailure,
     });
-    const nativeReference = await session.open(ctx.initialization.workspace);
+    if (hooks.fleetTools)
+      fleet = await openFleetMcp(ctx, (sessionId, promptId) =>
+        session!.fleetScope(sessionId, promptId)
+      );
+    // Native EOF can begin cleanup while the listener is still binding. That
+    // cleanup may already have observed fleet=undefined; join the late listener.
+    if (closing) {
+      await fleet?.close();
+      throw new ProtocolError(
+        "native_unavailable",
+        "Native runtime closed during fleet setup"
+      );
+    }
+    const nativeReference = await session.open(
+      ctx.initialization.workspace,
+      fleet?.descriptor
+    );
     ctx.signal.throwIfAborted();
     return {
       session,

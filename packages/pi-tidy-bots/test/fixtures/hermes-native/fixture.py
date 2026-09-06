@@ -8,6 +8,8 @@ from pathlib import Path
 import sys
 from types import ModuleType, SimpleNamespace
 from threading import Lock
+from contextvars import ContextVar
+from urllib.request import Request, urlopen
 
 
 def profile():
@@ -78,6 +80,21 @@ class FakeAgent:
         state = SimpleNamespace(session_id="native-one", mode="default", cwd=cwd,
                                 agent=FakeConversation())
         self.states[state.session_id] = state
+        if kwargs.get("mcp_servers"):
+            mcp = sys.modules["tools.mcp_tool"]
+            descriptor = kwargs["mcp_servers"][0]
+            mcp.descriptor = descriptor
+            listed = await asyncio.to_thread(mcp_request, "tools/list", {})
+            state.agent.valid_tool_names = set()
+            for tool in listed["tools"]:
+                if config().get("fleetRegistration") == "missing":
+                    continue
+                name = mcp.mcp_prefixed_tool_name("tidy-fleet", tool["name"])
+                mcp._mcp_tool_server_names[name] = "tidy-fleet"
+                mcp.handlers[tool["name"]] = mcp._make_tool_handler("tidy-fleet", tool["name"], 3)
+                if config().get("fleetRegistration") != "hidden":
+                    state.agent.valid_tool_names.add(name)
+            record("mcp_registered", count=len(state.agent.valid_tool_names))
         record("new", cwd=cwd)
         return SimpleNamespace(session_id=state.session_id, field_meta={})
 
@@ -93,6 +110,19 @@ class FakeAgent:
             self.states[session_id].agent.run_conversation(user_message=text)
         except Exception:
             pass  # Pinned Hermes can return end_turn after an executor error.
+        if text == "[fleet-send]":
+            def invoke():
+                approval = sys.modules["tools.approval"]
+                session_token = approval._approval_session_id.set("internal-one")
+                tool_token = approval._approval_tool_call_id.set("native-tool-one")
+                try:
+                    for _ in range(2):
+                        result = sys.modules["tools.mcp_tool"].handlers["fleet_send"]({"target": "peer", "text": "fixture task"})
+                        record("fleet_result", result=result)
+                finally:
+                    approval._approval_session_id.reset(session_token)
+                    approval._approval_tool_call_id.reset(tool_token)
+            await asyncio.to_thread(invoke)
         if text == "[cancel-wait]":
             cancellation = json.loads(sys.stdin.readline())
             if (cancellation.get("method") != "session/cancel" or "id" in cancellation
@@ -204,9 +234,10 @@ async def run_agent(agent, **kwargs):
             if method == "initialize":
                 result = await agent.initialize()
             elif method == "session/new":
-                result = await agent.new_session(cwd=params["cwd"])
+                servers = [SimpleNamespace(**{**server, "headers": [SimpleNamespace(**header) for header in server.get("headers", [])]}) for server in params.get("mcpServers", [])]
+                result = await agent.new_session(cwd=params["cwd"], mcp_servers=servers)
             elif method == "session/prompt":
-                result = await agent.prompt(session_id=params.get("sessionId", "native-one"), prompt=[SimpleNamespace(**part) for part in params["prompt"]])
+                result = await agent.prompt(session_id=params.get("sessionId", "native-one"), prompt=[SimpleNamespace(**part) for part in params["prompt"]], **params.get("_meta", {}))
                 child = getattr(agent, "_fixture_buffered_worker", None)
                 if child is not None:
                     record("worker_result", code=child.returncode, output=child.stdout.read(), error=child.stderr.read())
@@ -265,16 +296,38 @@ async def run_agent(agent, **kwargs):
         print(json.dumps(response), flush=True)
 
 
+def mcp_request(method, params):
+    descriptor = sys.modules["tools.mcp_tool"].descriptor
+    headers = {header.name: header.value for header in descriptor.headers}
+    headers.update({"Content-Type": "application/json", "Accept": "application/json, text/event-stream"})
+    request = Request(descriptor.url, data=json.dumps({"jsonrpc": "2.0", "id": str(uuid4()), "method": method, "params": params}).encode(), headers=headers)
+    with urlopen(request, timeout=3) as response:
+        return json.load(response)["result"]
+
+
 def install():
     module("yaml", safe_load=json.loads)
     module("hermes_constants", get_hermes_home=profile)
     module("hermes_cli.config", load_config_readonly=config)
     module("hermes_cli.env_loader", load_hermes_dotenv=load_environment)
     approval = module("tools.approval", _YOLO_MODE_FROZEN=False,
+                      _approval_session_id=ContextVar("native_session", default=None),
+                      _approval_tool_call_id=ContextVar("native_tool", default=None),
                       _get_approval_mode=lambda: config().get("approvals", {}).get("mode", "manual"),
                       _permanent_approved=set(), _session_approved={},
                       is_approval_bypass_active_for_session=lambda key: False)
     module("tools", approval=approval)
+    class ClientSession:
+        async def call_tool(self, name, arguments=None, **kwargs):
+            return await asyncio.to_thread(mcp_request, "tools/call", {"name": name, "arguments": arguments, "_meta": kwargs.get("meta")})
+    module("mcp", ClientSession=ClientSession)
+    mcp = module("tools.mcp_tool", _lock=Lock(), _mcp_tool_server_names={}, handlers={},
+                 mcp_prefixed_tool_name=lambda server, tool: "mcp__" + server.replace("-", "_") + "__" + tool)
+    mcp._run_on_mcp_loop = lambda factory, timeout=30: asyncio.run(factory() if callable(factory) else factory)
+    def make_handler(server, tool, timeout):
+        return lambda args, **kwargs: mcp._run_on_mcp_loop(lambda: ClientSession().call_tool(tool, args), timeout=timeout)
+    mcp._make_tool_handler = make_handler
+    sys.modules["tools"].mcp_tool = mcp
     module("acp", run_agent=run_agent)
     module("acp.schema", PromptResponse=SimpleNamespace)
     registry = module("tools.process_registry", subprocess=subprocess)

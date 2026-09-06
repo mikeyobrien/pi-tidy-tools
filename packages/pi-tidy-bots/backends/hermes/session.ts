@@ -160,7 +160,7 @@ export class HermesSession {
       onFailure: (error) => this.fail(error),
     });
   }
-  async open(cwd: string): Promise<string> {
+  async open(cwd: string, fleetServer?: JsonObject): Promise<string> {
     if (this.opening || this.lost || !isAbsolute(cwd))
       throw new ProtocolError(
         "session_unavailable",
@@ -187,6 +187,8 @@ export class HermesSession {
       initialized._meta.tidy.ownedWorkers !== "local-pipe-v1" ||
       initialized._meta.tidy.approvalPolicy !== "ask" ||
       initialized._meta.tidy.environment !== "explicit" ||
+      (fleetServer !== undefined &&
+        initialized._meta.tidy.fleetTools !== "native-mcp-v1") ||
       !object(initialized.agentCapabilities) ||
       initialized.agentCapabilities.loadSession !== false
     )
@@ -196,12 +198,22 @@ export class HermesSession {
       );
     const opened = await this.transport.request("session/new", {
       cwd,
-      mcpServers: [],
+      mcpServers: fleetServer === undefined ? [] : [fleetServer],
     });
     if (!object(opened) || !nonempty(opened.sessionId))
       throw new ProtocolError(
         "session_unknown",
         "Native session creation has no correlated identity"
+      );
+    if (
+      fleetServer !== undefined &&
+      (!object(opened._meta) ||
+        !object(opened._meta.tidy) ||
+        opened._meta.tidy.fleetTools !== "native-mcp-v1")
+    )
+      throw new ProtocolError(
+        "native_contract_unavailable",
+        "Native session did not prove fleet tool registration"
       );
     this.sessionId = opened.sessionId;
     return this.sessionId;

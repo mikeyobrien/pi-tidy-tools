@@ -21,5 +21,5 @@ test("Hermes fleet identity survives native MCP thread and retry boundaries", ()
     { encoding: "utf8", timeout: 10000 }
   );
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stderr, /Ran 5 tests/);
+  assert.match(result.stderr, /Ran 7 tests/);
 });

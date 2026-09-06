@@ -4,6 +4,7 @@ from contextvars import ContextVar, Context
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from types import SimpleNamespace
+from threading import Lock
 import unittest
 
 spec = spec_from_file_location("native_fleet", Path(__file__).parents[1] / "backends/hermes/native_fleet.py")
@@ -83,6 +84,33 @@ class FleetIdentityTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             mcp._make_tool_handler("tidy-fleet", "fleet_send", 2)({})
         self.assertEqual(calls, [])
+
+    def test_registration_requires_the_private_http_descriptor(self):
+        registration = module.FleetRegistration(None)
+        def server(**changes):
+            return SimpleNamespace(**{"type": "http", "name": "tidy-fleet", "url": "http://127.0.0.1:1234/mcp",
+                "headers": [SimpleNamespace(name="Authorization", value="Bearer " + "a" * 64)], **changes})
+        registration.validate([server()])
+        for servers in [[], [server(), server()], [server(type="stdio")], [server(name="foreign")],
+                        [server(url="http://localhost:1234/mcp")], [server(url="http://127.0.0.1:1234/mcp?token=x")],
+                        [server(headers=[])], [server(headers=[SimpleNamespace(name="Authorization", value="Bearer short")])]]:
+            with self.assertRaises(module.FleetIdentityUnavailable):
+                registration.validate(servers)
+
+    def test_registration_requires_both_exact_provenance_and_agent_visibility(self):
+        mcp = SimpleNamespace(_lock=Lock(), _mcp_tool_server_names={}, mcp_prefixed_tool_name=lambda server, tool: tool)
+        registration = module.FleetRegistration(mcp)
+        state = SimpleNamespace(agent=SimpleNamespace(valid_tool_names={"fleet_send", "fleet_discover"}))
+        for mapping in [{}, {"fleet_send": "tidy-fleet"}, {"fleet_send": "foreign", "fleet_discover": "tidy-fleet"},
+                        {"fleet_send": "tidy-fleet", "fleet_discover": "tidy-fleet", "unexpected": "tidy-fleet"}]:
+            mcp._mcp_tool_server_names = mapping
+            with self.assertRaises(module.FleetIdentityUnavailable):
+                registration.verify(state)
+        mcp._mcp_tool_server_names = {"fleet_send": "tidy-fleet", "fleet_discover": "tidy-fleet"}
+        registration.verify(state)
+        state.agent.valid_tool_names.clear()
+        with self.assertRaises(module.FleetIdentityUnavailable):
+            registration.verify(state)
 
 
 if __name__ == "__main__":

@@ -44,6 +44,7 @@ async function fixture(version = "0.20.5") {
     join(source, "hermes_cli"),
     join(source, "acp_adapter"),
     join(source, "agent_client_protocol-0.9.0.dist-info"),
+    join(source, "mcp-2.0.0.dist-info"),
   ])
     await mkdir(path, { recursive: true });
   await copyFile(
@@ -66,6 +67,10 @@ async function fixture(version = "0.20.5") {
   await writeFile(
     join(source, "agent_client_protocol-0.9.0.dist-info/METADATA"),
     "Name: agent-client-protocol\nVersion: 0.9.0\n"
+  );
+  await writeFile(
+    join(source, "mcp-2.0.0.dist-info/METADATA"),
+    "Name: mcp\nVersion: 2.0.0\n"
   );
   await writeFile(
     join(profile, "config.yaml"),
@@ -157,6 +162,79 @@ async function fixture(version = "0.20.5") {
       await rm(dir, { recursive: true, force: true });
     },
   };
+}
+
+test("guarded owned Hermes registers fleet MCP tools and preserves native retries", async () => {
+  const f = await fixture();
+  let runtime: HermesRuntime | undefined;
+  const calls: any[] = [];
+  let admissions = 0;
+  f.ctx.hostCall = async (call) => {
+    calls.push(call);
+    const key = `action:${call.actionId}`;
+    const retained = f.store.reserve(
+      key,
+      "host.call",
+      String(call.payloadDigest),
+      call
+    );
+    if (!retained.created) return retained.result;
+    admissions++;
+    const result = { status: "admitted", dispatchId: "fixture-dispatch" };
+    f.store.settle(key, result);
+    return result;
+  };
+  try {
+    runtime = await openHermesRuntime(f.ctx, f.launchId, f.config, {
+      ...f.hooks,
+      fleetTools: true,
+    });
+    f.store.reserve("operation:op1", "operation.submit", "intent", {
+      operationId: "op1",
+      turnId: "turn1",
+    });
+    assert.deepEqual(
+      await runtime.session.submit("op1", "turn1", [
+        { type: "text", text: "[fleet-send]" },
+      ]),
+      { disposition: "accepted" }
+    );
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[0], calls[1]);
+    assert.equal(calls[0].operationId, "op1");
+    assert.equal(calls[0].toolCallId, "native-tool-one");
+    assert.equal(admissions, 1);
+    assert.deepEqual(f.failures, []);
+    const effects = await readFile(join(f.profile, "effects.jsonl"), "utf8");
+    assert.match(effects, /mcp_registered/);
+    assert.equal(effects.includes("Bearer"), false);
+    assert.equal(effects.includes("promptId"), false);
+  } finally {
+    await runtime?.close();
+    await f.cleanup();
+  }
+});
+
+for (const fleetRegistration of ["missing", "hidden"]) {
+  test(`Hermes refuses ${fleetRegistration} native fleet registration`, async () => {
+    const f = await fixture();
+    try {
+      await writeFile(
+        join(f.profile, "config.yaml"),
+        JSON.stringify({ approvals: { mode: "manual" }, fleetRegistration })
+      );
+      await assert.rejects(
+        openHermesRuntime(f.ctx, f.launchId, f.config, {
+          ...f.hooks,
+          fleetTools: true,
+        })
+      );
+      const effects = await readFile(join(f.profile, "effects.jsonl"), "utf8");
+      assert.equal(effects.includes('"kind": "prompt"'), false);
+    } finally {
+      await f.cleanup();
+    }
+  });
 }
 
 test("Hermes cancellation requires immutable SDK reservation and waits for native terminal evidence", async () => {

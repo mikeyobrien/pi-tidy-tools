@@ -249,6 +249,44 @@ class OwnershipSDKTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(caught.exception.code, "capability_unavailable")
         self.assertEqual(len(frames), 1)
 
+    async def test_orderly_cleanup_only_admits_inspection_and_stop_evidence(self):
+        runtime = self.runtime()
+        frames = []
+        async def write(frame):
+            frames.append(frame)
+            runtime._reverse[frame["id"]].set_result({"state": "stopped"})
+        runtime._write = write
+        async def cleanup(info, ctx):
+            for method in ("prepare", "record"):
+                with self.assertRaises(SDKError) as caught:
+                    await ctx.owned_process(method, {"launchId": "launch"})
+                self.assertEqual(caught.exception.code, "plugin_closed")
+            for method in ("inspect", "stopped"):
+                self.assertEqual(await ctx.owned_process(method, {"launchId": "launch"}), {"state": "stopped"})
+            with self.assertRaises(SDKError) as caught:
+                await ctx.host_call("operator.enqueue", {})
+            self.assertEqual(caught.exception.code, "plugin_closed")
+            return {"ownedStopped": True}
+        runtime.on_close = cleanup
+        result = await runtime._cleanup("shutdown", orderly=True)
+        self.assertTrue(result["ownedStopped"])
+        self.assertEqual([frame["method"] for frame in frames], ["ownership.inspect", "ownership.stopped"])
+        with self.assertRaises(SDKError) as caught:
+            await runtime.owned_process("inspect", {"launchId": "launch"})
+        self.assertEqual(caught.exception.code, "plugin_closed")
+
+    async def test_eof_cleanup_never_reopens_host_services(self):
+        runtime = self.runtime()
+        async def cleanup(info, ctx):
+            for method in ("prepare", "record", "inspect", "stopped"):
+                with self.assertRaises(SDKError) as caught:
+                    await ctx.owned_process(method, {"launchId": "launch"})
+                self.assertEqual(caught.exception.code, "plugin_closed")
+            return {"ownedStopped": True}
+        runtime.on_close = cleanup
+        self.assertTrue((await runtime._cleanup("host_eof"))["ownedStopped"])
+        self.assertFalse(runtime._cleanup_ownership_open)
+
     async def test_ownership_timeout_does_not_return_an_activation_receipt(self):
         runtime = self.runtime()
         runtime.limits["commandTimeoutMs"] = 10

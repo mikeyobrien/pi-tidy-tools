@@ -44,6 +44,7 @@ class PluginRuntime:
         self._closing = asyncio.Event()
         self._cleanup_task = None
         self._shutdown_deadline = None
+        self._cleanup_ownership_open = False
 
     async def _write(self, value):
         frame = encode_frame(value, self.limits["maxFrameBytes"])
@@ -69,6 +70,7 @@ class PluginRuntime:
                         finally:
                             loop.remove_writer(fd)
         except (BrokenPipeError, OSError, asyncio.TimeoutError) as error:
+            self._cleanup_ownership_open = False
             self.state = "closing"
             self._closing.set()
             raise SDKError("host_eof") from error
@@ -214,7 +216,8 @@ class PluginRuntime:
         Persist the launch ID before spawn. A lost response requires inspection,
         never an assumption that native execution was authorized.
         """
-        if self.state != "ready" or self.initialization is None:
+        cleanup = self.state == "closing" and self._cleanup_ownership_open and method in ("inspect", "stopped")
+        if (self.state != "ready" and not cleanup) or self.initialization is None:
             raise SDKError("plugin_closed")
         service = "ownership." + str(method)
         services = self.initialization.get("ownershipServices", [])
@@ -275,9 +278,10 @@ class PluginRuntime:
         finally:
             self._reverse.pop(rpc_id, None)
 
-    async def _cleanup(self, reason, mode="interrupt"):
+    async def _cleanup(self, reason, mode="interrupt", *, orderly=False):
         if self._cleanup_task:
             return await self._cleanup_task
+        self._cleanup_ownership_open = orderly
         async def cleanup():
             self.state = "closing"
             loop = asyncio.get_running_loop()
@@ -304,7 +308,10 @@ class PluginRuntime:
                     result["status"] = "unknown"
             return result
         self._cleanup_task = asyncio.create_task(cleanup())
-        return await self._cleanup_task
+        try:
+            return await self._cleanup_task
+        finally:
+            self._cleanup_ownership_open = False
 
     async def _dispatch(self, request):
         method, p = request["method"], request.get("params", {})
@@ -336,7 +343,7 @@ class PluginRuntime:
                     # the lifecycle hook; drain never implies interrupt.
                     if mode == "drain":
                         raise SDKError("capability_unavailable", "Native drain is unsupported")
-                result = await self._cleanup(method, mode)
+                result = await self._cleanup(method, mode, orderly=True)
                 await self._response(request, result)
                 self._closing.set()
                 return
@@ -441,12 +448,13 @@ class PluginRuntime:
         except BaseException:
             reason = "protocol_failure"
         finally:
+            self._cleanup_ownership_open = False
             transport.close()
             self._closing.set()
-            cleanup = await self._cleanup(reason)
             for future in self._reverse.values():
                 if not future.done():
                     future.set_exception(SDKError("host_eof"))
+            cleanup = await self._cleanup(reason)
             tasks = self._requests | self._handlers
             for task in tasks:
                 task.cancel()

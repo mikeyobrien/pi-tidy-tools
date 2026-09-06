@@ -22,6 +22,7 @@ import {
 import { digestArtifact, PluginRegistry } from "../src/gateway/registry.ts";
 import type { GatewayPluginEvent } from "../src/gateway/protocol.ts";
 import { startFleet, type FleetHandle } from "../src/daemon.ts";
+import { ownedGroupHasExited } from "../src/gateway/process-ownership.ts";
 
 const candidate = "/opt/homebrew/opt/python@3.14/bin/python3.14";
 const python =
@@ -65,7 +66,7 @@ async function setup(mode = "normal") {
       },
       requestedAccess: {
         workspace: "none",
-        nativeProfile: false,
+        nativeProfile: mode === "registered-owned",
         network: false,
         gatewayTools: ["operator.enqueue"],
       },
@@ -100,7 +101,10 @@ async function setup(mode = "normal") {
   );
   const installation = (
     await PluginRegistry.load(registry, {
-      policy: { gatewayTools: ["operator.enqueue"] },
+      policy: {
+        gatewayTools: ["operator.enqueue"],
+        nativeProfile: mode === "registered-owned",
+      },
     })
   ).resolve("org.example.python");
   const handles: PluginHost[] = [];
@@ -166,6 +170,56 @@ async function until(probe: () => boolean | Promise<boolean>) {
   }
 }
 
+test("Python orderly cleanup confirms a registered detached child through the closing host", async () => {
+  const f = await setup("registered-owned");
+  let childId: string | undefined;
+  const stopped: string[] = [];
+  try {
+    const host = await f.start({
+      onLaunchPrepared: (id, parent) => {
+        if (parent) childId = id;
+      },
+      onLaunchRecorded: async (id) => {
+        if (id === childId)
+          await assert.rejects(readFile(join(f.dir, "data", "child-effect")), {
+            code: "ENOENT",
+          });
+      },
+      onLaunchStopped: (id) => {
+        stopped.push(id);
+      },
+    });
+    assert.equal(
+      ((await host.request("session.open", f.open)) as any).status,
+      "opened"
+    );
+    await until(() => existsSync(join(f.dir, "data", "child-effect")));
+    const child = (await f.calls()).find(
+      (entry) => entry.kind === "registered"
+    )!;
+    await host.close();
+    assert.equal(await ownedGroupHasExited(child.pid), true);
+    const calls = await f.calls();
+    assert.deepEqual(
+      calls
+        .filter((entry) => entry.kind === "cleanup_denied")
+        .map((entry) => entry.method),
+      ["prepare", "record"]
+    );
+    assert.ok(
+      calls.some(
+        (entry) =>
+          entry.kind === "cleanup_confirmed" &&
+          entry.inspected === childId &&
+          entry.stopped === childId
+      )
+    );
+    assert.ok(stopped.includes(childId!));
+  } finally {
+    await f.cleanup();
+  }
+});
+
 test("Python SDK storage/framing tests run on the explicitly supported engine", () => {
   const result = spawnSync(
     python,
@@ -180,7 +234,7 @@ test("Python SDK storage/framing tests run on the explicitly supported engine", 
     0,
     `Set TIDY_TEST_PYTHON to Python >=3.11 with SQLite3.53.4.\n${result.stderr}\n${result.error ?? ""}`
   );
-  assert.match(result.stderr, /Ran 15 tests/);
+  assert.match(result.stderr, /Ran 17 tests/);
 });
 
 test("independently installed Python plugin runs through real host; repeated open/submit/control never repeat native work", async () => {

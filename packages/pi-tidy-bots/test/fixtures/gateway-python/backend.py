@@ -5,12 +5,15 @@ import json
 import os
 from pathlib import Path
 import sys
+from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).parent / "sdk"))
 from tidy_backend_sdk import run_plugin
 
 mode = "normal"
 owned = None
+launch_id = None
+control_fd = None
 attached_pid = None
 
 
@@ -32,13 +35,33 @@ async def initialize(config, ctx):
 
 
 async def opened(p, ctx):
-    global owned
+    global owned, launch_id, control_fd
     record(ctx, "open", openId=p["openId"])
     if mode == "crash-open":
         os._exit(17)
     if mode == "owned":
         owned = await asyncio.create_subprocess_exec(sys.executable, "-c", "import time; time.sleep(600)")
         record(ctx, "owned", pid=owned.pid)
+    if mode == "registered-owned":
+        launch_id = "tidy-launch-" + str(uuid4())
+        prepared = await ctx.owned_process("prepare", {"launchId": launch_id})
+        if prepared.get("launcherProtocol") != 2:
+            raise ValueError("Unsupported launcher protocol")
+        read_fd, control_fd = os.pipe()
+        effect = str(Path(ctx.initialization["dataDir"]) / "child-effect")
+        try:
+            owned = await asyncio.create_subprocess_exec(
+                prepared["executable"], prepared["launcherPath"], launch_id, "--control-fd=" + str(read_fd),
+                sys.executable, "-I", "-c", "from pathlib import Path;import time;Path(" + repr(effect) + ").write_text('started');time.sleep(600)",
+                env={}, pass_fds=(read_fd,), start_new_session=True,
+                stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+            admitted = await ctx.owned_process("record", {"launchId": launch_id, "pid": owned.pid})
+            if admitted.get("state") != "started" or admitted.get("identity", {}).get("pid") != owned.pid:
+                raise ValueError("Missing ownership receipt")
+            os.write(control_fd, (json.dumps({"activate": launch_id, "env": {}}) + "\n").encode())
+            record(ctx, "registered", launchId=launch_id, pid=owned.pid)
+        finally:
+            os.close(read_fd)
     return {"status": "opened", "nativeReference": "python:" + p["openId"]}
 
 
@@ -80,6 +103,27 @@ async def snapshot(p, ctx):
 
 
 async def closed(p, ctx):
+    global control_fd
+    if launch_id is not None:
+        if control_fd is not None:
+            os.close(control_fd)
+            control_fd = None
+        if owned is not None:
+            await owned.wait()
+        for method in ("prepare", "record"):
+            try:
+                await ctx.owned_process(method, {"launchId": launch_id})
+                raise ValueError("Cleanup admitted native launch")
+            except Exception as error:
+                if getattr(error, "code", None) != "plugin_closed":
+                    raise
+                record(ctx, "cleanup_denied", method=method)
+        inspected = await ctx.owned_process("inspect", {"launchId": launch_id})
+        stopped = await ctx.owned_process("stopped", {"launchId": launch_id})
+        if stopped.get("state") != "stopped":
+            raise ValueError("Cleanup lacks ownership proof")
+        record(ctx, "cleanup_confirmed", inspected=inspected["launchId"], stopped=stopped["launchId"])
+        return {"ownedStopped": True}
     if attached_pid is not None:
         # Fixture deliberately makes the lifecycle contract observable against
         # a process started by the test outside the plugin ownership tree.

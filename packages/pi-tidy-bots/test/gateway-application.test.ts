@@ -700,6 +700,73 @@ test("stopped-fleet snapshot refuses future storage and restores current unknown
   }
 });
 
+test("compatible config rollback retains current journal and plugin checkpoint", async () => {
+  const f = await fixture();
+  try {
+    let handle = await f.start();
+    const binding = await f.binding(handle);
+    await f.submit(handle, binding, "rollback-unknown", "[unknown]");
+    await waitFor(
+      () => f.inspect(handle, "rollback-unknown"),
+      (receipt) => receipt.delivery === "unknown"
+    );
+    assert.equal(
+      (
+        await f.submit(
+          handle,
+          binding,
+          "rollback-queued",
+          "queued after unknown"
+        )
+      ).status,
+      202
+    );
+    await handle.stop();
+
+    const manifestPath = join(f.dir, "bots.toml");
+    const originalManifest = await readFile(manifestPath);
+    const checkpointPath = join(
+      f.dir,
+      ".fleet/plugins",
+      binding.bindingId,
+      "calls.jsonl"
+    );
+    const checkpointBefore = await readFile(checkpointPath);
+    const callsBefore = await f.calls(binding);
+    const submitCountBefore = callsBefore.filter(
+      (call) => call.method === "operation.submit"
+    ).length;
+
+    // A bot title is a compatible presentation change and is outside the
+    // binding policy, so the existing journal/binding remains usable.
+    await writeFile(manifestPath, `${f.manifest}title = "candidate"\n`);
+    handle = await f.start();
+    assert.equal((await f.request(handle, "/api/fleet")).status, 200);
+    await handle.stop();
+
+    // Roll back only the manifest. The current journal and plugin checkpoint
+    // stay in place; no older snapshot is restored over them.
+    await writeFile(manifestPath, originalManifest);
+    handle = await f.start();
+    const unknown = await f.inspect(handle, "rollback-unknown");
+    const queued = await f.inspect(handle, "rollback-queued");
+    assert.equal(unknown.delivery, "unknown");
+    assert.equal(unknown.observation, "reconciliation_required");
+    assert.equal(queued.delivery, "queued");
+    assert.equal(queued.execution, "not_started");
+    const callsAfter = await f.calls(binding);
+    assert.equal(
+      callsAfter.filter((call) => call.method === "operation.submit").length,
+      submitCountBefore
+    );
+    assert.ok(
+      (await readFile(checkpointPath)).length >= checkpointBefore.length
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
 test("established binding refuses erased plugin storage before starting a replacement", async () => {
   const f = await fixture();
   try {

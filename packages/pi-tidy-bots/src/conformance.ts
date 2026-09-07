@@ -1,4 +1,11 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,12 +15,18 @@ import {
   type PluginFaultObservation,
   type PluginHostObservation,
 } from "./daemon.ts";
-import { nonempty, object, type JsonObject } from "./gateway/protocol.ts";
+import {
+  nonempty,
+  object,
+  ProtocolError,
+  type JsonObject,
+} from "./gateway/protocol.ts";
 
 export type ConformanceStatus = "passed" | "failed" | "unsupported" | "not-run";
 export interface LocalConformanceCell {
   id: string;
-  kind: "message" | "post_native_eof" | "malformed_plugin" | "cancel";
+  kind:
+    "message" | "post_native_eof" | "malformed_plugin" | "cancel" | "prelaunch";
   operationId: string;
   text: string;
   retry?: "same" | "conflict";
@@ -29,6 +42,13 @@ export interface LocalConformanceCell {
   };
   /** Public stream predicates; one fixture bot executes cells serially. */
   events?: { minFrames: number; terminalFinals: 1 };
+  /** Host startup is itself a conformance surface; no request may reach native handlers. */
+  prelaunch?: {
+    phase: "compatible" | "initialize" | "config_preflight";
+    code?:
+      "incompatible_protocol" | "missing_required_method" | "invalid_config";
+    instrumentation: "readable" | "absent_preflight";
+  };
   expect: {
     status: number;
     execution?:
@@ -157,9 +177,13 @@ function validFixture(value: LocalConformanceFixture): void {
     value.cells.some(
       (cell) =>
         !nonempty(cell.id) ||
-        !["message", "post_native_eof", "malformed_plugin", "cancel"].includes(
-          cell.kind
-        ) ||
+        ![
+          "message",
+          "post_native_eof",
+          "malformed_plugin",
+          "cancel",
+          "prelaunch",
+        ].includes(cell.kind) ||
         !nonempty(cell.operationId) ||
         typeof cell.text !== "string" ||
         !object(cell.expect) ||
@@ -177,6 +201,24 @@ function validFixture(value: LocalConformanceFixture): void {
           (!cell.effect ||
             cell.expect.execution !== "unknown" ||
             cell.expect.observation !== "reconciliation_required")) ||
+        (cell.kind === "prelaunch" &&
+          (!cell.prelaunch ||
+            !["compatible", "initialize", "config_preflight"].includes(
+              cell.prelaunch.phase
+            ) ||
+            (cell.prelaunch.phase === "compatible"
+              ? cell.prelaunch.code !== undefined || cell.expect.status !== 200
+              : cell.prelaunch.code === undefined ||
+                cell.expect.status !== 0) ||
+            (cell.prelaunch.code !== undefined &&
+              ![
+                "incompatible_protocol",
+                "missing_required_method",
+                "invalid_config",
+              ].includes(cell.prelaunch.code)) ||
+            !["readable", "absent_preflight"].includes(
+              cell.prelaunch.instrumentation
+            ))) ||
         (cell.kind === "cancel" &&
           (!cell.effect ||
             !cell.cancel ||
@@ -221,6 +263,66 @@ async function waitFor(
   }
   throw new Error(
     `Conformance receipt did not reach ${execution}/${observation ?? "any"}: ${JSON.stringify(last)}`
+  );
+}
+
+export interface PrelaunchNativeEffects {
+  instrumentation: "readable" | "absent_preflight" | "missing";
+  lines: string[];
+}
+
+/** Reads only fixture-owned native counters; startup failures never trust plugin stderr. */
+async function prelaunchNativeEffects(
+  directory: string
+): Promise<PrelaunchNativeEffects> {
+  const plugins = join(directory, ".fleet", "plugins");
+  let bindings;
+  try {
+    bindings = await readdir(plugins, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT")
+      return { instrumentation: "absent_preflight", lines: [] };
+    throw error;
+  }
+  const lines: string[] = [];
+  let readable = false;
+  for (const binding of bindings) {
+    if (!binding.isDirectory()) continue;
+    try {
+      const value = await readFile(
+        join(plugins, binding.name, "native-calls.jsonl"),
+        "utf8"
+      );
+      readable = true;
+      lines.push(...value.split("\n").filter(Boolean));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  return { instrumentation: readable ? "readable" : "missing", lines };
+}
+
+function startupCode(error: unknown): string {
+  return error instanceof ProtocolError ? error.code : "startup_error";
+}
+
+/** A startup rejection is evidence only when its host code and native counters agree. */
+export function prelaunchFailureMatches(
+  expected: NonNullable<LocalConformanceCell["prelaunch"]>,
+  code: string,
+  effects: PrelaunchNativeEffects
+): boolean {
+  const nativeCalls = effects.lines.map((line) => {
+    const value: unknown = JSON.parse(line);
+    if (!object(value) || typeof value.kind !== "string")
+      throw new Error("Fixture native instrumentation is malformed");
+    return String(value.kind);
+  });
+  return (
+    expected.phase !== "compatible" &&
+    expected.code === code &&
+    effects.instrumentation === expected.instrumentation &&
+    !nativeCalls.some((kind) => kind === "open" || kind === "submit")
   );
 }
 
@@ -544,7 +646,54 @@ export async function runLocalConformance(
           pluginInstances.push(instance);
         },
       });
-    handle = await launch();
+    const startupCells = options.fixture.cells.filter(
+      (cell) => cell.kind === "prelaunch" && !cell.skip
+    );
+    try {
+      handle = await launch();
+    } catch (error) {
+      if (!startupCells.length) throw error;
+      const effects = await prelaunchNativeEffects(directory);
+      const code = startupCode(error);
+      for (const cell of startupCells) {
+        const matched = prelaunchFailureMatches(cell.prelaunch!, code, effects);
+        cells.push({
+          id: cell.id,
+          status: matched ? "passed" : "failed",
+          evidence: {
+            phase: cell.prelaunch!.phase,
+            expectedCode: cell.prelaunch!.code ?? null,
+            actualCode: code,
+            instrumentation: effects.instrumentation,
+            nativeCalls: effects.lines.map((line) => JSON.parse(line)),
+          },
+        });
+      }
+      report = {
+        scope: {
+          mode: "local_disposable",
+          daemon: "startFleet",
+          registryPath: options.registryPath,
+          pluginId: options.pluginId,
+          exercised: ["C01.startup_negotiation_prelaunch"],
+          notRun: [
+            "C01.compatible_session_open",
+            "C01.other_protocol_variants",
+            "C02",
+            "C03",
+            "C04",
+            "C05",
+            "L01",
+            "L02",
+            "L03",
+            "L10",
+          ],
+          nativeProvider: "not-run",
+        },
+        cells,
+      };
+      return report;
+    }
     const request = async (path: string, init: RequestInit = {}) => {
       const response = await fetch(handle!.url + path, {
         ...init,
@@ -597,6 +746,32 @@ export async function runLocalConformance(
             id: cell.id,
             status: "not-run",
             evidence: { reason: "fixture_native_effect_evidence_required" },
+          });
+          continue;
+        }
+        if (cell.kind === "prelaunch") {
+          const effects = await prelaunchNativeEffects(directory);
+          const calls = effects.lines.map(
+            (line) => JSON.parse(line) as JsonObject
+          );
+          const openCount = calls.filter((call) => call.kind === "open").length;
+          const submitCount = calls.filter(
+            (call) => call.kind === "submit"
+          ).length;
+          const matched =
+            cell.prelaunch!.phase === "compatible" &&
+            effects.instrumentation === "readable" &&
+            openCount === 1 &&
+            submitCount === 0;
+          cells.push({
+            id: cell.id,
+            status: matched ? "passed" : "failed",
+            evidence: {
+              phase: cell.prelaunch!.phase,
+              instrumentation: effects.instrumentation,
+              nativeOpenCount: openCount,
+              nativeSubmitCount: submitCount,
+            },
           });
           continue;
         }
@@ -1139,6 +1314,9 @@ export async function runLocalConformance(
     const retryCells = options.fixture.cells
       .filter((cell) => cell.retry && !cell.skip)
       .map((cell) => cell.id);
+    const prelaunchCells = options.fixture.cells
+      .filter((cell) => cell.kind === "prelaunch" && !cell.skip)
+      .map((cell) => cell.id);
     report = {
       scope: {
         mode: "local_disposable",
@@ -1153,6 +1331,9 @@ export async function runLocalConformance(
           fixtureId: "none",
         },
         exercised: [
+          ...(prelaunchCells.length
+            ? ["C01.startup_negotiation_prelaunch"]
+            : []),
           ...(retryCells.length || cancellationCells.length ? ["C03"] : []),
           ...(eventCells.length ? ["C05.public_ordered_terminal"] : []),
           ...(eofCells.length
@@ -1167,7 +1348,9 @@ export async function runLocalConformance(
         cancellationCells,
         retryCells,
         notRun: [
-          "C01",
+          ...(prelaunchCells.length
+            ? ["C01.other_protocol_variants"]
+            : ["C01"]),
           "C02",
           ...(retryCells.length || cancellationCells.length ? [] : ["C03"]),
           "C04",

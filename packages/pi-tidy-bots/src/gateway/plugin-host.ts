@@ -339,28 +339,60 @@ export class PluginHost {
     return { stderrBytes: this.stderrBytes, code: this.failure?.code };
   }
   private initialize(value: unknown): void {
+    if (!object(value))
+      throw new ProtocolError(
+        "initialize_failed",
+        "Plugin initialization result must be an object"
+      );
     if (
-      !object(value) ||
       !object(value.protocol) ||
       value.protocol.major !== 1 ||
-      value.protocol.minor !== 0 ||
+      value.protocol.minor !== 0
+    )
+      throw new ProtocolError(
+        "incompatible_protocol",
+        "Plugin selected an incompatible protocol version"
+      );
+    if (
       !object(value.plugin) ||
       value.plugin.id !== this.options.installation.manifest.id ||
-      value.plugin.version !== this.options.installation.manifest.version ||
+      value.plugin.version !== this.options.installation.manifest.version
+    )
+      throw new ProtocolError(
+        "initialize_failed",
+        "Plugin initialization identity is invalid"
+      );
+    if (
       !object(value.runtime) ||
       !nonempty(value.runtime.name) ||
-      !nonempty(value.runtime.version) ||
-      !Array.isArray(value.methods) ||
+      !nonempty(value.runtime.version)
+    )
+      throw new ProtocolError(
+        "initialize_failed",
+        "Plugin runtime identity is invalid"
+      );
+    if (!Array.isArray(value.methods))
+      throw new ProtocolError(
+        "missing_required_method",
+        "Plugin initialization does not list protocol methods"
+      );
+    if (
       CORE_METHODS.some(
         (method) => !(value.methods as unknown[]).includes(method)
-      ) ||
+      )
+    )
+      throw new ProtocolError(
+        "missing_required_method",
+        "Plugin initialization omits a required protocol method"
+      );
+    if (
       !["ready", "degraded", "auth_required", "unavailable"].includes(
         String(value.health)
       )
     )
       throw new ProtocolError(
         "initialize_failed",
-        "Plugin initialization identity, protocol, methods or health are invalid"
+        "Plugin initialization health is invalid"
       );
     this.capabilities = validateCapabilities(value.capabilities);
     this.runtime = value.runtime as PluginHost["runtime"];

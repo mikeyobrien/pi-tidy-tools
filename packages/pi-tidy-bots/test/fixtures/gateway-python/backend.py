@@ -47,6 +47,21 @@ async def initialize(config, ctx):
         ctx.ownership = "attached"
         attached_pid = config["externalPid"]
     record(ctx, "initialized")
+    if mode in ("initialize-incompatible", "initialize-missing-method"):
+        async def incompatible_response(request, result=None, error=None):
+            # Preserve the host request ID and all otherwise valid fields while
+            # selecting either an incompatible version or an incomplete method set.
+            methods = ["health", "session.snapshot", "operation.submit", "operation.inspect", "operation.cancel", "interaction.respond", "events.ack", "events.replay", "session.close", "shutdown"]
+            protocol = {"major": 99, "minor": 0} if mode == "initialize-incompatible" else {"major": 1, "minor": 0}
+            await ctx._write({
+                "jsonrpc": "2.0", "id": request["id"], "result": {
+                    "protocol": protocol,
+                    "plugin": ctx.identity, "runtime": ctx.runtime,
+                    "methods": methods,
+                    "capabilities": ctx.capabilities, "health": "ready",
+                }
+            })
+        ctx._response = incompatible_response
 
 
 async def opened(p, ctx):

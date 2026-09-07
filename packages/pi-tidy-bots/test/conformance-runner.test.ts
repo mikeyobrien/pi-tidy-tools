@@ -24,8 +24,10 @@ import {
   noCompletedAssistant,
   normalizeConformanceTrace,
   postNativeEofMatches,
+  prelaunchFailureMatches,
   publicEventEvidence,
   runLocalConformance,
+  type LocalConformanceFixture,
 } from "../src/conformance.ts";
 
 const pythonCandidate = "/opt/homebrew/opt/python@3.14/bin/python3.14";
@@ -123,6 +125,98 @@ async function pythonCrashArtifact(
   );
   return { registry, pluginId: "org.example.python" };
 }
+
+test("runner proves C01 negotiation and config failures before native launch", async () => {
+  const root = await mkdtemp(join(tmpdir(), "tidy-conformance-c01-"));
+  try {
+    const { registry, pluginId } = await pythonCrashArtifact(root);
+    const fixture = (
+      phase: "compatible" | "initialize" | "config_preflight",
+      code?:
+        "incompatible_protocol" | "missing_required_method" | "invalid_config"
+    ): LocalConformanceFixture => ({
+      version: 1 as const,
+      cells: [
+        {
+          id: `c01-${phase}-${code ?? "open"}`,
+          kind: "prelaunch" as const,
+          operationId: `c01-${phase}-${code ?? "open"}`,
+          text: "",
+          expect: { status: phase === "compatible" ? 200 : 0 },
+          prelaunch: {
+            phase,
+            ...(code ? { code } : {}),
+            instrumentation:
+              phase === "config_preflight" ? "absent_preflight" : "readable",
+          },
+        },
+      ],
+    });
+    const compatible = await runLocalConformance({
+      registryPath: registry,
+      pluginId,
+      config: { mode: "normal" },
+      fixture: fixture("compatible"),
+    });
+    assert.equal(
+      compatible.cells[0].status,
+      "passed",
+      JSON.stringify(compatible)
+    );
+    assert.deepEqual(compatible.cells[0].evidence, {
+      phase: "compatible",
+      instrumentation: "readable",
+      nativeOpenCount: 1,
+      nativeSubmitCount: 0,
+    });
+    for (const [mode, phase, code] of [
+      ["initialize-incompatible", "initialize", "incompatible_protocol"],
+      ["initialize-missing-method", "initialize", "missing_required_method"],
+      ["invalid", "config_preflight", "invalid_config"],
+    ] as const) {
+      const report = await runLocalConformance({
+        registryPath: registry,
+        pluginId,
+        config: mode === "invalid" ? { unexpected: true } : { mode },
+        fixture: fixture(phase, code),
+      });
+      assert.equal(report.cells[0].status, "passed", JSON.stringify(report));
+      assert.equal(report.cells[0].evidence.actualCode, code);
+      assert.equal(
+        report.cells[0].evidence.instrumentation,
+        phase === "config_preflight" ? "absent_preflight" : "readable"
+      );
+      assert.equal(
+        (report.cells[0].evidence.nativeCalls as Array<{ kind: string }>).some(
+          (call) => call.kind === "open" || call.kind === "submit"
+        ),
+        false
+      );
+    }
+    const wrongReason = await runLocalConformance({
+      registryPath: registry,
+      pluginId,
+      config: { mode: "initialize-incompatible" },
+      fixture: fixture("initialize", "missing_required_method"),
+    });
+    assert.equal(wrongReason.cells[0].status, "failed");
+    assert.equal(
+      prelaunchFailureMatches(
+        {
+          phase: "initialize",
+          code: "incompatible_protocol",
+          instrumentation: "readable",
+        },
+        "incompatible_protocol",
+        { instrumentation: "readable", lines: ['{"kind":"open"}'] }
+      ),
+      false,
+      "an unexpected native open cannot certify a startup rejection"
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("local conformance runner uses the shipped daemon with an explicit pinned fixture", async () => {
   const root = await mkdtemp(join(tmpdir(), "tidy-conformance-test-"));

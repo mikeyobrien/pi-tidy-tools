@@ -31,7 +31,11 @@
       "types": "./src/gateway/protocol.ts",
       "default": "./src/plugin-sdk/protocol.mjs"
     },
-    "./*": "./*"
+    "./*": "./*",
+    "./conformance": {
+      "types": "./src/conformance.ts",
+      "default": "./src/conformance.mjs"
+    }
   },
   "bin": {
     "pi-tidy-bots": "./bin/pi-tidy-bots.mjs"
@@ -39,6 +43,7 @@
   "files": [
     "bin/*.mjs",
     "src/**/*.ts",
+    "src/conformance.mjs",
     "src/gateway/*.mjs",
     "src/plugin-sdk/*.mjs",
     "src/gateway/schema/*.json",

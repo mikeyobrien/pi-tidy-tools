@@ -100,6 +100,19 @@ class HistoryTests(unittest.TestCase):
         self.db.get_session = changing
         self.unavailable()
 
+    def test_db_persistence_markers_are_not_conversation_identity(self):
+        original = self.db.get_messages_as_conversation
+
+        def stamped(sid, *, repair_alternation):
+            return [{**message, "_db_persisted": True, "_row_id": 17, "timestamp": 1.0}
+                    for message in original(sid, repair_alternation=repair_alternation)]
+
+        self.db.get_messages_as_conversation = stamped
+        checkpoint = history.history_checkpoint(self.manager, self.state)
+        self.assertEqual(checkpoint["messageCount"], 2)
+        self.assertNotIn("_db_persisted", json.dumps(checkpoint))
+        self.assertEqual(history.verify_history_checkpoint(self.manager, self.state, checkpoint), checkpoint)
+
     def test_accounting_flush_between_row_reads_preserves_exact_history(self):
         original = self.db.get_session
         count = 0

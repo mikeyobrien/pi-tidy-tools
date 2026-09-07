@@ -70,7 +70,10 @@ class FakeHistoryDB:
         if config().get("historyReadError"):
             raise RuntimeError("private database failure")
         value = json.loads((profile() / "state.db").read_text())
-        return value["messages"] if value["row"]["id"] == sid else []
+        messages = value["messages"] if value["row"]["id"] == sid else []
+        # Pinned Hermes SessionDB stamps load-time bookkeeping onto every
+        # decoded row. Live ACP history after a turn does not carry these keys.
+        return [{**message, "_db_persisted": True, "timestamp": 1.0} for message in messages]
 
     def save(self, state):
         (profile() / "state.db").write_text(json.dumps({"row": {"id":state.session_id, "source":"acp",

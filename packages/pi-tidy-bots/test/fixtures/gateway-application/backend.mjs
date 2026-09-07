@@ -364,9 +364,12 @@ input.on("line", (line) => {
           maxMediaBytes: p.config.artifacts ? 524288 : 0,
         },
         sessions: {
-          load: p.config.discovery === true,
+          load: p.config.discovery === true || p.config.sessionsLoad === true,
           import: false,
-          continuity: p.config.discovery === true ? "verified" : "unverified",
+          continuity:
+            p.config.discovery === true || p.config.sessionsLoad === true
+              ? "verified"
+              : "unverified",
         },
         output: { text: "snapshots", tools: true, usage: "unknown" },
         operations: {
@@ -405,6 +408,11 @@ input.on("line", (line) => {
     record({ method: "session.open", ...p });
     if (typeof init.config?.openError === "string")
       return respondError(message, init.config.openError);
+    if (
+      p.mode === "load" &&
+      typeof init.config?.openLoadError === "string"
+    )
+      return respondError(message, init.config.openLoadError);
     if (init.config?.openStatus === "creation_unknown")
       return respond(message, { status: "creation_unknown" });
     const nativeReferencePath = join(dir, "native-reference");

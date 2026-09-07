@@ -14,7 +14,11 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
 import { WebSocket } from "ws";
-import { startFleet, type FleetHandle } from "../src/daemon.ts";
+import {
+  startFleet,
+  type FleetHandle,
+  type PluginFaultObservation,
+} from "../src/daemon.ts";
 import { loadFleetConfig } from "../src/config.ts";
 import { digestArtifact } from "../src/gateway/registry.ts";
 import { GatewayJournal } from "../src/gateway/journal.ts";
@@ -135,12 +139,15 @@ async function fixture(
     );
   const handles: FleetHandle[] = [];
   let fleetToken = "disposable-test-token";
-  const start = async () => {
+  const start = async (
+    options: { onPluginFault?: (fault: PluginFaultObservation) => void } = {}
+  ) => {
     const handle = await startFleet({
       dir,
       port: 0,
       token: fleetToken,
       log: () => {},
+      ...options,
     });
     handles.push(handle);
     return handle;
@@ -1362,6 +1369,56 @@ for (const mode of ["wrong", "malformed", "lost"]) {
     }
   });
 }
+
+test("throwing plugin fault diagnostics cannot suppress bot isolation", async () => {
+  const f = await fixture(false, false, false, true);
+  try {
+    const handle = await f.start({
+      onPluginFault() {
+        throw new Error("diagnostic observer failure");
+      },
+    });
+    const binding = await f.binding(handle);
+    const configure = await f.request(handle, "/api/bots/fixture/model", {
+      method: "PUT",
+      headers: {
+        "content-type": "application/json",
+        "x-tidy-client-contract": "2",
+        "x-tidy-binding-revision": binding.bindingRevision,
+      },
+      body: JSON.stringify({
+        kind: "model",
+        operationId: "observer-isolation",
+        conversationId: binding.conversationId,
+        model: "fixture/lost",
+      }),
+    });
+    assert.equal(configure.status, 202);
+    await waitFor(
+      () => f.calls(binding),
+      (calls) => calls.some((call) => call.method === "session.configure")
+    );
+    await writeFile(
+      join(f.dir, ".fleet/plugins", binding.bindingId, "release-lost-control"),
+      "release"
+    );
+    const receipt = await waitFor(
+      () => f.inspect(handle, "observer-isolation"),
+      (value) => value.execution === "unknown"
+    );
+    assert.equal(receipt.observation, "reconciliation_required");
+    const later = await f.submit(
+      handle,
+      binding,
+      "after-observer-fault",
+      "must be rejected while isolated"
+    );
+    assert.equal(later.status, 503);
+    assert.equal(later.body.error, "session_unavailable");
+  } finally {
+    await f.cleanup();
+  }
+});
 
 test("gateway settings reads project only authoritative public values and gate unsupported controls", async () => {
   const f = await fixture(false, false, false, true);

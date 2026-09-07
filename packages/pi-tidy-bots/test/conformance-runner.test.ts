@@ -6,6 +6,7 @@ import {
   cp,
   mkdir,
   mkdtemp,
+  readFile,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -16,6 +17,8 @@ import { fileURLToPath } from "node:url";
 import { digestArtifact } from "../src/gateway/registry.ts";
 import {
   immutableReceiptMatches,
+  latestPluginInstance,
+  malformedPluginFaultMatches,
   matchingEffectLines,
   noCompletedAssistant,
   normalizeConformanceTrace,
@@ -80,6 +83,20 @@ async function pythonCrashArtifact(
       additionalProperties: false,
     })
   );
+  const healthy = join(root, "healthy-plugin");
+  await cp(artifact, healthy, { recursive: true });
+  const healthySource = (
+    await readFile(join(healthy, "backend.py"), "utf8")
+  ).replaceAll("org.example.python", "org.example.healthy");
+  await writeFile(join(healthy, "backend.py"), healthySource);
+  const healthyManifest = JSON.parse(
+    await readFile(join(healthy, "backend.json"), "utf8")
+  );
+  healthyManifest.id = "org.example.healthy";
+  await writeFile(
+    join(healthy, "backend.json"),
+    JSON.stringify(healthyManifest)
+  );
   const registry = join(root, "python-registry.json");
   await writeFile(
     registry,
@@ -91,6 +108,13 @@ async function pythonCrashArtifact(
           version: "1.0.0",
           artifactPath: "python-plugin",
           sha256: await digestArtifact(artifact),
+          enabled: true,
+        },
+        {
+          id: "org.example.healthy",
+          version: "1.0.0",
+          artifactPath: "healthy-plugin",
+          sha256: await digestArtifact(healthy),
           enabled: true,
         },
       ],
@@ -282,6 +306,96 @@ test("runner proves post-native-write Python EOF remains uncertain and is never 
   }
 });
 
+test("runner isolates malformed Python plugin frames while healthy binding completes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "tidy-conformance-malformed-"));
+  try {
+    const { registry, pluginId } = await pythonCrashArtifact(root);
+    for (const mode of [
+      "malformed-json",
+      "malformed-event",
+      "oversize",
+      "nonfinite",
+    ]) {
+      const operationId = `bad-${mode}`;
+      const report = await runLocalConformance({
+        registryPath: registry,
+        pluginId,
+        config: { mode },
+        healthy: {
+          pluginId: "org.example.healthy",
+          config: { mode: "normal" },
+        },
+        fixture: {
+          version: 1,
+          cells: [
+            {
+              id: mode,
+              kind: "malformed_plugin",
+              operationId,
+              text: "isolate",
+              effect: {
+                file: "native-calls.jsonl",
+                contains: `\"kind\": \"malformed\", \"mode\": \"${mode}\", \"operationId\": \"${operationId}\"`,
+                expectedOccurrences: 1,
+              },
+              expect: {
+                status: 202,
+                execution: "unknown",
+                observation: "reconciliation_required",
+              },
+            },
+          ],
+        },
+      });
+      assert.equal(report.cells[0].status, "passed", JSON.stringify(report));
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("marker plus ordinary Python crash cannot certify malformed-frame isolation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "tidy-conformance-marker-crash-"));
+  try {
+    const { registry, pluginId } = await pythonCrashArtifact(root);
+    const operationId = "marker-crash";
+    const report = await runLocalConformance({
+      registryPath: registry,
+      pluginId,
+      config: { mode: "marker-crash" },
+      healthy: {
+        pluginId: "org.example.healthy",
+        config: { mode: "normal" },
+      },
+      fixture: {
+        version: 1,
+        cells: [
+          {
+            id: "marker-crash",
+            kind: "malformed_plugin",
+            operationId,
+            text: "must not certify",
+            effect: {
+              file: "native-calls.jsonl",
+              contains: `"kind": "malformed", "mode": "marker-crash", "operationId": "${operationId}"`,
+              expectedOccurrences: 1,
+            },
+            expect: {
+              status: 202,
+              execution: "unknown",
+              observation: "reconciliation_required",
+            },
+          },
+        ],
+      },
+    });
+    assert.equal(report.cells[0].status, "failed", JSON.stringify(report));
+    assert.equal(report.cells[0].evidence.protocolRejection, null);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("shipped conformance export loads its runtime entrypoint", async () => {
   const runtime = await import(
     new URL("../src/conformance.mjs", import.meta.url).href
@@ -426,5 +540,75 @@ test("operation-scoped fixture effect matching tolerates unrelated RPCs and dete
   assert.equal(
     matchingEffectLines(benign + "{" + operation + "}\n", operation).length,
     2
+  );
+});
+
+test("malformed frame evidence rejects ordinary plugin EOF despite a fixture marker", () => {
+  const identity = {
+    botName: "fixture",
+    bindingId: "binding",
+    instanceId: "instance",
+    leaseGeneration: 1,
+  };
+  assert.equal(
+    malformedPluginFaultMatches(
+      "malformed-json",
+      { ...identity, code: "plugin_eof" },
+      identity
+    ),
+    false
+  );
+  assert.equal(
+    malformedPluginFaultMatches(
+      "malformed-json",
+      { ...identity, code: "invalid_frame" },
+      { ...identity, instanceId: "stale-instance" }
+    ),
+    false
+  );
+  assert.equal(
+    malformedPluginFaultMatches(
+      "oversize",
+      { ...identity, code: "resource_limit" },
+      { ...identity, leaseGeneration: 2 }
+    ),
+    false
+  );
+  assert.equal(
+    malformedPluginFaultMatches(
+      "oversize",
+      { ...identity, code: "resource_limit" },
+      identity
+    ),
+    true
+  );
+});
+
+test("malformed frame cell selects the latest matching ready instance", () => {
+  const first = {
+    botName: "fixture",
+    bindingId: "binding",
+    instanceId: "old-instance",
+    leaseGeneration: 1,
+  };
+  const active = {
+    ...first,
+    instanceId: "active-instance",
+    leaseGeneration: 2,
+  };
+  const selected = latestPluginInstance(
+    [first, { ...first, botName: "healthy" }, active],
+    "fixture",
+    "binding"
+  );
+  assert.equal(selected?.instanceId, "active-instance");
+  assert.equal(selected?.leaseGeneration, 2);
+  assert.equal(
+    malformedPluginFaultMatches(
+      "malformed-json",
+      { ...first, code: "invalid_frame" },
+      selected
+    ),
+    false
   );
 });

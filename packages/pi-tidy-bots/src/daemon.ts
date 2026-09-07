@@ -266,6 +266,17 @@ export interface FleetHandle {
   stop(): Promise<void>;
 }
 
+export interface PluginHostObservation {
+  botName: string;
+  bindingId: string;
+  instanceId: string;
+  leaseGeneration: number;
+}
+
+export interface PluginFaultObservation extends PluginHostObservation {
+  code: string;
+}
+
 export interface StartFleetOptions {
   dir: string;
   /** Registry name (issue 42) surfaced in /api/version for fleet identity. */
@@ -276,6 +287,10 @@ export interface StartFleetOptions {
   toolOutput?: ToolOutputMode;
   piBin?: string;
   log?: (line: string) => void;
+  /** Bounded host-generated plugin isolation diagnostic; never includes plugin output. */
+  onPluginFault?: (fault: PluginFaultObservation) => void;
+  /** Bounded host-generated active instance identity; never includes plugin output. */
+  onPluginReady?: (instance: PluginHostObservation) => void;
 }
 
 const ACTIVE_WINDOW_MS = 90_000;

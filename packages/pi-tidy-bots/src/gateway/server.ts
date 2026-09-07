@@ -511,7 +511,9 @@ export async function startGatewayFleet(
       options.log,
       (created) => {
         ownedApplication = created;
-      }
+      },
+      options.onPluginFault,
+      options.onPluginReady
     );
     unsubscribe = application.subscribe((event) => {
       for (const socket of sockets)

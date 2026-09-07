@@ -50,7 +50,10 @@ export interface PluginHostOptions {
   requiredCapabilities?: string[];
   onEvent: (event: GatewayPluginEvent) => Promise<number>;
   onHostCall?: (call: HostCall) => Promise<unknown>;
-  onFailure?: (error: ProtocolError) => void;
+  onFailure?: (
+    error: ProtocolError,
+    identity: { bindingId: string; instanceId: string; leaseGeneration: number }
+  ) => void;
   onLaunchPrepared?: (
     launchId: string,
     parentLaunchId?: string
@@ -880,7 +883,11 @@ export class PluginHost {
     this.state = "closing";
     this.rejectPending(error);
     try {
-      this.options.onFailure?.(error);
+      this.options.onFailure?.(error, {
+        bindingId: this.options.bindingId,
+        instanceId: this.instanceId,
+        leaseGeneration: this.options.leaseGeneration,
+      });
     } catch {
       /* failure observers do not own supervision */
     }

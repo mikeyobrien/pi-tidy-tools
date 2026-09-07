@@ -3,13 +3,17 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import WebSocket from "ws";
-import { startFleet } from "./daemon.ts";
+import {
+  startFleet,
+  type PluginFaultObservation,
+  type PluginHostObservation,
+} from "./daemon.ts";
 import { nonempty, object, type JsonObject } from "./gateway/protocol.ts";
 
 export type ConformanceStatus = "passed" | "failed" | "unsupported" | "not-run";
 export interface LocalConformanceCell {
   id: string;
-  kind: "message" | "post_native_eof";
+  kind: "message" | "post_native_eof" | "malformed_plugin";
   operationId: string;
   text: string;
   retry?: "same" | "conflict";
@@ -38,6 +42,7 @@ export interface LocalConformanceOptions {
   registryPath: string;
   pluginId: string;
   config: JsonObject;
+  healthy?: { pluginId: string; config: JsonObject };
   policy?: {
     workspace?: "none" | "read" | "read-write";
     nativeProfile?: boolean;
@@ -55,6 +60,43 @@ export interface LocalConformanceReceipt {
 export interface LocalConformanceReport {
   scope: JsonObject;
   cells: LocalConformanceReceipt[];
+}
+
+const MALFORMED_FRAME_CODES: Record<string, string> = {
+  "malformed-json": "invalid_frame",
+  "malformed-event": "invalid_event",
+  nonfinite: "invalid_frame",
+  oversize: "resource_limit",
+};
+
+/** The latest ready identity is the only admissible active host for a cell. */
+export function latestPluginInstance(
+  instances: readonly PluginHostObservation[],
+  botName: string,
+  bindingId: string
+): PluginHostObservation | undefined {
+  for (let index = instances.length - 1; index >= 0; index--) {
+    const candidate = instances[index];
+    if (candidate.botName === botName && candidate.bindingId === bindingId)
+      return candidate;
+  }
+  return undefined;
+}
+
+/** The decoder reason is host-generated and exact: fixture output cannot satisfy this predicate. */
+export function malformedPluginFaultMatches(
+  mode: string,
+  fault: PluginFaultObservation | undefined,
+  instance: PluginHostObservation | undefined
+): boolean {
+  return (
+    fault?.botName === "fixture" &&
+    instance?.botName === "fixture" &&
+    fault.bindingId === instance.bindingId &&
+    fault.instanceId === instance.instanceId &&
+    fault.leaseGeneration === instance.leaseGeneration &&
+    fault.code === MALFORMED_FRAME_CODES[mode]
+  );
 }
 export function normalizeConformanceTrace(value: unknown): unknown {
   const identifiers = new Map<string, number>();
@@ -101,7 +143,9 @@ function validFixture(value: LocalConformanceFixture): void {
     value.cells.some(
       (cell) =>
         !nonempty(cell.id) ||
-        !["message", "post_native_eof"].includes(cell.kind) ||
+        !["message", "post_native_eof", "malformed_plugin"].includes(
+          cell.kind
+        ) ||
         !nonempty(cell.operationId) ||
         typeof cell.text !== "string" ||
         !object(cell.expect) ||
@@ -389,6 +433,19 @@ export async function runLocalConformance(
     ...Object.entries(options.config).map(
       ([key, value]) => `${key} = ${toml(value)}`
     ),
+    ...(options.healthy
+      ? [
+          "",
+          "[[bot]]",
+          'name = "healthy"',
+          'dir = "workspace"',
+          `backend = ${JSON.stringify(options.healthy.pluginId)}`,
+          "[bot.backend_config]",
+          ...Object.entries(options.healthy.config).map(
+            ([key, value]) => `${key} = ${toml(value)}`
+          ),
+        ]
+      : []),
     "",
   ].join("\n");
   await writeFile(join(directory, "bots.toml"), gateway);
@@ -396,12 +453,19 @@ export async function runLocalConformance(
   const cells: LocalConformanceReceipt[] = [];
   let report: LocalConformanceReport | undefined;
   try {
+    const pluginFaults: PluginFaultObservation[] = [];
+    const pluginInstances: PluginHostObservation[] = [];
     const launch = () =>
       startFleet({
         dir: directory,
         port: 0,
         token: "local-conformance-token",
-        log() {},
+        onPluginFault(fault) {
+          pluginFaults.push(fault);
+        },
+        onPluginReady(instance) {
+          pluginInstances.push(instance);
+        },
       });
     handle = await launch();
     const request = async (path: string, init: RequestInit = {}) => {
@@ -471,6 +535,112 @@ export async function runLocalConformance(
             }),
           });
         try {
+          if (cell.kind === "malformed_plugin") {
+            const traceStart = publicTrace.frames.length;
+            const faultStart = pluginFaults.length;
+            const instance = latestPluginInstance(
+              pluginInstances,
+              "fixture",
+              String(binding.bindingId)
+            );
+            const first = await submit(cell.text);
+            const effectPath = join(
+              directory,
+              ".fleet",
+              "plugins",
+              String(binding.bindingId),
+              cell.effect!.file
+            );
+            const emitted = await waitForEffect(
+              effectPath,
+              cell.effect!.contains,
+              cell.effect!.expectedOccurrences
+            );
+            const bad = await waitFor(
+              () =>
+                request(
+                  `/api/bots/fixture/operations/${encodeURIComponent(cell.operationId)}`
+                ).then((v) => v.body),
+              "unknown",
+              "reconciliation_required"
+            );
+            const healthy = (await request("/api/bots/healthy/capabilities"))
+              .body;
+            if (
+              !object(healthy) ||
+              !nonempty(healthy.conversationId) ||
+              !nonempty(healthy.bindingRevision)
+            )
+              throw new Error("healthy_binding_unavailable");
+            const healthyId = `${cell.operationId}-healthy`;
+            const healthyResponse = await request("/api/bots/healthy/message", {
+              method: "POST",
+              headers: {
+                "content-type": "application/json",
+                "x-tidy-client-contract": "2",
+                "x-tidy-binding-revision": String(healthy.bindingRevision),
+              },
+              body: JSON.stringify({
+                operationId: healthyId,
+                clientMessageId: healthyId,
+                conversationId: healthy.conversationId,
+                text: cell.text,
+              }),
+            });
+            const healthyReceipt = await waitFor(
+              () =>
+                request(`/api/bots/healthy/operations/${healthyId}`).then(
+                  (v) => v.body
+                ),
+              "ended",
+              "complete"
+            );
+            const adversaryTrace = publicTrace.frames.slice(traceStart);
+            const noAssistant = noCompletedAssistant(
+              adversaryTrace,
+              cell.operationId
+            );
+            const protocolFault = pluginFaults
+              .slice(faultStart)
+              .find((fault) =>
+                malformedPluginFaultMatches(
+                  String(options.config.mode),
+                  fault,
+                  instance
+                )
+              );
+            cells.push({
+              id: cell.id,
+              status:
+                first.status === cell.expect.status &&
+                Boolean(protocolFault) &&
+                bad.execution === "unknown" &&
+                bad.observation === "reconciliation_required" &&
+                healthyResponse.status === 202 &&
+                healthyReceipt.execution === "ended" &&
+                noAssistant
+                  ? "passed"
+                  : "failed",
+              evidence: {
+                malformedEmission: matchingEffectLines(
+                  emitted,
+                  cell.effect!.contains
+                ),
+                protocolRejection: protocolFault
+                  ? (normalizeConformanceTrace(protocolFault) as JsonObject)
+                  : null,
+                noAssistant,
+                adversaryReceipt: normalizeConformanceTrace(bad) as JsonObject,
+                healthyReceipt: normalizeConformanceTrace(
+                  healthyReceipt
+                ) as JsonObject,
+                adversaryTrace: normalizeConformanceTrace(
+                  adversaryTrace
+                ) as JsonObject,
+              },
+            });
+            continue;
+          }
           if (cell.kind === "post_native_eof") {
             const traceStart = publicTrace.frames.length;
             const initialBootId = publicTrace.frames.find(

@@ -157,6 +157,17 @@ function bindingPolicy(
   });
 }
 
+export interface GatewayPluginInstance {
+  botName: string;
+  bindingId: string;
+  instanceId: string;
+  leaseGeneration: number;
+}
+
+export interface GatewayPluginFault extends GatewayPluginInstance {
+  code: string;
+}
+
 /** Neutral orchestration: no native runtime commands, model parsing, or backend switches. */
 export class GatewayApplication {
   readonly bootId = randomUUID();
@@ -170,13 +181,19 @@ export class GatewayApplication {
   private stopped?: Promise<void>;
   readonly fleet: FleetConfig;
   private readonly log: (line: string) => void;
+  private readonly onPluginFault?: (fault: GatewayPluginFault) => void;
+  private readonly onPluginReady?: (instance: GatewayPluginInstance) => void;
 
   private constructor(
     fleet: FleetConfig,
     log: (line: string) => void,
     journal: GatewayJournal,
-    lease: WriterLease
+    lease: WriterLease,
+    onPluginFault?: (fault: GatewayPluginFault) => void,
+    onPluginReady?: (instance: GatewayPluginInstance) => void
   ) {
+    this.onPluginFault = onPluginFault;
+    this.onPluginReady = onPluginReady;
     this.fleet = fleet;
     this.log = log;
     this.journal = journal;
@@ -219,7 +236,9 @@ export class GatewayApplication {
   static async start(
     fleet: FleetConfig,
     log: (line: string) => void = () => {},
-    onCreated?: (application: GatewayApplication) => void
+    onCreated?: (application: GatewayApplication) => void,
+    onPluginFault?: (fault: GatewayPluginFault) => void,
+    onPluginReady?: (instance: GatewayPluginInstance) => void
   ): Promise<GatewayApplication> {
     if (!fleet.gateway)
       throw new ProtocolError("invalid_config", "Gateway registry is required");
@@ -270,7 +289,14 @@ export class GatewayApplication {
         previousOwnerReconciled: reconciled,
         ...(previous ? { previousGeneration: previous.generation } : {}),
       });
-      app = new GatewayApplication(fleet, log, journal, lease);
+      app = new GatewayApplication(
+        fleet,
+        log,
+        journal,
+        lease,
+        onPluginFault,
+        onPluginReady
+      );
     } catch (error) {
       journal?.close();
       throw new GatewayStartupOwnershipError(error);
@@ -418,10 +444,21 @@ export class GatewayApplication {
               })),
           };
         },
-        onFailure: (error) => {
+        onFailure: (error, identity) => {
           // Startup failure may be waiting for a queued event callback to drain.
           // Release its provisioning wait before PluginHost.start awaits close.
           provisioned();
+          try {
+            this.onPluginFault?.({
+              botName: config.name,
+              bindingId: identity.bindingId,
+              instanceId: identity.instanceId,
+              leaseGeneration: identity.leaseGeneration,
+              code: error.code,
+            });
+          } catch {
+            // Read-only diagnostics must not change host supervision.
+          }
           if (bot) this.failBot(bot, error.code);
         },
       });
@@ -455,6 +492,16 @@ export class GatewayApplication {
         turns: new Map(),
       };
       this.bots.set(config.name, bot);
+      try {
+        this.onPluginReady?.({
+          botName: config.name,
+          bindingId,
+          instanceId: host.instanceId,
+          leaseGeneration: this.lease.generation,
+        });
+      } catch {
+        // Read-only diagnostics must not change host supervision.
+      }
       // Rebuild only from committed, ordered source observations. Replaying history
       // does not append entries, emit completions, or contact the native runtime.
       let cursor = 0;

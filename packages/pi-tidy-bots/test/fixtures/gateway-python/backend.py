@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import select
 from pathlib import Path
 import sys
 from uuid import uuid4
@@ -23,6 +24,19 @@ def record(ctx, kind, **values):
         stream.write(json.dumps({"kind": kind, **values}) + "\n")
         stream.flush()
         os.fsync(stream.fileno())
+
+
+def write_raw_frame(payload):
+    """Write adversarial transport bytes without SDK framing/validation."""
+    view = memoryview(payload)
+    fd = sys.stdout.fileno()
+    while view:
+        try:
+            written = os.write(fd, view)
+            view = view[written:]
+        except BlockingIOError:
+            select.select([], [fd], [], 1.0)
+    sys.stdout.flush()
 
 
 async def initialize(config, ctx):
@@ -69,6 +83,25 @@ async def submit(p, ctx):
     record(ctx, "submit", operationId=p["operationId"], text=p["input"][0]["text"])
     if mode == "crash-submit":
         os._exit(18)
+    if mode == "marker-crash":
+        record(ctx, "malformed", mode=mode, operationId=p["operationId"])
+        os._exit(19)
+    if mode in ("malformed-json", "malformed-event", "oversize", "nonfinite"):
+        record(ctx, "malformed", mode=mode, operationId=p["operationId"])
+        if mode == "malformed-json":
+            raw = b'{"jsonrpc":"2.0","method":"event","params":\n'
+        elif mode == "malformed-event":
+            raw = (json.dumps({"jsonrpc": "2.0", "method": "event", "params": {
+                "type": "not-a-protocol-event", "payload": {}}}) + "\n").encode()
+        elif mode == "nonfinite":
+            raw = b'{"jsonrpc":"2.0","method":"event","params":{"type":"turn.started","payload":{"value":NaN}}}\n'
+        else:
+            raw = (b'{"jsonrpc":"2.0","method":"event","params":{"type":"turn.started","payload":{"padding":"' +
+                   (b"x" * (2 * 1024 * 1024)) + b'"}}}\n')
+        write_raw_frame(raw)
+        # Exercise the host's post-fault isolation path; this must not become
+        # a successful canonical completion if the host has closed the pipe.
+        await ctx.emit({"operationId": p["operationId"], "turnId": p["turnId"], "type": "turn.started", "payload": {}})
     if mode == "timeout":
         try:
             await asyncio.sleep(60)

@@ -1959,6 +1959,7 @@ test("startFleet admits Pi questions through exact HTTP controls without certify
           .transcript as JsonObject[],
         target
       )!;
+      if (mode === "[ui-editor]") assert.equal(q.prefill, "Initial notes");
       const body = {
         kind: "question",
         operationId: `${target}-answer`,

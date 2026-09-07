@@ -95,6 +95,9 @@ const statuses: Record<string, number> = {
   client_upgrade_required: 426,
   capabilities_changed: 409,
   operation_conflict: 409,
+  schedule_owner_conflict: 409,
+  stale_schedule_owner: 409,
+  schedule_not_registered: 409,
   binding_conflict: 409,
   stale_binding: 409,
   operation_expired: 410,
@@ -241,6 +244,45 @@ export async function startGatewayFleet(
         json(response, 200, application.roster());
         return;
       }
+      const scheduleRoute =
+        /^\/api\/schedules\/([^/]+)\/(register|cutover)$/.exec(url.pathname);
+      if (request.method === "POST" && scheduleRoute) {
+        const scheduleId = decodeURIComponent(scheduleRoute[1]);
+        const input = await body(request);
+        if (scheduleRoute[2] === "register") {
+          if (typeof input.owner !== "string")
+            throw new ProtocolError(
+              "invalid_payload",
+              "Schedule owner is required"
+            );
+          json(
+            response,
+            200,
+            application.registerRoutineSchedule(scheduleId, input.owner)
+          );
+          return;
+        }
+        if (
+          typeof input.expectedOwner !== "string" ||
+          typeof input.nextOwner !== "string" ||
+          !Number.isSafeInteger(input.expectedGeneration)
+        )
+          throw new ProtocolError(
+            "invalid_payload",
+            "Cutover owner and generation are required"
+          );
+        json(
+          response,
+          200,
+          application.cutoverRoutineSchedule(
+            scheduleId,
+            input.expectedOwner,
+            input.expectedGeneration as number,
+            input.nextOwner
+          )
+        );
+        return;
+      }
       if (request.method === "GET" && url.pathname === "/api/settings") {
         json(response, 200, { toolOutput: "off" });
         return;
@@ -335,6 +377,33 @@ export async function startGatewayFleet(
             String(request.headers["x-tidy-binding-revision"])
           );
           json(response, 202, receipt);
+          return;
+        }
+        const routineFire = /^schedules\/([^/]+)\/fire$/.exec(action);
+        if (request.method === "POST" && routineFire) {
+          const input = await body(request);
+          if (
+            typeof input.occurrence !== "string" ||
+            typeof input.owner !== "string" ||
+            !Number.isSafeInteger(input.ownerGeneration) ||
+            typeof input.text !== "string"
+          )
+            throw new ProtocolError(
+              "invalid_payload",
+              "Routine fire identity and text are required"
+            );
+          json(
+            response,
+            202,
+            application.admitRoutineFire(
+              name,
+              decodeURIComponent(routineFire[1]),
+              input.occurrence,
+              input.owner,
+              input.ownerGeneration as number,
+              input.text
+            )
+          );
           return;
         }
         if (

@@ -775,6 +775,95 @@ test("compatible config rollback retains current journal and plugin checkpoint",
   }
 });
 
+test("external routine fire API fences owners and dedupes stable occurrences", async () => {
+  const f = await fixture();
+  try {
+    const handle = await f.start();
+    const registered = await f.request(
+      handle,
+      "/api/schedules/scribe%3Anightly/register",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ owner: "legacy-gateway" }),
+      }
+    );
+    assert.equal(registered.status, 200);
+    assert.equal(registered.body.generation, 1);
+    const binding = await f.binding(handle);
+    const fire = () =>
+      f.request(handle, "/api/bots/fixture/schedules/scribe%3Anightly/fire", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-tidy-client-contract": "2",
+          "x-tidy-binding-revision": binding.bindingRevision,
+        },
+        body: JSON.stringify({
+          occurrence: "2026-08-31T10:05:00-05:00",
+          owner: "legacy-gateway",
+          ownerGeneration: 1,
+          text: "scheduled status",
+        }),
+      });
+    const first = await fire();
+    assert.equal(first.status, 202);
+    assert.equal(first.body.created, true);
+    await waitFor(
+      () => f.inspect(handle, first.body.receipt.operationId),
+      (receipt) => ["ended", "failed"].includes(receipt.execution)
+    );
+    const retry = await fire();
+    assert.equal(retry.body.created, false);
+    assert.equal(
+      retry.body.receipt.operationId,
+      first.body.receipt.operationId
+    );
+    assert.equal(
+      (await f.calls(binding)).filter(
+        (call) => call.method === "operation.submit"
+      ).length,
+      1
+    );
+    const cutover = await f.request(
+      handle,
+      "/api/schedules/scribe%3Anightly/cutover",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          expectedOwner: "legacy-gateway",
+          expectedGeneration: 1,
+          nextOwner: "hermes",
+        }),
+      }
+    );
+    assert.equal(cutover.body.generation, 2);
+    const stale = await f.request(
+      handle,
+      "/api/bots/fixture/schedules/scribe%3Anightly/fire",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-tidy-client-contract": "2",
+          "x-tidy-binding-revision": binding.bindingRevision,
+        },
+        body: JSON.stringify({
+          occurrence: "2026-08-31T10:06:00-05:00",
+          owner: "legacy-gateway",
+          ownerGeneration: 1,
+          text: "stale",
+        }),
+      }
+    );
+    assert.equal(stale.status, 409);
+    assert.equal(stale.body.error, "schedule_owner_conflict");
+  } finally {
+    await f.cleanup();
+  }
+});
+
 test("established binding refuses erased plugin storage before starting a replacement", async () => {
   const f = await fixture();
   try {

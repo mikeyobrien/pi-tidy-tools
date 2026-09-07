@@ -22,7 +22,7 @@ import {
 /** Gateway storage is certified against this engine, rather than a best-effort substitute. */
 export const GATEWAY_SQLITE_VERSION = "3.53.4";
 const APPLICATION_ID = 0x54474459;
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 export type JsonValue =
   null | boolean | number | string | JsonValue[] | JsonObject;
@@ -171,6 +171,20 @@ export interface AdmitOperation extends ConversationBinding {
   publicBotName?: string;
   /** Additional canonical message metadata, after upstream validation. */
   userEntry?: JsonObject;
+}
+export interface RoutineFireAdmission {
+  scheduleId: string;
+  occurrence: string;
+  owner: string;
+  ownerGeneration: number;
+  binding: ConversationBinding;
+  payload: JsonObject;
+  actorId?: string;
+}
+export interface RoutineScheduleOwner {
+  scheduleId: string;
+  owner: string;
+  generation: number;
 }
 export interface OperationRecord {
   receipt: OperationReceipt;
@@ -411,7 +425,11 @@ export class GatewayJournal {
       );
       if (applicationId !== 0 && applicationId !== APPLICATION_ID)
         fail("incompatible_storage", "Database belongs to another application");
-      if (schemaVersion !== 0 && schemaVersion !== SCHEMA_VERSION)
+      if (
+        schemaVersion !== 0 &&
+        schemaVersion !== 1 &&
+        schemaVersion !== SCHEMA_VERSION
+      )
         fail(
           "incompatible_storage",
           `Unsupported gateway schema ${schemaVersion}`
@@ -508,6 +526,13 @@ export class GatewayJournal {
           CREATE TABLE IF NOT EXISTS completion_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, dispatch_id TEXT NOT NULL UNIQUE,
             origin_bot_id TEXT NOT NULL, target_bot_id TEXT NOT NULL, conversation_id TEXT NOT NULL,
             operation_id TEXT NOT NULL, payload_json TEXT NOT NULL, digest TEXT NOT NULL, delivered INTEGER NOT NULL DEFAULT 0) STRICT;
+          CREATE TABLE IF NOT EXISTS schedule_owners (schedule_id TEXT PRIMARY KEY, owner TEXT NOT NULL,
+            generation INTEGER NOT NULL CHECK(generation >= 1)) STRICT;
+          CREATE TABLE IF NOT EXISTS routine_fires (fire_id TEXT PRIMARY KEY, schedule_id TEXT NOT NULL,
+            occurrence TEXT NOT NULL, operation_id TEXT NOT NULL UNIQUE, bot_id TEXT NOT NULL,
+            conversation_id TEXT NOT NULL, binding_id TEXT NOT NULL, payload_digest TEXT NOT NULL,
+            owner TEXT NOT NULL, owner_generation INTEGER NOT NULL CHECK(owner_generation >= 1),
+            FOREIGN KEY(bot_id, conversation_id) REFERENCES conversations(bot_id, conversation_id)) STRICT;
         `);
           this.prepare(
             "INSERT INTO gateway_meta(key,value) VALUES('fleet_id',?)"
@@ -516,6 +541,31 @@ export class GatewayJournal {
             `PRAGMA application_id = ${APPLICATION_ID}; PRAGMA user_version = ${SCHEMA_VERSION};`
           );
         });
+      if (schemaVersion === 1) {
+        this.transaction(() => {
+          this.db.exec(`
+            CREATE TABLE IF NOT EXISTS schedule_owners (schedule_id TEXT PRIMARY KEY, owner TEXT NOT NULL,
+              generation INTEGER NOT NULL CHECK(generation >= 1)) STRICT;
+            CREATE TABLE IF NOT EXISTS routine_fires (fire_id TEXT PRIMARY KEY, schedule_id TEXT NOT NULL,
+              occurrence TEXT NOT NULL, operation_id TEXT NOT NULL UNIQUE, bot_id TEXT NOT NULL,
+              conversation_id TEXT NOT NULL, binding_id TEXT NOT NULL, payload_digest TEXT NOT NULL,
+              owner TEXT NOT NULL, owner_generation INTEGER NOT NULL CHECK(owner_generation >= 1),
+              FOREIGN KEY(bot_id, conversation_id) REFERENCES conversations(bot_id, conversation_id)) STRICT;
+            PRAGMA user_version = ${SCHEMA_VERSION};
+          `);
+        });
+      }
+      for (const table of ["schedule_owners", "routine_fires"]) {
+        if (
+          !this.prepare(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?"
+          ).get(table)
+        )
+          fail(
+            "corrupt_storage",
+            `Gateway table ${table} is missing; refusing to fabricate schedule state`
+          );
+      }
       const stored = this.prepare(
         "SELECT value FROM gateway_meta WHERE key='fleet_id'"
       ).get();
@@ -1210,6 +1260,143 @@ export class GatewayJournal {
     input: AdmitOperation
   ): { receipt: OperationReceipt; created: boolean } {
     return this.write(lease, () => this.admitOperation(input));
+  }
+  registerRoutineSchedule(
+    lease: WriterLease,
+    scheduleId: string,
+    owner: string
+  ): RoutineScheduleOwner {
+    identifier(scheduleId, "schedule ID");
+    identifier(owner, "schedule owner");
+    return this.write(lease, () => {
+      const existing = this.prepare(
+        "SELECT * FROM schedule_owners WHERE schedule_id=?"
+      ).get(scheduleId);
+      if (existing) {
+        if (existing.owner !== owner)
+          fail("schedule_owner_conflict", "Schedule already has another owner");
+        return {
+          scheduleId,
+          owner: String(existing.owner),
+          generation: Number(existing.generation),
+        };
+      }
+      this.prepare(
+        "INSERT INTO schedule_owners(schedule_id,owner,generation) VALUES(?,?,1)"
+      ).run(scheduleId, owner);
+      return { scheduleId, owner, generation: 1 };
+    });
+  }
+  cutoverRoutineSchedule(
+    lease: WriterLease,
+    scheduleId: string,
+    expectedOwner: string,
+    expectedGeneration: number,
+    nextOwner: string
+  ): RoutineScheduleOwner {
+    identifier(scheduleId, "schedule ID");
+    identifier(expectedOwner, "schedule owner");
+    identifier(nextOwner, "schedule owner");
+    if (!Number.isSafeInteger(expectedGeneration) || expectedGeneration < 1)
+      fail("invalid_generation", "Schedule generation must be positive");
+    return this.write(lease, () => {
+      const updated = this.prepare(
+        "UPDATE schedule_owners SET owner=?,generation=generation+1 WHERE schedule_id=? AND owner=? AND generation=?"
+      ).run(nextOwner, scheduleId, expectedOwner, expectedGeneration);
+      if (updated.changes !== 1)
+        fail("stale_schedule_owner", "Schedule owner or generation is stale");
+      return {
+        scheduleId,
+        owner: nextOwner,
+        generation: expectedGeneration + 1,
+      };
+    });
+  }
+  admitRoutineFire(
+    lease: WriterLease,
+    input: RoutineFireAdmission
+  ): { receipt: OperationReceipt; created: boolean; fireId: string } {
+    identifier(input.scheduleId, "schedule ID");
+    identifier(input.occurrence, "schedule occurrence");
+    identifier(input.owner, "schedule owner");
+    if (
+      !Number.isSafeInteger(input.ownerGeneration) ||
+      input.ownerGeneration < 1
+    )
+      fail("invalid_generation", "Schedule generation must be positive");
+    const fireId = `routine-fire:${payloadDigest({ scheduleId: input.scheduleId, occurrence: input.occurrence }).slice(7)}`;
+    const operationId = `routine-op:${fireId.slice("routine-fire:".length)}`;
+    const payloadDigestValue = payloadDigest(input.payload);
+    return this.write(lease, () => {
+      const owner = this.prepare(
+        "SELECT owner,generation FROM schedule_owners WHERE schedule_id=?"
+      ).get(input.scheduleId);
+      if (!owner)
+        fail("schedule_not_registered", "Schedule owner is not registered");
+      if (owner.owner !== input.owner)
+        fail(
+          "schedule_owner_conflict",
+          "Schedule is owned by another scheduler"
+        );
+      if (Number(owner.generation) !== input.ownerGeneration)
+        fail("stale_schedule_owner", "Schedule owner generation is stale");
+      const existing = this.prepare(
+        "SELECT * FROM routine_fires WHERE fire_id=?"
+      ).get(fireId);
+      if (existing) {
+        if (
+          existing.payload_digest !== payloadDigestValue ||
+          existing.schedule_id !== input.scheduleId ||
+          existing.occurrence !== input.occurrence ||
+          existing.bot_id !== input.binding.botId ||
+          existing.conversation_id !== input.binding.conversationId ||
+          existing.binding_id !== input.binding.bindingId ||
+          existing.owner !== input.owner ||
+          Number(existing.owner_generation) !== input.ownerGeneration
+        )
+          fail(
+            "operation_conflict",
+            "Routine fire identity already has different intent"
+          );
+        const receipt = this.getOperation({
+          botId: input.binding.botId,
+          conversationId: input.binding.conversationId,
+          operationId,
+        });
+        if (!receipt)
+          fail("corrupt_storage", "Routine fire operation is missing");
+        return { receipt, created: false, fireId };
+      }
+      const admitted = this.admitOperation({
+        ...input.binding,
+        operationId,
+        kind: "message",
+        actorId: `schedule:${input.scheduleId}`,
+        payload: input.payload,
+        userEntry: {
+          id: `entry-${fireId.slice("routine-fire:".length)}`,
+          role: "user",
+          origin: "routine",
+          originFrom: input.scheduleId,
+          text: String(input.payload.text ?? ""),
+        },
+      });
+      this.prepare(
+        "INSERT INTO routine_fires(fire_id,schedule_id,occurrence,operation_id,bot_id,conversation_id,binding_id,payload_digest,owner,owner_generation) VALUES(?,?,?,?,?,?,?,?,?,?)"
+      ).run(
+        fireId,
+        input.scheduleId,
+        input.occurrence,
+        operationId,
+        input.binding.botId,
+        input.binding.conversationId,
+        input.binding.bindingId,
+        payloadDigestValue,
+        input.owner,
+        input.ownerGeneration
+      );
+      return { receipt: admitted.receipt, created: true, fireId };
+    });
   }
   describeArtifacts(
     input: AdmitOperation,

@@ -855,6 +855,70 @@ export class GatewayApplication {
       ? null
       : (receipt as unknown as JsonObject | null);
   }
+  registerRoutineSchedule(scheduleId: string, owner: string): JsonObject {
+    return this.journal.registerRoutineSchedule(
+      this.lease,
+      scheduleId,
+      owner
+    ) as unknown as JsonObject;
+  }
+  cutoverRoutineSchedule(
+    scheduleId: string,
+    expectedOwner: string,
+    expectedGeneration: number,
+    nextOwner: string
+  ): JsonObject {
+    return this.journal.cutoverRoutineSchedule(
+      this.lease,
+      scheduleId,
+      expectedOwner,
+      expectedGeneration,
+      nextOwner
+    ) as unknown as JsonObject;
+  }
+  admitRoutineFire(
+    name: string,
+    scheduleId: string,
+    occurrence: string,
+    owner: string,
+    ownerGeneration: number,
+    text: string
+  ): JsonObject {
+    const bot = this.requireBot(name);
+    if (!text.trim())
+      throw new ProtocolError(
+        "invalid_payload",
+        "Routine text must be nonempty"
+      );
+    if (this.stopping || !bot.ready || !bot.host?.isReady)
+      throw new ProtocolError(
+        "session_unavailable",
+        "The session is unavailable"
+      );
+    const operationId = `routine-op:${payloadDigest({ scheduleId, occurrence }).slice(7)}`;
+    bot.host.assertSubmitFits({
+      operationId,
+      payloadDigest: `sha256:${"0".repeat(64)}`,
+      conversationId: bot.binding.conversationId,
+      turnId: `turn-${randomUUID()}`,
+      policyRevision: bot.binding.policyRevision,
+      input: [{ type: "text", text }],
+    });
+    const admitted = this.journal.admitRoutineFire(this.lease, {
+      scheduleId,
+      occurrence,
+      owner,
+      ownerGeneration,
+      binding: bot.binding,
+      payload: { text },
+    });
+    this.publishCommitted(bot, true);
+    if (admitted.created)
+      queueMicrotask(() => {
+        void this.pump(bot);
+      });
+    return admitted as unknown as JsonObject;
+  }
   async admit(
     name: string,
     body: Record<string, unknown>,

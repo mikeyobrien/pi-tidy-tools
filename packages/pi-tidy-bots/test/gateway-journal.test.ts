@@ -2240,3 +2240,84 @@ test("generic question admission is immutable, instance-fenced, and never stores
   );
   assert.equal(f.journal.getQuestion(descriptor)?.resolution, undefined);
 });
+
+test("routine admission binds one stable fire to one canonical operation and owner generation", (t) => {
+  const f = fixture(t);
+  const schedule = f.journal.registerRoutineSchedule(
+    f.lease,
+    "scribe:nightly",
+    "legacy-gateway"
+  );
+  const input = {
+    scheduleId: schedule.scheduleId,
+    occurrence: "2026-08-31T10:05:00-05:00",
+    owner: schedule.owner,
+    ownerGeneration: schedule.generation,
+    binding,
+    payload: { text: "scheduled status" },
+  };
+  const first = f.journal.admitRoutineFire(f.lease, input);
+  assert.equal(first.created, true);
+  assert.equal(first.receipt.delivery, "queued");
+  assert.deepEqual(f.journal.admitRoutineFire(f.lease, input), {
+    ...first,
+    created: false,
+  });
+  assert.equal(f.journal.listOperationRecords(binding).length, 1);
+  code(
+    () =>
+      f.journal.admitRoutineFire(f.lease, {
+        ...input,
+        payload: { text: "changed scheduled status" },
+      }),
+    "operation_conflict"
+  );
+  const cutover = f.journal.cutoverRoutineSchedule(
+    f.lease,
+    schedule.scheduleId,
+    schedule.owner,
+    schedule.generation,
+    "hermes"
+  );
+  code(
+    () => f.journal.admitRoutineFire(f.lease, input),
+    "schedule_owner_conflict"
+  );
+  const next = f.journal.admitRoutineFire(f.lease, {
+    ...input,
+    occurrence: "2026-08-31T10:06:00-05:00",
+    owner: cutover.owner,
+    ownerGeneration: cutover.generation,
+  });
+  assert.equal(next.created, true);
+  assert.notEqual(next.fireId, first.fireId);
+  assert.equal(
+    f.journal.getOperation(key(first.receipt.operationId))?.delivery,
+    "queued"
+  );
+});
+
+test("gateway journal v1 upgrades schedule tables without erasing retained operations", (t) => {
+  const f = fixture(t);
+  f.journal.admit(f.lease, intent("retained-before-upgrade"));
+  f.journal.close();
+  sql(
+    f.path,
+    "DROP TABLE routine_fires; DROP TABLE schedule_owners; UPDATE writer_lease SET expires_at=0; PRAGMA user_version=1"
+  );
+  const upgraded = f.open();
+  const lease = upgraded.acquireWriterLease("writer-upgrade", {
+    previousGeneration: 1,
+    previousOwnerReconciled: true,
+  });
+  assert.equal(
+    upgraded.getOperation(key("retained-before-upgrade"))?.delivery,
+    "queued"
+  );
+  const owner = upgraded.registerRoutineSchedule(
+    lease,
+    "scribe:nightly",
+    "hermes"
+  );
+  assert.equal(owner.generation, 1);
+});

@@ -73,6 +73,15 @@ export function questionRequest(value: JsonObject): JsonObject {
       fail();
     result.placeholder = value.placeholder;
   }
+  if (value.prefill !== undefined) {
+    if (
+      value.method !== "editor" ||
+      typeof value.prefill !== "string" ||
+      value.prefill.length > 16384
+    )
+      fail();
+    result.prefill = value.prefill;
+  }
   if (value.method === "select") {
     if (
       !Array.isArray(value.options) ||

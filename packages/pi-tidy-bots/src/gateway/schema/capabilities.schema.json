@@ -256,6 +256,10 @@
         },
         "compact": {
           "type": "boolean"
+        },
+        "new_context": {
+          "type": "boolean",
+          "description": "Optional. Advertise a no-summary context-reset control distinct from configuration.compact. Absent means unsupported."
         }
       },
       "required": ["model", "thinking", "compact"],

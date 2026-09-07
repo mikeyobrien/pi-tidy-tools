@@ -167,6 +167,16 @@ def validate_event(event):
             raise SDKError("invalid_event")
     if kind == "turn.terminal" and (payload.get("execution") not in ("ended", "failed", "cancelled", "interrupted") or payload.get("observation") not in ("complete", "live_gap", "reconciliation_required")):
         raise SDKError("invalid_event")
+    if "contextBudget" in payload:
+        budget = payload["contextBudget"]
+        if (
+            not isinstance(budget, dict)
+            or not integer(budget.get("remainingTokens"))
+            or budget.get("source") not in ("adapter", "gateway")
+            or ("usedTokens" in budget and not integer(budget.get("usedTokens")))
+            or ("windowTokens" in budget and not integer(budget.get("windowTokens"), 1))
+        ):
+            raise SDKError("invalid_event")
 
 
 def validate_capabilities(value):
@@ -176,7 +186,7 @@ def validate_capabilities(value):
         "output": {"text", "tools", "usage"},
         "operations": {"nativeDedupe", "nativeDedupeRetentionMs", "nativeReplay", "nativeReplayRetentionMs", "nativeReplayGapSemantics", "cancel", "steer"},
         "interactions": {"permissions", "questions"},
-        "configuration": {"model", "thinking", "compact"},
+        "configuration": {"model", "thinking", "compact", "new_context"},
     }
     if not isinstance(value, dict):
         raise SDKError("invalid_capabilities")
@@ -195,6 +205,8 @@ def validate_capabilities(value):
     for section, names in {"sessions": ["load", "import"], "output": ["tools"], "operations": ["steer"], "interactions": ["questions"], "configuration": ["model", "thinking", "compact"]}.items():
         if any(type(value[section].get(name)) is not bool for name in names):
             raise SDKError("invalid_capabilities")
+    if "new_context" in value["configuration"] and type(value["configuration"].get("new_context")) is not bool:
+        raise SDKError("invalid_capabilities")
     if type(value.get("fleetTools")) is not bool:
         raise SDKError("invalid_capabilities")
     for section, name, allowed in [

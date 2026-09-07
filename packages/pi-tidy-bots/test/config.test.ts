@@ -6,7 +6,9 @@ import {
   loadFleetConfig,
   ConfigError,
   botDisclosure,
+  convertLegacyManifest,
 } from "../src/config.ts";
+import { parse } from "smol-toml";
 import { scaffoldBot, restartSpawnArgs } from "../src/cli.ts";
 import {
   stripActionMarkers,
@@ -25,6 +27,59 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const fixtureFleet = new URL("./fixtures/fleet/", import.meta.url).pathname;
+
+test("legacy manifest conversion preserves bot values and adds only explicit bindings", () => {
+  const source = `title = "Fleet"\n[[bot]]\nname = "one"\ndir = "."\ntitle = "Primary"\napprove = true\nroutes = ["two"]\nmodel = "fixture/model"\nthinking = "high"\n[[bot.routines]]\nname = "daily"\nschedule = "0 9 * * *"\nprompt = "status"\n[[bot]]\nname = "two"\ndir = "."\nno_skills = true\n`;
+  const converted = convertLegacyManifest(source, {
+    registry: "registry.json",
+    backend: { one: "org.example.one", two: "org.example.two" },
+    environment: ["PATH"],
+  });
+  const before = parse(source) as Record<string, unknown>;
+  const after = parse(converted) as Record<string, unknown>;
+  assert.deepEqual(after.title, before.title);
+  assert.deepEqual(
+    (after.bot as Record<string, unknown>[]).map(
+      ({ backend: _backend, ...bot }) => bot
+    ),
+    before.bot
+  );
+  assert.deepEqual(after.gateway, {
+    registry: "registry.json",
+    environment: ["PATH"],
+    workspace_access: "none",
+    native_profile: false,
+    network: false,
+    gateway_tools: [],
+  });
+});
+
+test("legacy conversion rejects already migrated or ambiguously bound manifests", () => {
+  assert.throws(
+    () =>
+      convertLegacyManifest('[gateway]\nregistry="x"\n[[bot]]\nname="one"\n', {
+        registry: "registry.json",
+        backend: "org.example.backend",
+      }),
+    /already in gateway mode/
+  );
+  assert.throws(
+    () =>
+      convertLegacyManifest('[[bot]]\nname="one"\n', {
+        registry: "registry.json",
+        backend: { two: "org.example.backend" },
+      }),
+    /unknown bot/
+  );
+  assert.throws(
+    () =>
+      convertLegacyManifest('[[bot]]\nname="one"\n', {
+        registry: "registry.json",
+        backend: { one: "org.example.backend", typo: "org.example.other" },
+      }),
+    /unknown bot/
+  );
+});
 
 test("loadFleetConfig parses the fixture fleet with defaults", () => {
   const fleet = loadFleetConfig(fixtureFleet, { port: 4599 });

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { parse } from "smol-toml";
+import { parse, stringify } from "smol-toml";
 
 export interface BotRoutine {
   name: string;
@@ -77,6 +77,82 @@ export interface FleetConfig {
 }
 
 export class ConfigError extends Error {}
+
+/**
+ * Convert a legacy bot-only manifest by retaining every parsed value and
+ * adding only the explicitly selected gateway bindings. This is a pure
+ * preparation step; it does not enable or start a backend.
+ */
+export function convertLegacyManifest(
+  source: string,
+  options: {
+    registry: string;
+    backend: string | Record<string, string>;
+    environment?: string[];
+    workspaceAccess?: "none" | "read" | "read-write";
+    nativeProfile?: boolean;
+    network?: boolean;
+    gatewayTools?: string[];
+  }
+): string {
+  let doc: Record<string, unknown>;
+  try {
+    doc = parse(source) as Record<string, unknown>;
+  } catch (error) {
+    throw new ConfigError(
+      `legacy manifest parse error: ${(error as Error).message}`
+    );
+  }
+  if (doc.gateway !== undefined)
+    throw new ConfigError("manifest is already in gateway mode");
+  if (!Array.isArray(doc.bot) || doc.bot.length === 0)
+    throw new ConfigError("legacy manifest must contain [[bot]] entries");
+  if (typeof options.registry !== "string" || !options.registry.trim())
+    throw new ConfigError("migration registry is required");
+  const names = new Set<string>();
+  for (const [index, raw] of doc.bot.entries()) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw))
+      throw new ConfigError(`legacy bot #${index + 1} is not a table`);
+    const name = (raw as Record<string, unknown>).name;
+    if (typeof name !== "string" || !NAME_PATTERN.test(name) || names.has(name))
+      throw new ConfigError(
+        `legacy bot #${index + 1} has an invalid or duplicate name`
+      );
+    names.add(name);
+  }
+  const bindings =
+    typeof options.backend === "string"
+      ? Object.fromEntries([...names].map((name) => [name, options.backend]))
+      : options.backend;
+  if (!bindings || Object.keys(bindings).some((name) => !names.has(name)))
+    throw new ConfigError("backend map contains an unknown bot");
+  const bots = doc.bot.map((raw, index) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw))
+      throw new ConfigError(`legacy bot #${index + 1} is not a table`);
+    const bot = { ...(raw as Record<string, unknown>) };
+    const name = typeof bot.name === "string" ? bot.name : "";
+    const backend = bindings[name];
+    if (bot.backend !== undefined || bot.backend_config !== undefined)
+      throw new ConfigError(
+        `legacy bot ${name || `#${index + 1}`} already selects a backend`
+      );
+    if (typeof backend !== "string" || !backend.trim())
+      throw new ConfigError(
+        `missing explicit backend for legacy bot ${name || `#${index + 1}`}`
+      );
+    bot.backend = backend;
+    return bot;
+  });
+  const gateway = {
+    registry: options.registry,
+    environment: options.environment ?? [],
+    workspace_access: options.workspaceAccess ?? "none",
+    native_profile: options.nativeProfile === true,
+    network: options.network === true,
+    gateway_tools: options.gatewayTools ?? [],
+  };
+  return stringify({ ...doc, gateway, bot: bots });
+}
 
 /**
  * Issue 62: disclosure text for a bot — description when present (it IS the

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   chmod,
+  cp,
   copyFile,
   mkdir,
   mkdtemp,
@@ -14,6 +15,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
 import { WebSocket } from "ws";
+import { DatabaseSync } from "node:sqlite";
 import {
   startFleet,
   type FleetHandle,
@@ -609,6 +611,91 @@ test("hard gateway crash recovers expired ownership without repeating native adm
       driver.kill("SIGKILL");
       await childExit;
     }
+    await f.cleanup();
+  }
+});
+
+test("stopped-fleet snapshot refuses future storage and restores current unknown state", async () => {
+  const f = await fixture();
+  try {
+    let handle = await f.start();
+    const binding = await f.binding(handle);
+    await f.submit(handle, binding, "migration-unknown", "[unknown]");
+    await waitFor(
+      () => f.inspect(handle, "migration-unknown"),
+      (receipt) => receipt.delivery === "unknown"
+    );
+    await handle.stop();
+
+    const journalPath = join(f.dir, ".fleet/gateway.sqlite");
+    const backupPath = join(f.dir, ".fleet/gateway.sqlite.migration-backup");
+    const manifestBackupPath = join(f.dir, ".fleet/bots.toml.migration-backup");
+    const current = await readFile(journalPath);
+    await writeFile(backupPath, current, { mode: 0o600 });
+    assert.deepEqual(await readFile(backupPath), current);
+    const manifest = await readFile(join(f.dir, "bots.toml"));
+    await writeFile(manifestBackupPath, manifest, { mode: 0o600 });
+    const checkpointPath = join(
+      f.dir,
+      ".fleet/plugins",
+      binding.bindingId,
+      "calls.jsonl"
+    );
+    const checkpoint = await readFile(checkpointPath);
+    const callsBefore = await f.calls(binding);
+    const incompatibleDir = `${f.dir}-incompatible`;
+    await cp(f.dir, incompatibleDir, { recursive: true });
+    const incompatibleJournalPath = join(
+      incompatibleDir,
+      ".fleet/gateway.sqlite"
+    );
+    const future = new DatabaseSync(incompatibleJournalPath);
+    const schema = Number(
+      (future.prepare("PRAGMA user_version").get() as { user_version: number })
+        .user_version
+    );
+    future.exec(`PRAGMA user_version = ${schema + 1}`);
+    future.close();
+    const incompatibleCheckpoint = join(
+      incompatibleDir,
+      ".fleet/plugins",
+      binding.bindingId,
+      "calls.jsonl"
+    );
+    const incompatibleBefore = await readFile(incompatibleCheckpoint);
+    await assert.rejects(
+      startFleet({
+        dir: incompatibleDir,
+        port: 0,
+        token: "disposable-test-token",
+        log: () => {},
+      }),
+      (error: any) => {
+        assert.equal(error?.code, "incompatible_storage");
+        return true;
+      }
+    );
+    assert.deepEqual(
+      await readFile(incompatibleCheckpoint),
+      incompatibleBefore
+    );
+    await rm(incompatibleDir, { recursive: true, force: true });
+
+    handle = await f.start();
+    const retained = await f.inspect(handle, "migration-unknown");
+    assert.equal(retained.operationId, "migration-unknown");
+    assert.equal(retained.bindingId, binding.bindingId);
+    assert.equal(retained.delivery, "unknown");
+    assert.equal(retained.observation, "reconciliation_required");
+    const callsAfter = await f.calls(binding);
+    assert.deepEqual(await readFile(join(f.dir, "bots.toml")), manifest);
+    assert.deepEqual(await readFile(manifestBackupPath), manifest);
+    assert.ok((await readFile(checkpointPath)).length >= checkpoint.length);
+    assert.equal(
+      callsAfter.filter((call) => call.method === "operation.submit").length,
+      callsBefore.filter((call) => call.method === "operation.submit").length
+    );
+  } finally {
     await f.cleanup();
   }
 });

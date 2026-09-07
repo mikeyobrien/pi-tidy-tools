@@ -4,6 +4,7 @@ import type { BotConfig, FleetConfig } from "../config.ts";
 import { checkRoute } from "../config.ts";
 import {
   GatewayJournal,
+  GatewayJournalError,
   payloadDigest,
   type ConversationBinding,
   type EventProjection,
@@ -306,6 +307,16 @@ export class GatewayApplication {
       );
     } catch (error) {
       journal?.close();
+      // A storage-version refusal happens before the journal acquires a lease
+      // or any plugin is started.  It is a deterministic preflight failure,
+      // so the outer fleet lock can be released safely for callers inspecting
+      // or removing the disposable directory.
+      if (
+        journal === undefined &&
+        error instanceof GatewayJournalError &&
+        error.code === "incompatible_storage"
+      )
+        throw error;
       throw new GatewayStartupOwnershipError(error);
     }
     try {

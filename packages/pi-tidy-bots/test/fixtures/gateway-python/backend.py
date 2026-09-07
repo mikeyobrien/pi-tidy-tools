@@ -40,6 +40,21 @@ def write_raw_frame(payload):
     sys.stdout.flush()
 
 
+def write_split_frame(payload):
+    """Keep the terminal LF separate: this is a valid frame, not a log line."""
+    if not payload.endswith(b"\n"):
+        raise ValueError("split fixture requires a framed payload")
+    write_raw_frame(payload[:-1])
+    write_raw_frame(payload[-1:])
+
+
+async def emit_split_event(ctx, event):
+    """Commit the event once, then exercise the host's actual stdio decoder."""
+    frame = ctx.store.append(event)
+    ctx.store.mark_sent(frame["sourceSequence"])
+    write_split_frame((json.dumps({"jsonrpc": "2.0", "method": "event", "params": frame}) + "\n").encode())
+
+
 async def initialize(config, ctx):
     global mode, attached_pid
     mode = config.get("mode", "normal")
@@ -111,7 +126,7 @@ async def submit(p, ctx):
         finally:
             pending_submits.pop(p["operationId"], None)
         return {"disposition": "accepted"}
-    if mode in ("malformed-json", "malformed-event", "oversize", "nonfinite"):
+    if mode in ("malformed-json", "malformed-event", "oversize", "nonfinite", "stdout-log"):
         record(ctx, "malformed", mode=mode, operationId=p["operationId"])
         if mode == "malformed-json":
             raw = b'{"jsonrpc":"2.0","method":"event","params":\n'
@@ -120,6 +135,8 @@ async def submit(p, ctx):
                 "type": "not-a-protocol-event", "payload": {}}}) + "\n").encode()
         elif mode == "nonfinite":
             raw = b'{"jsonrpc":"2.0","method":"event","params":{"type":"turn.started","payload":{"value":NaN}}}\n'
+        elif mode == "stdout-log":
+            raw = b'native diagnostic accidentally written to stdout\n'
         else:
             raw = (b'{"jsonrpc":"2.0","method":"event","params":{"type":"turn.started","payload":{"padding":"' +
                    (b"x" * (2 * 1024 * 1024)) + b'"}}}\n')
@@ -136,7 +153,10 @@ async def submit(p, ctx):
     if mode == "reverse":
         await ctx.host_call("operator.enqueue", {"title": p["input"][0]["text"]}, operation_id=p["operationId"], tool_call_id="tool-1", action_id="action-1", payload_digest="sha256:reverse")
     ids = {"operationId": p["operationId"], "turnId": p["turnId"]}
-    await ctx.emit({**ids, "type": "turn.started", "payload": {}})
+    if mode == "split-lf":
+        await emit_split_event(ctx, {**ids, "type": "turn.started", "payload": {}})
+    else:
+        await ctx.emit({**ids, "type": "turn.started", "payload": {}})
     message = {**ids, "messageId": "message:" + p["operationId"]}
     await ctx.emit({**message, "type": "message.started", "payload": {"role": "assistant", "order": 0}})
     text = "Python: " + p["input"][0]["text"]

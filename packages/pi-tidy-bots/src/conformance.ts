@@ -26,7 +26,12 @@ export type ConformanceStatus = "passed" | "failed" | "unsupported" | "not-run";
 export interface LocalConformanceCell {
   id: string;
   kind:
-    "message" | "post_native_eof" | "malformed_plugin" | "cancel" | "prelaunch";
+    | "message"
+    | "split_lf"
+    | "post_native_eof"
+    | "malformed_plugin"
+    | "cancel"
+    | "prelaunch";
   operationId: string;
   text: string;
   retry?: "same" | "conflict";
@@ -97,6 +102,7 @@ const MALFORMED_FRAME_CODES: Record<string, string> = {
   "malformed-event": "invalid_event",
   nonfinite: "invalid_frame",
   oversize: "resource_limit",
+  "stdout-log": "invalid_frame",
 };
 
 /** The latest ready identity is the only admissible active host for a cell. */
@@ -179,6 +185,7 @@ function validFixture(value: LocalConformanceFixture): void {
         !nonempty(cell.id) ||
         ![
           "message",
+          "split_lf",
           "post_native_eof",
           "malformed_plugin",
           "cancel",
@@ -1237,6 +1244,43 @@ export async function runLocalConformance(
                 cell.events
               )
             : undefined;
+          let healthyReceipt: JsonObject | undefined;
+          let healthyStatus: number | undefined;
+          if (cell.kind === "split_lf") {
+            const healthy = (await request("/api/bots/healthy/capabilities"))
+              .body;
+            if (
+              !object(healthy) ||
+              !nonempty(healthy.conversationId) ||
+              !nonempty(healthy.bindingRevision)
+            )
+              throw new Error("healthy_binding_unavailable");
+            const healthyId = `${cell.operationId}-healthy`;
+            healthyStatus = (
+              await request("/api/bots/healthy/message", {
+                method: "POST",
+                headers: {
+                  "content-type": "application/json",
+                  "x-tidy-client-contract": "2",
+                  "x-tidy-binding-revision": String(healthy.bindingRevision),
+                },
+                body: JSON.stringify({
+                  operationId: healthyId,
+                  clientMessageId: healthyId,
+                  conversationId: healthy.conversationId,
+                  text: cell.text,
+                }),
+              })
+            ).status;
+            healthyReceipt = await waitFor(
+              () =>
+                request(`/api/bots/healthy/operations/${healthyId}`).then(
+                  (value) => value.body
+                ),
+              "ended",
+              "complete"
+            );
+          }
           let effects: JsonObject | undefined;
           if (cell.effect) {
             const file = await readFile(effectPath!, "utf8");
@@ -1271,6 +1315,9 @@ export async function runLocalConformance(
             retryUnchanged &&
             (!cell.expect.execution ||
               receipt?.execution === cell.expect.execution) &&
+            (cell.kind !== "split_lf" ||
+              (healthyStatus === 202 &&
+                healthyReceipt?.execution === "ended")) &&
             (cell.retry !== "conflict" || retry?.status === 409);
           cells.push({
             id: cell.id,
@@ -1284,6 +1331,12 @@ export async function runLocalConformance(
               ...(afterReceipt ? { retryReceipt: afterReceipt } : {}),
               ...(effects ? { effects } : {}),
               ...(events ? { events } : {}),
+              ...(healthyReceipt
+                ? {
+                    healthyStatus,
+                    healthyReceipt: normalizeConformanceTrace(healthyReceipt),
+                  }
+                : {}),
             },
           });
         } catch (error) {
@@ -1304,6 +1357,12 @@ export async function runLocalConformance(
     }
     const eventCells = options.fixture.cells
       .filter((cell) => cell.events && !cell.skip)
+      .map((cell) => cell.id);
+    const splitLfCells = options.fixture.cells
+      .filter((cell) => cell.kind === "split_lf" && !cell.skip)
+      .map((cell) => cell.id);
+    const malformedCells = options.fixture.cells
+      .filter((cell) => cell.kind === "malformed_plugin" && !cell.skip)
       .map((cell) => cell.id);
     const eofCells = options.fixture.cells
       .filter((cell) => cell.kind === "post_native_eof" && !cell.skip)
@@ -1336,6 +1395,8 @@ export async function runLocalConformance(
             : []),
           ...(retryCells.length || cancellationCells.length ? ["C03"] : []),
           ...(eventCells.length ? ["C05.public_ordered_terminal"] : []),
+          ...(splitLfCells.length ? ["C02.lf_split_valid_frame"] : []),
+          ...(malformedCells.length ? ["C02.malformed_plugin_isolation"] : []),
           ...(eofCells.length
             ? ["C04.post_write_eof", "C05.post_write_eof_recovery"]
             : []),
@@ -1351,7 +1412,9 @@ export async function runLocalConformance(
           ...(prelaunchCells.length
             ? ["C01.other_protocol_variants"]
             : ["C01"]),
-          "C02",
+          ...(splitLfCells.length || malformedCells.length
+            ? ["C02.other_plugin_frame_variants"]
+            : ["C02"]),
           ...(retryCells.length || cancellationCells.length ? [] : ["C03"]),
           "C04",
           "C05.source_replay_crash",

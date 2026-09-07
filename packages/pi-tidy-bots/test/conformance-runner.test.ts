@@ -407,6 +407,7 @@ test("runner isolates malformed Python plugin frames while healthy binding compl
       "malformed-event",
       "oversize",
       "nonfinite",
+      "stdout-log",
     ]) {
       const operationId = `bad-${mode}`;
       const report = await runLocalConformance({
@@ -441,6 +442,60 @@ test("runner isolates malformed Python plugin frames while healthy binding compl
       });
       assert.equal(report.cells[0].status, "passed", JSON.stringify(report));
     }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("runner preserves a valid LF-split plugin event and keeps a healthy peer responsive", async () => {
+  const root = await mkdtemp(join(tmpdir(), "tidy-conformance-split-lf-"));
+  try {
+    const { registry, pluginId } = await pythonCrashArtifact(root);
+    const report = await runLocalConformance({
+      registryPath: registry,
+      pluginId,
+      config: { mode: "split-lf" },
+      healthy: { pluginId: "org.example.healthy", config: { mode: "normal" } },
+      fixture: {
+        version: 1,
+        cells: [
+          {
+            id: "valid-lf-split",
+            kind: "split_lf",
+            operationId: "split-lf",
+            text: "valid split frame",
+            effect: {
+              file: "native-calls.jsonl",
+              contains: '"kind": "submit", "operationId": "split-lf"',
+              expectedOccurrences: 1,
+            },
+            events: { minFrames: 3, terminalFinals: 1 },
+            expect: {
+              status: 202,
+              execution: "ended",
+              observation: "complete",
+            },
+          },
+        ],
+      },
+    });
+    assert.equal(report.cells[0].status, "passed", JSON.stringify(report));
+    assert.equal(
+      (report.cells[0].evidence.events as any).terminalFinalCount,
+      1
+    );
+    assert.equal(
+      (report.cells[0].evidence.healthyReceipt as any).execution,
+      "ended"
+    );
+    assert.ok(
+      (report.scope.exercised as string[]).includes("C02.lf_split_valid_frame")
+    );
+    assert.ok(
+      (report.scope.notRun as string[]).includes(
+        "C02.other_plugin_frame_variants"
+      )
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

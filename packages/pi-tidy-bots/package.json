@@ -69,10 +69,10 @@
   "scripts": {
     "pretest": "node ../../scripts/bundle-core.mjs .",
     "prepack": "node ../../scripts/bundle-core.mjs .",
-    "test": "node --import tsx --test test/*.test.ts",
+    "test": "node --import tsx --test --test-concurrency=2 test/*.test.ts",
     "check": "node ../../scripts/bundle-core.mjs . && tsc --noEmit",
     "smoke": "PI_TIDY_BOTS_REAL_SMOKE=1 node --import tsx --test test/smoke.test.ts",
-    "test:coverage": "node ../../scripts/bundle-core.mjs . && c8 node --import tsx --test test/*.test.ts"
+    "test:coverage": "node ../../scripts/bundle-core.mjs . && c8 node --import tsx --test --test-concurrency=2 test/*.test.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.1",

@@ -1862,9 +1862,12 @@ test("reload history failure isolates as continuity_unverified with session_open
   const f = await fixture();
   const faults: PluginFaultObservation[] = [];
   try {
+    // Keep backend_config identical across restart: a policy-revision change
+    // is binding_conflict, not the continuity fault this cell isolates.
     await writeFile(
       join(f.dir, "bots.toml"),
-      f.manifest + "[bot.backend_config]\nsessionsLoad = true\n"
+      f.manifest +
+        '[bot.backend_config]\nsessionsLoad = true\nopenLoadError = "native_startup_history"\n'
     );
     const first = await f.start();
     const binding = await f.binding(first);
@@ -1880,18 +1883,15 @@ test("reload history failure isolates as continuity_unverified with session_open
       (receipt) => receipt.execution === "ended"
     );
     await first.stop();
-    await writeFile(
-      join(f.dir, "bots.toml"),
-      f.manifest +
-        "[bot.backend_config]\nsessionsLoad = true\nopenLoadError = \"native_startup_history\"\n"
-    );
     const handle = await f.start({
       onPluginFault: (fault) => faults.push(fault),
     });
     await waitFor(
       async () => faults,
       (items) =>
-        items.some((item) => item.code === "session_open:native_startup_history")
+        items.some(
+          (item) => item.code === "session_open:native_startup_history"
+        )
     );
     const roster = await f.request(handle, "/api/fleet");
     assert.equal(roster.body.bots[0].gatewayStatus, "continuity_unverified");
@@ -1905,8 +1905,9 @@ test("reload history failure isolates as continuity_unverified with session_open
     assert.equal(later.status, 503);
     assert.equal(later.body.error, "session_unavailable");
     assert.equal(
-      faults.filter((item) => item.code === "session_open:native_startup_history")
-        .length,
+      faults.filter(
+        (item) => item.code === "session_open:native_startup_history"
+      ).length,
       1
     );
   } finally {

@@ -8,7 +8,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { Hono } from "hono";
 import {
   botDisclosure,
@@ -73,10 +73,11 @@ export function safeAppAssetPath(
   root: string = APP_DIR
 ): string | undefined {
   const relative = urlPath.replace(/^\/app\/?/, "");
+  if (relative.includes("..")) return undefined;
   // Directory mount points serve the entry document, matching `app.get("/")`
   // behavior for the vanilla console. Files under /app/ pass through.
   const resolved = join(root, relative || "index.html");
-  if (!resolved.startsWith(root)) return undefined;
+  if (resolved !== root && !resolved.startsWith(root + sep)) return undefined;
   return resolved;
 }
 

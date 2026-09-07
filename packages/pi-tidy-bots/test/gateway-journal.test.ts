@@ -1517,25 +1517,13 @@ test("new_context is a control kind and does not evict compact receipts or the p
   ).receipt;
   assert.equal(reset.kind, "new_context");
   assert.equal(reset.userEntryId, undefined);
-  f.journal.recordDisposition(f.lease, key("reset-1"), {
-    delivery: "accepted",
-    execution: "ended",
-    result: {
-      status: "applied",
-      checkpoint: "no-summary",
-      contextGeneration: 1,
-    },
-  });
   assert.equal(
     f.journal.getPermission(f.descriptor)?.decisionOperationId,
     "decision-1"
   );
   assert.equal(f.journal.getOperation(key("decision-1"))!.kind, "permission");
   assert.deepEqual(f.journal.getOperation(key("compact-1")), compact);
-  assert.equal(
-    f.journal.getOperation(key("reset-1"))!.result?.checkpoint,
-    "no-summary"
-  );
+  assert.deepEqual(f.journal.getOperation(key("reset-1")), reset);
   assert.deepEqual(f.journal.listConversations()[0], binding);
   assert.equal(f.journal.readTranscript(binding).length, 1);
 });

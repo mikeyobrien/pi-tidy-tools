@@ -143,14 +143,19 @@
     },
     {
       "if": {
+        "type": "object",
         "properties": {
           "kind": {
             "const": "compact"
+          },
+          "result": {
+            "type": "object"
           }
         },
         "required": ["kind", "result"]
       },
       "then": {
+        "type": "object",
         "properties": {
           "result": {
             "$ref": "#/$defs/compactResult"
@@ -160,14 +165,19 @@
     },
     {
       "if": {
+        "type": "object",
         "properties": {
           "kind": {
             "const": "new_context"
+          },
+          "result": {
+            "type": "object"
           }
         },
         "required": ["kind", "result"]
       },
       "then": {
+        "type": "object",
         "properties": {
           "result": {
             "$ref": "#/$defs/newContextResult"

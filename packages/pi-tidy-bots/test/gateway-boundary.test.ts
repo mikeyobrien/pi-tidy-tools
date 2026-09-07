@@ -158,6 +158,7 @@ test("all public protocol schemas compile strictly and belong to the installed p
     "event.schema.json",
     "manifest.schema.json",
     "protocol.schema.json",
+    "receipt.schema.json",
     "registry.schema.json",
   ]);
   const ajv = new Ajv({ strict: true, allErrors: true });

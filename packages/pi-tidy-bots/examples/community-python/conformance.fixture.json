@@ -1,19 +1,125 @@
 {
   "version": 1,
-  "cells": [
+  "scenarios": [
     {
-      "id": "community-python-message",
-      "kind": "message",
-      "operationId": "community-python-message-1",
-      "text": "hello from the packaged community fixture",
-      "effect": {
+      "id": "open-send-stream-close",
+      "config": { "mode": "normal" },
+      "lifecycle": {
         "file": "native-calls.jsonl",
-        "contains": "\"kind\": \"submit\", \"operationId\": \"community-python-message-1\"",
-        "expectedOccurrences": 1
+        "expected": [
+          { "contains": "\"kind\": \"open\"", "expectedOccurrences": 1 },
+          { "contains": "\"kind\": \"closed\"", "expectedOccurrences": 1 }
+        ]
       },
-      "events": { "minFrames": 3, "terminalFinals": 1 },
-      "expect": { "status": 202, "execution": "ended" }
+      "fixture": {
+        "version": 1,
+        "cells": [
+          {
+            "id": "community-python-message",
+            "kind": "message",
+            "operationId": "community-python-message-1",
+            "text": "hello from the packaged community fixture",
+            "effect": {
+              "file": "native-calls.jsonl",
+              "contains": "\"kind\": \"submit\", \"operationId\": \"community-python-message-1\"",
+              "expectedOccurrences": 1
+            },
+            "events": { "minFrames": 3, "terminalFinals": 1 },
+            "expect": { "status": 202, "execution": "ended" }
+          }
+        ],
+        "allowedUncertainty": ["native_provider_not_run"]
+      }
+    },
+    {
+      "id": "cancel-acknowledged",
+      "config": { "mode": "cancel-ack" },
+      "notRun": ["L03.cancel_delayed", "L03.cancel_lost_or_ambiguous"],
+      "fixture": {
+        "version": 1,
+        "cells": [
+          {
+            "id": "community-python-cancel",
+            "kind": "cancel",
+            "operationId": "community-python-cancel-target",
+            "text": "hold for cancellation",
+            "effect": {
+              "file": "native-calls.jsonl",
+              "contains": "\"kind\": \"submit\", \"operationId\": \"community-python-cancel-target\"",
+              "expectedOccurrences": 1
+            },
+            "cancel": {
+              "operationId": "community-python-cancel-control",
+              "effect": {
+                "file": "native-calls.jsonl",
+                "contains": "\"kind\": \"cancel\", \"operationId\": \"community-python-cancel-control\"",
+                "expectedOccurrences": 1
+              },
+              "expect": { "execution": "ended", "observation": "complete" }
+            },
+            "expect": {
+              "status": 202,
+              "execution": "cancelled",
+              "observation": "complete"
+            }
+          }
+        ],
+        "allowedUncertainty": ["native_provider_not_run"]
+      }
+    },
+    {
+      "id": "malformed-event-isolated",
+      "config": { "mode": "malformed-event" },
+      "healthy": { "mode": "normal" },
+      "fixture": {
+        "version": 1,
+        "cells": [
+          {
+            "id": "community-python-malformed-event",
+            "kind": "malformed_plugin",
+            "operationId": "community-python-malformed-event-1",
+            "text": "malformed event must isolate",
+            "effect": {
+              "file": "native-calls.jsonl",
+              "contains": "\"kind\": \"malformed\", \"mode\": \"malformed-event\"",
+              "expectedOccurrences": 1
+            },
+            "expect": {
+              "status": 202,
+              "execution": "unknown",
+              "observation": "reconciliation_required"
+            }
+          }
+        ],
+        "allowedUncertainty": ["native_provider_not_run"]
+      }
+    },
+    {
+      "id": "post-write-crash-unknown",
+      "config": { "mode": "crash-submit" },
+      "healthy": { "mode": "normal" },
+      "fixture": {
+        "version": 1,
+        "cells": [
+          {
+            "id": "community-python-crash-submit",
+            "kind": "post_native_eof",
+            "operationId": "community-python-crash-submit-1",
+            "text": "crash after native write",
+            "effect": {
+              "file": "native-calls.jsonl",
+              "contains": "\"kind\": \"submit\", \"operationId\": \"community-python-crash-submit-1\"",
+              "expectedOccurrences": 1
+            },
+            "expect": {
+              "status": 202,
+              "execution": "unknown",
+              "observation": "reconciliation_required"
+            }
+          }
+        ],
+        "allowedUncertainty": ["native_provider_not_run"]
+      }
     }
-  ],
-  "allowedUncertainty": ["native_provider_not_run"]
+  ]
 }

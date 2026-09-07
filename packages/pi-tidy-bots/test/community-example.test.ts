@@ -22,10 +22,28 @@ const python =
   (existsSync(pythonCandidate) ? pythonCandidate : "python3");
 
 function semanticReceipt(receipt: any): unknown {
-  const value = structuredClone(receipt);
-  value.provenance.artifactDigest = "<executed-artifact-digest>";
-  value.report.scope.artifact.sha256 = "<executed-artifact-digest>";
-  return value;
+  return {
+    format: receipt.format,
+    version: receipt.version,
+    provenance: {
+      ...receipt.provenance,
+      artifactDigest: "<executed-artifact-digest>",
+    },
+    report: {
+      scope: receipt.report.scope,
+      scenarios: receipt.report.scenarios.map((scenario: any) => ({
+        id: scenario.id,
+        scope: {
+          exercised: scenario.report.scope.exercised,
+          notRun: scenario.report.scope.notRun,
+          nativeProvider: scenario.report.scope.nativeProvider,
+        },
+        cells: scenario.report.cells.map((cell: any) => ({
+          status: cell.status,
+        })),
+      })),
+    },
+  };
 }
 
 test("packed community example runs from an extracted registry-only artifact", async () => {
@@ -104,24 +122,55 @@ test("packed community example runs from an extracted registry-only artifact", a
     );
     assert.deepEqual(receipt, retained);
     assert.equal(receipt.format, "pi-tidy-community-conformance-receipt");
+    assert.equal(receipt.version, 2);
     assert.equal(receipt.provenance.installation, "registry_digest_pinned");
     assert.equal(receipt.provenance.assets, "package_relative");
     assert.equal(receipt.provenance.nativeProvider, "not-certified");
     assert.match(receipt.provenance.artifactDigest, /^sha256:[a-f0-9]{64}$/);
-    assert.equal(
-      receipt.report.scope.artifact.sha256,
-      receipt.provenance.artifactDigest,
-      "receipt digest is the registry-pinned artifact actually executed"
-    );
-    assert.equal(receipt.report.cells[0].status, "passed");
-    assert.deepEqual(receipt.report.scope.exercised, [
-      "C05.public_ordered_terminal",
+    assert.deepEqual(receipt.report.scope.scenarios, [
+      "open-send-stream-close",
+      "cancel-acknowledged",
+      "malformed-event-isolated",
+      "post-write-crash-unknown",
     ]);
-    assert.ok(receipt.report.scope.notRun.includes("C03"));
-    assert.ok(receipt.report.scope.notRun.includes("L03"));
+    const scenarios = new Map<string, any>(
+      receipt.report.scenarios.map((scenario: any): [string, any] => [
+        scenario.id,
+        scenario.report,
+      ])
+    );
+    assert.equal(scenarios.size, 4);
+    for (const [id, report] of scenarios) {
+      assert.equal(
+        report.scope.artifact.sha256,
+        receipt.provenance.artifactDigest,
+        "each scenario executes the registry-pinned artifact"
+      );
+      assert.ok(
+        report.cells.every((cell: any) => cell.status === "passed"),
+        `scenario failed: ${id}`
+      );
+    }
+    const normal = scenarios.get("open-send-stream-close");
+    assert.equal(normal.cells[0].evidence.events.terminalFinalCount, 1);
+    assert.equal(normal.cells[1].status, "passed");
+    assert.equal(normal.cells[1].evidence.shutdown, "startFleet.handle.stop");
+    const cancelled = scenarios.get("cancel-acknowledged").cells[0];
+    assert.equal(cancelled.evidence.receipts.target.execution, "cancelled");
+    assert.equal(cancelled.evidence.nativeEffects.submitCount, 1);
+    assert.equal(cancelled.evidence.nativeEffects.cancelCount, 1);
+    const malformed = scenarios.get("malformed-event-isolated").cells[0];
+    assert.equal(malformed.evidence.protocolRejection.code, "invalid_event");
+    assert.equal(malformed.evidence.healthyReceipt.execution, "ended");
+    const crash = scenarios.get("post-write-crash-unknown").cells[0];
+    assert.equal(crash.evidence.receipts.after.execution, "unknown");
+    assert.equal(crash.evidence.nativeEffects.count, 1);
+    assert.equal(crash.evidence.nativeEffects.unchanged, true);
+    assert.equal(crash.evidence.healthyReceipt.execution, "ended");
     assert.match(sample.provenance.artifactDigest, /^sha256:[a-f0-9]{64}$/);
+    assert.equal(sample.version, 2);
     assert.equal(
-      sample.report.scope.artifact.sha256,
+      sample.report.scenarios[0].report.scope.artifact.sha256,
       sample.provenance.artifactDigest,
       "bundled receipt preserves the original packed-run artifact provenance"
     );
@@ -137,10 +186,11 @@ test("packed community example runs from an extracted registry-only artifact", a
       receipt.provenance.artifactDigest,
       "an explicit executable override changes the truthfully pinned artifact"
     );
-    assert.equal(
-      alternate.report.scope.artifact.sha256,
-      alternate.provenance.artifactDigest
-    );
+    for (const scenario of alternate.report.scenarios)
+      assert.equal(
+        scenario.report.scope.artifact.sha256,
+        alternate.provenance.artifactDigest
+      );
     assert.deepEqual(semanticReceipt(alternate), semanticReceipt(receipt));
   } finally {
     await rm(root, { recursive: true, force: true });

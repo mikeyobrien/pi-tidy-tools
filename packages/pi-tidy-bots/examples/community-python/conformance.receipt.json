@@ -1,11 +1,11 @@
 {
   "format": "pi-tidy-community-conformance-receipt",
-  "version": 1,
+  "version": 2,
   "provenance": {
     "bundle": "community-python",
     "bundleVersion": "1.0.0",
-    "artifactDigest": "sha256:c618e30a01997da02a982b72b8d60e1bb6b646ce47a8c369f30bc81b3f9ed24d",
-    "fixtureDigest": "sha256:5789b6901ad4503f839a67b50f4d717f903bc962663d030e1f00e4111a7de1bc",
+    "artifactDigest": "sha256:159b319a8474ca212127b6f34591f05ea1bb468d2c8760364307d0cf3718f7e8",
+    "fixtureDigest": "sha256:fb856fc1a66d4ca702a69acf7983028f1373a38ddf082f5685683ce45188a2a5",
     "installation": "registry_digest_pinned",
     "supervisor": "startFleet",
     "nativeProvider": "not-certified",
@@ -13,156 +13,4509 @@
   },
   "report": {
     "scope": {
-      "mode": "local_disposable",
-      "daemon": "startFleet",
-      "registryPath": "<generated-registry>",
-      "pluginId": "<id:1>",
-      "artifact": {
-        "id": "<id:1>",
-        "version": "1.0.0",
-        "artifactPath": "<prepared-community-python-artifact>",
-        "sha256": "sha256:c618e30a01997da02a982b72b8d60e1bb6b646ce47a8c369f30bc81b3f9ed24d",
-        "enabled": true
-      },
-      "fixtureSha256": "sha256:7709c766eccbf50bc91cd2c277e2c8e691707ce4312bb11864e8c65855164b2f",
-      "allowedUncertainty": ["native_provider_not_run"],
-      "injection": {
-        "kind": "none",
-        "fixtureId": "<id:2>"
-      },
-      "exercised": ["C05.public_ordered_terminal"],
-      "eventCells": ["community-python-message"],
-      "eofCells": [],
-      "cancellationCells": [],
-      "retryCells": [],
-      "notRun": [
-        "C01",
-        "C02",
-        "C03",
-        "C04",
-        "C05.source_replay_crash",
-        "C06",
-        "C07",
-        "C08",
-        "C09",
-        "C10",
-        "L01",
-        "L02",
-        "L03",
-        "L04",
-        "L05",
-        "L06",
-        "L07",
-        "L08",
-        "L09",
-        "L10"
+      "mode": "external_registry_only_disposable",
+      "supervisor": "startFleet",
+      "scenarios": [
+        "open-send-stream-close",
+        "cancel-acknowledged",
+        "malformed-event-isolated",
+        "post-write-crash-unknown"
       ],
-      "nativeProvider": "not-run"
+      "exercised": [
+        "C05.public_ordered_terminal",
+        "C03",
+        "L03.cancel_rest",
+        "C02.malformed_plugin_isolation",
+        "C04.post_write_eof",
+        "C05.post_write_eof_recovery"
+      ],
+      "nativeProvider": "not-run",
+      "note": "Each scenario retains its own precise notRun scope; no matrix-wide certification is inferred."
     },
-    "cells": [
+    "scenarios": [
       {
-        "id": "<id:3>",
-        "status": "passed",
-        "evidence": {
-          "firstStatus": 202,
-          "immutableReceipt": true,
-          "retryUnchanged": true,
-          "receipt": {
-            "fleetId": "<id:4>",
-            "botId": "<id:5>",
-            "conversationId": "<id:6>",
-            "bindingId": "<id:7>",
-            "bindingRevision": "<id:8>",
-            "operationId": "<id:9>",
-            "userEntryId": "<id:10>",
-            "delivery": "accepted",
-            "execution": "ended",
-            "observation": "complete",
-            "result": {
-              "taskOutcome": "unknown"
-            }
+        "id": "open-send-stream-close",
+        "report": {
+          "scope": {
+            "mode": "local_disposable",
+            "daemon": "startFleet",
+            "registryPath": "<generated-registry>",
+            "pluginId": "<id:1>",
+            "artifact": {
+              "id": "<id:1>",
+              "version": "1.0.0",
+              "artifactPath": "<prepared-community-python-artifact>",
+              "sha256": "sha256:159b319a8474ca212127b6f34591f05ea1bb468d2c8760364307d0cf3718f7e8",
+              "enabled": true
+            },
+            "fixtureSha256": "sha256:7709c766eccbf50bc91cd2c277e2c8e691707ce4312bb11864e8c65855164b2f",
+            "allowedUncertainty": ["native_provider_not_run"],
+            "injection": {
+              "kind": "none",
+              "fixtureId": "<id:2>"
+            },
+            "exercised": ["C05.public_ordered_terminal"],
+            "eventCells": ["community-python-message"],
+            "eofCells": [],
+            "cancellationCells": [],
+            "retryCells": [],
+            "notRun": [
+              "C01",
+              "C02",
+              "C03",
+              "C04",
+              "C05.source_replay_crash",
+              "C06",
+              "C07",
+              "C08",
+              "C09",
+              "C10",
+              "L01",
+              "L02",
+              "L03",
+              "L04",
+              "L05",
+              "L06",
+              "L07",
+              "L08",
+              "L09",
+              "L10"
+            ],
+            "nativeProvider": "not-run"
           },
-          "effects": {
-            "file": "native-calls.jsonl",
-            "count": 1,
-            "unchanged": true
-          },
-          "events": {
-            "frameCount": 6,
-            "linkedAppendCount": 1,
-            "terminalFinalCount": 1,
-            "ordered": true,
-            "turnId": "<id:11>",
-            "trace": [
-              {
-                "bot": "fixture",
-                "phase": "working",
-                "text": "",
-                "turnId": "<id:12>",
-                "type": "bubble",
-                "seq": "<sequence:1>"
-              },
-              {
-                "bot": "fixture",
-                "parts": [
-                  {
-                    "text": "Python: hello from the packaged community fixture",
-                    "type": "text"
+          "cells": [
+            {
+              "id": "<id:3>",
+              "status": "passed",
+              "evidence": {
+                "firstStatus": 202,
+                "immutableReceipt": true,
+                "retryUnchanged": true,
+                "receipt": {
+                  "fleetId": "<id:4>",
+                  "botId": "<id:5>",
+                  "conversationId": "<id:6>",
+                  "bindingId": "<id:7>",
+                  "bindingRevision": "<id:8>",
+                  "operationId": "<id:9>",
+                  "userEntryId": "<id:10>",
+                  "delivery": "accepted",
+                  "execution": "ended",
+                  "observation": "complete",
+                  "result": {
+                    "taskOutcome": "unknown"
                   }
-                ],
-                "phase": "parts",
-                "text": "Python: hello from the packaged community fixture",
-                "turnId": "<id:12>",
-                "type": "bubble",
-                "seq": "<sequence:2>"
-              },
-              {
-                "bot": "fixture",
-                "entry": {
-                  "id": "<id:13>",
-                  "operationId": "<id:14>",
-                  "origin": "bot",
-                  "parts": [
+                },
+                "effects": {
+                  "file": "native-calls.jsonl",
+                  "count": 1,
+                  "unchanged": true
+                },
+                "events": {
+                  "frameCount": 6,
+                  "linkedAppendCount": 1,
+                  "terminalFinalCount": 1,
+                  "ordered": true,
+                  "turnId": "<id:11>",
+                  "trace": [
                     {
+                      "bot": "fixture",
+                      "phase": "working",
+                      "text": "",
+                      "turnId": "<id:12>",
+                      "type": "bubble",
+                      "seq": "<sequence:1>"
+                    },
+                    {
+                      "bot": "fixture",
+                      "parts": [
+                        {
+                          "text": "Python: hello from the packaged community fixture",
+                          "type": "text"
+                        }
+                      ],
+                      "phase": "parts",
                       "text": "Python: hello from the packaged community fixture",
-                      "type": "text"
+                      "turnId": "<id:12>",
+                      "type": "bubble",
+                      "seq": "<sequence:2>"
+                    },
+                    {
+                      "bot": "fixture",
+                      "entry": {
+                        "id": "<id:13>",
+                        "operationId": "<id:14>",
+                        "origin": "bot",
+                        "parts": [
+                          {
+                            "text": "Python: hello from the packaged community fixture",
+                            "type": "text"
+                          }
+                        ],
+                        "role": "assistant",
+                        "text": "Python: hello from the packaged community fixture",
+                        "ts": "<clock>",
+                        "turnId": "<id:12>"
+                      },
+                      "type": "append",
+                      "seq": "<sequence:3>"
+                    },
+                    {
+                      "bot": "fixture",
+                      "phase": "working",
+                      "text": "",
+                      "turnId": "<id:12>",
+                      "type": "bubble",
+                      "seq": "<sequence:4>"
+                    },
+                    {
+                      "bot": "fixture",
+                      "parts": [],
+                      "phase": "parts",
+                      "text": "",
+                      "turnId": "<id:12>",
+                      "type": "bubble",
+                      "seq": "<sequence:5>"
+                    },
+                    {
+                      "bot": "fixture",
+                      "phase": "final",
+                      "text": "",
+                      "turnId": "<id:12>",
+                      "type": "bubble",
+                      "seq": "<sequence:6>"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "id": "<id:15>",
+              "status": "passed",
+              "evidence": {
+                "shutdown": "startFleet.handle.stop",
+                "file": "native-calls.jsonl",
+                "assertions": [
+                  {
+                    "contains": "\"kind\": \"open\"",
+                    "expectedOccurrences": 1,
+                    "count": 1
+                  },
+                  {
+                    "contains": "\"kind\": \"closed\"",
+                    "expectedOccurrences": 1,
+                    "count": 1
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "id": "cancel-acknowledged",
+        "report": {
+          "scope": {
+            "mode": "local_disposable",
+            "daemon": "startFleet",
+            "registryPath": "<generated-registry>",
+            "pluginId": "<id:1>",
+            "artifact": {
+              "id": "<id:1>",
+              "version": "1.0.0",
+              "artifactPath": "<prepared-community-python-artifact>",
+              "sha256": "sha256:159b319a8474ca212127b6f34591f05ea1bb468d2c8760364307d0cf3718f7e8",
+              "enabled": true
+            },
+            "fixtureSha256": "sha256:8d16305da44441202429372e29e6c7abdb68d112999b545f59ff8ad54041944e",
+            "allowedUncertainty": ["native_provider_not_run"],
+            "injection": {
+              "kind": "none",
+              "fixtureId": "<id:2>"
+            },
+            "exercised": ["C03", "L03.cancel_rest"],
+            "eventCells": [],
+            "eofCells": [],
+            "cancellationCells": ["community-python-cancel"],
+            "retryCells": [],
+            "notRun": [
+              "C01",
+              "C02",
+              "C04",
+              "C05.source_replay_crash",
+              "C06",
+              "C07",
+              "C08",
+              "C09",
+              "C10",
+              "L01",
+              "L02",
+              "L03.cancel_impossible_or_unsupported",
+              "L03.tool_child_survives",
+              "L04",
+              "L05",
+              "L06",
+              "L07",
+              "L08",
+              "L09",
+              "L10",
+              "L03.cancel_delayed",
+              "L03.cancel_lost_or_ambiguous"
+            ],
+            "nativeProvider": "not-run"
+          },
+          "cells": [
+            {
+              "id": "<id:3>",
+              "status": "passed",
+              "evidence": {
+                "cancelRetryConflictStatus": 409,
+                "nativeTargetMatches": true,
+                "noCompletedAssistant": true,
+                "nativeEffects": {
+                  "submitCount": 1,
+                  "cancelCount": 1,
+                  "cancelUnchangedAfterRetry": true
+                },
+                "receipts": {
+                  "submit": {
+                    "fleetId": "<id:4>",
+                    "botId": "<id:5>",
+                    "conversationId": "<id:6>",
+                    "bindingId": "<id:7>",
+                    "bindingRevision": "<id:8>",
+                    "operationId": "<id:9>",
+                    "userEntryId": "<id:10>",
+                    "delivery": "queued",
+                    "execution": "not_started",
+                    "observation": "complete"
+                  },
+                  "cancel": {
+                    "fleetId": "<id:4>",
+                    "botId": "<id:5>",
+                    "conversationId": "<id:6>",
+                    "bindingId": "<id:7>",
+                    "bindingRevision": "<id:8>",
+                    "operationId": "<id:11>",
+                    "kind": "cancel",
+                    "delivery": "queued",
+                    "execution": "not_started",
+                    "observation": "complete"
+                  },
+                  "control": {
+                    "fleetId": "<id:4>",
+                    "botId": "<id:5>",
+                    "conversationId": "<id:6>",
+                    "bindingId": "<id:7>",
+                    "bindingRevision": "<id:8>",
+                    "operationId": "<id:11>",
+                    "kind": "cancel",
+                    "delivery": "accepted",
+                    "execution": "ended",
+                    "observation": "complete",
+                    "result": {
+                      "status": "requested"
+                    }
+                  },
+                  "target": {
+                    "fleetId": "<id:4>",
+                    "botId": "<id:5>",
+                    "conversationId": "<id:6>",
+                    "bindingId": "<id:7>",
+                    "bindingRevision": "<id:8>",
+                    "operationId": "<id:9>",
+                    "userEntryId": "<id:10>",
+                    "delivery": "accepted",
+                    "execution": "cancelled",
+                    "observation": "complete",
+                    "result": {
+                      "taskOutcome": "unknown"
+                    }
+                  },
+                  "retry": {
+                    "fleetId": "<id:4>",
+                    "botId": "<id:5>",
+                    "conversationId": "<id:6>",
+                    "bindingId": "<id:7>",
+                    "bindingRevision": "<id:8>",
+                    "operationId": "<id:11>",
+                    "kind": "cancel",
+                    "delivery": "accepted",
+                    "execution": "ended",
+                    "observation": "complete",
+                    "result": {
+                      "status": "requested"
+                    }
+                  }
+                },
+                "trace": [
+                  {
+                    "bot": "fixture",
+                    "entry": {
+                      "clientMessageId": "<id:4>",
+                      "id": "<id:5>",
+                      "operationId": "<id:4>",
+                      "origin": "operator",
+                      "role": "user",
+                      "text": "hold for cancellation",
+                      "ts": "<clock>"
+                    },
+                    "type": "append",
+                    "seq": 3
+                  },
+                  {
+                    "bots": [
+                      {
+                        "active": false,
+                        "avatar": "",
+                        "description": "",
+                        "gateway": {
+                          "backend": {
+                            "id": "<id:6>",
+                            "version": "1.0.0"
+                          },
+                          "bindingId": "<id:7>",
+                          "bindingRevision": "<id:8>",
+                          "botId": "<id:9>",
+                          "capabilities": {
+                            "configuration": {
+                              "compact": false,
+                              "model": false,
+                              "thinking": false
+                            },
+                            "fleetTools": false,
+                            "input": {
+                              "maxMediaBytes": 0,
+                              "mediaTypes": [],
+                              "text": true
+                            },
+                            "interactions": {
+                              "permissions": "exact-request",
+                              "questions": false
+                            },
+                            "operations": {
+                              "cancel": "cooperative",
+                              "nativeDedupe": "none",
+                              "nativeReplay": "none",
+                              "steer": false
+                            },
+                            "output": {
+                              "text": "snapshots",
+                              "tools": false,
+                              "usage": "unknown"
+                            },
+                            "sessions": {
+                              "continuity": "unverified",
+                              "import": false,
+                              "load": false
+                            }
+                          },
+                          "conversationId": "<id:10>",
+                          "fleetId": "<id:11>"
+                        },
+                        "lastActive": "<clock>",
+                        "latest": "hold for cancellation",
+                        "name": "fixture",
+                        "online": true,
+                        "queued": 1,
+                        "title": ""
+                      }
+                    ],
+                    "capabilities": [
+                      "messages",
+                      "turn-parts",
+                      "ws-auth-bearer",
+                      "backend-capabilities-v1",
+                      "operation-receipts-v1"
+                    ],
+                    "counts": {
+                      "active": 0,
+                      "total": 1
+                    },
+                    "fleetId": "<id:11>",
+                    "type": "roster",
+                    "seq": 4
+                  },
+                  {
+                    "bot": "fixture",
+                    "phase": "working",
+                    "text": "",
+                    "turnId": "<id:12>",
+                    "type": "bubble",
+                    "seq": 5
+                  },
+                  {
+                    "bots": [
+                      {
+                        "active": true,
+                        "avatar": "",
+                        "description": "",
+                        "gateway": {
+                          "backend": {
+                            "id": "<id:6>",
+                            "version": "1.0.0"
+                          },
+                          "bindingId": "<id:7>",
+                          "bindingRevision": "<id:8>",
+                          "botId": "<id:9>",
+                          "capabilities": {
+                            "configuration": {
+                              "compact": false,
+                              "model": false,
+                              "thinking": false
+                            },
+                            "fleetTools": false,
+                            "input": {
+                              "maxMediaBytes": 0,
+                              "mediaTypes": [],
+                              "text": true
+                            },
+                            "interactions": {
+                              "permissions": "exact-request",
+                              "questions": false
+                            },
+                            "operations": {
+                              "cancel": "cooperative",
+                              "nativeDedupe": "none",
+                              "nativeReplay": "none",
+                              "steer": false
+                            },
+                            "output": {
+                              "text": "snapshots",
+                              "tools": false,
+                              "usage": "unknown"
+                            },
+                            "sessions": {
+                              "continuity": "unverified",
+                              "import": false,
+                              "load": false
+                            }
+                          },
+                          "conversationId": "<id:10>",
+                          "fleetId": "<id:11>"
+                        },
+                        "lastActive": "<clock>",
+                        "latest": "hold for cancellation",
+                        "name": "fixture",
+                        "online": true,
+                        "queued": 0,
+                        "title": ""
+                      }
+                    ],
+                    "capabilities": [
+                      "messages",
+                      "turn-parts",
+                      "ws-auth-bearer",
+                      "backend-capabilities-v1",
+                      "operation-receipts-v1"
+                    ],
+                    "counts": {
+                      "active": 1,
+                      "total": 1
+                    },
+                    "fleetId": "<id:11>",
+                    "type": "roster",
+                    "seq": 6
+                  },
+                  {
+                    "bot": "fixture",
+                    "phase": "final",
+                    "text": "",
+                    "turnId": "<id:12>",
+                    "type": "bubble",
+                    "seq": 7
+                  },
+                  {
+                    "bots": [
+                      {
+                        "active": false,
+                        "avatar": "",
+                        "description": "",
+                        "gateway": {
+                          "backend": {
+                            "id": "<id:6>",
+                            "version": "1.0.0"
+                          },
+                          "bindingId": "<id:7>",
+                          "bindingRevision": "<id:8>",
+                          "botId": "<id:9>",
+                          "capabilities": {
+                            "configuration": {
+                              "compact": false,
+                              "model": false,
+                              "thinking": false
+                            },
+                            "fleetTools": false,
+                            "input": {
+                              "maxMediaBytes": 0,
+                              "mediaTypes": [],
+                              "text": true
+                            },
+                            "interactions": {
+                              "permissions": "exact-request",
+                              "questions": false
+                            },
+                            "operations": {
+                              "cancel": "cooperative",
+                              "nativeDedupe": "none",
+                              "nativeReplay": "none",
+                              "steer": false
+                            },
+                            "output": {
+                              "text": "snapshots",
+                              "tools": false,
+                              "usage": "unknown"
+                            },
+                            "sessions": {
+                              "continuity": "unverified",
+                              "import": false,
+                              "load": false
+                            }
+                          },
+                          "conversationId": "<id:10>",
+                          "fleetId": "<id:11>"
+                        },
+                        "lastActive": "<clock>",
+                        "latest": "hold for cancellation",
+                        "name": "fixture",
+                        "online": true,
+                        "queued": 0,
+                        "title": ""
+                      }
+                    ],
+                    "capabilities": [
+                      "messages",
+                      "turn-parts",
+                      "ws-auth-bearer",
+                      "backend-capabilities-v1",
+                      "operation-receipts-v1"
+                    ],
+                    "counts": {
+                      "active": 0,
+                      "total": 1
+                    },
+                    "fleetId": "<id:11>",
+                    "type": "roster",
+                    "seq": 8
+                  },
+                  {
+                    "bots": [
+                      {
+                        "active": false,
+                        "avatar": "",
+                        "description": "",
+                        "gateway": {
+                          "backend": {
+                            "id": "<id:6>",
+                            "version": "1.0.0"
+                          },
+                          "bindingId": "<id:7>",
+                          "bindingRevision": "<id:8>",
+                          "botId": "<id:9>",
+                          "capabilities": {
+                            "configuration": {
+                              "compact": false,
+                              "model": false,
+                              "thinking": false
+                            },
+                            "fleetTools": false,
+                            "input": {
+                              "maxMediaBytes": 0,
+                              "mediaTypes": [],
+                              "text": true
+                            },
+                            "interactions": {
+                              "permissions": "exact-request",
+                              "questions": false
+                            },
+                            "operations": {
+                              "cancel": "cooperative",
+                              "nativeDedupe": "none",
+                              "nativeReplay": "none",
+                              "steer": false
+                            },
+                            "output": {
+                              "text": "snapshots",
+                              "tools": false,
+                              "usage": "unknown"
+                            },
+                            "sessions": {
+                              "continuity": "unverified",
+                              "import": false,
+                              "load": false
+                            }
+                          },
+                          "conversationId": "<id:10>",
+                          "fleetId": "<id:11>"
+                        },
+                        "lastActive": "<clock>",
+                        "latest": "hold for cancellation",
+                        "name": "fixture",
+                        "online": true,
+                        "queued": 0,
+                        "title": ""
+                      }
+                    ],
+                    "capabilities": [
+                      "messages",
+                      "turn-parts",
+                      "ws-auth-bearer",
+                      "backend-capabilities-v1",
+                      "operation-receipts-v1"
+                    ],
+                    "counts": {
+                      "active": 0,
+                      "total": 1
+                    },
+                    "fleetId": "<id:11>",
+                    "type": "roster",
+                    "seq": 9
+                  },
+                  {
+                    "bots": [
+                      {
+                        "active": false,
+                        "avatar": "",
+                        "description": "",
+                        "gateway": {
+                          "backend": {
+                            "id": "<id:6>",
+                            "version": "1.0.0"
+                          },
+                          "bindingId": "<id:7>",
+                          "bindingRevision": "<id:8>",
+                          "botId": "<id:9>",
+                          "capabilities": {
+                            "configuration": {
+                              "compact": false,
+                              "model": false,
+                              "thinking": false
+                            },
+                            "fleetTools": false,
+                            "input": {
+                              "maxMediaBytes": 0,
+                              "mediaTypes": [],
+                              "text": true
+                            },
+                            "interactions": {
+                              "permissions": "exact-request",
+                              "questions": false
+                            },
+                            "operations": {
+                              "cancel": "cooperative",
+                              "nativeDedupe": "none",
+                              "nativeReplay": "none",
+                              "steer": false
+                            },
+                            "output": {
+                              "text": "snapshots",
+                              "tools": false,
+                              "usage": "unknown"
+                            },
+                            "sessions": {
+                              "continuity": "unverified",
+                              "import": false,
+                              "load": false
+                            }
+                          },
+                          "conversationId": "<id:10>",
+                          "fleetId": "<id:11>"
+                        },
+                        "lastActive": "<clock>",
+                        "latest": "hold for cancellation",
+                        "name": "fixture",
+                        "online": true,
+                        "queued": 0,
+                        "title": ""
+                      }
+                    ],
+                    "capabilities": [
+                      "messages",
+                      "turn-parts",
+                      "ws-auth-bearer",
+                      "backend-capabilities-v1",
+                      "operation-receipts-v1"
+                    ],
+                    "counts": {
+                      "active": 0,
+                      "total": 1
+                    },
+                    "fleetId": "<id:11>",
+                    "type": "roster",
+                    "seq": 10
+                  },
+                  {
+                    "bots": [
+                      {
+                        "active": false,
+                        "avatar": "",
+                        "description": "",
+                        "gateway": {
+                          "backend": {
+                            "id": "<id:6>",
+                            "version": "1.0.0"
+                          },
+                          "bindingId": "<id:7>",
+                          "bindingRevision": "<id:8>",
+                          "botId": "<id:9>",
+                          "capabilities": {
+                            "configuration": {
+                              "compact": false,
+                              "model": false,
+                              "thinking": false
+                            },
+                            "fleetTools": false,
+                            "input": {
+                              "maxMediaBytes": 0,
+                              "mediaTypes": [],
+                              "text": true
+                            },
+                            "interactions": {
+                              "permissions": "exact-request",
+                              "questions": false
+                            },
+                            "operations": {
+                              "cancel": "cooperative",
+                              "nativeDedupe": "none",
+                              "nativeReplay": "none",
+                              "steer": false
+                            },
+                            "output": {
+                              "text": "snapshots",
+                              "tools": false,
+                              "usage": "unknown"
+                            },
+                            "sessions": {
+                              "continuity": "unverified",
+                              "import": false,
+                              "load": false
+                            }
+                          },
+                          "conversationId": "<id:10>",
+                          "fleetId": "<id:11>"
+                        },
+                        "lastActive": "<clock>",
+                        "latest": "hold for cancellation",
+                        "name": "fixture",
+                        "online": true,
+                        "queued": 0,
+                        "title": ""
+                      }
+                    ],
+                    "capabilities": [
+                      "messages",
+                      "turn-parts",
+                      "ws-auth-bearer",
+                      "backend-capabilities-v1",
+                      "operation-receipts-v1"
+                    ],
+                    "counts": {
+                      "active": 0,
+                      "total": 1
+                    },
+                    "fleetId": "<id:11>",
+                    "type": "roster",
+                    "seq": 11
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "id": "malformed-event-isolated",
+        "report": {
+          "scope": {
+            "mode": "local_disposable",
+            "daemon": "startFleet",
+            "registryPath": "<generated-registry>",
+            "pluginId": "<id:1>",
+            "artifact": {
+              "id": "<id:1>",
+              "version": "1.0.0",
+              "artifactPath": "<prepared-community-python-artifact>",
+              "sha256": "sha256:159b319a8474ca212127b6f34591f05ea1bb468d2c8760364307d0cf3718f7e8",
+              "enabled": true
+            },
+            "fixtureSha256": "sha256:26ff980a5db977eb68108cb861a8214e33cd4f14302f83ae3a8c1e96a15147f4",
+            "allowedUncertainty": ["native_provider_not_run"],
+            "injection": {
+              "kind": "none",
+              "fixtureId": "<id:2>"
+            },
+            "exercised": ["C02.malformed_plugin_isolation"],
+            "eventCells": [],
+            "eofCells": [],
+            "cancellationCells": [],
+            "retryCells": [],
+            "notRun": [
+              "C01",
+              "C02.other_plugin_frame_variants",
+              "C03",
+              "C04",
+              "C05.source_replay_crash",
+              "C06",
+              "C07",
+              "C08",
+              "C09",
+              "C10",
+              "L01",
+              "L02",
+              "L03",
+              "L04",
+              "L05",
+              "L06",
+              "L07",
+              "L08",
+              "L09",
+              "L10"
+            ],
+            "nativeProvider": "not-run"
+          },
+          "cells": [
+            {
+              "id": "<id:3>",
+              "status": "passed",
+              "evidence": {
+                "malformedEmission": [
+                  "{\"kind\": \"malformed\", \"mode\": \"malformed-event\", \"operationId\": \"community-python-malformed-event-1\"}"
+                ],
+                "protocolRejection": {
+                  "botName": "fixture",
+                  "bindingId": "<id:4>",
+                  "instanceId": "<id:5>",
+                  "leaseGeneration": 1,
+                  "code": "invalid_event"
+                },
+                "noAssistant": true,
+                "adversaryReceipt": {
+                  "fleetId": "<id:4>",
+                  "botId": "<id:5>",
+                  "conversationId": "<id:6>",
+                  "bindingId": "<id:7>",
+                  "bindingRevision": "<id:8>",
+                  "operationId": "<id:9>",
+                  "userEntryId": "<id:10>",
+                  "delivery": "unknown",
+                  "execution": "unknown",
+                  "observation": "reconciliation_required"
+                },
+                "healthyReceipt": {
+                  "fleetId": "<id:4>",
+                  "botId": "<id:5>",
+                  "conversationId": "<id:6>",
+                  "bindingId": "<id:7>",
+                  "bindingRevision": "<id:8>",
+                  "operationId": "<id:9>",
+                  "userEntryId": "<id:10>",
+                  "delivery": "accepted",
+                  "execution": "ended",
+                  "observation": "complete",
+                  "result": {
+                    "taskOutcome": "unknown"
+                  }
+                },
+                "adversaryTrace": [
+                  {
+                    "bot": "fixture",
+                    "entry": {
+                      "clientMessageId": "<id:4>",
+                      "id": "<id:5>",
+                      "operationId": "<id:4>",
+                      "origin": "operator",
+                      "role": "user",
+                      "text": "malformed event must isolate",
+                      "ts": "<clock>"
+                    },
+                    "type": "append",
+                    "seq": 3
+                  },
+                  {
+                    "bots": [
+                      {
+                        "active": false,
+                        "avatar": "",
+                        "description": "",
+                        "gateway": {
+                          "backend": {
+                            "id": "<id:6>",
+                            "version": "1.0.0"
+                          },
+                          "bindingId": "<id:7>",
+                          "bindingRevision": "<id:8>",
+                          "botId": "<id:9>",
+                          "capabilities": {
+                            "configuration": {
+                              "compact": false,
+                              "model": false,
+                              "thinking": false
+                            },
+                            "fleetTools": false,
+                            "input": {
+                              "maxMediaBytes": 0,
+                              "mediaTypes": [],
+                              "text": true
+                            },
+                            "interactions": {
+                              "permissions": "exact-request",
+                              "questions": false
+                            },
+                            "operations": {
+                              "cancel": "cooperative",
+                              "nativeDedupe": "none",
+                              "nativeReplay": "none",
+                              "steer": false
+                            },
+                            "output": {
+                              "text": "snapshots",
+                              "tools": false,
+                              "usage": "unknown"
+                            },
+                            "sessions": {
+                              "continuity": "unverified",
+                              "import": false,
+                              "load": false
+                            }
+                          },
+                          "conversationId": "<id:10>",
+                          "fleetId": "<id:11>"
+                        },
+                        "lastActive": "<clock>",
+                        "latest": "malformed event must isolate",
+                        "name": "fixture",
+                        "online": true,
+                        "queued": 1,
+                        "title": ""
+                      },
+                      {
+                        "active": false,
+                        "avatar": "",
+                        "description": "",
+                        "gateway": {
+                          "backend": {
+                            "id": "<id:6>",
+                            "version": "1.0.0"
+                          },
+                          "bindingId": "<id:12>",
+                          "bindingRevision": "<id:13>",
+                          "botId": "<id:14>",
+                          "capabilities": {
+                            "configuration": {
+                              "compact": false,
+                              "model": false,
+                              "thinking": false
+                            },
+                            "fleetTools": false,
+                            "input": {
+                              "maxMediaBytes": 0,
+                              "mediaTypes": [],
+                              "text": true
+                            },
+                            "interactions": {
+                              "permissions": "exact-request",
+                              "questions": false
+                            },
+                            "operations": {
+                              "cancel": "cooperative",
+                              "nativeDedupe": "none",
+                              "nativeReplay": "none",
+                              "steer": false
+                            },
+                            "output": {
+                              "text": "snapshots",
+                              "tools": false,
+                              "usage": "unknown"
+                            },
+                            "sessions": {
+                              "continuity": "unverified",
+                              "import": false,
+                              "load": false
+                            }
+                          },
+                          "conversationId": "<id:15>",
+                          "fleetId": "<id:11>"
+                        },
+                        "lastActive": "<clock>",
+                        "latest": "",
+                        "name": "healthy",
+                        "online": true,
+                        "queued": 0,
+                        "title": ""
+                      }
+                    ],
+                    "capabilities": [
+                      "messages",
+                      "turn-parts",
+                      "ws-auth-bearer",
+                      "backend-capabilities-v1",
+                      "operation-receipts-v1"
+                    ],
+                    "counts": {
+                      "active": 0,
+                      "total": 2
+                    },
+                    "fleetId": "<id:11>",
+                    "type": "roster",
+                    "seq": 4
+                  },
+                  {
+                    "bots": [
+                      {
+                        "active": false,
+                        "avatar": "",
+                        "description": "",
+                        "gateway": {
+                          "backend": {
+                            "id": "<id:6>",
+                            "version": "1.0.0"
+                          },
+                          "bindingId": "<id:7>",
+                          "bindingRevision": "<id:8>",
+                          "botId": "<id:9>",
+                          "capabilities": {
+                            "configuration": {
+                              "compact": false,
+                              "model": false,
+                              "thinking": false
+                            },
+                            "fleetTools": false,
+                            "input": {
+                              "maxMediaBytes": 0,
+                              "mediaTypes": [],
+                              "text": true
+                            },
+                            "interactions": {
+                              "permissions": "exact-request",
+                              "questions": false
+                            },
+                            "operations": {
+                              "cancel": "cooperative",
+                              "nativeDedupe": "none",
+                              "nativeReplay": "none",
+                              "steer": false
+                            },
+                            "output": {
+                              "text": "snapshots",
+                              "tools": false,
+                              "usage": "unknown"
+                            },
+                            "sessions": {
+                              "continuity": "unverified",
+                              "import": false,
+                              "load": false
+                            }
+                          },
+                          "conversationId": "<id:10>",
+                          "fleetId": "<id:11>"
+                        },
+                        "gatewayStatus": "operation_unknown",
+                        "lastActive": "<clock>",
+                        "latest": "malformed event must isolate",
+                        "name": "fixture",
+                        "online": false,
+                        "queued": 0,
+                        "title": ""
+                      },
+                      {
+                        "active": false,
+                        "avatar": "",
+                        "description": "",
+                        "gateway": {
+                          "backend": {
+                            "id": "<id:6>",
+                            "version": "1.0.0"
+                          },
+                          "bindingId": "<id:12>",
+                          "bindingRevision": "<id:13>",
+                          "botId": "<id:14>",
+                          "capabilities": {
+                            "configuration": {
+                              "compact": false,
+                              "model": false,
+                              "thinking": false
+                            },
+                            "fleetTools": false,
+                            "input": {
+                              "maxMediaBytes": 0,
+                              "mediaTypes": [],
+                              "text": true
+                            },
+                            "interactions": {
+                              "permissions": "exact-request",
+                              "questions": false
+                            },
+                            "operations": {
+                              "cancel": "cooperative",
+                              "nativeDedupe": "none",
+                              "nativeReplay": "none",
+                              "steer": false
+                            },
+                            "output": {
+                              "text": "snapshots",
+                              "tools": false,
+                              "usage": "unknown"
+                            },
+                            "sessions": {
+                              "continuity": "unverified",
+                              "import": false,
+                              "load": false
+                            }
+                          },
+                          "conversationId": "<id:15>",
+                          "fleetId": "<id:11>"
+                        },
+                        "lastActive": "<clock>",
+                        "latest": "",
+                        "name": "healthy",
+                        "online": true,
+                        "queued": 0,
+                        "title": ""
+                      }
+                    ],
+                    "capabilities": [
+                      "messages",
+                      "turn-parts",
+                      "ws-auth-bearer",
+                      "backend-capabilities-v1",
+                      "operation-receipts-v1"
+                    ],
+                    "counts": {
+                      "active": 0,
+                      "total": 2
+                    },
+                    "fleetId": "<id:11>",
+                    "type": "roster",
+                    "seq": 5
+                  },
+                  {
+                    "bots": [
+                      {
+                        "active": false,
+                        "avatar": "",
+                        "description": "",
+                        "gateway": {
+                          "backend": {
+                            "id": "<id:6>",
+                            "version": "1.0.0"
+                          },
+                          "bindingId": "<id:7>",
+                          "bindingRevision": "<id:8>",
+                          "botId": "<id:9>",
+                          "capabilities": {
+                            "configuration": {
+                              "compact": false,
+                              "model": false,
+                              "thinking": false
+                            },
+                            "fleetTools": false,
+                            "input": {
+                              "maxMediaBytes": 0,
+                              "mediaTypes": [],
+                              "text": true
+                            },
+                            "interactions": {
+                              "permissions": "exact-request",
+                              "questions": false
+                            },
+                            "operations": {
+                              "cancel": "cooperative",
+                              "nativeDedupe": "none",
+                              "nativeReplay": "none",
+                              "steer": false
+                            },
+                            "output": {
+                              "text": "snapshots",
+                              "tools": false,
+                              "usage": "unknown"
+                            },
+                            "sessions": {
+                              "continuity": "unverified",
+                              "import": false,
+                              "load": false
+                            }
+                          },
+                          "conversationId": "<id:10>",
+                          "fleetId": "<id:11>"
+                        },
+                        "gatewayStatus": "operation_unknown",
+                        "lastActive": "<clock>",
+                        "latest": "malformed event must isolate",
+                        "name": "fixture",
+                        "online": false,
+                        "queued": 0,
+                        "title": ""
+                      },
+                      {
+                        "active": false,
+                        "avatar": "",
+                        "description": "",
+                        "gateway": {
+                          "backend": {
+                            "id": "<id:6>",
+                            "version": "1.0.0"
+                          },
+                          "bindingId": "<id:12>",
+                          "bindingRevision": "<id:13>",
+                          "botId": "<id:14>",
+                          "capabilities": {
+                            "configuration": {
+                              "compact": false,
+                              "model": false,
+                              "thinking": false
+                            },
+                            "fleetTools": false,
+                            "input": {
+                              "maxMediaBytes": 0,
+                              "mediaTypes": [],
+                              "text": true
+                            },
+                            "interactions": {
+                              "permissions": "exact-request",
+                              "questions": false
+                            },
+                            "operations": {
+                              "cancel": "cooperative",
+                              "nativeDedupe": "none",
+                              "nativeReplay": "none",
+                              "steer": false
+                            },
+                            "output": {
+                              "text": "snapshots",
+                              "tools": false,
+                              "usage": "unknown"
+                            },
+                            "sessions": {
+                              "continuity": "unverified",
+                              "import": false,
+                              "load": false
+                            }
+                          },
+                          "conversationId": "<id:15>",
+                          "fleetId": "<id:11>"
+                        },
+                        "lastActive": "<clock>",
+                        "latest": "",
+                        "name": "healthy",
+                        "online": true,
+                        "queued": 0,
+                        "title": ""
+                      }
+                    ],
+                    "capabilities": [
+                      "messages",
+                      "turn-parts",
+                      "ws-auth-bearer",
+                      "backend-capabilities-v1",
+                      "operation-receipts-v1"
+                    ],
+                    "counts": {
+                      "active": 0,
+                      "total": 2
+                    },
+                    "fleetId": "<id:11>",
+                    "type": "roster",
+                    "seq": 6
+                  },
+                  {
+                    "bots": [
+                      {
+                        "active": false,
+                        "avatar": "",
+                        "description": "",
+                        "gateway": {
+                          "backend": {
+                            "id": "<id:6>",
+                            "version": "1.0.0"
+                          },
+                          "bindingId": "<id:7>",
+                          "bindingRevision": "<id:8>",
+                          "botId": "<id:9>",
+                          "capabilities": {
+                            "configuration": {
+                              "compact": false,
+                              "model": false,
+                              "thinking": false
+                            },
+                            "fleetTools": false,
+                            "input": {
+                              "maxMediaBytes": 0,
+                              "mediaTypes": [],
+                              "text": true
+                            },
+                            "interactions": {
+                              "permissions": "exact-request",
+                              "questions": false
+                            },
+                            "operations": {
+                              "cancel": "cooperative",
+                              "nativeDedupe": "none",
+                              "nativeReplay": "none",
+                              "steer": false
+                            },
+                            "output": {
+                              "text": "snapshots",
+                              "tools": false,
+                              "usage": "unknown"
+                            },
+                            "sessions": {
+                              "continuity": "unverified",
+                              "import": false,
+                              "load": false
+                            }
+                          },
+                          "conversationId": "<id:10>",
+                          "fleetId": "<id:11>"
+                        },
+                        "gatewayStatus": "operation_unknown",
+                        "lastActive": "<clock>",
+                        "latest": "malformed event must isolate",
+                        "name": "fixture",
+                        "online": false,
+                        "queued": 0,
+                        "title": ""
+                      },
+                      {
+                        "active": false,
+                        "avatar": "",
+                        "description": "",
+                        "gateway": {
+                          "backend": {
+                            "id": "<id:6>",
+                            "version": "1.0.0"
+                          },
+                          "bindingId": "<id:12>",
+                          "bindingRevision": "<id:13>",
+                          "botId": "<id:14>",
+                          "capabilities": {
+                            "configuration": {
+                              "compact": false,
+                              "model": false,
+                              "thinking": false
+                            },
+                            "fleetTools": false,
+                            "input": {
+                              "maxMediaBytes": 0,
+                              "mediaTypes": [],
+                              "text": true
+                            },
+                            "interactions": {
+                              "permissions": "exact-request",
+                              "questions": false
+                            },
+                            "operations": {
+                              "cancel": "cooperative",
+                              "nativeDedupe": "none",
+                              "nativeReplay": "none",
+                              "steer": false
+                            },
+                            "output": {
+                              "text": "snapshots",
+                              "tools": false,
+                              "usage": "unknown"
+                            },
+                            "sessions": {
+                              "continuity": "unverified",
+                              "import": false,
+                              "load": false
+                            }
+                          },
+                          "conversationId": "<id:15>",
+                          "fleetId": "<id:11>"
+                        },
+                        "lastActive": "<clock>",
+                        "latest": "",
+                        "name": "healthy",
+                        "online": true,
+                        "queued": 0,
+                        "title": ""
+                      }
+                    ],
+                    "capabilities": [
+                      "messages",
+                      "turn-parts",
+                      "ws-auth-bearer",
+                      "backend-capabilities-v1",
+                      "operation-receipts-v1"
+                    ],
+                    "counts": {
+                      "active": 0,
+                      "total": 2
+                    },
+                    "fleetId": "<id:11>",
+                    "type": "roster",
+                    "seq": 7
+                  },
+                  {
+                    "bot": "healthy",
+                    "entry": {
+                      "clientMessageId": "<id:16>",
+                      "id": "<id:17>",
+                      "operationId": "<id:16>",
+                      "origin": "operator",
+                      "role": "user",
+                      "text": "malformed event must isolate",
+                      "ts": "<clock>"
+                    },
+                    "type": "append",
+                    "seq": 8
+                  },
+                  {
+                    "bots": [
+                      {
+                        "active": false,
+                        "avatar": "",
+                        "description": "",
+                        "gateway": {
+                          "backend": {
+                            "id": "<id:6>",
+                            "version": "1.0.0"
+                          },
+                          "bindingId": "<id:7>",
+                          "bindingRevision": "<id:8>",
+                          "botId": "<id:9>",
+                          "capabilities": {
+                            "configuration": {
+                              "compact": false,
+                              "model": false,
+                              "thinking": false
+                            },
+                            "fleetTools": false,
+                            "input": {
+                              "maxMediaBytes": 0,
+                              "mediaTypes": [],
+                              "text": true
+                            },
+                            "interactions": {
+                              "permissions": "exact-request",
+                              "questions": false
+                            },
+                            "operations": {
+                              "cancel": "cooperative",
+                              "nativeDedupe": "none",
+                              "nativeReplay": "none",
+                              "steer": false
+                            },
+                            "output": {
+                              "text": "snapshots",
+                              "tools": false,
+                              "usage": "unknown"
+                            },
+                            "sessions": {
+                              "continuity": "unverified",
+                              "import": false,
+                              "load": false
+                            }
+                          },
+                          "conversationId": "<id:10>",
+                          "fleetId": "<id:11>"
+                        },
+                        "gatewayStatus": "operation_unknown",
+                        "lastActive": "<clock>",
+                        "latest": "malformed event must isolate",
+                        "name": "fixture",
+                        "online": false,
+                        "queued": 0,
+                        "title": ""
+                      },
+                      {
+                        "active": false,
+                        "avatar": "",
+                        "description": "",
+                        "gateway": {
+                          "backend": {
+                            "id": "<id:6>",
+                            "version": "1.0.0"
+                          },
+                          "bindingId": "<id:12>",
+                          "bindingRevision": "<id:13>",
+                          "botId": "<id:14>",
+                          "capabilities": {
+                            "configuration": {
+                              "compact": false,
+                              "model": false,
+                              "thinking": false
+                            },
+                            "fleetTools": false,
+                            "input": {
+                              "maxMediaBytes": 0,
+                              "mediaTypes": [],
+                              "text": true
+                            },
+                            "interactions": {
+                              "permissions": "exact-request",
+                              "questions": false
+                            },
+                            "operations": {
+                              "cancel": "cooperative",
+                              "nativeDedupe": "none",
+                              "nativeReplay": "none",
+                              "steer": false
+                            },
+                            "output": {
+                              "text": "snapshots",
+                              "tools": false,
+                              "usage": "unknown"
+                            },
+                            "sessions": {
+                              "continuity": "unverified",
+                              "import": false,
+                              "load": false
+                            }
+                          },
+                          "conversationId": "<id:15>",
+                          "fleetId": "<id:11>"
+                        },
+                        "lastActive": "<clock>",
+                        "latest": "malformed event must isolate",
+                        "name": "healthy",
+                        "online": true,
+                        "queued": 1,
+                        "title": ""
+                      }
+                    ],
+                    "capabilities": [
+                      "messages",
+                      "turn-parts",
+                      "ws-auth-bearer",
+                      "backend-capabilities-v1",
+                      "operation-receipts-v1"
+                    ],
+                    "counts": {
+                      "active": 0,
+                      "total": 2
+                    },
+                    "fleetId": "<id:11>",
+                    "type": "roster",
+                    "seq": 9
+                  },
+                  {
+                    "bot": "healthy",
+                    "phase": "working",
+                    "text": "",
+                    "turnId": "<id:18>",
+                    "type": "bubble",
+                    "seq": 10
+                  },
+                  {
+                    "bot": "healthy",
+                    "parts": [
+                      {
+                        "text": "Python: malformed event must isolate",
+                        "type": "text"
+                      }
+                    ],
+                    "phase": "parts",
+                    "text": "Python: malformed event must isolate",
+                    "turnId": "<id:18>",
+                    "type": "bubble",
+                    "seq": 11
+                  },
+                  {
+                    "bots": [
+                      {
+                        "active": false,
+                        "avatar": "",
+                        "description": "",
+                        "gateway": {
+                          "backend": {
+                            "id": "<id:6>",
+                            "version": "1.0.0"
+                          },
+                          "bindingId": "<id:7>",
+                          "bindingRevision": "<id:8>",
+                          "botId": "<id:9>",
+                          "capabilities": {
+                            "configuration": {
+                              "compact": false,
+                              "model": false,
+                              "thinking": false
+                            },
+                            "fleetTools": false,
+                            "input": {
+                              "maxMediaBytes": 0,
+                              "mediaTypes": [],
+                              "text": true
+                            },
+                            "interactions": {
+                              "permissions": "exact-request",
+                              "questions": false
+                            },
+                            "operations": {
+                              "cancel": "cooperative",
+                              "nativeDedupe": "none",
+                              "nativeReplay": "none",
+                              "steer": false
+                            },
+                            "output": {
+                              "text": "snapshots",
+                              "tools": false,
+                              "usage": "unknown"
+                            },
+                            "sessions": {
+                              "continuity": "unverified",
+                              "import": false,
+                              "load": false
+                            }
+                          },
+                          "conversationId": "<id:10>",
+                          "fleetId": "<id:11>"
+                        },
+                        "gatewayStatus": "operation_unknown",
+                        "lastActive": "<clock>",
+                        "latest": "malformed event must isolate",
+                        "name": "fixture",
+                        "online": false,
+                        "queued": 0,
+                        "title": ""
+                      },
+                      {
+                        "active": true,
+                        "avatar": "",
+                        "description": "",
+                        "gateway": {
+                          "backend": {
+                            "id": "<id:6>",
+                            "version": "1.0.0"
+                          },
+                          "bindingId": "<id:12>",
+                          "bindingRevision": "<id:13>",
+                          "botId": "<id:14>",
+                          "capabilities": {
+                            "configuration": {
+                              "compact": false,
+                              "model": false,
+                              "thinking": false
+                            },
+                            "fleetTools": false,
+                            "input": {
+                              "maxMediaBytes": 0,
+                              "mediaTypes": [],
+                              "text": true
+                            },
+                            "interactions": {
+                              "permissions": "exact-request",
+                              "questions": false
+                            },
+                            "operations": {
+                              "cancel": "cooperative",
+                              "nativeDedupe": "none",
+                              "nativeReplay": "none",
+                              "steer": false
+                            },
+                            "output": {
+                              "text": "snapshots",
+                              "tools": false,
+                              "usage": "unknown"
+                            },
+                            "sessions": {
+                              "continuity": "unverified",
+                              "import": false,
+                              "load": false
+                            }
+                          },
+                          "conversationId": "<id:15>",
+                          "fleetId": "<id:11>"
+                        },
+                        "lastActive": "<clock>",
+                        "latest": "malformed event must isolate",
+                        "name": "healthy",
+                        "online": true,
+                        "queued": 0,
+                        "title": ""
+                      }
+                    ],
+                    "capabilities": [
+                      "messages",
+                      "turn-parts",
+                      "ws-auth-bearer",
+                      "backend-capabilities-v1",
+                      "operation-receipts-v1"
+                    ],
+                    "counts": {
+                      "active": 1,
+                      "total": 2
+                    },
+                    "fleetId": "<id:11>",
+                    "type": "roster",
+                    "seq": 12
+                  },
+                  {
+                    "bot": "healthy",
+                    "entry": {
+                      "id": "<id:19>",
+                      "operationId": "<id:16>",
+                      "origin": "bot",
+                      "parts": [
+                        {
+                          "text": "Python: malformed event must isolate",
+                          "type": "text"
+                        }
+                      ],
+                      "role": "assistant",
+                      "text": "Python: malformed event must isolate",
+                      "ts": "<clock>",
+                      "turnId": "<id:18>"
+                    },
+                    "type": "append",
+                    "seq": 13
+                  },
+                  {
+                    "bot": "healthy",
+                    "phase": "working",
+                    "text": "",
+                    "turnId": "<id:18>",
+                    "type": "bubble",
+                    "seq": 14
+                  },
+                  {
+                    "bot": "healthy",
+                    "parts": [],
+                    "phase": "parts",
+                    "text": "",
+                    "turnId": "<id:18>",
+                    "type": "bubble",
+                    "seq": 15
+                  },
+                  {
+                    "bot": "healthy",
+                    "phase": "final",
+                    "text": "",
+                    "turnId": "<id:18>",
+                    "type": "bubble",
+                    "seq": 16
+                  },
+                  {
+                    "bots": [
+                      {
+                        "active": false,
+                        "avatar": "",
+                        "description": "",
+                        "gateway": {
+                          "backend": {
+                            "id": "<id:6>",
+                            "version": "1.0.0"
+                          },
+                          "bindingId": "<id:7>",
+                          "bindingRevision": "<id:8>",
+                          "botId": "<id:9>",
+                          "capabilities": {
+                            "configuration": {
+                              "compact": false,
+                              "model": false,
+                              "thinking": false
+                            },
+                            "fleetTools": false,
+                            "input": {
+                              "maxMediaBytes": 0,
+                              "mediaTypes": [],
+                              "text": true
+                            },
+                            "interactions": {
+                              "permissions": "exact-request",
+                              "questions": false
+                            },
+                            "operations": {
+                              "cancel": "cooperative",
+                              "nativeDedupe": "none",
+                              "nativeReplay": "none",
+                              "steer": false
+                            },
+                            "output": {
+                              "text": "snapshots",
+                              "tools": false,
+                              "usage": "unknown"
+                            },
+                            "sessions": {
+                              "continuity": "unverified",
+                              "import": false,
+                              "load": false
+                            }
+                          },
+                          "conversationId": "<id:10>",
+                          "fleetId": "<id:11>"
+                        },
+                        "gatewayStatus": "operation_unknown",
+                        "lastActive": "<clock>",
+                        "latest": "malformed event must isolate",
+                        "name": "fixture",
+                        "online": false,
+                        "queued": 0,
+                        "title": ""
+                      },
+                      {
+                        "active": false,
+                        "avatar": "",
+                        "description": "",
+                        "gateway": {
+                          "backend": {
+                            "id": "<id:6>",
+                            "version": "1.0.0"
+                          },
+                          "bindingId": "<id:12>",
+                          "bindingRevision": "<id:13>",
+                          "botId": "<id:14>",
+                          "capabilities": {
+                            "configuration": {
+                              "compact": false,
+                              "model": false,
+                              "thinking": false
+                            },
+                            "fleetTools": false,
+                            "input": {
+                              "maxMediaBytes": 0,
+                              "mediaTypes": [],
+                              "text": true
+                            },
+                            "interactions": {
+                              "permissions": "exact-request",
+                              "questions": false
+                            },
+                            "operations": {
+                              "cancel": "cooperative",
+                              "nativeDedupe": "none",
+                              "nativeReplay": "none",
+                              "steer": false
+                            },
+                            "output": {
+                              "text": "snapshots",
+                              "tools": false,
+                              "usage": "unknown"
+                            },
+                            "sessions": {
+                              "continuity": "unverified",
+                              "import": false,
+                              "load": false
+                            }
+                          },
+                          "conversationId": "<id:15>",
+                          "fleetId": "<id:11>"
+                        },
+                        "lastActive": "<clock>",
+                        "latest": "Python: malformed event must isolate",
+                        "name": "healthy",
+                        "online": true,
+                        "queued": 0,
+                        "title": ""
+                      }
+                    ],
+                    "capabilities": [
+                      "messages",
+                      "turn-parts",
+                      "ws-auth-bearer",
+                      "backend-capabilities-v1",
+                      "operation-receipts-v1"
+                    ],
+                    "counts": {
+                      "active": 0,
+                      "total": 2
+                    },
+                    "fleetId": "<id:11>",
+                    "type": "roster",
+                    "seq": 17
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "id": "post-write-crash-unknown",
+        "report": {
+          "scope": {
+            "mode": "local_disposable",
+            "daemon": "startFleet",
+            "registryPath": "<generated-registry>",
+            "pluginId": "<id:1>",
+            "artifact": {
+              "id": "<id:1>",
+              "version": "1.0.0",
+              "artifactPath": "<prepared-community-python-artifact>",
+              "sha256": "sha256:159b319a8474ca212127b6f34591f05ea1bb468d2c8760364307d0cf3718f7e8",
+              "enabled": true
+            },
+            "fixtureSha256": "sha256:ba3ead35d5b475a3735854b073b95c4d35ba945ed1dd03136f5538aaa1f57b68",
+            "allowedUncertainty": ["native_provider_not_run"],
+            "injection": {
+              "kind": "none",
+              "fixtureId": "<id:2>"
+            },
+            "exercised": ["C04.post_write_eof", "C05.post_write_eof_recovery"],
+            "eventCells": [],
+            "eofCells": ["community-python-crash-submit"],
+            "cancellationCells": [],
+            "retryCells": [],
+            "notRun": [
+              "C01",
+              "C02",
+              "C03",
+              "C04",
+              "C05.source_replay_crash",
+              "C06",
+              "C07",
+              "C08",
+              "C09",
+              "C10",
+              "L01",
+              "L02",
+              "L03",
+              "L04",
+              "L05",
+              "L06",
+              "L07",
+              "L08",
+              "L09",
+              "L10"
+            ],
+            "nativeProvider": "not-run"
+          },
+          "cells": [
+            {
+              "id": "<id:3>",
+              "status": "passed",
+              "evidence": {
+                "firstStatus": 202,
+                "recoveryReady": true,
+                "recoveryState": "ready",
+                "noCompletedAssistant": true,
+                "nativeEffects": {
+                  "file": "native-calls.jsonl",
+                  "count": 1,
+                  "unchanged": true
+                },
+                "receipts": {
+                  "first": {
+                    "fleetId": "<id:4>",
+                    "botId": "<id:5>",
+                    "conversationId": "<id:6>",
+                    "bindingId": "<id:7>",
+                    "bindingRevision": "<id:8>",
+                    "operationId": "<id:9>",
+                    "userEntryId": "<id:10>",
+                    "delivery": "queued",
+                    "execution": "not_started",
+                    "observation": "complete"
+                  },
+                  "before": {
+                    "fleetId": "<id:4>",
+                    "botId": "<id:5>",
+                    "conversationId": "<id:6>",
+                    "bindingId": "<id:7>",
+                    "bindingRevision": "<id:8>",
+                    "operationId": "<id:9>",
+                    "userEntryId": "<id:10>",
+                    "delivery": "unknown",
+                    "execution": "unknown",
+                    "observation": "reconciliation_required"
+                  },
+                  "after": {
+                    "fleetId": "<id:4>",
+                    "botId": "<id:5>",
+                    "conversationId": "<id:6>",
+                    "bindingId": "<id:7>",
+                    "bindingRevision": "<id:8>",
+                    "operationId": "<id:9>",
+                    "userEntryId": "<id:10>",
+                    "delivery": "unknown",
+                    "execution": "unknown",
+                    "observation": "reconciliation_required"
+                  }
+                },
+                "events": {
+                  "beforeRestart": [
+                    {
+                      "bot": "fixture",
+                      "entry": {
+                        "clientMessageId": "<id:4>",
+                        "id": "<id:5>",
+                        "operationId": "<id:4>",
+                        "origin": "operator",
+                        "role": "user",
+                        "text": "crash after native write",
+                        "ts": "<clock>"
+                      },
+                      "type": "append",
+                      "seq": 3
+                    },
+                    {
+                      "bots": [
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:7>",
+                            "bindingRevision": "<id:8>",
+                            "botId": "<id:9>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:10>",
+                            "fleetId": "<id:11>"
+                          },
+                          "lastActive": "<clock>",
+                          "latest": "crash after native write",
+                          "name": "fixture",
+                          "online": true,
+                          "queued": 1,
+                          "title": ""
+                        },
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:12>",
+                            "bindingRevision": "<id:13>",
+                            "botId": "<id:14>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:15>",
+                            "fleetId": "<id:11>"
+                          },
+                          "lastActive": "<clock>",
+                          "latest": "",
+                          "name": "healthy",
+                          "online": true,
+                          "queued": 0,
+                          "title": ""
+                        }
+                      ],
+                      "capabilities": [
+                        "messages",
+                        "turn-parts",
+                        "ws-auth-bearer",
+                        "backend-capabilities-v1",
+                        "operation-receipts-v1"
+                      ],
+                      "counts": {
+                        "active": 0,
+                        "total": 2
+                      },
+                      "fleetId": "<id:11>",
+                      "type": "roster",
+                      "seq": 4
+                    },
+                    {
+                      "bots": [
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:7>",
+                            "bindingRevision": "<id:8>",
+                            "botId": "<id:9>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:10>",
+                            "fleetId": "<id:11>"
+                          },
+                          "gatewayStatus": "operation_unknown",
+                          "lastActive": "<clock>",
+                          "latest": "crash after native write",
+                          "name": "fixture",
+                          "online": false,
+                          "queued": 0,
+                          "title": ""
+                        },
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:12>",
+                            "bindingRevision": "<id:13>",
+                            "botId": "<id:14>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:15>",
+                            "fleetId": "<id:11>"
+                          },
+                          "lastActive": "<clock>",
+                          "latest": "",
+                          "name": "healthy",
+                          "online": true,
+                          "queued": 0,
+                          "title": ""
+                        }
+                      ],
+                      "capabilities": [
+                        "messages",
+                        "turn-parts",
+                        "ws-auth-bearer",
+                        "backend-capabilities-v1",
+                        "operation-receipts-v1"
+                      ],
+                      "counts": {
+                        "active": 0,
+                        "total": 2
+                      },
+                      "fleetId": "<id:11>",
+                      "type": "roster",
+                      "seq": 5
+                    },
+                    {
+                      "bots": [
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:7>",
+                            "bindingRevision": "<id:8>",
+                            "botId": "<id:9>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:10>",
+                            "fleetId": "<id:11>"
+                          },
+                          "gatewayStatus": "operation_unknown",
+                          "lastActive": "<clock>",
+                          "latest": "crash after native write",
+                          "name": "fixture",
+                          "online": false,
+                          "queued": 0,
+                          "title": ""
+                        },
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:12>",
+                            "bindingRevision": "<id:13>",
+                            "botId": "<id:14>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:15>",
+                            "fleetId": "<id:11>"
+                          },
+                          "lastActive": "<clock>",
+                          "latest": "",
+                          "name": "healthy",
+                          "online": true,
+                          "queued": 0,
+                          "title": ""
+                        }
+                      ],
+                      "capabilities": [
+                        "messages",
+                        "turn-parts",
+                        "ws-auth-bearer",
+                        "backend-capabilities-v1",
+                        "operation-receipts-v1"
+                      ],
+                      "counts": {
+                        "active": 0,
+                        "total": 2
+                      },
+                      "fleetId": "<id:11>",
+                      "type": "roster",
+                      "seq": 6
+                    },
+                    {
+                      "bots": [
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:7>",
+                            "bindingRevision": "<id:8>",
+                            "botId": "<id:9>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:10>",
+                            "fleetId": "<id:11>"
+                          },
+                          "gatewayStatus": "operation_unknown",
+                          "lastActive": "<clock>",
+                          "latest": "crash after native write",
+                          "name": "fixture",
+                          "online": false,
+                          "queued": 0,
+                          "title": ""
+                        },
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:12>",
+                            "bindingRevision": "<id:13>",
+                            "botId": "<id:14>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:15>",
+                            "fleetId": "<id:11>"
+                          },
+                          "lastActive": "<clock>",
+                          "latest": "",
+                          "name": "healthy",
+                          "online": true,
+                          "queued": 0,
+                          "title": ""
+                        }
+                      ],
+                      "capabilities": [
+                        "messages",
+                        "turn-parts",
+                        "ws-auth-bearer",
+                        "backend-capabilities-v1",
+                        "operation-receipts-v1"
+                      ],
+                      "counts": {
+                        "active": 0,
+                        "total": 2
+                      },
+                      "fleetId": "<id:11>",
+                      "type": "roster",
+                      "seq": 7
+                    },
+                    {
+                      "bot": "healthy",
+                      "entry": {
+                        "clientMessageId": "<id:16>",
+                        "id": "<id:17>",
+                        "operationId": "<id:16>",
+                        "origin": "operator",
+                        "role": "user",
+                        "text": "crash after native write",
+                        "ts": "<clock>"
+                      },
+                      "type": "append",
+                      "seq": 8
+                    },
+                    {
+                      "bots": [
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:7>",
+                            "bindingRevision": "<id:8>",
+                            "botId": "<id:9>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:10>",
+                            "fleetId": "<id:11>"
+                          },
+                          "gatewayStatus": "operation_unknown",
+                          "lastActive": "<clock>",
+                          "latest": "crash after native write",
+                          "name": "fixture",
+                          "online": false,
+                          "queued": 0,
+                          "title": ""
+                        },
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:12>",
+                            "bindingRevision": "<id:13>",
+                            "botId": "<id:14>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:15>",
+                            "fleetId": "<id:11>"
+                          },
+                          "lastActive": "<clock>",
+                          "latest": "crash after native write",
+                          "name": "healthy",
+                          "online": true,
+                          "queued": 1,
+                          "title": ""
+                        }
+                      ],
+                      "capabilities": [
+                        "messages",
+                        "turn-parts",
+                        "ws-auth-bearer",
+                        "backend-capabilities-v1",
+                        "operation-receipts-v1"
+                      ],
+                      "counts": {
+                        "active": 0,
+                        "total": 2
+                      },
+                      "fleetId": "<id:11>",
+                      "type": "roster",
+                      "seq": 9
+                    },
+                    {
+                      "bot": "healthy",
+                      "phase": "working",
+                      "text": "",
+                      "turnId": "<id:18>",
+                      "type": "bubble",
+                      "seq": 10
+                    },
+                    {
+                      "bot": "healthy",
+                      "parts": [
+                        {
+                          "text": "Python: crash after native write",
+                          "type": "text"
+                        }
+                      ],
+                      "phase": "parts",
+                      "text": "Python: crash after native write",
+                      "turnId": "<id:18>",
+                      "type": "bubble",
+                      "seq": 11
+                    },
+                    {
+                      "bots": [
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:7>",
+                            "bindingRevision": "<id:8>",
+                            "botId": "<id:9>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:10>",
+                            "fleetId": "<id:11>"
+                          },
+                          "gatewayStatus": "operation_unknown",
+                          "lastActive": "<clock>",
+                          "latest": "crash after native write",
+                          "name": "fixture",
+                          "online": false,
+                          "queued": 0,
+                          "title": ""
+                        },
+                        {
+                          "active": true,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:12>",
+                            "bindingRevision": "<id:13>",
+                            "botId": "<id:14>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:15>",
+                            "fleetId": "<id:11>"
+                          },
+                          "lastActive": "<clock>",
+                          "latest": "crash after native write",
+                          "name": "healthy",
+                          "online": true,
+                          "queued": 0,
+                          "title": ""
+                        }
+                      ],
+                      "capabilities": [
+                        "messages",
+                        "turn-parts",
+                        "ws-auth-bearer",
+                        "backend-capabilities-v1",
+                        "operation-receipts-v1"
+                      ],
+                      "counts": {
+                        "active": 1,
+                        "total": 2
+                      },
+                      "fleetId": "<id:11>",
+                      "type": "roster",
+                      "seq": 12
+                    },
+                    {
+                      "bot": "healthy",
+                      "entry": {
+                        "id": "<id:19>",
+                        "operationId": "<id:16>",
+                        "origin": "bot",
+                        "parts": [
+                          {
+                            "text": "Python: crash after native write",
+                            "type": "text"
+                          }
+                        ],
+                        "role": "assistant",
+                        "text": "Python: crash after native write",
+                        "ts": "<clock>",
+                        "turnId": "<id:18>"
+                      },
+                      "type": "append",
+                      "seq": 13
+                    },
+                    {
+                      "bot": "healthy",
+                      "phase": "working",
+                      "text": "",
+                      "turnId": "<id:18>",
+                      "type": "bubble",
+                      "seq": 14
+                    },
+                    {
+                      "bot": "healthy",
+                      "parts": [],
+                      "phase": "parts",
+                      "text": "",
+                      "turnId": "<id:18>",
+                      "type": "bubble",
+                      "seq": 15
+                    },
+                    {
+                      "bot": "healthy",
+                      "phase": "final",
+                      "text": "",
+                      "turnId": "<id:18>",
+                      "type": "bubble",
+                      "seq": 16
+                    },
+                    {
+                      "bots": [
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:7>",
+                            "bindingRevision": "<id:8>",
+                            "botId": "<id:9>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:10>",
+                            "fleetId": "<id:11>"
+                          },
+                          "gatewayStatus": "operation_unknown",
+                          "lastActive": "<clock>",
+                          "latest": "crash after native write",
+                          "name": "fixture",
+                          "online": false,
+                          "queued": 0,
+                          "title": ""
+                        },
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:12>",
+                            "bindingRevision": "<id:13>",
+                            "botId": "<id:14>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:15>",
+                            "fleetId": "<id:11>"
+                          },
+                          "lastActive": "<clock>",
+                          "latest": "Python: crash after native write",
+                          "name": "healthy",
+                          "online": true,
+                          "queued": 0,
+                          "title": ""
+                        }
+                      ],
+                      "capabilities": [
+                        "messages",
+                        "turn-parts",
+                        "ws-auth-bearer",
+                        "backend-capabilities-v1",
+                        "operation-receipts-v1"
+                      ],
+                      "counts": {
+                        "active": 0,
+                        "total": 2
+                      },
+                      "fleetId": "<id:11>",
+                      "type": "roster",
+                      "seq": 17
                     }
                   ],
-                  "role": "assistant",
-                  "text": "Python: hello from the packaged community fixture",
-                  "ts": "<clock>",
-                  "turnId": "<id:12>"
+                  "afterRestart": [
+                    {
+                      "type": "hello",
+                      "fleet": "/var/folders/s9/x5s6jsl12p3f371gpx8cw7cc0000gn/T/tidy-conformance-ysKcLP",
+                      "bootId": "<id:20>",
+                      "seq": 18
+                    },
+                    {
+                      "bots": [
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:7>",
+                            "bindingRevision": "<id:8>",
+                            "botId": "<id:9>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:10>",
+                            "fleetId": "<id:11>"
+                          },
+                          "lastActive": "<clock>",
+                          "latest": "",
+                          "name": "fixture",
+                          "online": true,
+                          "queued": 0,
+                          "title": ""
+                        },
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:12>",
+                            "bindingRevision": "<id:13>",
+                            "botId": "<id:14>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:15>",
+                            "fleetId": "<id:11>"
+                          },
+                          "lastActive": "<clock>",
+                          "latest": "",
+                          "name": "healthy",
+                          "online": true,
+                          "queued": 0,
+                          "title": ""
+                        }
+                      ],
+                      "capabilities": [
+                        "messages",
+                        "turn-parts",
+                        "ws-auth-bearer",
+                        "backend-capabilities-v1",
+                        "operation-receipts-v1"
+                      ],
+                      "counts": {
+                        "active": 0,
+                        "total": 2
+                      },
+                      "fleetId": "<id:11>",
+                      "type": "roster",
+                      "seq": 1
+                    },
+                    {
+                      "bots": [
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:7>",
+                            "bindingRevision": "<id:8>",
+                            "botId": "<id:9>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:10>",
+                            "fleetId": "<id:11>"
+                          },
+                          "lastActive": "<clock>",
+                          "latest": "",
+                          "name": "fixture",
+                          "online": true,
+                          "queued": 0,
+                          "title": ""
+                        },
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:12>",
+                            "bindingRevision": "<id:13>",
+                            "botId": "<id:14>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:15>",
+                            "fleetId": "<id:11>"
+                          },
+                          "lastActive": "<clock>",
+                          "latest": "",
+                          "name": "healthy",
+                          "online": true,
+                          "queued": 0,
+                          "title": ""
+                        }
+                      ],
+                      "capabilities": [
+                        "messages",
+                        "turn-parts",
+                        "ws-auth-bearer",
+                        "backend-capabilities-v1",
+                        "operation-receipts-v1"
+                      ],
+                      "counts": {
+                        "active": 0,
+                        "total": 2
+                      },
+                      "fleetId": "<id:11>",
+                      "type": "roster",
+                      "seq": 2
+                    },
+                    {
+                      "bot": "fixture",
+                      "entry": {
+                        "clientMessageId": "<id:4>",
+                        "id": "<id:5>",
+                        "operationId": "<id:4>",
+                        "origin": "operator",
+                        "role": "user",
+                        "text": "crash after native write",
+                        "ts": "<clock>"
+                      },
+                      "type": "append",
+                      "seq": 3
+                    },
+                    {
+                      "bots": [
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:7>",
+                            "bindingRevision": "<id:8>",
+                            "botId": "<id:9>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:10>",
+                            "fleetId": "<id:11>"
+                          },
+                          "lastActive": "<clock>",
+                          "latest": "crash after native write",
+                          "name": "fixture",
+                          "online": true,
+                          "queued": 1,
+                          "title": ""
+                        },
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:12>",
+                            "bindingRevision": "<id:13>",
+                            "botId": "<id:14>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:15>",
+                            "fleetId": "<id:11>"
+                          },
+                          "lastActive": "<clock>",
+                          "latest": "",
+                          "name": "healthy",
+                          "online": true,
+                          "queued": 0,
+                          "title": ""
+                        }
+                      ],
+                      "capabilities": [
+                        "messages",
+                        "turn-parts",
+                        "ws-auth-bearer",
+                        "backend-capabilities-v1",
+                        "operation-receipts-v1"
+                      ],
+                      "counts": {
+                        "active": 0,
+                        "total": 2
+                      },
+                      "fleetId": "<id:11>",
+                      "type": "roster",
+                      "seq": 4
+                    },
+                    {
+                      "bots": [
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:7>",
+                            "bindingRevision": "<id:8>",
+                            "botId": "<id:9>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:10>",
+                            "fleetId": "<id:11>"
+                          },
+                          "gatewayStatus": "operation_unknown",
+                          "lastActive": "<clock>",
+                          "latest": "crash after native write",
+                          "name": "fixture",
+                          "online": false,
+                          "queued": 0,
+                          "title": ""
+                        },
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:12>",
+                            "bindingRevision": "<id:13>",
+                            "botId": "<id:14>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:15>",
+                            "fleetId": "<id:11>"
+                          },
+                          "lastActive": "<clock>",
+                          "latest": "",
+                          "name": "healthy",
+                          "online": true,
+                          "queued": 0,
+                          "title": ""
+                        }
+                      ],
+                      "capabilities": [
+                        "messages",
+                        "turn-parts",
+                        "ws-auth-bearer",
+                        "backend-capabilities-v1",
+                        "operation-receipts-v1"
+                      ],
+                      "counts": {
+                        "active": 0,
+                        "total": 2
+                      },
+                      "fleetId": "<id:11>",
+                      "type": "roster",
+                      "seq": 5
+                    },
+                    {
+                      "bots": [
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:7>",
+                            "bindingRevision": "<id:8>",
+                            "botId": "<id:9>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:10>",
+                            "fleetId": "<id:11>"
+                          },
+                          "gatewayStatus": "operation_unknown",
+                          "lastActive": "<clock>",
+                          "latest": "crash after native write",
+                          "name": "fixture",
+                          "online": false,
+                          "queued": 0,
+                          "title": ""
+                        },
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:12>",
+                            "bindingRevision": "<id:13>",
+                            "botId": "<id:14>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:15>",
+                            "fleetId": "<id:11>"
+                          },
+                          "lastActive": "<clock>",
+                          "latest": "",
+                          "name": "healthy",
+                          "online": true,
+                          "queued": 0,
+                          "title": ""
+                        }
+                      ],
+                      "capabilities": [
+                        "messages",
+                        "turn-parts",
+                        "ws-auth-bearer",
+                        "backend-capabilities-v1",
+                        "operation-receipts-v1"
+                      ],
+                      "counts": {
+                        "active": 0,
+                        "total": 2
+                      },
+                      "fleetId": "<id:11>",
+                      "type": "roster",
+                      "seq": 6
+                    },
+                    {
+                      "bots": [
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:7>",
+                            "bindingRevision": "<id:8>",
+                            "botId": "<id:9>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:10>",
+                            "fleetId": "<id:11>"
+                          },
+                          "gatewayStatus": "operation_unknown",
+                          "lastActive": "<clock>",
+                          "latest": "crash after native write",
+                          "name": "fixture",
+                          "online": false,
+                          "queued": 0,
+                          "title": ""
+                        },
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:12>",
+                            "bindingRevision": "<id:13>",
+                            "botId": "<id:14>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:15>",
+                            "fleetId": "<id:11>"
+                          },
+                          "lastActive": "<clock>",
+                          "latest": "",
+                          "name": "healthy",
+                          "online": true,
+                          "queued": 0,
+                          "title": ""
+                        }
+                      ],
+                      "capabilities": [
+                        "messages",
+                        "turn-parts",
+                        "ws-auth-bearer",
+                        "backend-capabilities-v1",
+                        "operation-receipts-v1"
+                      ],
+                      "counts": {
+                        "active": 0,
+                        "total": 2
+                      },
+                      "fleetId": "<id:11>",
+                      "type": "roster",
+                      "seq": 7
+                    },
+                    {
+                      "bot": "healthy",
+                      "entry": {
+                        "clientMessageId": "<id:16>",
+                        "id": "<id:17>",
+                        "operationId": "<id:16>",
+                        "origin": "operator",
+                        "role": "user",
+                        "text": "crash after native write",
+                        "ts": "<clock>"
+                      },
+                      "type": "append",
+                      "seq": 8
+                    },
+                    {
+                      "bots": [
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:7>",
+                            "bindingRevision": "<id:8>",
+                            "botId": "<id:9>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:10>",
+                            "fleetId": "<id:11>"
+                          },
+                          "gatewayStatus": "operation_unknown",
+                          "lastActive": "<clock>",
+                          "latest": "crash after native write",
+                          "name": "fixture",
+                          "online": false,
+                          "queued": 0,
+                          "title": ""
+                        },
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:12>",
+                            "bindingRevision": "<id:13>",
+                            "botId": "<id:14>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:15>",
+                            "fleetId": "<id:11>"
+                          },
+                          "lastActive": "<clock>",
+                          "latest": "crash after native write",
+                          "name": "healthy",
+                          "online": true,
+                          "queued": 1,
+                          "title": ""
+                        }
+                      ],
+                      "capabilities": [
+                        "messages",
+                        "turn-parts",
+                        "ws-auth-bearer",
+                        "backend-capabilities-v1",
+                        "operation-receipts-v1"
+                      ],
+                      "counts": {
+                        "active": 0,
+                        "total": 2
+                      },
+                      "fleetId": "<id:11>",
+                      "type": "roster",
+                      "seq": 9
+                    },
+                    {
+                      "bots": [
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:7>",
+                            "bindingRevision": "<id:8>",
+                            "botId": "<id:9>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:10>",
+                            "fleetId": "<id:11>"
+                          },
+                          "gatewayStatus": "operation_unknown",
+                          "lastActive": "<clock>",
+                          "latest": "crash after native write",
+                          "name": "fixture",
+                          "online": false,
+                          "queued": 0,
+                          "title": ""
+                        },
+                        {
+                          "active": true,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:12>",
+                            "bindingRevision": "<id:13>",
+                            "botId": "<id:14>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:15>",
+                            "fleetId": "<id:11>"
+                          },
+                          "lastActive": "<clock>",
+                          "latest": "crash after native write",
+                          "name": "healthy",
+                          "online": true,
+                          "queued": 0,
+                          "title": ""
+                        }
+                      ],
+                      "capabilities": [
+                        "messages",
+                        "turn-parts",
+                        "ws-auth-bearer",
+                        "backend-capabilities-v1",
+                        "operation-receipts-v1"
+                      ],
+                      "counts": {
+                        "active": 1,
+                        "total": 2
+                      },
+                      "fleetId": "<id:11>",
+                      "type": "roster",
+                      "seq": 12
+                    },
+                    {
+                      "bot": "healthy",
+                      "entry": {
+                        "id": "<id:19>",
+                        "operationId": "<id:16>",
+                        "origin": "bot",
+                        "parts": [
+                          {
+                            "text": "Python: crash after native write",
+                            "type": "text"
+                          }
+                        ],
+                        "role": "assistant",
+                        "text": "Python: crash after native write",
+                        "ts": "<clock>",
+                        "turnId": "<id:18>"
+                      },
+                      "type": "append",
+                      "seq": 13
+                    },
+                    {
+                      "bots": [
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:7>",
+                            "bindingRevision": "<id:8>",
+                            "botId": "<id:9>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:10>",
+                            "fleetId": "<id:11>"
+                          },
+                          "gatewayStatus": "operation_unknown",
+                          "lastActive": "<clock>",
+                          "latest": "crash after native write",
+                          "name": "fixture",
+                          "online": false,
+                          "queued": 0,
+                          "title": ""
+                        },
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:12>",
+                            "bindingRevision": "<id:13>",
+                            "botId": "<id:14>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:15>",
+                            "fleetId": "<id:11>"
+                          },
+                          "lastActive": "<clock>",
+                          "latest": "Python: crash after native write",
+                          "name": "healthy",
+                          "online": true,
+                          "queued": 0,
+                          "title": ""
+                        }
+                      ],
+                      "capabilities": [
+                        "messages",
+                        "turn-parts",
+                        "ws-auth-bearer",
+                        "backend-capabilities-v1",
+                        "operation-receipts-v1"
+                      ],
+                      "counts": {
+                        "active": 0,
+                        "total": 2
+                      },
+                      "fleetId": "<id:11>",
+                      "type": "roster",
+                      "seq": 17
+                    },
+                    {
+                      "bots": [
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:7>",
+                            "bindingRevision": "<id:8>",
+                            "botId": "<id:9>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:10>",
+                            "fleetId": "<id:11>"
+                          },
+                          "gatewayStatus": "continuity_unverified",
+                          "lastActive": "<clock>",
+                          "latest": "crash after native write",
+                          "name": "fixture",
+                          "online": false,
+                          "queued": 0,
+                          "title": ""
+                        },
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:12>",
+                            "bindingRevision": "<id:13>",
+                            "botId": "<id:14>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:15>",
+                            "fleetId": "<id:11>"
+                          },
+                          "gatewayStatus": "continuity_unverified",
+                          "lastActive": "<clock>",
+                          "latest": "Python: crash after native write",
+                          "name": "healthy",
+                          "online": false,
+                          "queued": 0,
+                          "title": ""
+                        }
+                      ],
+                      "capabilities": [
+                        "messages",
+                        "turn-parts",
+                        "ws-auth-bearer",
+                        "backend-capabilities-v1",
+                        "operation-receipts-v1"
+                      ],
+                      "counts": {
+                        "active": 0,
+                        "total": 2
+                      },
+                      "fleetId": "<id:11>",
+                      "type": "roster",
+                      "seq": 18
+                    },
+                    {
+                      "bots": [
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:7>",
+                            "bindingRevision": "<id:8>",
+                            "botId": "<id:9>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:10>",
+                            "fleetId": "<id:11>"
+                          },
+                          "gatewayStatus": "continuity_unverified",
+                          "lastActive": "<clock>",
+                          "latest": "crash after native write",
+                          "name": "fixture",
+                          "online": false,
+                          "queued": 0,
+                          "title": ""
+                        },
+                        {
+                          "active": false,
+                          "avatar": "",
+                          "description": "",
+                          "gateway": {
+                            "backend": {
+                              "id": "<id:6>",
+                              "version": "1.0.0"
+                            },
+                            "bindingId": "<id:12>",
+                            "bindingRevision": "<id:13>",
+                            "botId": "<id:14>",
+                            "capabilities": {
+                              "configuration": {
+                                "compact": false,
+                                "model": false,
+                                "thinking": false
+                              },
+                              "fleetTools": false,
+                              "input": {
+                                "maxMediaBytes": 0,
+                                "mediaTypes": [],
+                                "text": true
+                              },
+                              "interactions": {
+                                "permissions": "exact-request",
+                                "questions": false
+                              },
+                              "operations": {
+                                "cancel": "cooperative",
+                                "nativeDedupe": "none",
+                                "nativeReplay": "none",
+                                "steer": false
+                              },
+                              "output": {
+                                "text": "snapshots",
+                                "tools": false,
+                                "usage": "unknown"
+                              },
+                              "sessions": {
+                                "continuity": "unverified",
+                                "import": false,
+                                "load": false
+                              }
+                            },
+                            "conversationId": "<id:15>",
+                            "fleetId": "<id:11>"
+                          },
+                          "gatewayStatus": "continuity_unverified",
+                          "lastActive": "<clock>",
+                          "latest": "Python: crash after native write",
+                          "name": "healthy",
+                          "online": false,
+                          "queued": 0,
+                          "title": ""
+                        }
+                      ],
+                      "capabilities": [
+                        "messages",
+                        "turn-parts",
+                        "ws-auth-bearer",
+                        "backend-capabilities-v1",
+                        "operation-receipts-v1"
+                      ],
+                      "counts": {
+                        "active": 0,
+                        "total": 2
+                      },
+                      "fleetId": "<id:11>",
+                      "type": "roster",
+                      "seq": 19
+                    }
+                  ]
                 },
-                "type": "append",
-                "seq": "<sequence:3>"
-              },
-              {
-                "bot": "fixture",
-                "phase": "working",
-                "text": "",
-                "turnId": "<id:12>",
-                "type": "bubble",
-                "seq": "<sequence:4>"
-              },
-              {
-                "bot": "fixture",
-                "parts": [],
-                "phase": "parts",
-                "text": "",
-                "turnId": "<id:12>",
-                "type": "bubble",
-                "seq": "<sequence:5>"
-              },
-              {
-                "bot": "fixture",
-                "phase": "final",
-                "text": "",
-                "turnId": "<id:12>",
-                "type": "bubble",
-                "seq": "<sequence:6>"
+                "healthyStatus": 202,
+                "healthyReceipt": {
+                  "fleetId": "<id:4>",
+                  "botId": "<id:5>",
+                  "conversationId": "<id:6>",
+                  "bindingId": "<id:7>",
+                  "bindingRevision": "<id:8>",
+                  "operationId": "<id:9>",
+                  "userEntryId": "<id:10>",
+                  "delivery": "accepted",
+                  "execution": "ended",
+                  "observation": "complete",
+                  "result": {
+                    "taskOutcome": "unknown"
+                  }
+                }
               }
-            ]
-          }
+            }
+          ]
         }
       }
     ]

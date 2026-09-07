@@ -604,9 +604,7 @@ test("runner proves scoped REST cancellation outcomes without replaying native e
       });
       assert.equal(report.cells[0].status, "passed", JSON.stringify(report));
       assert.ok(
-        (report.scope.exercised as unknown[]).includes(
-          "L03.cancel_rest_acknowledged_delayed_lost"
-        ),
+        (report.scope.exercised as unknown[]).includes("L03.cancel_rest"),
         JSON.stringify(report)
       );
       assert.ok(

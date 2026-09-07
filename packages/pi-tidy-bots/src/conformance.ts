@@ -84,6 +84,11 @@ export interface LocalConformanceOptions {
     network?: boolean;
     gatewayTools?: string[];
   };
+  /** Fixture-owned session lifecycle evidence, read only after shipped supervisor shutdown. */
+  lifecycle?: {
+    file: string;
+    expected: Array<{ contains: string; expectedOccurrences: number }>;
+  };
   fixture: LocalConformanceFixture;
 }
 export interface LocalConformanceReceipt {
@@ -251,6 +256,21 @@ function validFixture(value: LocalConformanceFixture): void {
       !value.allowedUncertainty.every(nonempty))
   )
     throw new Error("Invalid allowed uncertainty declaration");
+}
+
+function validLifecycle(value: LocalConformanceOptions["lifecycle"]): void {
+  if (
+    value !== undefined &&
+    (!/^[A-Za-z0-9_.-]+$/.test(value.file) ||
+      !value.expected.length ||
+      value.expected.some(
+        (expected) =>
+          !nonempty(expected.contains) ||
+          !Number.isInteger(expected.expectedOccurrences) ||
+          expected.expectedOccurrences < 0
+      ))
+  )
+    throw new Error("Invalid conformance lifecycle evidence");
 }
 async function waitFor(
   fetchReceipt: () => Promise<JsonObject>,
@@ -587,6 +607,7 @@ export async function runLocalConformance(
   options: LocalConformanceOptions
 ): Promise<LocalConformanceReport> {
   validFixture(options.fixture);
+  validLifecycle(options.lifecycle);
   if (
     !nonempty(options.registryPath) ||
     !nonempty(options.pluginId) ||
@@ -638,6 +659,7 @@ export async function runLocalConformance(
   let handle: Awaited<ReturnType<typeof startFleet>> | undefined;
   const cells: LocalConformanceReceipt[] = [];
   let report: LocalConformanceReport | undefined;
+  let bindingId: string | undefined;
   try {
     const pluginFaults: PluginFaultObservation[] = [];
     const pluginInstances: PluginHostObservation[] = [];
@@ -717,6 +739,21 @@ export async function runLocalConformance(
       }
       return { status: response.status, body };
     };
+    const waitForOnlineBot = async (name: string) => {
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        const roster = (await request("/api/fleet")).body;
+        if (
+          Array.isArray(roster.bots) &&
+          roster.bots.some(
+            (bot) => object(bot) && bot.name === name && bot.online === true
+          )
+        )
+          return;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      throw new Error(`Conformance bot did not become ready: ${name}`);
+    };
     const binding = (await request("/api/bots/fixture/capabilities")).body;
     if (
       !object(binding) ||
@@ -724,6 +761,7 @@ export async function runLocalConformance(
       !nonempty(binding.bindingRevision)
     )
       throw new Error("Conformance daemon did not expose a binding");
+    bindingId = String(binding.bindingId);
     const registry = JSON.parse(await readFile(options.registryPath, "utf8"));
     const entry = Array.isArray(registry.plugins)
       ? registry.plugins.find(
@@ -1096,6 +1134,48 @@ export async function runLocalConformance(
               beforeFile,
               cell.effect!.contains
             );
+            let healthyStatus: number | undefined;
+            let healthyReceipt: JsonObject | undefined;
+            if (options.healthy) {
+              await waitForOnlineBot("healthy");
+              const healthy = (await request("/api/bots/healthy/capabilities"))
+                .body;
+              if (
+                !object(healthy) ||
+                !nonempty(healthy.conversationId) ||
+                !nonempty(healthy.bindingRevision)
+              )
+                throw new Error("healthy_binding_unavailable");
+              const healthyId = `${cell.operationId}-healthy`;
+              healthyStatus = (
+                await request("/api/bots/healthy/message", {
+                  method: "POST",
+                  headers: {
+                    "content-type": "application/json",
+                    "x-tidy-client-contract": "2",
+                    "x-tidy-binding-revision": String(healthy.bindingRevision),
+                  },
+                  body: JSON.stringify({
+                    operationId: healthyId,
+                    clientMessageId: healthyId,
+                    conversationId: healthy.conversationId,
+                    text: cell.text,
+                  }),
+                })
+              ).status;
+              if (healthyStatus !== 202)
+                throw new Error(
+                  `healthy_message_not_admitted:${healthyStatus}`
+                );
+              healthyReceipt = await waitFor(
+                () =>
+                  request(`/api/bots/healthy/operations/${healthyId}`).then(
+                    (value) => value.body
+                  ),
+                "ended",
+                "complete"
+              );
+            }
             const beforeTrace = publicTrace.frames.slice(traceStart);
             publicTrace.close();
             await handle!.stop();
@@ -1157,15 +1237,19 @@ export async function runLocalConformance(
               [...beforeTrace, ...recoveryTrace],
               cell.operationId
             );
-            const matched = postNativeEofMatches(
-              first,
-              before,
-              after,
-              cell.expect,
-              beforeEffects,
-              afterEffects,
-              noAssistantCompletion
-            );
+            const matched =
+              postNativeEofMatches(
+                first,
+                before,
+                after,
+                cell.expect,
+                beforeEffects,
+                afterEffects,
+                noAssistantCompletion
+              ) &&
+              (!options.healthy ||
+                (healthyStatus === 202 &&
+                  healthyReceipt?.execution === "ended"));
             cells.push({
               id: cell.id,
               status: matched ? "passed" : "failed",
@@ -1190,6 +1274,14 @@ export async function runLocalConformance(
                   beforeRestart: beforeTrace,
                   afterRestart: recoveryTrace,
                 }) as JsonObject,
+                ...(healthyReceipt
+                  ? {
+                      healthyStatus,
+                      healthyReceipt: normalizeConformanceTrace(
+                        healthyReceipt
+                      ) as JsonObject,
+                    }
+                  : {}),
               },
             });
             continue;
@@ -1400,9 +1492,7 @@ export async function runLocalConformance(
           ...(eofCells.length
             ? ["C04.post_write_eof", "C05.post_write_eof_recovery"]
             : []),
-          ...(cancellationCells.length
-            ? ["L03.cancel_rest_acknowledged_delayed_lost"]
-            : []),
+          ...(cancellationCells.length ? ["L03.cancel_rest"] : []),
         ],
         eventCells,
         eofCells,
@@ -1456,6 +1546,47 @@ export async function runLocalConformance(
           error: error instanceof Error ? error.message : "cleanup_failed",
         });
       else throw error;
+    }
+    if (report && options.lifecycle && bindingId) {
+      try {
+        const file = await readFile(
+          join(
+            directory,
+            ".fleet",
+            "plugins",
+            bindingId,
+            options.lifecycle.file
+          ),
+          "utf8"
+        );
+        const evidence = options.lifecycle.expected.map((expected) => ({
+          ...expected,
+          count: matchingEffectLines(file, expected.contains).length,
+        }));
+        report.cells.push({
+          id: "supervisor-lifecycle",
+          status: evidence.every(
+            (entry) => entry.count === entry.expectedOccurrences
+          )
+            ? "passed"
+            : "failed",
+          evidence: {
+            shutdown: "startFleet.handle.stop",
+            file: options.lifecycle.file,
+            assertions: evidence,
+          },
+        });
+      } catch (error) {
+        report.cells.push({
+          id: "supervisor-lifecycle",
+          status: "failed",
+          evidence: {},
+          error:
+            error instanceof Error
+              ? error.message
+              : "lifecycle_evidence_failed",
+        });
+      }
     }
     await rm(directory, { recursive: true, force: true });
   }

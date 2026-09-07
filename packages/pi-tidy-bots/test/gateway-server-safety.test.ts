@@ -9,12 +9,14 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { WebSocket } from "ws";
 import { startFleet, type FleetHandle } from "../src/daemon.ts";
+import { GatewayJournal } from "../src/gateway/journal.ts";
+import { processIdentity } from "../src/gateway/process-ownership.ts";
 import { digestArtifact } from "../src/gateway/registry.ts";
 import { DEFAULT_LIMITS } from "../src/gateway/protocol.ts";
 import { acquireFleetLock } from "../src/lock.ts";
@@ -208,6 +210,56 @@ test("failed initialization retains shared ownership when durable cleanup cannot
     );
     assert.equal(child.status, 0, `${child.stderr}\n${child.error ?? ""}`);
   } finally {
+    await f.cleanup();
+  }
+});
+
+test("failed startup ownership leaves a frozen heartbeat, not a live one", async () => {
+  // Regression: a startFleet that acquires the fleet lock and then fails
+  // journal ownership (writer lease unexpired) must stop heartbeating. The
+  // old behavior kept the 2s heartbeat timer alive inside the embedding
+  // process forever, so every later start refused writer_busy naming the
+  // embedding process's pid — the gateway crash-recovery test wedged on it.
+  const f = await fixture();
+  const previousController = spawn(process.execPath, [
+    "-e",
+    "setInterval(()=>{},1<<30)",
+  ]);
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const seed = new GatewayJournal(join(f.dir, ".fleet", "gateway.sqlite"));
+    seed.acquireWriterLease("gateway-previous", {
+      ownerProcess: await processIdentity(previousController.pid!),
+    });
+    seed.close();
+    await assert.rejects(
+      f.start(),
+      (error: unknown) => (error as { code?: string }).code === "writer_busy",
+      "unexpired previous lease must refuse startup"
+    );
+    const lockPath = join(f.dir, ".fleet", "lock.json");
+    const frozen = JSON.parse(await readFile(lockPath, "utf8"));
+    assert.equal(
+      frozen.pid,
+      process.pid,
+      "the failed start owned the file lock in-process"
+    );
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
+    const still = JSON.parse(await readFile(lockPath, "utf8"));
+    assert.equal(
+      still.heartbeatAt,
+      frozen.heartbeatAt,
+      "heartbeat must freeze after the failed start instead of beating forever"
+    );
+    const takeover = acquireFleetLock(f.dir, { staleMs: 1_000 });
+    assert.ok(
+      takeover.ok,
+      "frozen heartbeat must permit takeover after staleness"
+    );
+    if (takeover.ok) takeover.lock.release();
+  } finally {
+    previousController.kill("SIGKILL");
+    await new Promise((resolve) => previousController.once("exit", resolve));
     await f.cleanup();
   }
 });

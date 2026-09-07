@@ -7,6 +7,7 @@ import {
   readFileSync,
   existsSync,
 } from "node:fs";
+import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acquireFleetLock, isFleetLockFree } from "../src/lock.ts";
@@ -108,4 +109,79 @@ test("live holder with a fresh heartbeat still refuses (issue 178)", () => {
   assert.ok(!second.ok, "must not steal from a live owner");
   if (first.ok) first.lock.release();
   assert.equal(isFleetLockFree(dir, 10_000), true, "release frees the lock");
+});
+
+test("quiesce freezes the heartbeat in place for staleness takeover", async () => {
+  const dir = freshFleetDir();
+  const path = join(dir, ".fleet", "lock.json");
+  const acquired = acquireFleetLock(dir, { heartbeatMs: 50, staleMs: 400 });
+  assert.ok(acquired.ok);
+  if (!acquired.ok) return;
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  const before = JSON.parse(readFileSync(path, "utf8"));
+  acquired.lock.quiesce();
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const frozen = JSON.parse(readFileSync(path, "utf8"));
+  assert.equal(
+    frozen.heartbeatAt,
+    before.heartbeatAt,
+    "quiesced lock must stop heartbeating"
+  );
+  assert.ok(existsSync(path), "quiesce keeps the lock file");
+  assert.equal(frozen.birth, before.birth, "quiesce keeps ownership identity");
+  assert.equal(
+    isFleetLockFree(dir, 10_000),
+    false,
+    "quiesced lock is still held while its heartbeat is fresh"
+  );
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(
+    isFleetLockFree(dir, 400),
+    true,
+    "frozen heartbeat goes stale and permits takeover"
+  );
+  const takeover = acquireFleetLock(dir, { heartbeatMs: 50, staleMs: 400 });
+  assert.ok(takeover.ok, "stale quiesced lock must be takeable");
+  if (takeover.ok) takeover.lock.release();
+});
+
+test("recycled holder pid is not an owner (issue 178 vs pid reuse)", async () => {
+  // A dead holder's pid was reused by an unrelated live process. The lock
+  // must recover: staleness — not pid liveness — is the takeover authority
+  // for a live-but-silent pid; a stale heartbeat recovers even then.
+  const dir = freshFleetDir();
+  const path = join(dir, ".fleet", "lock.json");
+  mkdirSync(join(dir, ".fleet"), { recursive: true });
+  const recycled = spawn(process.execPath, ["-e", "setInterval(()=>{},1<<30)"]);
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    process.kill(recycled.pid!, 0); // the "recycled" holder is provably alive
+    writeFileSync(
+      path,
+      JSON.stringify({
+        pid: recycled.pid,
+        birth: "crashed-holder-whose-pid-was-reused",
+        host: "local",
+        acquiredAt: new Date(Date.now() - 60_000).toISOString(),
+        heartbeatAt: new Date(Date.now() - 60_000).toISOString(),
+      })
+    );
+    assert.equal(
+      isFleetLockFree(dir, 10_000),
+      true,
+      "stale heartbeat recovers even when the pid was recycled to a live process"
+    );
+    const acquired = acquireFleetLock(dir, {
+      heartbeatMs: 50,
+      staleMs: 1_000,
+    });
+    assert.ok(
+      acquired.ok,
+      "recycled pid with stale heartbeat must be takeable"
+    );
+    if (acquired.ok) acquired.lock.release();
+  } finally {
+    recycled.kill("SIGKILL");
+    await new Promise((resolve) => recycled.once("exit", resolve));
+  }
 });

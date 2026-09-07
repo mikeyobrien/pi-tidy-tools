@@ -240,15 +240,22 @@ type HermesInput = {
   provider: string;
   model: string;
   credentialKey: string;
+  environmentKeys?: string[];
 };
 
 const hermesEnabled = process.env.PI_TIDY_BOTS_REAL_HERMES_SMOKE === "1";
+const hermesInitEnabled =
+  process.env.PI_TIDY_BOTS_REAL_HERMES_INIT_ONLY === "1";
 const realHermesInput = (): HermesInput => ({
   executable: process.env.TIDY_REAL_HERMES_PYTHON ?? "",
   source: process.env.TIDY_REAL_HERMES_SOURCE ?? "",
   provider: process.env.TIDY_REAL_HERMES_PROVIDER ?? "",
   model: process.env.TIDY_REAL_HERMES_MODEL ?? "",
   credentialKey: process.env.TIDY_REAL_HERMES_CREDENTIAL_KEY ?? "",
+  environmentKeys: (process.env.TIDY_REAL_HERMES_ENVIRONMENT_KEYS ?? "")
+    .split(",")
+    .map((key) => key.trim())
+    .filter(Boolean),
 });
 
 const validHermesInput = (input: HermesInput, source: string) =>
@@ -262,7 +269,17 @@ const validHermesInput = (input: HermesInput, source: string) =>
   input.provider.length > 0 &&
   !input.provider.includes("/") &&
   input.model.startsWith(`${input.provider}/`) &&
-  input.model.length > input.provider.length + 1;
+  input.model.length > input.provider.length + 1 &&
+  (input.environmentKeys ?? []).every(
+    (key) =>
+      /^[A-Z][A-Z0-9_]*$/.test(key) &&
+      !/^(TIDY_|PI_TIDY_|HERMES_|PYTHON|NODE_|LD_|DYLD_|HOME$|VIRTUAL_ENV$)/.test(
+        key
+      ) &&
+      typeof process.env[key] === "string"
+  ) &&
+  new Set(input.environmentKeys ?? []).size ===
+    (input.environmentKeys ?? []).length;
 
 async function generatedHermesSource(dir: string) {
   const source = join(dir, "source");
@@ -327,6 +344,10 @@ async function generatedHermesFleet(
         join(profile, "config.yaml"),
         JSON.stringify({
           approvals: { mode: "manual" },
+          // The guard proves the two gateway MCP tools against Hermes'
+          // visible surface. Keep the disposable smoke profile out of
+          // progressive disclosure, which intentionally defers MCP tools.
+          tools: { tool_search: false },
           // This fixture-only switch makes its deterministic ACP state file
           // available for the native load assertion below. Real Hermes uses
           // its installed persistence defaults and the durable gateway record.
@@ -361,7 +382,11 @@ async function generatedHermesFleet(
       [
         "[gateway]",
         'registry="registry.json"',
-        `environment=["PATH",${JSON.stringify(input.credentialKey)}]`,
+        `environment=${JSON.stringify([
+          "PATH",
+          input.credentialKey,
+          ...(input.environmentKeys ?? []),
+        ])}`,
         'workspace_access="read-write"',
         "native_profile=true",
         "network=true",
@@ -375,7 +400,10 @@ async function generatedHermesFleet(
         `source_dir=${JSON.stringify(source)}`,
         `home_dir=${JSON.stringify(home)}`,
         `profile_dir=${JSON.stringify(profile)}`,
-        `environment_keys=[${JSON.stringify(input.credentialKey)}]`,
+        `environment_keys=${JSON.stringify([
+          input.credentialKey,
+          ...(input.environmentKeys ?? []),
+        ])}`,
         "",
       ].join("\n")
     );
@@ -404,18 +432,29 @@ async function runHermesSmoke(
     fixtureHistoryPersistence
   );
   let handle: Awaited<ReturnType<typeof startFleet>> | undefined;
+  const faults: string[] = [];
   try {
     const token = `hermes-smoke-${crypto.randomUUID()}`;
     const launch = () =>
-      startFleet({ dir: fleet.dir, port: 0, token, log() {} });
+      startFleet({
+        dir: fleet.dir,
+        port: 0,
+        token,
+        log() {},
+        onPluginFault: (fault) => faults.push(fault.code),
+      });
     handle = await launch();
     assert.notEqual(handle.port, 4317);
-    const submit = async (message: string) => {
+    const submit = async (message: string, phase: "initial" | "reload") => {
       const caps = (
         await request(handle!.url, token, "/api/bots/hermes/capabilities")
       ).body;
       assert.equal(caps.capabilities.sessions.load, true);
       const operationId = `hermes-smoke-${crypto.randomUUID()}`;
+      const rosterBefore = await request(handle!.url, token, "/api/fleet");
+      const before = rosterBefore.body.bots.find(
+        (candidate: any) => candidate.name === "hermes"
+      );
       const submitted = await request(
         handle!.url,
         token,
@@ -435,10 +474,33 @@ async function runHermesSmoke(
           }),
         }
       );
+      const rosterAfter = await request(handle!.url, token, "/api/fleet");
+      const after = rosterAfter.body.bots.find(
+        (candidate: any) => candidate.name === "hermes"
+      );
       assert.equal(
         submitted.status,
         202,
-        `Hermes submit returned ${submitted.status}`
+        `Hermes ${phase} submit returned ${submitted.status}; ${JSON.stringify({
+          before: {
+            online: before?.online === true,
+            gatewayStatus:
+              typeof before?.gatewayStatus === "string"
+                ? before.gatewayStatus
+                : "ready",
+          },
+          after: {
+            online: after?.online === true,
+            gatewayStatus:
+              typeof after?.gatewayStatus === "string"
+                ? after.gatewayStatus
+                : "ready",
+          },
+          faults: [...faults].sort(),
+        })}`
+      );
+      console.log(
+        `SMOKE_HERMES_PHASE ${JSON.stringify({ phase, admitted: true })}`
       );
       const deadline = Date.now() + timeoutMs;
       while (Date.now() < deadline) {
@@ -462,6 +524,13 @@ async function runHermesSmoke(
                 entry.operationId === operationId && entry.role === "assistant"
             )
           );
+          console.log(
+            `SMOKE_HERMES_PHASE ${JSON.stringify({
+              phase,
+              admitted: true,
+              terminal: "ended",
+            })}`
+          );
           return;
         }
         await new Promise((resolve) => setTimeout(resolve, 20));
@@ -470,18 +539,58 @@ async function runHermesSmoke(
         "Hermes smoke terminal was not observed; no retry was attempted"
       );
     };
-    await submit(text);
+    await submit(text, "initial");
     await handle.stop();
     handle = undefined;
     const initial = readHermesSessionCheckpoint(fleet.dir, "open:");
     handle = await launch();
-    await submit(`${text} after verified session load`);
+    await submit(`${text} after verified session load`, "reload");
     await handle.stop();
     handle = undefined;
     const restored = readHermesSessionCheckpoint(fleet.dir, "load:");
     assert.equal(restored.nativeReference, initial.nativeReference);
     assert.equal(restored.conversationId, initial.conversationId);
     await assertCheckpoint?.(fleet.profile);
+  } finally {
+    try {
+      await handle?.stop();
+    } finally {
+      await fleet.cleanup();
+    }
+  }
+}
+
+async function runHermesInitialization(input: HermesInput) {
+  const fleet = await generatedHermesFleet(input);
+  const faults: string[] = [];
+  let handle: Awaited<ReturnType<typeof startFleet>> | undefined;
+  try {
+    const token = `hermes-init-${crypto.randomUUID()}`;
+    handle = await startFleet({
+      dir: fleet.dir,
+      port: 0,
+      token,
+      log() {},
+      onPluginFault: (fault) => faults.push(fault.code),
+    });
+    const transcript = await request(
+      handle.url,
+      token,
+      "/api/bots/hermes/transcript"
+    );
+    assert.equal(transcript.status, 200);
+    assert.deepEqual(transcript.body.transcript, []);
+    const roster = await request(handle.url, token, "/api/fleet");
+    const bot = roster.body.bots.find(
+      (candidate: any) => candidate.name === "hermes"
+    );
+    assert.ok(bot);
+    return {
+      faults: [...faults].sort(),
+      online: bot.online === true,
+      gatewayStatus:
+        typeof bot.gatewayStatus === "string" ? bot.gatewayStatus : "ready",
+    };
   } finally {
     try {
       await handle?.stop();
@@ -533,6 +642,17 @@ test(
 );
 
 test(
+  "authorized Hermes initializer records only safe startup diagnostics",
+  { skip: !hermesInitEnabled },
+  async () => {
+    const result = await runHermesInitialization(realHermesInput());
+    // This opt-in diagnostic deliberately sends no prompt. Keep only bounded
+    // host-generated codes in its captured test output.
+    console.log(`SMOKE_INIT ${JSON.stringify(result)}`);
+  }
+);
+
+test(
   "generated Hermes fixture proves gateway receipt, terminal correlation, load checkpoint, and cleanup",
   { skip: !fixturePython?.startsWith("/") },
   async () => {
@@ -546,8 +666,10 @@ test(
       })
     );
     const prior = process.env.SMOKE_HERMES_CREDENTIAL;
+    const priorBaseUrl = process.env.SMOKE_HERMES_BASE_URL;
     try {
       process.env.SMOKE_HERMES_CREDENTIAL = "fixture-only";
+      process.env.SMOKE_HERMES_BASE_URL = "https://example.invalid/explicit";
       await runHermesSmoke(
         {
           executable: fixturePython!,
@@ -555,11 +677,16 @@ test(
           provider: "fixture",
           model: "fixture/saved-model",
           credentialKey: "SMOKE_HERMES_CREDENTIAL",
+          environmentKeys: ["SMOKE_HERMES_BASE_URL"],
         },
         "fixture reply",
         3_000,
         generatedHermesSource,
         async (profile) => {
+          const config = JSON.parse(
+            await readFile(join(profile, "config.yaml"), "utf8")
+          );
+          assert.equal(config.tools.tool_search, false);
           const effects = (
             await readFile(join(profile, "effects.jsonl"), "utf8")
           )
@@ -578,12 +705,24 @@ test(
             effects.filter((effect) => effect.kind === "prompt").length,
             2
           );
+          assert.deepEqual(
+            effects.filter((effect) => effect.kind === "explicit_environment"),
+            [
+              {
+                kind: "explicit_environment",
+                name: "SMOKE_HERMES_BASE_URL",
+                value: "https://example.invalid/explicit",
+              },
+            ]
+          );
         },
         true
       );
     } finally {
       if (prior === undefined) delete process.env.SMOKE_HERMES_CREDENTIAL;
       else process.env.SMOKE_HERMES_CREDENTIAL = prior;
+      if (priorBaseUrl === undefined) delete process.env.SMOKE_HERMES_BASE_URL;
+      else process.env.SMOKE_HERMES_BASE_URL = priorBaseUrl;
     }
   }
 );

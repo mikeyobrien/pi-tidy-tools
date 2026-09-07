@@ -55,6 +55,13 @@ function send(value) {
 function respond(message, result) {
   send({ jsonrpc: "2.0", id: message.id, result });
 }
+function respondError(message, code) {
+  send({
+    jsonrpc: "2.0",
+    id: message.id,
+    error: { code: -32000, message: code, data: { code } },
+  });
+}
 function event(request, type, payload, identities = {}) {
   sequence++;
   writeFileSync(join(dir, "sequence"), String(sequence));
@@ -396,6 +403,10 @@ input.on("line", (line) => {
     });
   } else if (message.method === "session.open") {
     record({ method: "session.open", ...p });
+    if (typeof init.config?.openError === "string")
+      return respondError(message, init.config.openError);
+    if (init.config?.openStatus === "creation_unknown")
+      return respond(message, { status: "creation_unknown" });
     const nativeReferencePath = join(dir, "native-reference");
     const nativeReference = existsSync(nativeReferencePath)
       ? readFileSync(nativeReferencePath, "utf8")

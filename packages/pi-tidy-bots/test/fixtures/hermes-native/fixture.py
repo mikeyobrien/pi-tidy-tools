@@ -101,6 +101,11 @@ class FakeAgent:
                                    session_capabilities=SimpleNamespace(fork={}, resume={})))
 
     async def new_session(self, cwd, **kwargs):
+        if config().get("newSessionError"):
+            raise RuntimeError("private native startup failure")
+        if "SMOKE_HERMES_BASE_URL" in os.environ:
+            record("explicit_environment", name="SMOKE_HERMES_BASE_URL",
+                   value=os.environ["SMOKE_HERMES_BASE_URL"])
         state = SimpleNamespace(session_id="native-one", mode="default", cwd=cwd,
                                 agent=FakeConversation())
         if config().get("omitMode"):
@@ -257,7 +262,10 @@ async def run_agent(agent, **kwargs):
         async def ext_notification(self, method, params):
             if self.fail_receipts:
                 raise RuntimeError("private receipt write failure")
-            record("permission_receipt", **params)
+            record(
+                "startup_failure" if method == "tidy/startup_failure" else "permission_receipt",
+                **params,
+            )
             print(json.dumps({"jsonrpc": "2.0", "method": "_" + method, "params": params}), flush=True)
 
         async def ext_method(self, method, params):

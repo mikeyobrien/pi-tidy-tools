@@ -80,6 +80,7 @@ const toolLabels: Record<string, string> = {
 export class HermesSession {
   readonly transport: AcpTransport;
   private opening = false;
+  private startupFailure?: string;
   private sessionId?: string;
   private active?: Turn;
   private lost = false;
@@ -215,16 +216,26 @@ export class HermesSession {
         "continuity_unverified",
         "Guarded native load is unavailable"
       );
-    const opened = await this.transport.request(
-      restoreSessionId === undefined ? "session/new" : "session/load",
-      {
-        cwd,
-        mcpServers: fleetServer === undefined ? [] : [fleetServer],
-        ...(restoreSessionId === undefined
-          ? {}
-          : { sessionId: restoreSessionId }),
-      }
-    );
+    let opened: unknown;
+    try {
+      opened = await this.transport.request(
+        restoreSessionId === undefined ? "session/new" : "session/load",
+        {
+          cwd,
+          mcpServers: fleetServer === undefined ? [] : [fleetServer],
+          ...(restoreSessionId === undefined
+            ? {}
+            : { sessionId: restoreSessionId }),
+        }
+      );
+    } catch (error) {
+      if (this.startupFailure)
+        throw new ProtocolError(
+          `native_startup_${this.startupFailure}`,
+          "Guarded native startup failed"
+        );
+      throw error;
+    }
     if (
       !object(opened) ||
       (restoreSessionId === undefined && !nonempty(opened.sessionId))
@@ -580,6 +591,27 @@ export class HermesSession {
     turn.message = undefined;
   }
   private notification(method: string, params: JsonObject): void {
+    if (method === "_tidy/startup_failure") {
+      const stage = params.stage;
+      if (
+        !this.opening ||
+        this.sessionId !== undefined ||
+        Object.keys(params).length !== 1 ||
+        typeof stage !== "string" ||
+        ![
+          "approval_policy",
+          "fleet_descriptor",
+          "native_session",
+          "session_state",
+          "fleet_identity",
+          "mode",
+          "history",
+        ].includes(stage)
+      )
+        throw new Error();
+      this.startupFailure = stage;
+      return;
+    }
     if (method === "_tidy/permission_consumed") {
       const permission = nonempty(params.permissionId)
         ? this.permissions.get(params.permissionId)

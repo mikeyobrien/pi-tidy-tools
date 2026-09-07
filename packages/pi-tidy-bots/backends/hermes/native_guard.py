@@ -154,6 +154,7 @@ def guarded_agent(base, guard, prompt_response, worker_type, fleet=None, history
             self._tidy_workers = None
             self._tidy_worker_session = None
             self._tidy_prompt_id = None
+            self._tidy_connection = None
 
         def _tidy_fleet_scope(self):
             if not self._tidy_active_prompt or self._tidy_prompt_id is None:
@@ -274,11 +275,30 @@ def guarded_agent(base, guard, prompt_response, worker_type, fleet=None, history
                         raise ApprovalPolicyUnavailable()
                     return result
 
-            return super().on_connect(ExactPermissionClient())
+            owner._tidy_connection = ExactPermissionClient()
+            return super().on_connect(owner._tidy_connection)
+
+        async def _tidy_startup_failure(self, stage):
+            if stage not in {"approval_policy", "fleet_descriptor", "native_session", "session_state", "fleet_identity", "mode", "history"}:
+                stage = "native_session"
+            connection = self._tidy_connection
+            if connection is not None:
+                try:
+                    await connection.ext_notification("tidy/startup_failure", {"stage": stage})
+                except BaseException:
+                    pass
 
         async def initialize(self, *args, **kwargs):
-            guard.check()
-            result = await super().initialize(*args, **kwargs)
+            try:
+                guard.check()
+            except ApprovalPolicyUnavailable:
+                await self._tidy_startup_failure("approval_policy")
+                raise
+            try:
+                result = await super().initialize(*args, **kwargs)
+            except BaseException:
+                await self._tidy_startup_failure("native_session")
+                raise
             capabilities = getattr(result, "agent_capabilities", None)
             if capabilities is not None:
                 capabilities.load_session = history_store is not None and history_prepare is not None and history_verify is not None
@@ -298,23 +318,46 @@ def guarded_agent(base, guard, prompt_response, worker_type, fleet=None, history
             return result
 
         async def new_session(self, *args, **kwargs):
-            guard.check()
+            try:
+                guard.check()
+            except ApprovalPolicyUnavailable:
+                await self._tidy_startup_failure("approval_policy")
+                raise
             servers = kwargs.get("mcp_servers", [])
             if fleet is not None:
-                fleet.validate(servers)
+                try:
+                    fleet.validate(servers)
+                except BaseException:
+                    await self._tidy_startup_failure("fleet_descriptor")
+                    raise
             elif servers:
+                await self._tidy_startup_failure("fleet_descriptor")
                 raise ApprovalPolicyUnavailable()
-            result = await super().new_session(*args, **kwargs)
+            try:
+                result = await super().new_session(*args, **kwargs)
+            except BaseException:
+                await self._tidy_startup_failure("native_session")
+                raise
             state = self._tidy_live_state(result.session_id)
             if state is None:
+                await self._tidy_startup_failure("session_state")
                 raise ApprovalPolicyUnavailable()
-            guard.check(state, self)
+            try:
+                guard.check(state, self)
+            except ApprovalPolicyUnavailable:
+                await self._tidy_startup_failure("approval_policy")
+                raise
             if fleet is not None:
-                fleet.verify(state)
+                try:
+                    fleet.verify(state)
+                except BaseException:
+                    await self._tidy_startup_failure("fleet_identity")
+                    raise
                 result.field_meta = {**(result.field_meta or {}), "tidy": {"fleetTools": "native-mcp-v1"}}
             modes = getattr(result, "modes", None)
             if modes is not None:
                 if modes.current_mode_id != "default":
+                    await self._tidy_startup_failure("mode")
                     raise ApprovalPolicyUnavailable()
                 modes.available_modes = [mode for mode in modes.available_modes if mode.id == "default"]
             self._tidy_created_sessions.add(result.session_id)
@@ -494,30 +537,62 @@ def guarded_agent(base, guard, prompt_response, worker_type, fleet=None, history
             return await super().set_config_option(config_id=config_id, value=value, session_id=session_id, **kwargs)
 
         async def load_session(self, cwd, session_id, mcp_servers=None, **kwargs):
-            guard.check()
+            try:
+                guard.check()
+            except ApprovalPolicyUnavailable:
+                await self._tidy_startup_failure("approval_policy")
+                raise
             if (history_store is None or history_prepare is None or history_verify is None
                     or self._tidy_created_sessions or self._tidy_active_prompt or self._tidy_loading_session is not None):
+                await self._tidy_startup_failure("history")
                 raise ApprovalPolicyUnavailable()
             servers = mcp_servers or []
             if fleet is not None:
-                fleet.validate(servers)
+                try:
+                    fleet.validate(servers)
+                except BaseException:
+                    await self._tidy_startup_failure("fleet_descriptor")
+                    raise
             elif servers:
+                await self._tidy_startup_failure("fleet_descriptor")
                 raise ApprovalPolicyUnavailable()
-            expected = history_store.load(session_id)
-            history_prepare(self.session_manager, session_id, cwd, expected, guard.profile / "state.db")
+            try:
+                expected = history_store.load(session_id)
+                history_prepare(self.session_manager, session_id, cwd, expected, guard.profile / "state.db")
+            except BaseException:
+                await self._tidy_startup_failure("history")
+                raise
             self._tidy_loading_session = session_id
             try:
-                result = await super().load_session(cwd=cwd, session_id=session_id, mcp_servers=servers, **kwargs)
+                try:
+                    result = await super().load_session(cwd=cwd, session_id=session_id, mcp_servers=servers, **kwargs)
+                except BaseException:
+                    await self._tidy_startup_failure("native_session")
+                    raise
                 state = self._tidy_live_state(session_id)
                 if result is None or state is None:
+                    await self._tidy_startup_failure("session_state")
                     raise ApprovalPolicyUnavailable()
-                guard.check(state, self)
-                history_verify(self.session_manager, state, expected)
+                try:
+                    guard.check(state, self)
+                except ApprovalPolicyUnavailable:
+                    await self._tidy_startup_failure("approval_policy")
+                    raise
+                try:
+                    history_verify(self.session_manager, state, expected)
+                except BaseException:
+                    await self._tidy_startup_failure("history")
+                    raise
                 if fleet is not None:
-                    fleet.verify(state)
+                    try:
+                        fleet.verify(state)
+                    except BaseException:
+                        await self._tidy_startup_failure("fleet_identity")
+                        raise
                 modes = getattr(result, "modes", None)
                 if modes is not None:
                     if modes.current_mode_id != "default":
+                        await self._tidy_startup_failure("mode")
                         raise ApprovalPolicyUnavailable()
                     modes.available_modes = [mode for mode in modes.available_modes if mode.id == "default"]
                 proof = {"historyLoad": "checkpoint-v1", "sessionId": session_id, "checkpoint": expected}

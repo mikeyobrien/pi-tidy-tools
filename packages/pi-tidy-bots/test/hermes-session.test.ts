@@ -46,6 +46,37 @@ for (const stage of ["initialize", "opened", "complete"]) {
   });
 }
 
+test("guarded startup failure exposes only its allowlisted stage", async (t) => {
+  const f = fixture(
+    t,
+    (request, send) => {
+      if (request.method !== "session/new") return;
+      send({
+        jsonrpc: "2.0",
+        method: "_tidy/startup_failure",
+        params: { stage: "fleet_identity" },
+      });
+      send({
+        jsonrpc: "2.0",
+        id: request.id,
+        error: { code: -32000, message: "private native detail" },
+      });
+    },
+    { newSessionResponse: false }
+  );
+  await assert.rejects(f.session.open("/disposable"), {
+    code: "native_startup_fleet_identity",
+  });
+  assert.equal(
+    f.calls.filter((call) => call.method === "session/new").length,
+    1
+  );
+  assert.equal(
+    f.calls.some((call) => call.method === "session/prompt"),
+    false
+  );
+});
+
 test("fleet scope requires the exact live prompt and records admission before dispatch", async (t) => {
   let prompt: any;
   const f = fixture(t, (request) => {
@@ -113,6 +144,7 @@ function fixture(
     fleetProof?: { initialize?: boolean; opened?: boolean };
     nativeImages?: boolean;
     guardVersion?: number;
+    newSessionResponse?: boolean;
   } = {}
 ) {
   const input = new PassThrough(),
@@ -149,7 +181,10 @@ function fixture(
           },
         },
       });
-    else if (request.method === "session/new")
+    else if (
+      request.method === "session/new" &&
+      options.newSessionResponse !== false
+    )
       send({
         jsonrpc: "2.0",
         id: request.id,

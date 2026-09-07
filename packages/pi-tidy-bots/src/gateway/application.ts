@@ -611,6 +611,19 @@ export class GatewayApplication {
         return;
       }
       let response: unknown;
+      const observeOpenFailure = (code: string) => {
+        try {
+          this.onPluginFault?.({
+            botName: config.name,
+            bindingId: binding.bindingId,
+            instanceId: host!.instanceId,
+            leaseGeneration: this.lease.generation,
+            code: `session_open:${code}`,
+          });
+        } catch {
+          // Read-only diagnostics do not change reconciliation or supervision.
+        }
+      };
       try {
         response = await host.request("session.open", {
           openId,
@@ -619,7 +632,13 @@ export class GatewayApplication {
           conversationId: binding.conversationId,
           ...payload,
         });
-      } catch {
+      } catch (error) {
+        // Session creation remains uncertain after a failed transport/native
+        // call. Expose only the typed stage/code to the bounded diagnostic
+        // observer; never retain native stderr or an exception message.
+        observeOpenFailure(
+          error instanceof ProtocolError ? error.code : "failed"
+        );
         this.journal.recordDisposition(
           this.lease,
           { ...binding, operationId: openId },
@@ -641,6 +660,11 @@ export class GatewayApplication {
           (response.nativeReference !== nativeReference ||
             response.continuity !== "verified"))
       ) {
+        observeOpenFailure(
+          object(response) && response.status === "creation_unknown"
+            ? "creation_unknown"
+            : "invalid_result"
+        );
         this.journal.recordDisposition(
           this.lease,
           { ...binding, operationId: openId },

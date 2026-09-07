@@ -48,6 +48,7 @@ export function startHermesAdapter(): PluginRuntime {
   let lost = false;
   let conversationId: string | undefined;
   let active: Promise<unknown> | undefined;
+  let activeTurn: { operationId: string; turnId: string } | undefined;
   const launches = new Set<string>();
   const runtime = runPlugin({
     identity: { id: "tidy.hermes", version: "0.1.0-dev" },
@@ -147,10 +148,17 @@ export function startHermesAdapter(): PluginRuntime {
               if (lost || stopping) return;
               lost = true;
               try {
-                ctx.emit({
-                  type: "observation.gap",
-                  payload: { code: "native_observation_gap" },
-                });
+                // Startup has no admitted operation to reconcile. Emitting an
+                // uncorrelated gap would itself be rejected by the gateway and
+                // hide the native startup failure. Once a prompt is admitted,
+                // retain its exact identity for the durable gap projection.
+                if (activeTurn)
+                  ctx.emit({
+                    type: "observation.gap",
+                    operationId: activeTurn.operationId,
+                    turnId: activeTurn.turnId,
+                    payload: { code: "native_observation_gap" },
+                  });
               } finally {
                 void runtime.close("native_observation_gap");
               }
@@ -233,6 +241,10 @@ export function startHermesAdapter(): PluginRuntime {
         }>((resolve) => {
           admit = resolve;
         });
+        activeTurn = {
+          operationId: params.operationId,
+          turnId: params.turnId,
+        };
         const completion = native.session.submit(
           params.operationId,
           params.turnId,
@@ -243,7 +255,10 @@ export function startHermesAdapter(): PluginRuntime {
         void completion
           .then(admit, () => admit({ disposition: "unknown" }))
           .finally(() => {
-            if (active === completion) active = undefined;
+            if (active === completion) {
+              active = undefined;
+              activeTurn = undefined;
+            }
           });
         // Admission uncertainty is retained without timing out the native turn.
         // Its later correlated events remain the only execution evidence.

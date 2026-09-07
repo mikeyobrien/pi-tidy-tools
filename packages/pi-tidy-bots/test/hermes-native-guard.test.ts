@@ -500,8 +500,9 @@ test("Hermes guard refuses unknown session references and cold-load methods with
     assert.equal((await f.prompt())._meta.tidy.rejectedBeforePrompt, true);
     assert.deepEqual(
       (await f.effects()).map((effect) => effect.kind),
-      ["new"]
+      ["new", "startup_failure"]
     );
+    assert.equal((await f.effects())[1].stage, "history");
   } finally {
     await f.cleanup();
   }

@@ -98,6 +98,8 @@ async function fixture(
         discovery: { type: "boolean" },
         artifacts: { type: "boolean" },
         settings: { type: "boolean" },
+        openError: { type: "string" },
+        openStatus: { type: "string" },
       },
       additionalProperties: false,
     })
@@ -1810,6 +1812,74 @@ test("throwing plugin fault diagnostics cannot suppress bot isolation", async ()
     );
     assert.equal(later.status, 503);
     assert.equal(later.body.error, "session_unavailable");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("session-open RPC errors retain unknown state and expose only a typed diagnostic", async () => {
+  const f = await fixture();
+  const faults: PluginFaultObservation[] = [];
+  try {
+    await writeFile(
+      join(f.dir, "bots.toml"),
+      f.manifest +
+        '[bot.backend_config]\nopenError = "native_contract_unavailable"\n'
+    );
+    const handle = await f.start({
+      onPluginFault: (fault) => faults.push(fault),
+    });
+    const binding = await f.binding(handle);
+    const fault = await waitFor(
+      async () => faults,
+      (items) =>
+        items.some(
+          (item) => item.code === "session_open:native_contract_unavailable"
+        )
+    );
+    assert.equal(fault.length, 1);
+    assert.equal(fault[0].bindingId, binding.bindingId);
+    assert.equal(typeof fault[0].instanceId, "string");
+    assert.ok(fault[0].instanceId);
+    assert.equal(
+      (await f.calls(binding)).filter((call) => call.method === "session.open")
+        .length,
+      1
+    );
+    assert.equal(
+      (await f.request(handle, "/api/bots/fixture/operations/open:ignored"))
+        .status,
+      404
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("session-open uncertainty result exposes a stable diagnostic without replay", async () => {
+  const f = await fixture();
+  const faults: PluginFaultObservation[] = [];
+  try {
+    await writeFile(
+      join(f.dir, "bots.toml"),
+      f.manifest + '[bot.backend_config]\nopenStatus = "creation_unknown"\n'
+    );
+    const handle = await f.start({
+      onPluginFault: (fault) => faults.push(fault),
+    });
+    const binding = await f.binding(handle);
+    const fault = await waitFor(
+      async () => faults,
+      (items) =>
+        items.some((item) => item.code === "session_open:creation_unknown")
+    );
+    assert.equal(fault.length, 1);
+    assert.equal(fault[0].bindingId, binding.bindingId);
+    assert.equal(
+      (await f.calls(binding)).filter((call) => call.method === "session.open")
+        .length,
+      1
+    );
   } finally {
     await f.cleanup();
   }

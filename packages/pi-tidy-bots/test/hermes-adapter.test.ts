@@ -29,7 +29,8 @@ const python =
   (existsSync(candidate) ? candidate : "/usr/bin/python3");
 
 async function setup(
-  artifact = fileURLToPath(new URL("../backends/hermes", import.meta.url))
+  artifact = fileURLToPath(new URL("../backends/hermes", import.meta.url)),
+  profileConfig: Record<string, unknown> = {}
 ) {
   const dir = await mkdtemp(join(tmpdir(), "tidy-hermes-adapter-"));
   const source = join(dir, "source"),
@@ -71,7 +72,7 @@ async function setup(
   );
   await writeFile(
     join(profile, "config.yaml"),
-    JSON.stringify({ approvals: { mode: "manual" } })
+    JSON.stringify({ approvals: { mode: "manual" }, ...profileConfig })
   );
   const registry = join(dir, "registry.json");
   await writeFile(
@@ -236,6 +237,39 @@ test("packed Hermes artifact contains its executable contract and runs after ext
   } finally {
     await f?.cleanup();
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Hermes startup failure remains unknown without an uncorrelated event", async () => {
+  const f = await setup(undefined, { newSessionError: true });
+  try {
+    await assert.rejects(f.host.request("session.open", f.open), {
+      code: "native_startup_native_session",
+    });
+    assert.deepEqual(f.events, []);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("Hermes active native failure persists one correlated observation gap", async () => {
+  const f = await setup();
+  try {
+    await f.host.request("session.open", f.open);
+    await assert.rejects(
+      f.host.request("operation.submit", f.submit("[update-error]")),
+      { code: "plugin_eof" }
+    );
+    await until(() =>
+      f.events.some((event) => event.type === "observation.gap")
+    );
+    const gaps = f.events.filter((event) => event.type === "observation.gap");
+    assert.equal(gaps.length, 1);
+    assert.equal(gaps[0].operationId, "op1");
+    assert.equal(gaps[0].turnId, "turn1");
+    assert.deepEqual(gaps[0].payload, { code: "native_observation_gap" });
+  } finally {
+    await f.cleanup();
   }
 });
 

@@ -72,6 +72,17 @@ test("safeAppAssetPath mounts under the root and refuses traversal", () => {
     "bare mount serves the entry document"
   );
   assert.equal(safeAppAssetPath("/app/../secrets.txt", root), undefined);
+  // Prefix bypass: join("/srv/app", "../app-evil/x") === "/srv/app-evil/x",
+  // which startsWith("/srv/app") but is outside the mount (CWE-22).
+  assert.equal(
+    safeAppAssetPath("/app/../app-evil/secrets.txt", root),
+    undefined
+  );
+  assert.equal(
+    safeAppAssetPath("/app/foo/../../../etc/passwd", root),
+    undefined
+  );
+  assert.equal(safeAppAssetPath("/app/..\\secrets.txt", root), undefined);
 });
 
 test("isPublicAssetPath bypasses auth for asset trees only", () => {

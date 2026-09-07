@@ -128,6 +128,7 @@ export function validateManifest(value: unknown): PluginManifest {
       [
         "fleet.discover",
         "fleet.send",
+        "fleet.action.inspect",
         "operator.enqueue",
         "artifact.read",
       ].includes(String(v))

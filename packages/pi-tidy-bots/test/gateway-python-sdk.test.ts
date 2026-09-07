@@ -234,7 +234,7 @@ test("Python SDK storage/framing tests run on the explicitly supported engine", 
     0,
     `Set TIDY_TEST_PYTHON to Python >=3.11 with SQLite3.53.4.\n${result.stderr}\n${result.error ?? ""}`
   );
-  assert.match(result.stderr, /Ran 21 tests/);
+  assert.match(result.stderr, /Ran 22 tests/);
 });
 
 test("independently installed Python plugin runs through real host; repeated open/submit/control never repeat native work", async () => {

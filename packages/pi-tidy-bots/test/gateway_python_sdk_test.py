@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sdk" / "python"))
 from tidy_backend_sdk import DurableStore, SDKError, PluginRuntime, read_artifact
-from tidy_backend_sdk.protocol import encode_frame, parse_frame, validate_capabilities
+from tidy_backend_sdk.protocol import encode_frame, fingerprint, parse_frame, validate_capabilities
 
 
 def operation(**values):
@@ -276,6 +276,39 @@ class OwnershipSDKTests(unittest.IsolatedAsyncioTestCase):
             await runtime._dispatch({"id": request_id, "method": "interaction.respond", "params": params})
             self.assertEqual(responses[-1], (request_id, None, "invalid_payload"))
         self.assertEqual(len(calls), 1)
+        runtime.store.close()
+        temp.cleanup()
+
+    async def test_explicit_fleet_action_reconcile_uses_persisted_intent_and_rejects_bad_proof(self):
+        runtime = self.runtime()
+        runtime.capabilities["fleetTools"] = True
+        temp = tempfile.TemporaryDirectory()
+        runtime.store = DurableStore(temp.name, "org.example.python", "binding", 1)
+        call = {"name": "fleet.send", "callId": "send", "operationId": "origin", "toolCallId": "tool", "actionId": "action", "payloadDigest": "sha256:intent", "arguments": {"target": "target", "text": "hello"}, "bindingId": "binding", "leaseGeneration": 7}
+        key, created, original = runtime.store.reserve("host.call", call)
+        self.assertTrue(created)
+        calls = []
+        async def malformed(name, arguments, **identity):
+            calls.append((name, arguments, identity))
+            return {"status": "admitted", "dispatchId": "wrong", "receipt": {}, "proof": {}}
+        runtime.host_call = malformed
+        self.assertEqual(await runtime.reconcile_host_action("action"), original)
+        self.assertEqual(calls[0][0], "fleet.action.inspect")
+        self.assertFalse(runtime.store.settled(key))
+
+        dispatch = "dispatch-" + fingerprint({"bindingId": "binding", "operationId": "origin", "toolCallId": "tool", "actionId": "action"})[7:]
+        async def exact(name, arguments, **identity):
+            return {"status": "admitted", "dispatchId": dispatch,
+                    "receipt": {"operationId": dispatch, "fleetId": "fleet", "botId": "bot", "conversationId": "conversation", "bindingId": "target-binding"},
+                    "proof": {"bindingId": "binding", "operationId": "origin", "toolCallId": "tool", "actionId": "action", "payloadDigest": "sha256:intent", "target": "target", "fleetId": "fleet", "targetBotId": "bot", "targetConversationId": "conversation", "targetBindingId": "target-binding"}}
+        runtime.host_call = exact
+        self.assertEqual((await runtime.reconcile_host_action("action"))["dispatchId"], dispatch)
+        self.assertTrue(runtime.store.settled(key))
+
+        operator = {**call, "name": "operator.enqueue", "actionId": "operator"}
+        _, created, operator_unknown = runtime.store.reserve("host.call", operator)
+        self.assertTrue(created)
+        self.assertEqual(await runtime.reconcile_host_action("operator"), operator_unknown)
         runtime.store.close()
         temp.cleanup()
 

@@ -17,6 +17,7 @@ import {
   type RpcMessage,
 } from "../gateway/protocol.ts";
 import { PluginStore, type EventInput } from "./store.ts";
+import { payloadDigest } from "../gateway/journal.ts";
 
 export interface PluginInitialization extends JsonObject {
   bindingId: string;
@@ -38,6 +39,8 @@ export interface PluginContext {
   signal: AbortSignal;
   emit(event: EventInput): void;
   hostCall(call: HostCallInput): Promise<unknown>;
+  /** Read-only recovery of a prior uncertain fleet.send action. */
+  reconcileHostAction(actionId: string): Promise<unknown>;
   /** Lifecycle metadata only. Never activate a child until record returns started.
    * Retain the launch ID before spawning; lost responses require inspection.
    */
@@ -406,6 +409,7 @@ export class PluginRuntime {
         signal: this.abort.signal,
         emit: (event) => this.emit(event),
         hostCall: (call) => this.hostCall(call),
+        reconcileHostAction: (actionId) => this.reconcileHostAction(actionId),
         ownedProcess: (method, params) => this.ownedProcess(method, params),
       };
       if (this.options.onInitialize) {
@@ -838,6 +842,7 @@ export class PluginRuntime {
       ![
         "fleet.discover",
         "fleet.send",
+        "fleet.action.inspect",
         "operator.enqueue",
         "artifact.read",
       ].includes(call.name) ||
@@ -867,7 +872,9 @@ export class PluginRuntime {
         call.payloadDigest,
         call
       );
-      if (!reservation.created) return reservation.result;
+      if (!reservation.created) {
+        return reservation.result;
+      }
       uncertain = reservation.result;
     }
     if (this.pending.size >= this.limits.maxPendingRequests)
@@ -912,6 +919,79 @@ export class PluginRuntime {
       if (key) return uncertain;
       throw error;
     }
+  }
+  private async reconcileHostAction(actionId: string): Promise<unknown> {
+    if (!nonempty(actionId))
+      throw new ProtocolError(
+        "invalid_request",
+        "Fleet action identity is required"
+      );
+    const reservation = this.store!.reservation(`action:${actionId}`);
+    if (!reservation)
+      throw new ProtocolError(
+        "invalid_request",
+        "Missing durable fleet action"
+      );
+    if (reservation.settled || reservation.method !== "host.call")
+      return reservation.result;
+    const call = reservation.params as HostCallInput;
+    const target = object(call.arguments) ? call.arguments.target : undefined;
+    if (
+      call.name !== "fleet.send" ||
+      typeof target !== "string" ||
+      !target ||
+      !nonempty(call.operationId) ||
+      !nonempty(call.toolCallId) ||
+      !nonempty(call.actionId) ||
+      !nonempty(call.payloadDigest)
+    )
+      return reservation.result;
+    let result: unknown;
+    try {
+      result = await this.hostCall({
+        name: "fleet.action.inspect",
+        callId: `${actionId}:inspect`,
+        operationId: call.operationId,
+        toolCallId: call.toolCallId,
+        actionId: call.actionId,
+        payloadDigest: call.payloadDigest,
+        arguments: { target },
+      });
+    } catch {
+      return reservation.result;
+    }
+    const dispatchId = `dispatch-${payloadDigest({
+      bindingId: this.context!.initialization.bindingId,
+      operationId: call.operationId,
+      toolCallId: call.toolCallId,
+      actionId: call.actionId,
+    }).slice(7)}`;
+    if (
+      object(result) &&
+      result.status === "admitted" &&
+      result.dispatchId === dispatchId &&
+      object(result.receipt) &&
+      result.receipt.operationId === dispatchId &&
+      object(result.proof) &&
+      result.proof.bindingId === this.context!.initialization.bindingId &&
+      result.proof.operationId === call.operationId &&
+      result.proof.toolCallId === call.toolCallId &&
+      result.proof.actionId === call.actionId &&
+      result.proof.payloadDigest === call.payloadDigest &&
+      result.proof.target === target &&
+      nonempty(result.proof.fleetId) &&
+      nonempty(result.proof.targetBotId) &&
+      nonempty(result.proof.targetConversationId) &&
+      nonempty(result.proof.targetBindingId) &&
+      result.receipt.fleetId === result.proof.fleetId &&
+      result.receipt.botId === result.proof.targetBotId &&
+      result.receipt.conversationId === result.proof.targetConversationId &&
+      result.receipt.bindingId === result.proof.targetBindingId
+    ) {
+      this.store!.settle(reservation.key, result);
+      return result;
+    }
+    return reservation.result;
   }
   private deadline<T>(
     promise: Promise<T>,

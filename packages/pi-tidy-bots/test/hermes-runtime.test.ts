@@ -107,6 +107,9 @@ async function fixture(version = "0.20.5") {
     async hostCall() {
       throw new Error("Unexpected agent host service");
     },
+    async reconcileHostAction() {
+      throw new Error("Unexpected host reconciliation");
+    },
     emit: (event) => {
       store.append(event);
       events.push(event);

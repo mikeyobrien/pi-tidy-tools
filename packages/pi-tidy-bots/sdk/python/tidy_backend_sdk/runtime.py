@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import sys
 
-from .protocol import (CORE_METHODS, DEFAULT_LIMITS, MUTATING, SDKError, encode_frame,
+from .protocol import (CORE_METHODS, DEFAULT_LIMITS, MUTATING, SDKError, encode_frame, fingerprint,
                        identity, integer, limits, parse_frame, validate_capabilities)
 from .store import DurableStore
 
@@ -250,7 +250,7 @@ class PluginRuntime:
                         action_id=None, payload_digest=None, call_id=None):
         if self.state != "ready":
             raise SDKError("plugin_closed")
-        if name not in ("fleet.discover", "fleet.send", "operator.enqueue", "artifact.read"):
+        if name not in ("fleet.discover", "fleet.send", "fleet.action.inspect", "operator.enqueue", "artifact.read"):
             raise SDKError("capability_unavailable")
         if name.startswith("fleet.") and not self.capabilities["fleetTools"]:
             raise SDKError("capability_unavailable")
@@ -281,6 +281,32 @@ class PluginRuntime:
             raise SDKError("request_timeout")
         finally:
             self._reverse.pop(rpc_id, None)
+
+    async def reconcile_host_action(self, action_id):
+        if not identity(action_id):
+            raise SDKError("invalid_payload")
+        reservation = self.store.host_action(action_id)
+        if reservation["settled"] or reservation["method"] != "host.call":
+            return reservation["result"]
+        call = reservation["params"]
+        target = call.get("arguments", {}).get("target") if isinstance(call.get("arguments"), dict) else None
+        if call.get("name") != "fleet.send" or not identity(target) or not all(identity(call.get(key)) for key in ("operationId", "toolCallId", "actionId", "payloadDigest")):
+            return reservation["result"]
+        try:
+            recovered = await self.host_call("fleet.action.inspect", {"target": target},
+                                             operation_id=call["operationId"], tool_call_id=call["toolCallId"],
+                                             action_id=call["actionId"], payload_digest=call["payloadDigest"],
+                                             call_id=action_id + ":inspect")
+        except SDKError:
+            return reservation["result"]
+        scope = {"bindingId": self.initialization["bindingId"], "operationId": call["operationId"], "toolCallId": call["toolCallId"], "actionId": call["actionId"]}
+        dispatch_id = "dispatch-" + fingerprint(scope)[7:]
+        proof = recovered.get("proof") if isinstance(recovered, dict) else None
+        receipt = recovered.get("receipt") if isinstance(recovered, dict) else None
+        if isinstance(recovered, dict) and recovered.get("status") == "admitted" and recovered.get("dispatchId") == dispatch_id and isinstance(receipt, dict) and receipt.get("operationId") == dispatch_id and isinstance(proof, dict) and proof.get("bindingId") == self.initialization["bindingId"] and proof.get("operationId") == call["operationId"] and proof.get("toolCallId") == call["toolCallId"] and proof.get("actionId") == call["actionId"] and proof.get("payloadDigest") == call["payloadDigest"] and proof.get("target") == target and all(identity(proof.get(key)) for key in ("fleetId", "targetBotId", "targetConversationId", "targetBindingId")) and receipt.get("fleetId") == proof["fleetId"] and receipt.get("botId") == proof["targetBotId"] and receipt.get("conversationId") == proof["targetConversationId"] and receipt.get("bindingId") == proof["targetBindingId"]:
+            self.store.complete(reservation["key"], recovered)
+            return recovered
+        return reservation["result"]
 
     async def _cleanup(self, reason, mode="interrupt", *, orderly=False):
         if self._cleanup_task:

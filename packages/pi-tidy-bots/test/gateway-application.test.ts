@@ -83,7 +83,7 @@ async function fixture(
         gatewayTools: artifacts
           ? ["artifact.read"]
           : discovery
-            ? ["fleet.discover", "fleet.send"]
+            ? ["fleet.discover", "fleet.send", "fleet.action.inspect"]
             : [],
       },
     })
@@ -123,7 +123,7 @@ async function fixture(
     discovery
       ? manifest.replace(
           'environment = ["PATH"]',
-          'environment = ["PATH"]\ngateway_tools = ["fleet.discover", "fleet.send"]'
+          'environment = ["PATH"]\ngateway_tools = ["fleet.discover", "fleet.send", "fleet.action.inspect"]'
         ) +
           'routes = ["allowed"]\n[bot.backend_config]\ndiscovery = true\n[[bot]]\nname = "allowed"\ndir = "."\nbackend = "org.example.independent"\n[[bot]]\nname = "hidden"\ndir = "."\nbackend = "org.example.independent"\n'
       : artifacts
@@ -378,6 +378,73 @@ test("fleet send admits one target and one nonrecursive completion despite dupli
     assert.deepEqual(
       (await f.request(handle, "/api/bots/hidden/transcript")).body.transcript,
       []
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("lost fleet-send reply is recovered by an exact lookup without a second target admission", async () => {
+  const f = await fixture(false, true);
+  try {
+    const first = await f.start();
+    const firstBinding = await f.binding(first);
+    assert.equal(
+      (
+        await f.submit(
+          first,
+          firstBinding,
+          "lost-dispatch",
+          "[send-lost-reply]"
+        )
+      ).status,
+      202
+    );
+    const firstCalls = await waitFor(
+      () => f.calls(firstBinding),
+      (calls) =>
+        calls.some(
+          (call) => call.dispatch && call.operationId === "lost-dispatch"
+        ),
+      "committed fleet dispatch before reply loss"
+    );
+    const original = firstCalls.find(
+      (call) => call.dispatch && call.operationId === "lost-dispatch"
+    )!.dispatch as ObjectValue;
+    assert.equal(original.status, "admitted");
+    await first.stop();
+
+    const replacement = await f.start();
+    const binding = await f.binding(replacement);
+    const calls = await waitFor(
+      () => f.calls(binding),
+      (values) =>
+        values.filter(
+          (call) => call.dispatch && call.operationId === "lost-dispatch"
+        ).length === 2,
+      "replacement fleet action lookup"
+    );
+    const recovered = calls
+      .filter((call) => call.dispatch && call.operationId === "lost-dispatch")
+      .at(-1)!.dispatch as ObjectValue;
+    assert.equal(recovered.status, "admitted");
+    assert.equal(recovered.dispatchId, original.dispatchId);
+    assert.deepEqual(recovered.receipt, original.receipt);
+    assert.equal((recovered.proof as ObjectValue).operationId, "lost-dispatch");
+    assert.equal((recovered.proof as ObjectValue).target, "allowed");
+    const target = (
+      await f.request(replacement, "/api/bots/allowed/transcript")
+    ).body.transcript as ObjectValue[];
+    assert.equal(target.filter((entry) => entry.origin === "fleet").length, 1);
+    const allowed = await f.request(
+      replacement,
+      "/api/bots/allowed/capabilities"
+    );
+    assert.equal(
+      (await f.calls(allowed.body)).filter(
+        (call) => call.method === "operation.submit"
+      ).length,
+      1
     );
   } finally {
     await f.cleanup();

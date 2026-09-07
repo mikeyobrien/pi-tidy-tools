@@ -272,6 +272,29 @@ class DurableStore:
             self.db.execute("UPDATE reservations SET result=?,complete=1 WHERE key=?", (encoded, key))
             return result
 
+    def settled(self, key):
+        row = self.db.execute("SELECT complete FROM reservations WHERE key=?", (key,)).fetchone()
+        if not row:
+            raise SDKError("operation_not_found")
+        return bool(row[0])
+
+    def reservation(self, key):
+        row = self.db.execute("SELECT method,params,result,complete FROM reservations WHERE key=?", (key,)).fetchone()
+        if not row:
+            raise SDKError("operation_not_found")
+        return {"method": row[0], "params": json.loads(row[1]), "result": json.loads(row[2]), "settled": bool(row[3])}
+
+    def host_action(self, action_id):
+        matches = []
+        for key, method, params, result, complete in self.db.execute("SELECT key,method,params,result,complete FROM reservations WHERE method='host.call'"):
+            value = json.loads(params)
+            if value.get("actionId") == action_id:
+                matches.append((key, method, value, json.loads(result), bool(complete)))
+        if len(matches) != 1:
+            raise SDKError("operation_not_found" if not matches else "corrupt_storage")
+        key, method, params, result, settled = matches[0]
+        return {"key": key, "method": method, "params": params, "result": result, "settled": settled}
+
     def inspect(self, operation_id):
         row = self.db.execute("SELECT result,execution,observation FROM reservations WHERE key=?", ("operation:" + operation_id,)).fetchone()
         if not row:

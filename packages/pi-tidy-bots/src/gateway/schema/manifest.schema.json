@@ -91,6 +91,7 @@
             "enum": [
               "fleet.discover",
               "fleet.send",
+              "fleet.action.inspect",
               "operator.enqueue",
               "artifact.read"
             ]

@@ -29,6 +29,8 @@ import {
   type ProtocolLimits,
   type RpcMessage,
 } from "../src/gateway/protocol.ts";
+import { payloadDigest } from "../src/gateway/journal.ts";
+import type { HostCallInput } from "../src/plugin-sdk/runtime.ts";
 
 async function fixture(nativeProfile = false, sessionLoad = false) {
   const dir = await mkdtemp(join(tmpdir(), "tidy-sdk-runtime-"));
@@ -78,7 +80,7 @@ async function fixture(nativeProfile = false, sessionLoad = false) {
         workspace: "none",
         nativeProfile,
         network: false,
-        gatewayTools: ["fleet.send"],
+        gatewayTools: ["fleet.send", "fleet.action.inspect"],
       },
     })
   );
@@ -108,7 +110,10 @@ async function fixture(nativeProfile = false, sessionLoad = false) {
   );
   const installation = (
     await PluginRegistry.load(registryPath, {
-      policy: { gatewayTools: ["fleet.send"], nativeProfile },
+      policy: {
+        gatewayTools: ["fleet.send", "fleet.action.inspect"],
+        nativeProfile,
+      },
     })
   ).resolve("org.example.sdk-fixture");
   const hosts: PluginHost[] = [];
@@ -202,7 +207,7 @@ async function fixture(nativeProfile = false, sessionLoad = false) {
         mode?: string;
         limits?: Partial<ProtocolLimits>;
         event?: (event: GatewayPluginEvent) => Promise<number>;
-        hostCall?: () => Promise<unknown>;
+        hostCall?: (call: HostCallInput) => Promise<unknown>;
         ownership?: string;
         lifecycle?: Pick<
           PluginHostOptions,
@@ -649,6 +654,81 @@ test("reverse mutating calls persist one action before transport and duplicate i
     assert.ok(
       (await f.effects()).some((entry) => entry.actionResultsEqual === true)
     );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("explicit fleet-action reconciliation settles only an exact receipt", async () => {
+  const f = await fixture();
+  try {
+    const host = await f.start({
+      hostCall: async (call) => {
+        assert.equal(call.name, "fleet.action.inspect");
+        const dispatchId = `dispatch-${payloadDigest({
+          bindingId: call.bindingId,
+          operationId: call.operationId,
+          toolCallId: call.toolCallId,
+          actionId: call.actionId,
+        }).slice(7)}`;
+        return {
+          status: "admitted",
+          dispatchId,
+          receipt: {
+            operationId: dispatchId,
+            fleetId: "fleet",
+            botId: "bot",
+            conversationId: "conversation",
+            bindingId: "target-binding",
+          },
+          proof: {
+            bindingId: call.bindingId,
+            operationId: call.operationId,
+            toolCallId: call.toolCallId,
+            actionId: call.actionId,
+            payloadDigest: call.payloadDigest,
+            target: "fixture",
+            fleetId: "fleet",
+            targetBotId: "bot",
+            targetConversationId: "conversation",
+            targetBindingId: "target-binding",
+          },
+        };
+      },
+    });
+    await host.request("session.open", open);
+    await host.request("operation.submit", submit("[host-action-reconcile]"));
+    const effects = await f.effects();
+    const result = effects.find((entry) => entry.actionResult)
+      ?.actionResult as Record<string, unknown>;
+    assert.equal(result.status, "admitted");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("explicit fleet-action reconciliation preserves unknown for malformed proof", async () => {
+  const f = await fixture();
+  try {
+    const host = await f.start({
+      hostCall: async (call) => {
+        assert.equal(call.name, "fleet.action.inspect");
+        return {
+          status: "admitted",
+          dispatchId: "wrong",
+          receipt: {},
+          proof: {},
+        };
+      },
+    });
+    await host.request("session.open", open);
+    await host.request(
+      "operation.submit",
+      submit("[host-action-reconcile-bad]")
+    );
+    const result = (await f.effects()).find((entry) => entry.actionResult)!
+      .actionResult as Record<string, unknown>;
+    assert.equal(result.disposition, "unknown");
   } finally {
     await f.cleanup();
   }

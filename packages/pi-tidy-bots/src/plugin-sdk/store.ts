@@ -38,6 +38,8 @@ export interface Reservation {
   created: boolean;
   result: unknown;
   settled: boolean;
+  /** Original immutable request, retained for explicit reconciliation only. */
+  params: JsonObject;
 }
 export interface PluginStoreOptions {
   bindingId: string;
@@ -460,6 +462,7 @@ export class PluginStore {
           created: false,
           result: JSON.parse(String(existing.result_json)),
           settled: existing.settled === 1,
+          params: JSON.parse(String(existing.params_json)) as JsonObject,
         };
       }
       if (this.observationGap)
@@ -521,7 +524,14 @@ export class PluginStore {
         "reservation_count",
         String(Number(this.meta("reservation_count")) + 1)
       );
-      return { key, method, created: true, result, settled: false };
+      return {
+        key,
+        method,
+        created: true,
+        result,
+        settled: false,
+        params: immutable,
+      };
     });
   }
   settle(key: string, result: unknown): void {
@@ -594,6 +604,7 @@ export class PluginStore {
           created: false,
           result: JSON.parse(String(row.result_json)),
           settled: row.settled === 1,
+          params: JSON.parse(String(row.params_json)) as JsonObject,
         }
       : undefined;
   }

@@ -47,6 +47,9 @@ async function fixture(timeoutMs = 1000) {
     async hostCall() {
       throw new Error("Unexpected host service");
     },
+    async reconcileHostAction() {
+      throw new Error("Unexpected host reconciliation");
+    },
     async ownedProcess() {
       throw new Error("Unexpected process service");
     },

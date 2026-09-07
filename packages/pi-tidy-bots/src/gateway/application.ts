@@ -421,7 +421,14 @@ export class GatewayApplication {
         },
         onHostCall: async (call) => {
           await provision;
-          if (!bot || this.stopping || !bot.ready)
+          // Inspection only reads a committed dispatch record. Permit it while
+          // the originating native turn remains uncertain after a lost reply;
+          // every admission path below still requires a ready binding.
+          if (
+            !bot ||
+            this.stopping ||
+            (!bot.ready && call.name !== "fleet.action.inspect")
+          )
             throw new ProtocolError(
               "not_initialized",
               "Fleet service binding is unavailable"
@@ -429,6 +436,8 @@ export class GatewayApplication {
           if (call.name === "artifact.read")
             return this.readPluginArtifact(bot, call);
           if (call.name === "fleet.send") return this.sendFleet(bot, call);
+          if (call.name === "fleet.action.inspect")
+            return this.inspectFleetAction(bot, call);
           if (call.name !== "fleet.discover")
             throw new ProtocolError(
               "capability_unavailable",
@@ -736,9 +745,12 @@ export class GatewayApplication {
       typeof args.target !== "string" ||
       typeof args.text !== "string" ||
       !args.text.trim() ||
-      ![call.operationId, call.toolCallId, call.actionId].every(
-        (value) => typeof value === "string" && value.length > 0
-      )
+      ![
+        call.operationId,
+        call.toolCallId,
+        call.actionId,
+        call.payloadDigest,
+      ].every((value) => typeof value === "string" && value.length > 0)
     )
       throw new ProtocolError(
         "invalid_payload",
@@ -775,6 +787,7 @@ export class GatewayApplication {
         target: target.binding,
         toolCallId: String(call.toolCallId),
         actionId: String(call.actionId),
+        payloadDigest: String(call.payloadDigest),
         text: args.text,
         publicBotName: target.config.name,
       });
@@ -793,6 +806,56 @@ export class GatewayApplication {
       dispatchId: admitted.dispatchId,
       receipt: admitted.receipt as unknown as JsonObject,
     };
+  }
+  private inspectFleetAction(
+    origin: BoundBot,
+    call: Record<string, unknown>
+  ): JsonObject {
+    const args = call.arguments;
+    if (
+      !object(args) ||
+      Object.keys(args).some((key) => key !== "target") ||
+      typeof args.target !== "string" ||
+      !args.target ||
+      ![
+        call.operationId,
+        call.toolCallId,
+        call.actionId,
+        call.payloadDigest,
+      ].every((value) => typeof value === "string" && value.length > 0)
+    )
+      throw new ProtocolError(
+        "invalid_payload",
+        "Fleet action lookup requires exact immutable action identity"
+      );
+    const route = checkRoute(origin.config.name, args.target, this.fleet.bots);
+    if (!route.ok)
+      throw new ProtocolError(route.reason, "Fleet route is unavailable");
+    // A restart may be reconciling this origin before the target plugin has
+    // been provisioned. Resolve the durable target binding without checking
+    // target readiness or creating work.
+    const targetBot = this.journal.botByName(args.target);
+    const candidates = targetBot
+      ? this.journal
+          .listConversations()
+          .filter((binding) => binding.botId === targetBot.botId)
+      : [];
+    if (candidates.length !== 1) return { status: "unknown" };
+    const result = this.journal.inspectFleetDispatch({
+      origin: { ...origin.binding, operationId: String(call.operationId) },
+      toolCallId: String(call.toolCallId),
+      actionId: String(call.actionId),
+      payloadDigest: String(call.payloadDigest),
+      target: candidates[0]!,
+    });
+    return result.status === "unknown"
+      ? result
+      : {
+          status: result.status,
+          dispatchId: result.dispatchId,
+          receipt: result.receipt as unknown as JsonObject,
+          proof: { ...result.proof, target: args.target },
+        };
   }
   private deliverCompletions(afterId = 0): void {
     if (this.stopping) return;

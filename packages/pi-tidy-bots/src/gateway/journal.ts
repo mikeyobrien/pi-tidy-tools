@@ -201,9 +201,28 @@ export interface AdmitFleetDispatch {
   origin: ConversationBinding & { operationId: string };
   toolCallId: string;
   actionId: string;
+  payloadDigest?: string;
   target: ConversationBinding;
   text: string;
   publicBotName?: string;
+}
+export interface FleetDispatchLookup {
+  origin: ConversationBinding & { operationId: string };
+  toolCallId: string;
+  actionId: string;
+  payloadDigest: string;
+  target: ConversationBinding;
+}
+export interface FleetDispatchProof {
+  fleetId: string;
+  bindingId: string;
+  operationId: string;
+  toolCallId: string;
+  actionId: string;
+  payloadDigest: string;
+  targetBotId: string;
+  targetConversationId: string;
+  targetBindingId: string;
 }
 export interface OperationDisposition {
   delivery?: DeliveryState;
@@ -1636,6 +1655,83 @@ export class GatewayJournal {
       `fleet_dispatch_v1:dispatch-${digest}`
     );
   }
+  /** Lookup is deliberately read-only: old ledger rows without recovery proof
+   * remain unknown rather than being upgraded into a successful dispatch. */
+  inspectFleetDispatch(input: FleetDispatchLookup):
+    | {
+        status: "admitted";
+        dispatchId: string;
+        receipt: OperationReceipt;
+        proof: FleetDispatchProof;
+      }
+    | { status: "unknown" } {
+    const scope = {
+      bindingId: input.origin.bindingId,
+      operationId: input.origin.operationId,
+      toolCallId: input.toolCallId,
+      actionId: input.actionId,
+    };
+    const dispatchId = `dispatch-${payloadDigest(scope).slice(7)}`;
+    const row = this.prepare("SELECT value FROM gateway_meta WHERE key=?").get(
+      `fleet_dispatch_v1:${dispatchId}`
+    );
+    if (!row) return { status: "unknown" };
+    let record: JsonObject;
+    try {
+      record = parseObject(row.value);
+    } catch {
+      fail("corrupt_storage", "Retained dispatch ledger is unreadable");
+    }
+    // Rows written before recovery proof had no caller digest or full target
+    // identity. They are intentionally not evidence for a successful lookup.
+    if (
+      typeof record.callerPayloadDigest !== "string" ||
+      typeof record.originBotId !== "string" ||
+      typeof record.originConversationId !== "string" ||
+      typeof record.targetBotId !== "string" ||
+      typeof record.targetConversationId !== "string" ||
+      typeof record.targetBindingId !== "string"
+    )
+      return { status: "unknown" };
+    if (
+      record.callerPayloadDigest !== input.payloadDigest ||
+      record.originBotId !== input.origin.botId ||
+      record.originConversationId !== input.origin.conversationId ||
+      record.targetBotId !== input.target.botId ||
+      record.targetConversationId !== input.target.conversationId ||
+      record.targetBindingId !== input.target.bindingId
+    )
+      fail("action_conflict", "Fleet action recovery identity changed");
+    if (
+      record.dispatchId !== dispatchId ||
+      typeof record.receipt !== "object" ||
+      record.receipt === null ||
+      Array.isArray(record.receipt) ||
+      (record.receipt as JsonObject).operationId !== dispatchId ||
+      (record.receipt as JsonObject).botId !== input.target.botId ||
+      (record.receipt as JsonObject).conversationId !==
+        input.target.conversationId ||
+      (record.receipt as JsonObject).bindingId !== input.target.bindingId ||
+      (record.receipt as JsonObject).fleetId !== this.fleetId
+    )
+      fail("corrupt_storage", "Retained dispatch receipt is invalid");
+    return {
+      status: "admitted",
+      dispatchId,
+      receipt: record.receipt as unknown as OperationReceipt,
+      proof: {
+        fleetId: this.fleetId,
+        bindingId: input.origin.bindingId,
+        operationId: input.origin.operationId,
+        toolCallId: input.toolCallId,
+        actionId: input.actionId,
+        payloadDigest: input.payloadDigest,
+        targetBotId: input.target.botId,
+        targetConversationId: input.target.conversationId,
+        targetBindingId: input.target.bindingId,
+      },
+    };
+  }
   admitFleetDispatch(
     lease: WriterLease,
     input: AdmitFleetDispatch
@@ -1807,7 +1903,13 @@ export class GatewayJournal {
           digest,
           receipt: admitted.receipt,
           originBotId: input.origin.botId,
+          originConversationId: input.origin.conversationId,
           targetBotId: input.target.botId,
+          targetConversationId: input.target.conversationId,
+          targetBindingId: input.target.bindingId,
+          ...(typeof input.payloadDigest === "string"
+            ? { callerPayloadDigest: input.payloadDigest }
+            : {}),
           createdAt: this.now(),
         })
       );

@@ -682,7 +682,9 @@ export class PluginHost {
         );
       if (
         !ownership &&
-        ["fleet.send", "operator.enqueue"].includes(name) &&
+        ["fleet.send", "fleet.action.inspect", "operator.enqueue"].includes(
+          name
+        ) &&
         (!nonempty(value.actionId) ||
           !nonempty(value.payloadDigest) ||
           !nonempty(value.operationId) ||

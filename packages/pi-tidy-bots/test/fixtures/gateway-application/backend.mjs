@@ -19,6 +19,25 @@ const cancellable = new Map();
 const artifactReads = new Map();
 const discoveries = new Map();
 const dispatches = new Map();
+const inspections = new Map();
+function requestInspection(prior, attempts = 0) {
+  const id = `inspect:${prior.operationId}:${attempts}`;
+  inspections.set(id, { prior, attempts });
+  send({
+    jsonrpc: "2.0",
+    id,
+    method: "host.call",
+    params: {
+      ...prior,
+      bindingId: init.bindingId,
+      leaseGeneration: init.leaseGeneration,
+      name: "fleet.action.inspect",
+      callId: id,
+      arguments: { target: prior.arguments.target },
+    },
+  });
+}
+
 const dir = process.env.TIDY_DATA_DIR;
 const logPath = join(dir, "calls.jsonl");
 function record(value) {
@@ -262,6 +281,13 @@ input.on("line", (line) => {
       dispatch: message.result ?? message.error,
       operationId: pending.request.operationId,
     });
+    if (pending.lostReply && message.result) {
+      writeFileSync(
+        join(dir, "lost-dispatch.json"),
+        JSON.stringify(pending.params)
+      );
+      process.exit(0);
+    }
     if (!pending.repeated && message.result) {
       const id = message.id + ":retry";
       dispatches.set(id, { ...pending, repeated: true });
@@ -272,6 +298,25 @@ input.on("line", (line) => {
         params: { ...pending.params, callId: id },
       });
     } else void execute(pending.request);
+    return;
+  }
+  if (inspections.has(message.id)) {
+    const pending = inspections.get(message.id);
+    inspections.delete(message.id);
+    if (
+      message.error?.data?.code === "not_initialized" &&
+      pending.attempts < 20
+    ) {
+      setTimeout(
+        () => requestInspection(pending.prior, pending.attempts + 1),
+        10
+      );
+      return;
+    }
+    record({
+      dispatch: message.result ?? message.error,
+      operationId: pending.prior.operationId,
+    });
     return;
   }
   if (discoveries.has(message.id)) {
@@ -287,6 +332,11 @@ input.on("line", (line) => {
   const p = message.params ?? {};
   if (message.method === "initialize") {
     init = p;
+    const lostDispatch = join(dir, "lost-dispatch.json");
+    if (existsSync(lostDispatch)) {
+      const prior = JSON.parse(readFileSync(lostDispatch, "utf8"));
+      queueMicrotask(() => requestInspection(prior));
+    }
     if (existsSync(join(dir, "sequence")))
       sequence = Number(readFileSync(join(dir, "sequence"), "utf8"));
     record({ method: "initialize", instanceId: p.instanceId });
@@ -306,7 +356,11 @@ input.on("line", (line) => {
           mediaTypes: p.config.artifacts ? ["text/plain"] : [],
           maxMediaBytes: p.config.artifacts ? 524288 : 0,
         },
-        sessions: { load: false, import: false, continuity: "unverified" },
+        sessions: {
+          load: p.config.discovery === true,
+          import: false,
+          continuity: p.config.discovery === true ? "verified" : "unverified",
+        },
         output: { text: "snapshots", tools: true, usage: "unknown" },
         operations: {
           nativeDedupe: "none",
@@ -342,9 +396,16 @@ input.on("line", (line) => {
     });
   } else if (message.method === "session.open") {
     record({ method: "session.open", ...p });
+    const nativeReferencePath = join(dir, "native-reference");
+    const nativeReference = existsSync(nativeReferencePath)
+      ? readFileSync(nativeReferencePath, "utf8")
+      : "session:fixture";
+    if (!existsSync(nativeReferencePath))
+      writeFileSync(nativeReferencePath, nativeReference);
     respond(message, {
       status: "opened",
-      nativeReference: `session:${p.openId}`,
+      nativeReference,
+      ...(p.mode === "load" ? { continuity: "verified" } : {}),
     });
   } else if (message.method === "session.compact") {
     record({ method: "session.compact", ...p });
@@ -421,7 +482,11 @@ input.on("line", (line) => {
       return;
     }
 
-    if (["[send]", "[send-forbidden]"].includes(p.input[0].text)) {
+    if (
+      ["[send]", "[send-forbidden]", "[send-lost-reply]"].includes(
+        p.input[0].text
+      )
+    ) {
       const id = `send:${p.operationId}`;
       const params = {
         bindingId: init.bindingId,
@@ -433,11 +498,17 @@ input.on("line", (line) => {
         actionId: "action-1",
         payloadDigest: "fixture-action-intent",
         arguments: {
-          target: p.input[0].text === "[send]" ? "allowed" : "hidden",
+          target: ["[send]", "[send-lost-reply]"].includes(p.input[0].text)
+            ? "allowed"
+            : "hidden",
           text: "Delegated task",
         },
       };
-      dispatches.set(id, { request: p, params });
+      dispatches.set(id, {
+        request: p,
+        params,
+        lostReply: p.input[0].text === "[send-lost-reply]",
+      });
       send({ jsonrpc: "2.0", id, method: "host.call", params });
       respond(message, { disposition: "accepted" });
       return;

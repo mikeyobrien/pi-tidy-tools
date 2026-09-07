@@ -168,7 +168,12 @@ const runtime = runPlugin({
         await new Promise((resolve) => setTimeout(resolve, 100));
         log({ drainedWithoutAbort: !ctx.signal.aborted });
       }
-      if (text === "[host-action]" || text === "[host-action-unknown]") {
+      if (
+        text === "[host-action]" ||
+        text === "[host-action-unknown]" ||
+        text === "[host-action-reconcile]" ||
+        text === "[host-action-reconcile-bad]"
+      ) {
         const call = {
           name: "fleet.send",
           callId: "call-1",
@@ -178,8 +183,18 @@ const runtime = runPlugin({
           payloadDigest: "caller-action-digest",
           arguments: { target: "fixture", text: "hello" },
         };
-        const first = await ctx.hostCall(call),
-          second = await ctx.hostCall(call);
+        const first = text.startsWith("[host-action-reconcile")
+            ? (ctx.store.reserve(
+                "action:action-1",
+                "host.call",
+                call.payloadDigest,
+                call
+              ),
+              await ctx.reconcileHostAction("action-1"))
+            : await ctx.hostCall(call),
+          second = text.startsWith("[host-action-reconcile")
+            ? first
+            : await ctx.hostCall(call);
         log({
           actionResultsEqual: isDeepStrictEqual(first, second),
           actionResult: first,

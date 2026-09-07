@@ -114,12 +114,49 @@ test("fleet dispatch atomically retains one target admission across lost replies
     target,
     toolCallId: "native-call-1",
     actionId: "action-1",
+    payloadDigest: "sha256:caller-intent",
     text: "Review the fixture",
     publicBotName: "target",
   };
   const first = f.journal.admitFleetDispatch(f.lease, input);
   assert.equal(first.created, true);
   assert.equal(first.receipt.operationId, first.dispatchId);
+  assert.deepEqual(
+    f.journal.inspectFleetDispatch({
+      origin: input.origin,
+      toolCallId: input.toolCallId,
+      actionId: input.actionId,
+      payloadDigest: input.payloadDigest,
+      target,
+    }),
+    {
+      status: "admitted",
+      dispatchId: first.dispatchId,
+      receipt: first.receipt,
+      proof: {
+        fleetId: f.journal.fleetId,
+        bindingId: binding.bindingId,
+        operationId: key().operationId,
+        toolCallId: input.toolCallId,
+        actionId: input.actionId,
+        payloadDigest: input.payloadDigest,
+        targetBotId: target.botId,
+        targetConversationId: target.conversationId,
+        targetBindingId: target.bindingId,
+      },
+    }
+  );
+  code(
+    () =>
+      f.journal.inspectFleetDispatch({
+        origin: input.origin,
+        toolCallId: input.toolCallId,
+        actionId: input.actionId,
+        payloadDigest: "sha256:changed",
+        target,
+      }),
+    "action_conflict"
+  );
   assert.deepEqual(f.journal.admitFleetDispatch(f.lease, input), {
     ...first,
     created: false,

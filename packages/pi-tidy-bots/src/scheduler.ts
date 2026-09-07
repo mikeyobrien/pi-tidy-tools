@@ -1,7 +1,7 @@
 // Time-driven layer of the fleet daemon (issue 94). Pure move out of
 // daemon.ts: routine scheduling, cron ticking, and compaction policy.
 // daemon.ts re-exports moved symbols so imports/tests are unchanged.
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { isDue, minuteKey, parseCron } from "./cron.ts";
 
@@ -25,106 +25,6 @@ export function routineBootWarnings(
     }
   }
   return warnings;
-}
-
-export type RoutineScheduleOwner = "legacy-gateway" | "hermes";
-
-/** Stable identity shared by a legacy scheduler and an explicit Hermes cutover. */
-export function routineFireId(
-  bot: string,
-  routine: string,
-  minute: string
-): string {
-  if (!bot || !routine || !minute)
-    throw new Error("routine fire identity is incomplete");
-  return `routine:${bot}:${routine}:${minute}`;
-}
-
-export interface RoutineFireRecord {
-  fireId: string;
-  operationId: string;
-  owner: RoutineScheduleOwner;
-  status: "admitted";
-}
-
-/**
- * Durable owner/firing ledger used during an explicit legacy-to-Hermes
- * schedule cutover. The append-only file is intentionally separate from the
- * best-effort skip journal: an admitted fire must retain its operation ID.
- */
-export class RoutineFireLedger {
-  private readonly records = new Map<string, RoutineFireRecord>();
-  private owner: RoutineScheduleOwner;
-
-  constructor(
-    private readonly path: string,
-    owner: RoutineScheduleOwner
-  ) {
-    this.owner = owner;
-    try {
-      for (const line of readFileSync(path, "utf8").split("\n")) {
-        if (!line.trim()) continue;
-        const value = JSON.parse(line) as Record<string, unknown>;
-        if (
-          value.type === "owner" &&
-          (value.owner === "legacy-gateway" || value.owner === "hermes")
-        ) {
-          this.owner = value.owner;
-        } else if (
-          typeof value.fireId === "string" &&
-          typeof value.operationId === "string" &&
-          (value.owner === "legacy-gateway" || value.owner === "hermes") &&
-          value.status === "admitted"
-        ) {
-          this.records.set(value.fireId, value as unknown as RoutineFireRecord);
-        }
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-  }
-
-  get scheduleOwner(): RoutineScheduleOwner {
-    return this.owner;
-  }
-
-  /** Explicitly changes the sole scheduler owner; it never rewrites fires. */
-  cutover(next: RoutineScheduleOwner): void {
-    if (next === this.owner) return;
-    mkdirSync(join(this.path, ".."), { recursive: true });
-    appendFileSync(
-      this.path,
-      `${JSON.stringify({ type: "owner", owner: next })}\n`
-    );
-    this.owner = next;
-  }
-
-  /** Returns the prior admission on retry, or records exactly one new one. */
-  admit(
-    fireId: string,
-    owner: RoutineScheduleOwner = this.owner
-  ): RoutineFireRecord {
-    if (owner !== this.owner)
-      throw new Error(
-        `routine schedule owner is ${this.owner}; ${owner} cannot admit ${fireId}`
-      );
-    const prior = this.records.get(fireId);
-    if (prior) return prior;
-    const record: RoutineFireRecord = {
-      fireId,
-      operationId: `op:${fireId}`,
-      owner,
-      status: "admitted",
-    };
-    mkdirSync(join(this.path, ".."), { recursive: true });
-    appendFileSync(this.path, `${JSON.stringify(record)}\n`);
-    this.records.set(fireId, record);
-    return record;
-  }
-
-  get(fireId: string): RoutineFireRecord | undefined {
-    return this.records.get(fireId);
-  }
 }
 
 /**

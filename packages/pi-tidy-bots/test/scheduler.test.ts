@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { runSchedulerTick } from "../src/daemon.ts";
-import { RoutineFireLedger, routineFireId } from "../src/scheduler.ts";
 
 const DUE = new Date(2026, 7, 31, 10, 5, 0); // local 10:05 — matches "5 10 * * *"
 
@@ -93,40 +89,4 @@ test("not-due and disabled routines journal nothing", () => {
   h.tick(true, true);
   assert.deepEqual(h.entries, []);
   assert.equal(h.firedKeys.size, 0);
-});
-
-test("routine fire ledger durably dedupes identities and fences owner cutover", () => {
-  const dir = mkdtempSync(join(tmpdir(), "tidy-routine-ledger-"));
-  const path = join(dir, ".fleet", "routine-fires.jsonl");
-  try {
-    const fireId = routineFireId("scribe", "nightly", "2026-08-31 10:05");
-    const legacy = new RoutineFireLedger(path, "legacy-gateway");
-    const first = legacy.admit(fireId);
-    assert.equal(
-      first.operationId,
-      "op:routine:scribe:nightly:2026-08-31 10:05"
-    );
-    assert.deepEqual(legacy.admit(fireId), first);
-    assert.throws(
-      () => legacy.admit(fireId, "hermes"),
-      /owner is legacy-gateway/
-    );
-    legacy.cutover("hermes");
-    assert.equal(legacy.scheduleOwner, "hermes");
-    assert.throws(
-      () =>
-        legacy.admit(
-          routineFireId("scribe", "nightly", "2026-08-31 10:06"),
-          "legacy-gateway"
-        ),
-      /owner is hermes/
-    );
-    const hermes = new RoutineFireLedger(path, "legacy-gateway");
-    assert.equal(hermes.scheduleOwner, "hermes");
-    assert.deepEqual(hermes.get(fireId), first);
-    assert.deepEqual(hermes.admit(fireId), first);
-    assert.equal(readFileSync(path, "utf8").trim().split("\n").length, 2);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
 });

@@ -28,9 +28,25 @@ const sessionDir = realpathSync(
 const sessionFile = process.argv.includes("--session")
   ? process.argv[process.argv.indexOf("--session") + 1]
   : join(sessionDir, "history.jsonl");
-let messageCount = process.argv.includes("--session")
-  ? readFileSync(sessionFile, "utf8").trim().split("\n").length - 1
-  : 0;
+const retained = process.argv.includes("--session")
+  ? readFileSync(sessionFile, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+  : [];
+let messageCount = retained.filter((entry) => entry.type === "message").length;
+let settings = {
+  model: { provider: "fixture", id: "saved-model" },
+  thinkingLevel: "medium",
+};
+for (const entry of retained) {
+  if (entry.type === "model_change")
+    settings.model = { provider: entry.provider, id: entry.modelId };
+  if (entry.type === "thinking_level_change")
+    settings.thinkingLevel = entry.thinkingLevel;
+}
+const persistSetting = (entry) =>
+  appendFileSync(sessionFile, JSON.stringify(entry) + "\n");
 if (!process.argv.includes("--session"))
   writeFileSync(
     sessionFile,
@@ -95,6 +111,9 @@ for await (const line of createInterface({ input: process.stdin })) {
     command: request.type,
     id: request.id,
     text: request.message,
+    provider: request.provider,
+    modelId: request.modelId,
+    level: request.level,
     ...(request.images ? { images: request.images } : {}),
   });
   if (request.type === "get_state") {
@@ -103,10 +122,34 @@ for await (const line of createInterface({ input: process.stdin })) {
       sessionFile,
       isStreaming: false,
       messageCount,
-      model: { provider: "fixture", id: "saved-model" },
-      thinkingLevel: "medium",
+      model: settings.model,
+      thinkingLevel: settings.thinkingLevel,
       pendingMessageCount: 0,
     });
+  } else if (request.type === "get_available_thinking_levels") {
+    response(request, { levels: ["off", "low", "medium", "high"] });
+  } else if (request.type === "get_available_models") {
+    response(request, {
+      models: [
+        { provider: "fixture", id: "saved-model" },
+        { provider: "fixture", id: "next/model" },
+      ],
+    });
+  } else if (request.type === "set_model") {
+    settings.model = { provider: request.provider, id: request.modelId };
+    persistSetting({
+      type: "model_change",
+      provider: request.provider,
+      modelId: request.modelId,
+    });
+    response(request);
+  } else if (request.type === "set_thinking_level") {
+    settings.thinkingLevel = request.level;
+    persistSetting({
+      type: "thinking_level_change",
+      thinkingLevel: request.level,
+    });
+    response(request);
   } else if (request.type === "prompt") {
     if (request.message === "[reject]") {
       response(request, undefined, false);

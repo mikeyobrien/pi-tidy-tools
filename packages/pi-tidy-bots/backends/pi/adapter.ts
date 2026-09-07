@@ -45,7 +45,7 @@ export const PI_CAPABILITIES: CapabilityDescriptor = {
     steer: false,
   },
   interactions: { permissions: "none", questions: false },
-  configuration: { model: false, thinking: false, compact: false },
+  configuration: { model: true, thinking: true, compact: false },
   fleetTools: true,
 };
 export const PI_VERSION = "0.85.0";
@@ -187,6 +187,7 @@ export function startPiAdapter(): PluginRuntime {
   let nativeReference: string | undefined;
   let active: Turn | undefined;
   let preparing = false;
+  let settingsRevision = 0;
   let settling = false;
   let observationLost = false;
   let stopping = false;
@@ -251,6 +252,99 @@ export function startPiAdapter(): PluginRuntime {
       { text, revision: ++message.revision },
       { messageId: message.id, blockId: "body" }
     );
+  };
+  const stateOf = async () => {
+    const response = await native!.request<JsonObject>(
+      { type: "get_state" },
+      context.initialization.limits.inspectTimeoutMs
+    );
+    const state = response.data;
+    if (
+      !object(state) ||
+      `pi:${state.sessionId}` !== nativeReference ||
+      !Number.isSafeInteger(state.messageCount) ||
+      Number(state.messageCount) < 0
+    )
+      throw new Error("Unverified native session state");
+    piRuntimeSettings(state);
+    return state;
+  };
+  const retainSettings = async (state: JsonObject) => {
+    // Pi does not flush a fresh session until its first assistant message.
+    // There is no restorable history to claim for an untouched conversation.
+    if (state.messageCount === 0) return;
+    if (
+      !nonempty(state.sessionFile) ||
+      state.isStreaming !== false ||
+      state.pendingMessageCount !== 0
+    )
+      throw new Error("Native history not settled");
+    const history = await inspectPiHistory(
+      join(context.initialization.dataDir, "native-sessions"),
+      state.sessionFile,
+      String(state.sessionId),
+      context.initialization.workspace
+    );
+    await savePiCheckpoint(context.initialization.dataDir, {
+      version: 1,
+      bindingId: context.initialization.bindingId,
+      conversationId: conversationId!,
+      messageCount: Number(state.messageCount),
+      settings: piRuntimeSettings(state),
+      history,
+    });
+  };
+  const thinkingLevels = async (): Promise<string[]> => {
+    const response = await native!.request<JsonObject>(
+      { type: "get_available_thinking_levels" },
+      context.initialization.limits.inspectTimeoutMs
+    );
+    const levels = object(response.data) ? response.data.levels : undefined;
+    if (
+      !Array.isArray(levels) ||
+      levels.length < 1 ||
+      levels.length > 6 ||
+      !levels.every(
+        (level) =>
+          typeof level === "string" &&
+          ["off", "minimal", "low", "medium", "high", "xhigh"].includes(level)
+      ) ||
+      new Set(levels).size !== levels.length
+    )
+      throw new Error("Invalid native thinking levels");
+    return levels as string[];
+  };
+  const modelCatalog = async () => {
+    const response = await native!.request<JsonObject>(
+      { type: "get_available_models" },
+      context.initialization.limits.inspectTimeoutMs
+    );
+    if (
+      !object(response.data) ||
+      !Array.isArray(response.data.models) ||
+      response.data.models.length > 4096
+    )
+      throw new Error("Invalid native model catalog");
+    const catalog = response.data.models.map((model) => {
+      if (
+        !object(model) ||
+        !nonempty(model.provider) ||
+        !nonempty(model.id) ||
+        model.provider.length > 512 ||
+        model.id.length > 512 ||
+        model.provider.includes("\0") ||
+        model.id.includes("\0")
+      )
+        throw new Error("Invalid native model identity");
+      return {
+        model: `${model.provider}/${model.id}`,
+        provider: model.provider,
+        modelId: model.id,
+      };
+    });
+    if (new Set(catalog.map((model) => model.model)).size !== catalog.length)
+      throw new Error("Ambiguous native model identity");
+    return catalog;
   };
   const onEvent = (event: RpcEvent) => {
     if (stopping || observationLost) return;
@@ -381,20 +475,7 @@ export function startPiAdapter(): PluginRuntime {
             Number(state.messageCount) < 1
           )
             throw new Error("Native history not settled");
-          const history = await inspectPiHistory(
-            join(context.initialization.dataDir, "native-sessions"),
-            state.sessionFile,
-            String(state.sessionId),
-            context.initialization.workspace
-          );
-          await savePiCheckpoint(context.initialization.dataDir, {
-            version: 1,
-            bindingId: context.initialization.bindingId,
-            conversationId: conversationId!,
-            messageCount: Number(state.messageCount),
-            settings: piRuntimeSettings(state),
-            history,
-          });
+          await retainSettings(state);
           if (stopping || observationLost || active !== turn) return;
           emit("turn.terminal", {
             execution: turn.execution,
@@ -574,6 +655,142 @@ export function startPiAdapter(): PluginRuntime {
           nativeReference,
           continuity: checkpoint ? "verified" : "unverified",
         };
+      },
+      async "session.snapshot"(params) {
+        if (
+          !native?.alive ||
+          observationLost ||
+          stopping ||
+          preparing ||
+          params.conversationId !== conversationId
+        )
+          return {
+            disposition: "unknown",
+            observation: "reconciliation_required",
+          };
+        const revision = settingsRevision;
+        const models = await modelCatalog();
+        const levels = await thinkingLevels();
+        const state = await stateOf();
+        const settings = piRuntimeSettings(state);
+        if (
+          revision !== settingsRevision ||
+          preparing ||
+          observationLost ||
+          stopping
+        )
+          return {
+            disposition: "unknown",
+            observation: "reconciliation_required",
+          };
+        return {
+          disposition: "known",
+          observation: "complete",
+          nativeReference,
+          settings: {
+            model: `${settings.provider}/${settings.modelId}`,
+            thinking: settings.thinkingLevel,
+          },
+          models: models.map(({ model }) => ({ model })),
+          thinkingLevels: levels,
+          idle:
+            !active &&
+            !preparing &&
+            state.isStreaming === false &&
+            state.pendingMessageCount === 0,
+        };
+      },
+      async "session.configure"(params) {
+        if (
+          params.conversationId !== conversationId ||
+          (params.kind !== "model" && params.kind !== "thinking") ||
+          (params.kind === "model"
+            ? !nonempty(params.model)
+            : !nonempty(params.thinking))
+        )
+          return { disposition: "rejected", status: "failed" };
+        if (!native?.alive || !nativeReference || observationLost || stopping)
+          return { disposition: "unknown", status: "unknown" };
+        if (active || preparing)
+          return { disposition: "rejected", status: "failed" };
+        preparing = true;
+        settingsRevision++;
+        let entered = false;
+        try {
+          const before = await stateOf();
+          if (
+            before.isStreaming !== false ||
+            before.pendingMessageCount !== 0 ||
+            before.isCompacting === true
+          )
+            return { disposition: "rejected", status: "failed" };
+          const previous = piRuntimeSettings(before);
+          let command: JsonObject;
+          let expected = previous;
+          if (params.kind === "model") {
+            const model = (await modelCatalog()).find(
+              (model) => model.model === params.model
+            );
+            if (!model) return { disposition: "rejected", status: "failed" };
+            expected = {
+              ...previous,
+              provider: model.provider,
+              modelId: model.modelId,
+            };
+            command = {
+              type: "set_model",
+              provider: model.provider,
+              modelId: model.modelId,
+            };
+          } else {
+            if (!(await thinkingLevels()).includes(String(params.thinking)))
+              return { disposition: "rejected", status: "failed" };
+            expected = { ...previous, thinkingLevel: String(params.thinking) };
+            command = { type: "set_thinking_level", level: params.thinking };
+          }
+          if (stopping || context.signal.aborted)
+            return { disposition: "rejected", status: "failed" };
+          entered = true;
+          await native.request(
+            command,
+            context.initialization.limits.commandTimeoutMs
+          );
+          const after = await stateOf();
+          const settings = piRuntimeSettings(after);
+          // Model selection can legitimately clamp thinking to the new model's capabilities.
+          if (
+            settings.provider !== expected.provider ||
+            settings.modelId !== expected.modelId ||
+            (params.kind === "thinking" &&
+              settings.thinkingLevel !== expected.thinkingLevel) ||
+            after.messageCount !== before.messageCount ||
+            after.isStreaming !== false ||
+            after.pendingMessageCount !== 0 ||
+            after.isCompacting === true
+          )
+            throw new Error("Native settings readback mismatch");
+          await retainSettings(after);
+          if (stopping || observationLost)
+            return { disposition: "unknown", status: "unknown" };
+          return {
+            disposition: "accepted",
+            status: "applied",
+            settings: {
+              model: `${settings.provider}/${settings.modelId}`,
+              thinking: settings.thinkingLevel,
+            },
+          };
+        } catch {
+          if (entered) {
+            // A lost or rejected RPC response may follow a native settings write.
+            // Keep its reservation unknown and stop; never resend it automatically.
+            loseObservation();
+            return { disposition: "unknown", status: "unknown" };
+          }
+          return { disposition: "rejected", status: "failed" };
+        } finally {
+          preparing = false;
+        }
       },
       async "operation.submit"(params, ctx) {
         if (

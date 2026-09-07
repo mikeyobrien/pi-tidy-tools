@@ -1168,3 +1168,253 @@ test("Pi unsupported runtime metadata fails negotiation before any native execut
     await f.cleanup();
   }
 });
+
+test("Pi settings controls read back native state, dedupe and survive process replacement", async () => {
+  const f = await setup();
+  try {
+    const first = await f.start();
+    const opened = (await f.open(first)) as JsonObject;
+    const snapshot = () =>
+      first.request("session.snapshot", {
+        conversationId: "conversation",
+      }) as Promise<JsonObject>;
+    assert.deepEqual((await snapshot()).thinkingLevels, [
+      "off",
+      "low",
+      "medium",
+      "high",
+    ]);
+    assert.deepEqual((await snapshot()).settings, {
+      model: "fixture/saved-model",
+      thinking: "medium",
+    });
+    const thinking = {
+      operationId: "thinking-one",
+      payloadDigest: "thinking-one",
+      conversationId: "conversation",
+      kind: "thinking",
+      thinking: "high",
+    };
+    assert.equal(
+      ((await first.request("session.configure", thinking)) as JsonObject)
+        .status,
+      "applied"
+    );
+    await f.submit(first, "retain history");
+    await until(() => f.events.some((event) => event.type === "turn.terminal"));
+    const model = {
+      operationId: "model-one",
+      payloadDigest: "model-one",
+      conversationId: "conversation",
+      kind: "model",
+      model: "fixture/next/model",
+    };
+    const applied = await first.request("session.configure", model);
+    assert.deepEqual(applied, {
+      disposition: "accepted",
+      status: "applied",
+      settings: { model: "fixture/next/model", thinking: "high" },
+    });
+    assert.deepEqual(await first.request("session.configure", model), applied);
+    await assert.rejects(
+      first.request("session.configure", {
+        ...model,
+        model: "fixture/saved-model",
+      }),
+      { code: "payload_conflict" }
+    );
+    assert.deepEqual(
+      (await snapshot()).settings,
+      (applied as JsonObject).settings
+    );
+    await first.close();
+    const second = await f.start({}, 2);
+    await second.request("session.open", {
+      openId: "restore-settings",
+      payloadDigest: "restore-settings",
+      conversationId: "conversation",
+      mode: "load",
+      cwd: f.directory,
+      nativeReference: opened.nativeReference,
+    });
+    assert.deepEqual(
+      (
+        (await second.request("session.snapshot", {
+          conversationId: "conversation",
+        })) as JsonObject
+      ).settings,
+      (applied as JsonObject).settings
+    );
+    assert.deepEqual(await second.request("session.configure", model), applied);
+    const effects = await f.effects();
+    assert.equal(
+      effects.filter((effect) => effect.command === "set_model").length,
+      1
+    );
+    assert.equal(
+      effects.filter((effect) => effect.command === "set_thinking_level")
+        .length,
+      1
+    );
+    assert.equal(
+      effects.filter((effect) => effect.command === "prompt").length,
+      1
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("Pi settings reject invalid or busy changes before native mutation", async () => {
+  const f = await setup();
+  try {
+    const host = await f.start();
+    await f.open(host);
+    let index = 0;
+    const configure = (args: JsonObject) =>
+      host.request("session.configure", {
+        operationId: `invalid-${++index}`,
+        payloadDigest: `invalid-${index}`,
+        conversationId: "conversation",
+        ...args,
+      });
+    for (const args of [
+      { kind: "model", model: "not-a-model" },
+      { kind: "thinking", thinking: "yolo" },
+      { kind: "thinking", thinking: "xhigh" },
+      { kind: "thinking", thinking: ["high"] },
+      { kind: ["thinking"], thinking: "high" },
+      { kind: "model", model: "fixture/saved-model", conversationId: "other" },
+    ]) {
+      assert.deepEqual(await configure(args), {
+        disposition: "rejected",
+        status: "failed",
+      });
+    }
+    await f.submit(host, "[hold]");
+    assert.deepEqual(
+      await configure({ kind: "model", model: "fixture/next/model" }),
+      { disposition: "rejected", status: "failed" }
+    );
+    assert.equal(
+      (await f.effects()).filter((effect) =>
+        ["set_model", "set_thinking_level"].includes(String(effect.command))
+      ).length,
+      0
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("Pi lost configuration response cannot claim application or replay the mutation", async () => {
+  const f = await setup();
+  try {
+    const executable = join(f.directory, "native", "native.mjs");
+    const original = await readFile(executable, "utf8");
+    const before =
+      '    response(request);\n  } else if (request.type === "set_thinking_level")';
+    assert.ok(original.includes(before));
+    await writeFile(
+      executable,
+      original.replace(
+        before,
+        '    /* lose response after native write */\n  } else if (request.type === "set_thinking_level")'
+      )
+    );
+    const first = await f.start();
+    const opened = (await f.open(first)) as JsonObject;
+    await f.submit(first, "retain history");
+    await until(() => f.events.some((event) => event.type === "turn.terminal"));
+    const model = {
+      operationId: "lost-model",
+      payloadDigest: "lost-model",
+      conversationId: "conversation",
+      kind: "model",
+      model: "fixture/next/model",
+    };
+    const result = (await first
+      .request("session.configure", model)
+      .catch(() => ({ status: "unknown" }))) as JsonObject;
+    assert.notEqual(result.status, "applied");
+    await until(() =>
+      f.events.some((event) => event.type === "observation.gap")
+    );
+    await first.close();
+    const second = await f.start({}, 2);
+    const retained = (await second.request(
+      "session.configure",
+      model
+    )) as JsonObject;
+    assert.notEqual(retained.status, "applied");
+    await assert.rejects(
+      second.request("session.open", {
+        openId: "restore-lost",
+        payloadDigest: "restore-lost",
+        conversationId: "conversation",
+        mode: "load",
+        cwd: f.directory,
+        nativeReference: opened.nativeReference,
+      }),
+      { code: "observation_gap" }
+    );
+    assert.equal(
+      (await f.effects()).filter((effect) => effect.command === "set_model")
+        .length,
+      1
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("Pi configuration readback and checkpoint failures leave uncertainty", async () => {
+  for (const failure of ["readback", "checkpoint"]) {
+    const f = await setup();
+    try {
+      if (failure === "readback") {
+        const executable = join(f.directory, "native", "native.mjs");
+        const original = await readFile(executable, "utf8");
+        assert.ok(original.includes("settings.thinkingLevel = request.level;"));
+        await writeFile(
+          executable,
+          original.replace(
+            "settings.thinkingLevel = request.level;",
+            'settings.thinkingLevel = "off";'
+          )
+        );
+      }
+      const host = await f.start();
+      await f.open(host);
+      await f.submit(host, "retain history");
+      await until(() =>
+        f.events.some((event) => event.type === "turn.terminal")
+      );
+      if (failure === "checkpoint") {
+        await rm(join(f.dataDir, "pi-history.json"));
+        await mkdir(join(f.dataDir, "pi-history.json"));
+      }
+      const result = (await host
+        .request("session.configure", {
+          operationId: "uncertain-thinking",
+          payloadDigest: "uncertain-thinking",
+          conversationId: "conversation",
+          kind: "thinking",
+          thinking: "high",
+        })
+        .catch(() => ({ status: "unknown" }))) as JsonObject;
+      assert.notEqual(result.status, "applied");
+      await until(() =>
+        f.events.some((event) => event.type === "observation.gap")
+      );
+      assert.equal(
+        (await f.effects()).filter(
+          (effect) => effect.command === "set_thinking_level"
+        ).length,
+        1
+      );
+    } finally {
+      await f.cleanup();
+    }
+  }
+});

@@ -131,11 +131,54 @@ export async function inspectPiHistory(
   }
 }
 
+export interface PiRuntimeSettings {
+  provider: string;
+  modelId: string;
+  thinkingLevel: string;
+}
+
+/** Compare effective native settings, never the requested startup defaults. */
+export function piRuntimeSettings(state: unknown): PiRuntimeSettings {
+  const value = state as {
+    model?: { provider?: unknown; id?: unknown };
+    thinkingLevel?: unknown;
+  } | null;
+  const valid = (text: unknown): text is string =>
+    typeof text === "string" &&
+    text.length > 0 &&
+    text.length <= 512 &&
+    !text.includes("\0");
+  if (
+    !valid(value?.model?.provider) ||
+    !valid(value?.model?.id) ||
+    !valid(value?.thinkingLevel)
+  )
+    throw unavailable();
+  return {
+    provider: value.model.provider,
+    modelId: value.model.id,
+    thinkingLevel: value.thinkingLevel,
+  };
+}
+
+export function samePiSettings(
+  state: unknown,
+  expected: PiRuntimeSettings
+): boolean {
+  const actual = piRuntimeSettings(state);
+  return (
+    actual.provider === expected.provider &&
+    actual.modelId === expected.modelId &&
+    actual.thinkingLevel === expected.thinkingLevel
+  );
+}
+
 export interface PiHistoryCheckpoint {
   version: 1;
   bindingId: string;
   conversationId: string;
   messageCount: number;
+  settings: PiRuntimeSettings;
   history: PiHistoryIdentity;
 }
 
@@ -205,6 +248,17 @@ export async function loadPiCheckpoint(
       checkpoint.conversationId !== conversationId ||
       !Number.isSafeInteger(checkpoint.messageCount) ||
       checkpoint.messageCount < 1 ||
+      !checkpoint.settings ||
+      !samePiSettings(
+        {
+          model: {
+            provider: checkpoint.settings.provider,
+            id: checkpoint.settings.modelId,
+          },
+          thinkingLevel: checkpoint.settings.thinkingLevel,
+        },
+        checkpoint.settings
+      ) ||
       !checkpoint.history ||
       nativeReference !== `pi:${checkpoint.history.sessionId}`
     )

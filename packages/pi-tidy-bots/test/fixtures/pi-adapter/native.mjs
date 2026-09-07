@@ -103,6 +103,8 @@ for await (const line of createInterface({ input: process.stdin })) {
       sessionFile,
       isStreaming: false,
       messageCount,
+      model: { provider: "fixture", id: "saved-model" },
+      thinkingLevel: "medium",
       pendingMessageCount: 0,
     });
   } else if (request.type === "prompt") {

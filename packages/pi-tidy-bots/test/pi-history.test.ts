@@ -12,7 +12,11 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { inspectPiHistory } from "../backends/pi/history.ts";
+import {
+  inspectPiHistory,
+  savePiCheckpoint,
+  loadPiCheckpoint,
+} from "../backends/pi/history.ts";
 import { rpcSpawnArgs } from "../src/rpc.ts";
 
 test("Pi history retains an exact identity and rejects changed or incomplete history", async (t) => {
@@ -108,4 +112,48 @@ test("exact Pi launch selects only the verified file and rejects ambiguous resum
     rpcSpawnArgs({ ...options, sessionFile: "relative.jsonl" })
   );
   assert.throws(() => rpcSpawnArgs({ ...options, sessionFile: "/bad\0file" }));
+});
+
+test("Pi retained checkpoints require complete scoped runtime settings", async (t) => {
+  const dir = await realpath(
+    await mkdtemp(join(tmpdir(), "tidy-pi-settings-"))
+  );
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const sessions = join(dir, "native-sessions");
+  await mkdir(sessions);
+  const file = join(sessions, "history.jsonl");
+  await writeFile(
+    file,
+    JSON.stringify({ type: "session", version: 3, id: "one", cwd: dir }) + "\n"
+  );
+  const checkpoint = {
+    version: 1 as const,
+    bindingId: "binding",
+    conversationId: "conversation",
+    messageCount: 1,
+    settings: {
+      provider: "fixture",
+      modelId: "saved-model",
+      thinkingLevel: "medium",
+    },
+    history: await inspectPiHistory(sessions, file, "one", dir),
+  };
+  await savePiCheckpoint(dir, checkpoint);
+  const load = () =>
+    loadPiCheckpoint(dir, "binding", "conversation", "pi:one", dir);
+  assert.deepEqual(await load(), checkpoint);
+  for (const settings of [
+    undefined,
+    null,
+    {},
+    { ...checkpoint.settings, provider: "" },
+    { ...checkpoint.settings, modelId: null },
+    { ...checkpoint.settings, thinkingLevel: "" },
+  ]) {
+    await writeFile(
+      join(dir, "pi-history.json"),
+      JSON.stringify({ ...checkpoint, settings })
+    );
+    await assert.rejects(load(), { code: "continuity_unverified" });
+  }
 });

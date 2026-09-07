@@ -886,9 +886,14 @@ test("Pi cold load restores exact checkpoint across process replacement without 
       await readFile(join(f.dataDir, "pi-history.json"), "utf8")
     );
     assert.equal(checkpoint.messageCount, 1);
+    assert.deepEqual(checkpoint.settings, {
+      provider: "fixture",
+      modelId: "saved-model",
+      thinkingLevel: "medium",
+    });
     assert.equal(checkpoint.conversationId, "conversation");
     await first.close();
-    const second = await f.start({}, 2);
+    const second = await f.start({ model: "startup-override" }, 2);
     const load = {
       openId: "load-two",
       payloadDigest: "load-two",
@@ -910,6 +915,7 @@ test("Pi cold load restores exact checkpoint across process replacement without 
     assert.equal(launches.length, 2);
     const argv = launches[1].argv as string[];
     assert.equal(argv.includes("--continue"), false);
+    assert.equal(argv.includes("--model"), false);
     assert.equal(argv[argv.indexOf("--session") + 1], checkpoint.history.file);
     await f.submit(second, "after restart", "operation-two");
     await until(() =>
@@ -1023,6 +1029,50 @@ test("Pi load refuses a native message-count mismatch without sending another pr
     );
   } finally {
     await f.cleanup();
+  }
+});
+
+test("Pi cold load rejects changed effective model or thinking level", async () => {
+  for (const [before, after] of [
+    ['id: "saved-model"', 'id: "other-model"'],
+    ['thinkingLevel: "medium"', 'thinkingLevel: "low"'],
+    ['provider: "fixture"', 'provider: "other"'],
+    ['thinkingLevel: "medium"', "thinkingLevel: undefined"],
+    ['id: "saved-model"', "id: undefined"],
+  ]) {
+    const f = await setup();
+    try {
+      const first = await f.start();
+      const opened = (await f.open(first)) as JsonObject;
+      await f.submit(first, "before restart");
+      await until(() =>
+        f.events.some((event) => event.type === "turn.terminal")
+      );
+      await first.close();
+      const executable = join(f.directory, "native", "native.mjs");
+      const original = await readFile(executable, "utf8");
+      assert.ok(original.includes(before));
+      await writeFile(executable, original.replace(before, after));
+      const second = await f.start({}, 2);
+      await assert.rejects(
+        second.request("session.open", {
+          openId: "load-two",
+          payloadDigest: "load-two",
+          conversationId: "conversation",
+          mode: "load",
+          cwd: f.directory,
+          nativeReference: opened.nativeReference,
+        }),
+        { code: "continuity_unverified" }
+      );
+      assert.equal(
+        (await f.effects()).filter((effect) => effect.command === "prompt")
+          .length,
+        1
+      );
+    } finally {
+      await f.cleanup();
+    }
   }
 });
 

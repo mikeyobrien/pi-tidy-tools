@@ -5,6 +5,8 @@ import type { Duplex } from "node:stream";
 import { PiFleetBridge } from "./fleet-bridge.ts";
 import {
   inspectPiHistory,
+  piRuntimeSettings,
+  samePiSettings,
   loadPiCheckpoint,
   savePiCheckpoint,
 } from "./history.ts";
@@ -390,6 +392,7 @@ export function startPiAdapter(): PluginRuntime {
             bindingId: context.initialization.bindingId,
             conversationId: conversationId!,
             messageCount: Number(state.messageCount),
+            settings: piRuntimeSettings(state),
             history,
           });
           if (stopping || observationLost || active !== turn) return;
@@ -480,7 +483,7 @@ export function startPiAdapter(): PluginRuntime {
           resume: false,
           sessionFile: checkpoint?.history.file,
           approve: false,
-          model: configuration.model,
+          model: checkpoint ? undefined : configuration.model,
           noBuiltinTools: true,
           noExtensions: true,
           noSkills: true,
@@ -532,7 +535,8 @@ export function startPiAdapter(): PluginRuntime {
           response.data.pendingMessageCount !== 0 ||
           response.data.messageCount !== (checkpoint?.messageCount ?? 0) ||
           (checkpoint &&
-            (response.data.sessionId !== checkpoint.history.sessionId ||
+            (!samePiSettings(response.data, checkpoint.settings) ||
+              response.data.sessionId !== checkpoint.history.sessionId ||
               response.data.sessionFile !== checkpoint.history.file))
         )
           throw new ProtocolError(

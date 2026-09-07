@@ -736,18 +736,23 @@ test("compatible config rollback retains current journal and plugin checkpoint",
     const submitCountBefore = callsBefore.filter(
       (call) => call.method === "operation.submit"
     ).length;
+    assert.equal(submitCountBefore, 1);
 
     // A bot title is a compatible presentation change and is outside the
     // binding policy, so the existing journal/binding remains usable.
     await writeFile(manifestPath, `${f.manifest}title = "candidate"\n`);
     handle = await f.start();
-    assert.equal((await f.request(handle, "/api/fleet")).status, 200);
+    const candidateFleet = await f.request(handle, "/api/fleet");
+    assert.equal(candidateFleet.status, 200);
+    assert.equal(candidateFleet.body.bots[0].title, "candidate");
     await handle.stop();
 
     // Roll back only the manifest. The current journal and plugin checkpoint
     // stay in place; no older snapshot is restored over them.
     await writeFile(manifestPath, originalManifest);
     handle = await f.start();
+    const restoredFleet = await f.request(handle, "/api/fleet");
+    assert.equal(restoredFleet.body.bots[0].title, "");
     const unknown = await f.inspect(handle, "rollback-unknown");
     const queued = await f.inspect(handle, "rollback-queued");
     assert.equal(unknown.delivery, "unknown");
@@ -759,8 +764,11 @@ test("compatible config rollback retains current journal and plugin checkpoint",
       callsAfter.filter((call) => call.method === "operation.submit").length,
       submitCountBefore
     );
-    assert.ok(
-      (await readFile(checkpointPath)).length >= checkpointBefore.length
+    const checkpointAfter = await readFile(checkpointPath);
+    assert.ok(checkpointAfter.length >= checkpointBefore.length);
+    assert.deepEqual(
+      checkpointAfter.subarray(0, checkpointBefore.length),
+      checkpointBefore
     );
   } finally {
     await f.cleanup();

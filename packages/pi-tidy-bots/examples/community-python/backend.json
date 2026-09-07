@@ -1,0 +1,19 @@
+{
+  "manifestVersion": 1,
+  "id": "org.example.tidy-community-python",
+  "version": "1.0.0",
+  "protocol": { "major": 1, "minMinor": 0, "maxMinor": 0 },
+  "entrypoint": { "path": "plugin", "args": [] },
+  "configSchema": "config.schema.json",
+  "runtime": {
+    "name": "community-python-example",
+    "testedVersion": "1.0.0",
+    "transport": "stdio"
+  },
+  "requestedAccess": {
+    "workspace": "none",
+    "nativeProfile": false,
+    "network": false,
+    "gatewayTools": []
+  }
+}

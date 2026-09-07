@@ -17,6 +17,7 @@ import {
 } from "./config.ts";
 import { DEFAULT_COMPACT_FALLBACK_MODEL } from "./daemon.ts";
 import { paginateTranscript } from "./transcripts.ts";
+import { evaluateFleetHealth } from "./health-probe.ts";
 import { versionPayload } from "./contract.ts";
 import type { BotRuntime } from "./daemon.ts";
 
@@ -465,6 +466,25 @@ export function buildHttpServer(deps: ServerDeps): Hono {
       };
     });
     return context.json({ dir: deps.fleet.dir, bots });
+  });
+
+  app.get("/api/health", (context) => {
+    const verdict = evaluateFleetHealth(
+      [...deps.runtimes.values()].map((runtime) => ({
+        name: runtime.config.name,
+        transcript: runtime.transcript,
+        context: {
+          inputTokens: runtime.inputTokens ?? null,
+          contextWindow: runtime.contextWindow ?? null,
+          overWindow:
+            runtime.inputTokens !== undefined &&
+            runtime.contextWindow !== undefined &&
+            runtime.inputTokens > runtime.contextWindow,
+          fill: runtime.fill ?? null,
+        },
+      }))
+    );
+    return context.json(verdict, verdict.ok ? 200 : 503);
   });
 
   app.get("/api/bots/:name/context", (context) => {

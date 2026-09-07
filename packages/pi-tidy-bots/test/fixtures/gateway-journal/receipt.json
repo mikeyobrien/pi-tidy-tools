@@ -1,0 +1,12 @@
+{
+  "fleetId": "fleet-example-1",
+  "botId": "bot-researcher-1",
+  "conversationId": "conv-researcher-1",
+  "bindingId": "binding-researcher-1",
+  "bindingRevision": "binding-researcher-1:cap-3",
+  "operationId": "op-example-42",
+  "userEntryId": "entry-example-42",
+  "delivery": "queued",
+  "execution": "not_started",
+  "observation": "complete"
+}

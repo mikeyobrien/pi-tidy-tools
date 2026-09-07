@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { binEntry, daemonRespawnArgs, restartSpawnArgs } from "../src/cli.ts";
 import { describePortHolder } from "../src/cli-core.ts";
 
@@ -8,6 +9,16 @@ test("binEntry points at the shipped bin shim (cwd-independent runner)", () => {
   const entry = binEntry();
   assert.match(entry, /bin\/pi-tidy-bots\.mjs$/);
   assert.equal(existsSync(entry), true, "bin shim ships with the package");
+});
+
+test("plain Node bin preserves leading global version/json flags", () => {
+  const result = JSON.parse(
+    execFileSync(process.execPath, [binEntry(), "--version", "--json"], {
+      encoding: "utf8",
+    })
+  );
+  assert.equal(result.name, "@mobrienv/pi-tidy-bots");
+  assert.equal(typeof result.version, "string");
 });
 
 test("daemonRespawnArgs: bin entry, no --daemon/--json, never --import tsx", () => {

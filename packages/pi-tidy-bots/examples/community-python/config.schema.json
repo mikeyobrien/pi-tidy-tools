@@ -1,0 +1,10 @@
+{
+  "type": "object",
+  "properties": {
+    "mode": {
+      "type": "string",
+      "enum": ["normal", "cancel-ack", "malformed-event", "crash-submit"]
+    }
+  },
+  "additionalProperties": false
+}

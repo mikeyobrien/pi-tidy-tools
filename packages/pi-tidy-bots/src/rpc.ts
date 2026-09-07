@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { isAbsolute } from "node:path";
 
 export interface RpcSpawnOptions {
   name: string;
@@ -8,6 +9,8 @@ export interface RpcSpawnOptions {
   cwd: string;
   sessionDir: string;
   resume: boolean;
+  /** Exact previously verified history file; never combine with latest-session resume. */
+  sessionFile?: string;
   model?: string;
   approve: boolean;
   /** Issue 92: trust the fleet-owned bot dir's project-local settings so
@@ -27,6 +30,16 @@ export interface RpcSpawnOptions {
   noSkills?: boolean;
   /** Issue 132: extra child env (image provider id, fleet dir for outputs). */
   env?: Record<string, string>;
+  /** Exact environment for an owned gateway child. When supplied, neither
+   * the parent environment nor legacy daemon credentials are injected.
+   * The caller owns HOME/profile/provider configuration and extension scope. */
+  isolatedEnv?: Record<string, string>;
+  /** Gateway-native transport limits; legacy transport behavior is unchanged. */
+  nativeProtocol?: {
+    maxFrameBytes: number;
+    onError: () => void;
+    privateControl?: boolean;
+  };
   daemonUrl: string;
   childSecret: string;
   onEvent: (event: RpcEvent) => void;
@@ -44,6 +57,7 @@ export function rpcSpawnArgs(
     | "name"
     | "sessionDir"
     | "resume"
+    | "sessionFile"
     | "model"
     | "approve"
     | "trustProject"
@@ -55,6 +69,15 @@ export function rpcSpawnArgs(
     | "noSkills"
   >
 ): string[] {
+  if (
+    options.sessionFile !== undefined &&
+    (!isAbsolute(options.sessionFile) ||
+      options.sessionFile.includes("\0") ||
+      options.resume)
+  )
+    throw new Error(
+      "Exact native session requires an absolute file and no latest-session resume"
+    );
   return [
     "--mode",
     "rpc",
@@ -63,6 +86,7 @@ export function rpcSpawnArgs(
     "--session-dir",
     options.sessionDir,
     ...(options.resume ? ["--continue"] : []),
+    ...(options.sessionFile ? ["--session", options.sessionFile] : []),
     ...(options.model ? ["--model", options.model] : []),
     ...(options.approve ? ["--approve"] : []),
     ...(options.trustProject ? ["--approve"] : []),
@@ -158,6 +182,9 @@ export type RpcEvent =
       options?: string[];
       message?: string;
       placeholder?: string;
+      prefill?: string;
+      timeoutMs?: number;
+      invalidTimeout?: boolean;
     }
   | { kind: "event"; raw: Record<string, unknown> };
 
@@ -290,6 +317,19 @@ const toolResultText = (result: unknown): string => {
  * a wedged-alive child can hit this, and the timeout means UNKNOWN. */
 export const PROMPT_CLASS_TIMEOUT_MS = 10 * 60_000;
 
+/** Correlated native refusal, distinct from transport loss or a timeout. */
+export class RpcCommandRejected extends Error {
+  readonly remoteError?: string;
+  constructor(remoteError?: string) {
+    super(
+      remoteError
+        ? `Native RPC command was rejected: ${remoteError}`
+        : "Native RPC command was rejected"
+    );
+    this.remoteError = remoteError;
+  }
+}
+
 export class RpcSession {
   readonly process: ChildProcess;
   private buffer = "";
@@ -311,8 +351,28 @@ export class RpcSession {
   private constructor(options: RpcSpawnOptions, process_: ChildProcess) {
     this.options = options;
     this.process = process_;
-    this.process.stdout?.setEncoding("utf8");
-    this.process.stdout?.on("data", (chunk: string) => this.ingest(chunk));
+    if (options.nativeProtocol) {
+      const decoder = new TextDecoder("utf-8", { fatal: true });
+      this.process.stdout?.on("data", (chunk: Buffer) => {
+        try {
+          if (!this.closed)
+            this.ingest(decoder.decode(chunk, { stream: true }));
+        } catch {
+          this.protocolFailed();
+        }
+      });
+      this.process.stdout?.on("end", () => {
+        try {
+          decoder.decode();
+          if (this.buffer.length) this.protocolFailed();
+        } catch {
+          this.protocolFailed();
+        }
+      });
+    } else {
+      this.process.stdout?.setEncoding("utf8");
+      this.process.stdout?.on("data", (chunk: string) => this.ingest(chunk));
+    }
     this.process.stderr?.setEncoding("utf8");
     this.process.stderr?.on("data", (chunk: string) => {
       for (const line of chunk.split("\n")) {
@@ -348,18 +408,50 @@ export class RpcSession {
   }
 
   static spawn(options: RpcSpawnOptions): RpcSession {
+    if (
+      options.nativeProtocol?.privateControl &&
+      options.isolatedEnv === undefined
+    )
+      throw new Error(
+        "Private native control requires an isolated owned child"
+      );
+    if (
+      options.nativeProtocol &&
+      (!Number.isSafeInteger(options.nativeProtocol.maxFrameBytes) ||
+        options.nativeProtocol.maxFrameBytes < 128)
+    )
+      throw new Error("Invalid native RPC frame limit");
+    if (options.isolatedEnv !== undefined) {
+      if (options.env !== undefined)
+        throw new Error(
+          "isolatedEnv cannot be combined with inherited env overrides"
+        );
+      if (
+        !options.piBin ||
+        !isAbsolute(options.piBin) ||
+        !isAbsolute(options.cwd) ||
+        !isAbsolute(options.sessionDir)
+      )
+        throw new Error(
+          "isolated RPC requires absolute executable, workspace and session paths"
+        );
+    }
     const args = rpcSpawnArgs(options);
     const child = spawn(options.piBin ?? "pi", args, {
       cwd: options.cwd,
       env: {
-        ...process.env,
-        PI_TIDY_BOTS_CHILD: "1",
-        PI_TIDY_BOTS_NAME: options.name,
-        PI_TIDY_BOTS_DAEMON_URL: options.daemonUrl,
-        PI_TIDY_BOTS_CHILD_SECRET: options.childSecret,
-        ...(options.env ?? {}),
+        ...(options.isolatedEnv ?? {
+          ...process.env,
+          PI_TIDY_BOTS_CHILD: "1",
+          PI_TIDY_BOTS_NAME: options.name,
+          PI_TIDY_BOTS_DAEMON_URL: options.daemonUrl,
+          PI_TIDY_BOTS_CHILD_SECRET: options.childSecret,
+          ...(options.env ?? {}),
+        }),
       },
-      stdio: ["pipe", "pipe", "pipe"],
+      stdio: options.nativeProtocol?.privateControl
+        ? ["pipe", "pipe", "pipe", "pipe"]
+        : ["pipe", "pipe", "pipe"],
     });
     return new RpcSession(options, child);
   }
@@ -379,7 +471,16 @@ export class RpcSession {
 
   send(payload: Record<string, unknown>): void {
     if (!this.alive) throw new Error("rpc child is not running");
-    this.process.stdin?.write(`${JSON.stringify(payload)}\n`);
+    const frame = `${JSON.stringify(payload)}\n`;
+    const limit = this.options.nativeProtocol?.maxFrameBytes;
+    if (
+      limit &&
+      (Buffer.byteLength(frame) > limit ||
+        (this.process.stdin?.writableLength ?? 0) + Buffer.byteLength(frame) >
+          limit * 2)
+    )
+      throw new Error("Native RPC output limit exceeded");
+    this.process.stdin?.write(frame);
   }
 
   request<T = any>(
@@ -390,6 +491,10 @@ export class RpcSession {
     return new Promise<T>((resolve, reject) => {
       if (!this.alive) {
         reject(new Error("rpc child is not running"));
+        return;
+      }
+      if (this.options.nativeProtocol && this.pending.size >= 256) {
+        reject(new Error("Native RPC pending request limit exceeded"));
         return;
       }
       const id = randomUUID();
@@ -411,7 +516,18 @@ export class RpcSession {
           reject(error);
         },
       });
-      this.send({ ...payload, id });
+      try {
+        this.send({ ...payload, id });
+      } catch (error) {
+        this.pending
+          .get(id)!
+          .reject(
+            error instanceof Error
+              ? error
+              : new Error("Native RPC write failed")
+          );
+        this.pending.delete(id);
+      }
     });
   }
 
@@ -488,10 +604,30 @@ export class RpcSession {
     let index = this.buffer.indexOf("\n");
     while (index !== -1) {
       const line = this.buffer.slice(0, index).replace(/\r$/, "");
+      if (
+        this.options.nativeProtocol &&
+        Buffer.byteLength(line) + 1 > this.options.nativeProtocol.maxFrameBytes
+      )
+        throw new Error("Native RPC frame limit exceeded");
       this.buffer = this.buffer.slice(index + 1);
       if (line.trim().length > 0) this.handleLine(line);
       index = this.buffer.indexOf("\n");
     }
+    if (
+      this.options.nativeProtocol &&
+      Buffer.byteLength(this.buffer) > this.options.nativeProtocol.maxFrameBytes
+    )
+      throw new Error("Native RPC frame limit exceeded");
+  }
+
+  private protocolFailed(): void {
+    if (this.closed) return;
+    this.stop();
+    this.closed = true;
+    for (const pending of this.pending.values())
+      pending.reject(new Error("Native RPC observation lost"));
+    this.pending.clear();
+    this.options.nativeProtocol?.onError();
   }
 
   private handleLine(line: string): void {
@@ -500,18 +636,39 @@ export class RpcSession {
     try {
       parsed = JSON.parse(line) as Record<string, unknown>;
     } catch {
+      if (this.options.nativeProtocol)
+        throw new Error("Invalid native RPC JSON");
       return;
     }
+    if (
+      this.options.nativeProtocol &&
+      (!parsed ||
+        typeof parsed !== "object" ||
+        Array.isArray(parsed) ||
+        typeof parsed.type !== "string")
+    )
+      throw new Error("Invalid native RPC frame");
     const type = String(parsed.type ?? "");
 
     if (type === "response") {
+      if (
+        this.options.nativeProtocol &&
+        (typeof parsed.id !== "string" || typeof parsed.success !== "boolean")
+      )
+        throw new Error("Invalid native RPC response");
       const id = typeof parsed.id === "string" ? parsed.id : undefined;
       if (id) {
         const pending = this.pending.get(id);
         if (pending) {
           this.pending.delete(id);
           if (parsed.success === false) {
-            pending.reject(new Error(`rpc command failed: ${line}`));
+            const remoteError =
+              typeof parsed.error === "string" ? parsed.error : undefined;
+            pending.reject(
+              this.options.nativeProtocol
+                ? new RpcCommandRejected(remoteError)
+                : new Error(`rpc command failed: ${line}`)
+            );
           } else {
             pending.resolve(parsed);
           }
@@ -649,6 +806,19 @@ export class RpcSession {
               typeof parsed.placeholder === "string"
                 ? parsed.placeholder
                 : undefined,
+            prefill:
+              typeof parsed.prefill === "string" ? parsed.prefill : undefined,
+            timeoutMs:
+              Number.isSafeInteger(parsed.timeout) &&
+              Number(parsed.timeout) > 0 &&
+              Number(parsed.timeout) <= 24 * 60 * 60 * 1000
+                ? Number(parsed.timeout)
+                : undefined,
+            invalidTimeout:
+              parsed.timeout !== undefined &&
+              (!Number.isSafeInteger(parsed.timeout) ||
+                Number(parsed.timeout) < 0 ||
+                Number(parsed.timeout) > 24 * 60 * 60 * 1000),
           });
         }
         return;

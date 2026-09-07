@@ -1,0 +1,58 @@
+{
+  "baseline": "d6be0d4d3a975040fca7bfaf0710238b7607d7bb",
+  "entry": "bin/pi-tidy-bots.mjs -> cli.main -> startFleet -> daemon local HTTP builder and event reducer",
+  "normalization": "Only clock/random identities are relational; order, full text, public statuses, canonical IDs and native correlation are asserted.",
+  "auth": {
+    "anonymous": { "status": 401, "body": { "error": "unauthorized" } },
+    "wrongBearer": { "status": 401, "body": { "error": "unauthorized" } },
+    "wsAnonymousStatus": 401
+  },
+  "admission": {
+    "direct": { "status": 200, "body": { "accepted": true } },
+    "busyFollowUp": { "status": 200, "body": { "accepted": true } },
+    "offline": { "status": 202, "body": { "accepted": true, "queued": true } },
+    "unknown": { "status": 202, "body": { "accepted": true, "unknown": true } },
+    "duplicate": { "status": 409, "body": { "error": "duplicate" } }
+  },
+  "stream": {
+    "distinctSnapshots": ["Narration A", "Narration ANarration B"],
+    "canonicalText": "Narration ANarration B",
+    "partShapes": ["text:Narration A", "tool:ok", "text:Narration B"],
+    "settlementOrder": ["append", "bubble:final"]
+  },
+  "question": {
+    "accepted": { "status": 200, "body": { "accepted": true } },
+    "alreadyAnswered": {
+      "status": 404,
+      "body": { "error": "no such question" }
+    },
+    "nativeResponse": {
+      "type": "extension_ui_response",
+      "id": "question",
+      "value": "Evening"
+    },
+    "resolution": { "id": "question", "value": "Evening", "auto": false },
+    "crashResolution": {
+      "id": "question-crash",
+      "value": "cancelled",
+      "auto": true
+    }
+  },
+  "compactionRefusal": {
+    "status": 200,
+    "body": { "accepted": true, "rerouted": "compact", "compacted": false }
+  },
+  "compactionAlreadyDone": {
+    "status": 200,
+    "body": { "accepted": true, "rerouted": "compact", "compacted": true }
+  },
+  "unsafeLegacyGaps": [
+    "A 202 unknown response has no durable operation receipt or inspection route; do not replay it automatically.",
+    "clientMessageId duplicate rejection is process-local, not restart-safe idempotency.",
+    "Question responses have no durable decision receipt; accepted records a local write, not a proven native effect.",
+    "HTTP 200 for compaction can mean compacted=false; acceptance is not completion.",
+    "Pending JSONL persistence is best-effort; successful queue tracing is not a crash-durability certification.",
+    "At baseline foreground SIGTERM exited before handle.stop and left a fresh lock; the real-bin regression now requires cleanup before exit.",
+    "Legacy --port 0 passes port 0 to native reverse calls; this baseline handoff uses an OS-selected explicit spare port."
+  ]
+}

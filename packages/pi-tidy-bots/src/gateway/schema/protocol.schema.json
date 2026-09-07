@@ -1,0 +1,128 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://tidy.invalid/backend-protocol/v1/protocol.schema.json",
+  "title": "Tidy private stdio JSON-RPC 2.0 frame (LF and byte limits enforced by transport)",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "minLength": 1
+        },
+        "params": {
+          "type": "object"
+        }
+      },
+      "required": ["jsonrpc", "method"],
+      "additionalProperties": true,
+      "not": {
+        "anyOf": [
+          {
+            "required": ["result"],
+            "properties": {
+              "result": {}
+            }
+          },
+          {
+            "required": ["error"],
+            "properties": {
+              "error": {}
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "object",
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "type": "string"
+        },
+        "result": {}
+      },
+      "required": ["jsonrpc", "id", "result"],
+      "additionalProperties": true,
+      "not": {
+        "anyOf": [
+          {
+            "required": ["method"],
+            "properties": {
+              "method": {}
+            }
+          },
+          {
+            "required": ["params"],
+            "properties": {
+              "params": {}
+            }
+          },
+          {
+            "required": ["error"],
+            "properties": {
+              "error": {}
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "object",
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "type": "string"
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "integer"
+            },
+            "message": {
+              "type": "string"
+            },
+            "data": {}
+          },
+          "required": ["code", "message"],
+          "additionalProperties": true
+        }
+      },
+      "required": ["jsonrpc", "id", "error"],
+      "additionalProperties": true,
+      "not": {
+        "anyOf": [
+          {
+            "required": ["method"],
+            "properties": {
+              "method": {}
+            }
+          },
+          {
+            "required": ["params"],
+            "properties": {
+              "params": {}
+            }
+          },
+          {
+            "required": ["result"],
+            "properties": {
+              "result": {}
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -15,6 +15,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { TurnPartsAccumulator } from "./turnparts.ts";
 import { stripActionMarkers } from "./actions.ts";
+import { reconcileDelivering } from "./delivering.ts";
 import type { BotRuntime, TranscriptEntry, UiRequestView } from "./daemon.ts";
 import type { PendingStore } from "./pending.ts";
 import type { BotConfig, ToolOutputMode } from "./config.ts";
@@ -117,10 +118,17 @@ export function createRpcEventHandler(
             const delivered = runtime.transcript.find(
               (candidate) => candidate.id === head.id
             );
-            if (delivered) {
+            if (delivered?.delivering) {
               delivered.delivering = false;
               ctx.emit({ type: "append", bot: botName, entry: delivered });
             }
+          }
+          for (const leftover of reconcileDelivering(runtime.transcript, {
+            pendingIds: ctx.pendingStore.load(botName).map((m) => m.id),
+            activeDeliveryId: runtime.activeDeliveryId,
+            streaming: runtime.session?.streaming === true,
+          })) {
+            ctx.emit({ type: "append", bot: botName, entry: leftover });
           }
           ctx.emitRoster();
         }
@@ -453,6 +461,14 @@ export function createRpcEventHandler(
         void ctx
           .maybeCompact(runtime, forceNext ? { force: true } : {})
           .catch(() => {});
+        for (const leftover of reconcileDelivering(runtime.transcript, {
+          pendingIds: ctx.pendingStore.load(botName).map((m) => m.id),
+          activeDeliveryId: runtime.activeDeliveryId,
+          streaming: runtime.session?.streaming === true,
+          settled: true,
+        })) {
+          ctx.emit({ type: "append", bot: botName, entry: leftover });
+        }
         return;
       }
       case "ui_request": {

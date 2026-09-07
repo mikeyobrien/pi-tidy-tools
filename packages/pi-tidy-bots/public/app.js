@@ -221,7 +221,9 @@ function transcriptEl(entry) {
       if (!image || typeof image.path !== "string") continue;
       const file = image.path.split("/").pop() ?? "";
       const joiner = state.token ? "&" : "";
-      const auth = state.token ? `?token=${encodeURIComponent(state.token)}` : "";
+      const auth = state.token
+        ? `?token=${encodeURIComponent(state.token)}`
+        : "";
       void joiner;
       const img = el("img", "entry-image");
       img.src = `/api/images/${encodeURIComponent(entry.bot)}/${encodeURIComponent(file)}${auth}`;

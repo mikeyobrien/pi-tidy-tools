@@ -53,6 +53,23 @@ export function classifyFailure(message: string): Reason {
   return "delivery_failed";
 }
 
+/**
+ * Issue 79: pi compact refusals are terminal no-ops, not delivery failures.
+ * classifyFailure("Already compacted") still falls through to delivery_failed
+ * — that misclass is what retried at every settled boundary (118+ spam).
+ * Compact paths MUST consult this first.
+ */
+export type CompactRefusal = "already_compacted" | "nothing_to_compact";
+
+export function classifyCompactRefusal(
+  message: string
+): CompactRefusal | undefined {
+  const lowered = message.toLowerCase();
+  if (lowered.includes("already compacted")) return "already_compacted";
+  if (lowered.includes("nothing to compact")) return "nothing_to_compact";
+  return undefined;
+}
+
 export function isRetryable(reason: string): boolean {
   return (RETRYABLE as string[]).includes(reason);
 }

@@ -103,11 +103,7 @@ test("torn journal line salvages good rows; rewrite keeps them (issue 143)", () 
     writeFileSync(file, lines.join("\n"));
 
     const salvaged = store.load("aa");
-    assert.equal(
-      salvaged.length,
-      2,
-      "good rows survive the torn line"
-    );
+    assert.equal(salvaged.length, 2, "good rows survive the torn line");
     assert.deepEqual(
       salvaged.map((message) => message.id),
       ["m1", "m3"],
@@ -124,7 +120,9 @@ test("torn journal line salvages good rows; rewrite keeps them (issue 143)", () 
     });
     assert.equal(store.load("aa").length, 3);
     const onDisk = readFileSync(file, "utf8");
-    assert.ok(onDisk.includes("m1") && onDisk.includes("m3") && onDisk.includes("m4"));
+    assert.ok(
+      onDisk.includes("m1") && onDisk.includes("m3") && onDisk.includes("m4")
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

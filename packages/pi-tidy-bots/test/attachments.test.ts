@@ -12,10 +12,8 @@ import { join } from "node:path";
 // delivered to the model. Clients (Flutter) render the file chip from the
 // record. Image attachments still ride the child prompt as before.
 
-const runner = new URL(
-  "./fixtures/rpc/streaming-pi.mjs",
-  import.meta.url
-).pathname;
+const runner = new URL("./fixtures/rpc/streaming-pi.mjs", import.meta.url)
+  .pathname;
 
 async function waitFor(
   probe: () => Promise<boolean> | boolean,
@@ -291,9 +289,7 @@ test("video message journals a file chip on the entry (issue 110)", async () => 
 
     const entries = async () =>
       (
-        (await (
-          await fetch(`${base}/api/bots/aa/transcript`)
-        ).json()) as {
+        (await (await fetch(`${base}/api/bots/aa/transcript`)).json()) as {
           transcript: {
             role: string;
             text: string;

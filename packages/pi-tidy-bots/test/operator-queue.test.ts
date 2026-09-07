@@ -16,10 +16,8 @@ import { createOperatorQueueStore } from "../src/operator-queue.ts";
 // restart-safe journal. GET {pinged, queued, counts}; enqueue promotes when
 // idle; clear promotes exactly one; the invariant holds on every write.
 
-const runner = new URL(
-  "./fixtures/rpc/streaming-pi.mjs",
-  import.meta.url
-).pathname;
+const runner = new URL("./fixtures/rpc/streaming-pi.mjs", import.meta.url)
+  .pathname;
 
 async function waitFor(
   probe: () => Promise<boolean> | boolean,
@@ -36,7 +34,10 @@ async function waitFor(
 function queueFixture(dir: string) {
   mkdirSync(join(dir, "bots", "aa"), { recursive: true });
   writeFileSync(join(dir, "bots", "aa", "AGENTS.md"), "# aa\n");
-  writeFileSync(join(dir, "bots.toml"), `[[bot]]\nname = "aa"\ndir = "bots/aa"\n`);
+  writeFileSync(
+    join(dir, "bots.toml"),
+    `[[bot]]\nname = "aa"\ndir = "bots/aa"\n`
+  );
 }
 
 test("store: one-at-a-time invariant across enqueue/clear/replay (issue 159)", () => {
@@ -118,7 +119,9 @@ test(
       });
       handles.push(handle);
       const base = `http://127.0.0.1:${handle.port}`;
-      await waitFor(async () => (await (await fetch(`${base}/api/fleet?token=sekrit`)).ok));
+      await waitFor(
+        async () => await (await fetch(`${base}/api/fleet?token=sekrit`)).ok
+      );
 
       const enqueue = (title: string) =>
         fetch(`${base}/api/operator/queue?token=sekrit`, {
@@ -131,7 +134,9 @@ test(
           }),
         });
       const view = async () =>
-        (await (await fetch(`${base}/api/operator/queue?token=sekrit`)).json()) as {
+        (await (
+          await fetch(`${base}/api/operator/queue?token=sekrit`)
+        ).json()) as {
           pinged: { id: string; title: string } | null;
           queued: { id: string; title: string }[];
           counts: { pinged: number; queued: number; cleared: number };
@@ -170,17 +175,25 @@ test(
       });
       handles.push(second);
       const base2 = `http://127.0.0.1:${second.port}`;
-      await waitFor(async () => (await (await fetch(`${base2}/api/fleet?token=sekrit`)).ok));
+      await waitFor(
+        async () => await (await fetch(`${base2}/api/fleet?token=sekrit`)).ok
+      );
       const replayed = (await (
         await fetch(`${base2}/api/operator/queue?token=sekrit`)
-      ).json()) as { pinged: { title: string } | null; counts: { cleared: number } };
+      ).json()) as {
+        pinged: { title: string } | null;
+        counts: { cleared: number };
+      };
       assert.equal(replayed.pinged?.title, "two", "queue survives restart");
       assert.equal(replayed.counts.cleared, 1);
 
       // Unknown id clear → 404.
-      const miss = await fetch(`${base2}/api/operator/queue/nope/clear?token=sekrit`, {
-        method: "POST",
-      });
+      const miss = await fetch(
+        `${base2}/api/operator/queue/nope/clear?token=sekrit`,
+        {
+          method: "POST",
+        }
+      );
       assert.equal(miss.status, 404);
     } finally {
       await Promise.all(handles.map((h) => h.stop().catch(() => {})));

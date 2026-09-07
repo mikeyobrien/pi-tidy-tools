@@ -13,10 +13,8 @@ import { TurnPartsAccumulator } from "../src/turnparts.ts";
 // boundary, and narration blocks stay DISTINCT text parts (123's styling
 // signal). Whole-message (no deltas) and streamed paths both covered.
 
-const runner = new URL(
-  "./fixtures/rpc/streaming-pi.mjs",
-  import.meta.url
-).pathname;
+const runner = new URL("./fixtures/rpc/streaming-pi.mjs", import.meta.url)
+  .pathname;
 
 async function waitFor(
   probe: () => Promise<boolean> | boolean,
@@ -121,7 +119,9 @@ async function runTurnCase(mode: "whole" | "delta") {
     );
     // Acceptance 1: BOTH narrations in the canonical text.
     assert.ok(
-      entry && entry.text.includes("Narration A") && entry.text.includes("Narration B"),
+      entry &&
+        entry.text.includes("Narration A") &&
+        entry.text.includes("Narration B"),
       `${mode}: entry.text carries both narrations — got "${entry?.text}"`
     );
     // Acceptance 3: distinct text parts per message boundary, tool between.
@@ -129,16 +129,13 @@ async function runTurnCase(mode: "whole" | "delta") {
     const shape = parts.map((part) =>
       part.type === "text" ? `text:${part.text}` : `tool:${part.status}`
     );
-    assert.deepEqual(shape, [
-      "text:Narration A",
-      "tool:ok",
-      "text:Narration B",
-    ], `${mode}: ordered, distinct parts`);
-    // Acceptance 2: no live wipe — the A→""→B overwrite is gone.
-    assert.ok(
-      deltaFrames.length > 0,
-      `${mode}: delta frames observed`
+    assert.deepEqual(
+      shape,
+      ["text:Narration A", "tool:ok", "text:Narration B"],
+      `${mode}: ordered, distinct parts`
     );
+    // Acceptance 2: no live wipe — the A→""→B overwrite is gone.
+    assert.ok(deltaFrames.length > 0, `${mode}: delta frames observed`);
     assert.ok(
       !deltaFrames.includes(""),
       `${mode}: no empty delta frame at the tool-only boundary`
@@ -147,7 +144,9 @@ async function runTurnCase(mode: "whole" | "delta") {
       deltaFrames.some((frame) => frame.includes("Narration A")),
       `${mode}: narration A visible live`
     );
-    const lastWithB = deltaFrames.find((frame) => frame.includes("Narration B"));
+    const lastWithB = deltaFrames.find((frame) =>
+      frame.includes("Narration B")
+    );
     assert.ok(
       lastWithB !== undefined && lastWithB.includes("Narration A"),
       `${mode}: delta frames are cumulative — A survives into the B frames`
@@ -159,5 +158,7 @@ async function runTurnCase(mode: "whole" | "delta") {
   }
 }
 
-test("mid-turn interleaving, whole-message path (issue 124)", () => runTurnCase("whole"));
-test("mid-turn interleaving, streamed-delta path (issue 124)", () => runTurnCase("delta"));
+test("mid-turn interleaving, whole-message path (issue 124)", () =>
+  runTurnCase("whole"));
+test("mid-turn interleaving, streamed-delta path (issue 124)", () =>
+  runTurnCase("delta"));

@@ -17,10 +17,8 @@ import { createTranscriptStore } from "../src/transcripts.ts";
 // peer-completion entry (kind=completion). Daemon stores + serves; it never
 // writes the text. Survives restart; legacy entries unchanged.
 
-const runner = new URL(
-  "./fixtures/rpc/streaming-pi.mjs",
-  import.meta.url
-).pathname;
+const runner = new URL("./fixtures/rpc/streaming-pi.mjs", import.meta.url)
+  .pathname;
 
 async function waitFor(
   probe: () => Promise<boolean> | boolean,
@@ -101,7 +99,10 @@ test(
         },
         body: JSON.stringify({ from: "aa", target: "bb", message: "do it" }),
       });
-      assert.equal(((await bus.json()) as { delivered?: boolean }).delivered, true);
+      assert.equal(
+        ((await bus.json()) as { delivered?: boolean }).delivered,
+        true
+      );
 
       const transcript = async () =>
         (
@@ -125,7 +126,9 @@ test(
           "content-type": "application/json",
           "x-fleet-child": handle.childSecret,
         },
-        body: JSON.stringify({ summary: "bb landed the fix — re-verified green" }),
+        body: JSON.stringify({
+          summary: "bb landed the fix — re-verified green",
+        }),
       });
       assert.equal(attach.status, 200);
       assert.deepEqual(await attach.json(), { attached: true });

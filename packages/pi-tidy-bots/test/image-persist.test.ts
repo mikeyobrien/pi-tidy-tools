@@ -19,10 +19,8 @@ import { join } from "node:path";
 // journal never carries megabyte payloads (146's uncapped requests can't
 // blow transcript rotation).
 
-const runner = new URL(
-  "./fixtures/rpc/streaming-pi.mjs",
-  import.meta.url
-).pathname;
+const runner = new URL("./fixtures/rpc/streaming-pi.mjs", import.meta.url)
+  .pathname;
 
 async function waitFor(
   probe: () => Promise<boolean> | boolean,
@@ -88,7 +86,9 @@ test("image send persists blob refs; refetch/restart carry them (issue 176)", as
 
     const transcript = async () =>
       (
-        (await (await fetch(`${base}/api/bots/aa/transcript?token=sekrit`)).json()) as {
+        (await (
+          await fetch(`${base}/api/bots/aa/transcript?token=sekrit`)
+        ).json()) as {
           transcript: {
             role: string;
             text: string;
@@ -118,12 +118,13 @@ test("image send persists blob refs; refetch/restart carry them (issue 176)", as
       "utf8"
     );
     assert.ok(journal.includes(file), "journal carries the ref");
-    assert.ok(!journal.includes(PNG.slice(0, 40)), "journal carries no payload");
+    assert.ok(
+      !journal.includes(PNG.slice(0, 40)),
+      "journal carries no payload"
+    );
 
     // Serve endpoint: authed fetch returns the bytes; unauthed 401s.
-    const served = await fetch(
-      `${base}/api/images/aa/${file}?token=sekrit`
-    );
+    const served = await fetch(`${base}/api/images/aa/${file}?token=sekrit`);
     assert.equal(served.status, 200);
     assert.equal(served.headers.get("content-type"), "image/png");
     assert.equal(
@@ -150,19 +151,23 @@ test("image send persists blob refs; refetch/restart carry them (issue 176)", as
     });
     handles.push(second);
     const base2 = `http://127.0.0.1:${second.port}`;
-    await waitFor(async () =>
-      (await (await fetch(`${base2}/api/fleet?token=sekrit`)).ok)
+    await waitFor(
+      async () => await (await fetch(`${base2}/api/fleet?token=sekrit`)).ok
     );
     await waitFor(async () => {
       const entries = (
-        (await (await fetch(`${base2}/api/bots/aa/transcript?token=sekrit`)).json()) as {
+        (await (
+          await fetch(`${base2}/api/bots/aa/transcript?token=sekrit`)
+        ).json()) as {
           transcript: { images?: unknown[] }[];
         }
       ).transcript;
       return entries.length > 0;
     });
     const after = (
-      (await (await fetch(`${base2}/api/bots/aa/transcript?token=sekrit`)).json()) as {
+      (await (
+        await fetch(`${base2}/api/bots/aa/transcript?token=sekrit`)
+      ).json()) as {
         transcript: { images?: unknown[] }[];
       }
     ).transcript;

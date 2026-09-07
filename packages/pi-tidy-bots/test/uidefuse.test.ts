@@ -16,10 +16,8 @@ import { join } from "node:path";
 // entry + uiResolved + WS append) instead of freezing open with answers
 // 404ing forever.
 
-const runner = new URL(
-  "./fixtures/rpc/streaming-pi.mjs",
-  import.meta.url
-).pathname;
+const runner = new URL("./fixtures/rpc/streaming-pi.mjs", import.meta.url)
+  .pathname;
 
 async function waitFor(
   probe: () => Promise<boolean> | boolean,
@@ -86,10 +84,7 @@ setInterval(() => {}, 1 << 30);
         `[[bot]]\nname = "aa"\ndir = "bots/aa"\n`
       );
       const wrapper = join(fleetDir, "pi.sh");
-      writeFileSync(
-        wrapper,
-        `#!/bin/sh\nexec node ${questionStub}\n`
-      );
+      writeFileSync(wrapper, `#!/bin/sh\nexec node ${questionStub}\n`);
       spawnSync("chmod", ["+x", wrapper]);
       delete process.env.PTB_STUB_TRACE;
 
@@ -153,8 +148,7 @@ setInterval(() => {}, 1 << 30);
       await waitFor(async () => {
         const entries = await transcript();
         return entries.some(
-          (e) =>
-            (e as { uiResolved?: { id?: string } }).uiResolved?.id === "q1"
+          (e) => (e as { uiResolved?: { id?: string } }).uiResolved?.id === "q1"
         );
       });
       const entries = await transcript();

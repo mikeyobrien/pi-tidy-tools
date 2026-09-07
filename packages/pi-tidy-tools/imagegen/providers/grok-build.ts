@@ -51,9 +51,10 @@ export function getCachedGrokXaiToken(
 ): string | undefined {
   if (!existsSync(authPath)) return undefined;
   try {
-    const data = JSON.parse(
-      readFileSync(authPath, "utf8")
-    ) as Record<string, GrokAuthEntry>;
+    const data = JSON.parse(readFileSync(authPath, "utf8")) as Record<
+      string,
+      GrokAuthEntry
+    >;
     for (const entry of Object.values(data)) {
       if (entry.issuer === "https://auth.x.ai" && entry.key) return entry.key;
     }
@@ -86,7 +87,9 @@ export function grokBuildProvider(): ImageProvider {
     aspects: GROK_ASPECTS,
     resolutions: GROK_RESOLUTIONS,
     maxCount: 4,
-    async generate(request: ImageGenerateRequest): Promise<ImageGenerateResult> {
+    async generate(
+      request: ImageGenerateRequest
+    ): Promise<ImageGenerateResult> {
       const key = getXaiApiKey();
       if (!key) {
         return {
@@ -143,8 +146,7 @@ export function grokBuildProvider(): ImageProvider {
               download.headers.get("content-type")?.split(";")[0] ?? "";
             images.push({
               buffer: Buffer.from(await download.arrayBuffer()),
-              mediaType:
-                mediaType in EXT_BY_MEDIA ? mediaType : "image/png",
+              mediaType: mediaType in EXT_BY_MEDIA ? mediaType : "image/png",
             });
           }
         }

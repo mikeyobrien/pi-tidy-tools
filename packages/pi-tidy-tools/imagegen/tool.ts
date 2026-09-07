@@ -66,7 +66,11 @@ export function buildGenerateImageTool(deps: GenerateImageDeps = {}) {
           `Unknown image provider "${providerId}".`
         );
       }
-      if (params.aspect && provider.aspects && !provider.aspects.includes(params.aspect)) {
+      if (
+        params.aspect &&
+        provider.aspects &&
+        !provider.aspects.includes(params.aspect)
+      ) {
         return failure(
           "unsupported_size",
           `Unsupported aspect "${params.aspect}" for ${provider.id}. Allowed: ${provider.aspects.join(", ")}.`
@@ -141,7 +145,8 @@ function buildParameters() {
     prompt: Type.String({ description: "What to draw, in plain prose." }),
     aspect: Type.Optional(
       Type.String({
-        description: "Aspect ratio, provider-constrained (grok: 1:1, 16:9, 9:16, 4:3, 3:4, …).",
+        description:
+          "Aspect ratio, provider-constrained (grok: 1:1, 16:9, 9:16, 4:3, 3:4, …).",
       })
     ),
     resolution: Type.Optional(

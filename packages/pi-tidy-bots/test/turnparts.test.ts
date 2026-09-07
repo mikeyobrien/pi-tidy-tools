@@ -184,7 +184,8 @@ test("issue 43 item 2: compaction policy thresholds, hysteresis, boundaries", as
 });
 
 test("stepReason/stepLabel share the bounded wire contract (issue 158)", async () => {
-  const { stepReason, stepLabel, boundStepText } = await import("../src/rpc.ts");
+  const { stepReason, stepLabel, boundStepText } =
+    await import("../src/rpc.ts");
   // mcpScript-shaped body: 3.4k chars + newlines → first line, ~90 max.
   const body = `const x = {${"data: 'x', ".repeat(200)}};\nsecond line never rides`;
   const reason = stepReason({ script: body });
@@ -197,8 +198,13 @@ test("stepReason/stepLabel share the bounded wire contract (issue 158)", async (
   // Shared helper consistency: label routes through the same contract.
   assert.equal(boundStepText("a\nb", 10), "a");
   assert.equal(boundStepText("x".repeat(50), 10), `${"x".repeat(9)}…`);
-  const label = stepLabel("bash", { command: `echo one\necho two ${"y".repeat(200)}` });
-  assert.ok((label ?? "").length <= 61, "label bounded through the same helper");
+  const label = stepLabel("bash", {
+    command: `echo one\necho two ${"y".repeat(200)}`,
+  });
+  assert.ok(
+    (label ?? "").length <= 61,
+    "label bounded through the same helper"
+  );
 });
 
 test("issue 61: consecutive identical tool failures trip the breaker at 5", () => {

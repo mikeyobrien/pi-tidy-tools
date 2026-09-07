@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { binEntry, daemonRespawnArgs, restartSpawnArgs } from "../src/cli.ts";
 import { describePortHolder } from "../src/cli-core.ts";
 
@@ -8,6 +9,16 @@ test("binEntry points at the shipped bin shim (cwd-independent runner)", () => {
   const entry = binEntry();
   assert.match(entry, /bin\/pi-tidy-bots\.mjs$/);
   assert.equal(existsSync(entry), true, "bin shim ships with the package");
+});
+
+test("plain Node bin preserves leading global version/json flags", () => {
+  const result = JSON.parse(
+    execFileSync(process.execPath, [binEntry(), "--version", "--json"], {
+      encoding: "utf8",
+    })
+  );
+  assert.equal(result.name, "@mobrienv/pi-tidy-bots");
+  assert.equal(typeof result.version, "string");
 });
 
 test("daemonRespawnArgs: bin entry, no --daemon/--json, never --import tsx", () => {
@@ -82,10 +93,35 @@ test("probeDaemonIdentity fingerprints the serving fleet (issue 154)", async () 
   );
 });
 
-test("daemonCommandMatches recognizes bin and source daemons only (issue 135)", async () => {
-  const { daemonCommandMatches, verifyDaemonPid } = await import(
-    "../src/cli-core.ts"
+test("probeDaemonIdentity carries the stored token (issue 178)", async () => {
+  const { probeDaemonIdentity } = await import("../src/cli-core.ts");
+  let seenAuth: string | null = null;
+  const authed = (_url: string, init?: RequestInit) => {
+    seenAuth = new Headers(init?.headers).get("authorization");
+    return Promise.resolve(
+      new Response(JSON.stringify({ fleetDir: "/fleets/alpha" }), {
+        status: 200,
+      })
+    );
+  };
+  assert.deepEqual(
+    await probeDaemonIdentity(4000, "/fleets/alpha", authed, "sekrit"),
+    { kind: "match", fleetDir: "/fleets/alpha" }
   );
+  assert.equal(seenAuth, "Bearer sekrit", "token rides the identity probe");
+
+  const unauthorized = () =>
+    Promise.resolve(new Response("nope", { status: 401 }));
+  assert.deepEqual(
+    await probeDaemonIdentity(4000, "/fleets/alpha", unauthorized),
+    { kind: "unreachable" },
+    "401 without credentials is not a foreign-fleet match"
+  );
+});
+
+test("daemonCommandMatches recognizes bin and source daemons only (issue 135)", async () => {
+  const { daemonCommandMatches, verifyDaemonPid } =
+    await import("../src/cli-core.ts");
   assert.equal(
     daemonCommandMatches(
       "/opt/homebrew/bin/node /x/packages/pi-tidy-bots/bin/pi-tidy-bots.mjs start /fleet --port 4317"
@@ -111,11 +147,12 @@ test("daemonCommandMatches recognizes bin and source daemons only (issue 135)", 
     "non-start subcommand"
   );
   // verifyDaemonPid: dead (ps misses), foreign (alive but not ours), ours.
-  const ps = (rows: Record<number, string>) => (_file: string, args: string[]) => {
-    const pid = Number(args[1]);
-    if (pid in rows) return rows[pid];
-    throw new Error("no such pid");
-  };
+  const ps =
+    (rows: Record<number, string>) => (_file: string, args: string[]) => {
+      const pid = Number(args[1]);
+      if (pid in rows) return rows[pid];
+      throw new Error("no such pid");
+    };
   assert.deepEqual(
     verifyDaemonPid(123, ps({})),
     { kind: "dead", pid: 123 },
@@ -127,11 +164,12 @@ test("daemonCommandMatches recognizes bin and source daemons only (issue 135)", 
     "foreign pid"
   );
   assert.deepEqual(
-    verifyDaemonPid(
-      123,
-      ps({ 123: "node /x/pi-tidy-bots.mjs start /fleet" })
-    ),
-    { kind: "alive-daemon", pid: 123, command: "node /x/pi-tidy-bots.mjs start /fleet" },
+    verifyDaemonPid(123, ps({ 123: "node /x/pi-tidy-bots.mjs start /fleet" })),
+    {
+      kind: "alive-daemon",
+      pid: 123,
+      command: "node /x/pi-tidy-bots.mjs start /fleet",
+    },
     "our daemon"
   );
 });

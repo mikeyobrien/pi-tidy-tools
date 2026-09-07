@@ -1,12 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
-import {
-  mkdirSync,
-  mkdtempSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -15,10 +10,8 @@ import { join } from "node:path";
 // journal (the complete synchronous history); the no-param hot path stays
 // the RAM list.
 
-const runner = new URL(
-  "./fixtures/rpc/streaming-pi.mjs",
-  import.meta.url
-).pathname;
+const runner = new URL("./fixtures/rpc/streaming-pi.mjs", import.meta.url)
+  .pathname;
 
 async function waitFor(
   probe: () => Promise<boolean> | boolean,
@@ -76,11 +69,15 @@ test("journal-backed paging: before= walks reach pre-RAM history (issue 104)", a
       text: `history row ${i}`,
       ts: new Date(2026, 0, 1, 0, i).toISOString(),
     }));
-    writeFileSync(journal, seeded.map((e) => JSON.stringify(e)).join("\n") + "\n");
+    writeFileSync(
+      journal,
+      seeded.map((e) => JSON.stringify(e)).join("\n") + "\n"
+    );
 
     const fetchPage = (query: string, base = base2) =>
       fetch(`${base}/api/bots/aa/transcript${query}`).then(
-        (res) => res.json() as Promise<{ transcript: { text: string; ts: string }[] }>
+        (res) =>
+          res.json() as Promise<{ transcript: { text: string; ts: string }[] }>
       );
 
     // Restart so the RAM merge slices to the LAST 50 (the 104 condition).
@@ -121,15 +118,12 @@ test("journal-backed paging: before= walks reach pre-RAM history (issue 104)", a
     assert.equal(page1.transcript.length, 20);
     const oldest1 = page1.transcript[0]?.ts;
     assert.ok(oldest1, "page one has an oldest row");
-    const page2 = await fetchPage(`?limit=20&before=${encodeURIComponent(oldest1!)}`);
-    assert.ok(
-      page2.transcript.length > 0,
-      "the walk continues past page one"
+    const page2 = await fetchPage(
+      `?limit=20&before=${encodeURIComponent(oldest1!)}`
     );
+    assert.ok(page2.transcript.length > 0, "the walk continues past page one");
     assert.ok(
-      page2.transcript.every(
-        (e) => Date.parse(e.ts) < Date.parse(oldest1!)
-      ),
+      page2.transcript.every((e) => Date.parse(e.ts) < Date.parse(oldest1!)),
       "page two is strictly older"
     );
 

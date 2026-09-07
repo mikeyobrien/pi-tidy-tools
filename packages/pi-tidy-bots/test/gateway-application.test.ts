@@ -1,0 +1,2103 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  chmod,
+  cp,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawn, type ChildProcess } from "node:child_process";
+import { WebSocket } from "ws";
+import { DatabaseSync } from "node:sqlite";
+import {
+  startFleet,
+  type FleetHandle,
+  type PluginFaultObservation,
+} from "../src/daemon.ts";
+import { loadFleetConfig } from "../src/config.ts";
+import { digestArtifact } from "../src/gateway/registry.ts";
+import { GatewayJournal } from "../src/gateway/journal.ts";
+
+type ObjectValue = Record<string, any>;
+async function waitFor<T>(
+  probe: () => Promise<T> | T,
+  predicate: (value: T) => boolean,
+  description = "condition"
+): Promise<T> {
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    const value = await probe();
+    if (predicate(value)) return value;
+    if (Date.now() >= deadline)
+      throw new Error(
+        `Timed out waiting for ${description}: ${JSON.stringify(value)}`
+      );
+    await new Promise((resolve) => setTimeout(resolve, 15));
+  }
+}
+async function fixture(
+  permissions = false,
+  discovery = false,
+  artifacts = false,
+  settings = false
+) {
+  const dir = await mkdtemp(join(tmpdir(), "tidy-gateway-application-"));
+  const artifact = join(dir, "plugin");
+  await mkdir(artifact);
+  await writeFile(
+    join(dir, "AGENTS.md"),
+    "Disposable gateway integration workspace. No native model calls.\n"
+  );
+  await copyFile(
+    fileURLToPath(
+      new URL("./fixtures/gateway-application/backend.mjs", import.meta.url)
+    ),
+    join(artifact, "backend.mjs")
+  );
+  await chmod(join(artifact, "backend.mjs"), 0o755);
+  await writeFile(
+    join(artifact, "backend.json"),
+    JSON.stringify({
+      manifestVersion: 1,
+      id: "org.example.independent",
+      version: "1.0.0",
+      protocol: { major: 1, minMinor: 0, maxMinor: 0 },
+      entrypoint: { path: "backend.mjs", args: [] },
+      configSchema: "config.schema.json",
+      runtime: {
+        name: "independent-fixture",
+        testedVersion: "1.0.0",
+        transport: "stdio",
+      },
+      requestedAccess: {
+        workspace: "none",
+        nativeProfile: false,
+        network: false,
+        gatewayTools: artifacts
+          ? ["artifact.read"]
+          : discovery
+            ? ["fleet.discover", "fleet.send", "fleet.action.inspect"]
+            : [],
+      },
+    })
+  );
+  await writeFile(
+    join(artifact, "config.schema.json"),
+    JSON.stringify({
+      type: "object",
+      properties: {
+        health: { type: "string", enum: ["ready", "auth_required"] },
+        permissions: { type: "boolean" },
+        discovery: { type: "boolean" },
+        artifacts: { type: "boolean" },
+        settings: { type: "boolean" },
+        openError: { type: "string" },
+        openStatus: { type: "string" },
+      },
+      additionalProperties: false,
+    })
+  );
+  await writeFile(
+    join(dir, "registry.json"),
+    JSON.stringify({
+      registryVersion: 1,
+      plugins: [
+        {
+          id: "org.example.independent",
+          version: "1.0.0",
+          artifactPath: artifact,
+          sha256: await digestArtifact(artifact),
+          enabled: true,
+        },
+      ],
+    })
+  );
+  const manifest = `[gateway]\nregistry = "registry.json"\nenvironment = ["PATH"]\n[[bot]]\nname = "fixture"\ndir = "."\nbackend = "org.example.independent"\n`;
+  await writeFile(
+    join(dir, "bots.toml"),
+    discovery
+      ? manifest.replace(
+          'environment = ["PATH"]',
+          'environment = ["PATH"]\ngateway_tools = ["fleet.discover", "fleet.send", "fleet.action.inspect"]'
+        ) +
+          'routes = ["allowed"]\n[bot.backend_config]\ndiscovery = true\n[[bot]]\nname = "allowed"\ndir = "."\nbackend = "org.example.independent"\n[[bot]]\nname = "hidden"\ndir = "."\nbackend = "org.example.independent"\n'
+      : artifacts
+        ? manifest.replace(
+            'environment = ["PATH"]',
+            'environment = ["PATH"]\ngateway_tools = ["artifact.read"]'
+          ) + "[bot.backend_config]\nartifacts = true\n"
+        : manifest +
+          (permissions ? "[bot.backend_config]\npermissions = true\n" : "")
+  );
+  if (settings)
+    await writeFile(
+      join(dir, "bots.toml"),
+      manifest + "[bot.backend_config]\nsettings = true\n"
+    );
+  const handles: FleetHandle[] = [];
+  let fleetToken = "disposable-test-token";
+  const start = async (
+    options: { onPluginFault?: (fault: PluginFaultObservation) => void } = {}
+  ) => {
+    const handle = await startFleet({
+      dir,
+      port: 0,
+      token: fleetToken,
+      log: () => {},
+      ...options,
+    });
+    handles.push(handle);
+    return handle;
+  };
+  const request = async (
+    handle: FleetHandle,
+    path: string,
+    options: RequestInit = {}
+  ) => {
+    const response = await fetch(handle.url + path, {
+      ...options,
+      headers: {
+        authorization: `Bearer ${fleetToken}`,
+        ...options.headers,
+      },
+    });
+    return {
+      status: response.status,
+      body: (await response.json()) as ObjectValue,
+      headers: response.headers,
+    };
+  };
+  const binding = async (handle: FleetHandle) =>
+    (await request(handle, "/api/bots/fixture/capabilities")).body;
+  const calls = async (descriptor: ObjectValue): Promise<ObjectValue[]> => {
+    const source = await readFile(
+      join(dir, ".fleet/plugins", descriptor.bindingId, "calls.jsonl"),
+      "utf8"
+    );
+    return source
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+  };
+  const submit = async (
+    handle: FleetHandle,
+    descriptor: ObjectValue,
+    operationId: string,
+    text: string,
+    extra: ObjectValue = {}
+  ) =>
+    request(handle, "/api/bots/fixture/message", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-tidy-client-contract": "2",
+        "x-tidy-binding-revision": descriptor.bindingRevision,
+      },
+      body: JSON.stringify({
+        operationId,
+        clientMessageId: operationId,
+        conversationId: descriptor.conversationId,
+        text,
+        ...extra,
+      }),
+    });
+  const inspect = async (handle: FleetHandle, id: string) =>
+    (
+      await request(
+        handle,
+        `/api/bots/fixture/operations/${encodeURIComponent(id)}`
+      )
+    ).body;
+  const socket = async (handle: FleetHandle, since = 0) => {
+    const ws = new WebSocket(
+      handle.url.replace("http", "ws") +
+        `/api/ws?token=${encodeURIComponent(fleetToken)}&since=${since}`
+    );
+    const events: ObjectValue[] = [];
+    ws.on("message", (data) => events.push(JSON.parse(String(data))));
+    await new Promise<void>((resolve, reject) => {
+      ws.once("open", resolve);
+      ws.once("error", reject);
+    });
+    await waitFor(
+      () => events,
+      (values) => values.some((value) => value.type === "hello")
+    );
+    return { ws, events };
+  };
+  return {
+    dir,
+    setToken: (token: string) => {
+      fleetToken = token;
+    },
+    manifest,
+    start,
+    request,
+    binding,
+    calls,
+    submit,
+    inspect,
+    socket,
+    cleanup: async () => {
+      await Promise.all(handles.map((handle) => handle.stop()));
+      await rm(dir, { recursive: true, force: true });
+    },
+  };
+}
+
+for (const mode of ["tools", "tools-error", "tools-unfinished"]) {
+  test(`gateway retains ordered safe tool parts and exact observation state: ${mode}`, async () => {
+    const f = await fixture();
+    try {
+      const handle = await f.start();
+      const binding = await f.binding(handle);
+      const { ws, events } = await f.socket(handle);
+      try {
+        await f.submit(handle, binding, mode, `[${mode}]`);
+        const receipt = await waitFor(
+          () => f.request(handle, `/api/bots/fixture/operations/${mode}`),
+          (value) => value.body.execution === "ended"
+        );
+        assert.equal(
+          receipt.body.observation,
+          mode === "tools-unfinished" ? "reconciliation_required" : "complete"
+        );
+        const transcript = (
+          await f.request(handle, "/api/bots/fixture/transcript")
+        ).body.transcript as ObjectValue[];
+        assert.deepEqual(
+          transcript.map((entry) => entry.text),
+          mode === "tools-unfinished"
+            ? [`[${mode}]`, "Before", "After"]
+            : [`[${mode}]`, "Before", "", "After"]
+        );
+        if (mode !== "tools-unfinished") {
+          assert.deepEqual(transcript[2].parts, [
+            {
+              type: "tool",
+              toolCallId: "native-tool",
+              tool: "tool",
+              label: "Inspect",
+              status: mode === "tools-error" ? "error" : "ok",
+            },
+          ]);
+          assert.equal(typeof transcript[2].ts, "string");
+        }
+        await waitFor(
+          () => events,
+          (values) =>
+            values.some(
+              (event) =>
+                event.type === "bubble" &&
+                Array.isArray(event.parts) &&
+                event.parts.some(
+                  (part: any) =>
+                    part.type === "tool" && part.status === "running"
+                )
+            )
+        );
+        assert.equal(
+          JSON.stringify({ transcript, events }).includes(
+            "PRIVATE_TOOL_CANARY"
+          ),
+          false
+        );
+      } finally {
+        ws.terminate();
+      }
+    } finally {
+      await f.cleanup();
+    }
+  });
+}
+
+test("fleet send admits one target and one nonrecursive completion despite duplicate native calls", async () => {
+  const f = await fixture(false, true);
+  try {
+    const handle = await f.start();
+    const binding = await f.binding(handle);
+    await f.submit(handle, binding, "dispatch-origin", "[send]");
+    const calls = await waitFor(
+      () => f.calls(binding),
+      (values) => values.filter((value) => value.dispatch).length === 2,
+      "duplicate native dispatch replies"
+    );
+    const replies = calls
+      .filter((value) => value.dispatch)
+      .map((value) => value.dispatch as ObjectValue);
+    assert.deepEqual(replies[0], replies[1]);
+    assert.equal(replies[0].status, "admitted");
+    const dispatchId = replies[0].dispatchId;
+    await waitFor(
+      () =>
+        f.request(
+          handle,
+          `/api/bots/fixture/operations/completion-${dispatchId}`
+        ),
+      (value) => value.body.execution === "ended",
+      "completion execution"
+    );
+    const target = (await f.request(handle, "/api/bots/allowed/transcript"))
+      .body.transcript as ObjectValue[];
+    assert.deepEqual(
+      target.map((entry) => entry.text),
+      ["Delegated task", "Reply: Delegated task"]
+    );
+    assert.equal(target[0].origin, "fleet");
+    const origin = (await f.request(handle, "/api/bots/fixture/transcript"))
+      .body.transcript as ObjectValue[];
+    assert.equal(origin.filter((entry) => entry.completion === true).length, 1);
+    assert.equal(origin.length, 4);
+    const allowedBinding = (
+      await f.request(handle, "/api/bots/allowed/capabilities")
+    ).body;
+    assert.equal(
+      (await f.calls(allowedBinding)).filter(
+        (entry) => entry.method === "operation.submit"
+      ).length,
+      1
+    );
+    await f.submit(handle, binding, "forbidden-origin", "[send-forbidden]");
+    const denied = await waitFor(
+      () => f.calls(binding),
+      (values) =>
+        values.some(
+          (entry) => entry.dispatch && entry.operationId === "forbidden-origin"
+        ),
+      "route refusal"
+    );
+    const error = denied.find(
+      (entry) => entry.dispatch && entry.operationId === "forbidden-origin"
+    )!.dispatch as ObjectValue;
+    assert.equal((error.data as ObjectValue).code, "route_forbidden");
+    assert.deepEqual(
+      (await f.request(handle, "/api/bots/hidden/transcript")).body.transcript,
+      []
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("lost fleet-send reply is recovered by an exact lookup without a second target admission", async () => {
+  const f = await fixture(false, true);
+  try {
+    const first = await f.start();
+    const firstBinding = await f.binding(first);
+    assert.equal(
+      (
+        await f.submit(
+          first,
+          firstBinding,
+          "lost-dispatch",
+          "[send-lost-reply]"
+        )
+      ).status,
+      202
+    );
+    const firstCalls = await waitFor(
+      () => f.calls(firstBinding),
+      (calls) =>
+        calls.some(
+          (call) => call.dispatch && call.operationId === "lost-dispatch"
+        ),
+      "committed fleet dispatch before reply loss"
+    );
+    const original = firstCalls.find(
+      (call) => call.dispatch && call.operationId === "lost-dispatch"
+    )!.dispatch as ObjectValue;
+    assert.equal(original.status, "admitted");
+    await first.stop();
+
+    const replacement = await f.start();
+    const binding = await f.binding(replacement);
+    const calls = await waitFor(
+      () => f.calls(binding),
+      (values) =>
+        values.filter(
+          (call) => call.dispatch && call.operationId === "lost-dispatch"
+        ).length === 2,
+      "replacement fleet action lookup"
+    );
+    const recovered = calls
+      .filter((call) => call.dispatch && call.operationId === "lost-dispatch")
+      .at(-1)!.dispatch as ObjectValue;
+    assert.equal(recovered.status, "admitted");
+    assert.equal(recovered.dispatchId, original.dispatchId);
+    assert.deepEqual(recovered.receipt, original.receipt);
+    assert.equal((recovered.proof as ObjectValue).operationId, "lost-dispatch");
+    assert.equal((recovered.proof as ObjectValue).target, "allowed");
+    const target = (
+      await f.request(replacement, "/api/bots/allowed/transcript")
+    ).body.transcript as ObjectValue[];
+    assert.equal(target.filter((entry) => entry.origin === "fleet").length, 1);
+    const allowed = await f.request(
+      replacement,
+      "/api/bots/allowed/capabilities"
+    );
+    assert.equal(
+      (await f.calls(allowed.body)).filter(
+        (call) => call.method === "operation.submit"
+      ).length,
+      1
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("fleet discovery returns only route-authorized peers and refuses sender overrides", async () => {
+  const f = await fixture(false, true);
+  try {
+    const handle = await f.start();
+    const binding = await f.binding(handle);
+    await f.submit(handle, binding, "discover-1", "[discover]");
+    const calls = await waitFor(
+      () => f.calls(binding),
+      (values) => values.some((value) => value.discovery),
+      "scoped discovery response"
+    );
+    assert.deepEqual(calls.find((value) => value.discovery)!.discovery, {
+      origin: "fixture",
+      bots: [
+        {
+          name: "allowed",
+          title: "",
+          description: "",
+          online: true,
+          backend: "org.example.independent",
+        },
+      ],
+    });
+    await waitFor(
+      () => f.request(handle, "/api/bots/fixture/operations/discover-1"),
+      (value) => value.body.execution === "ended",
+      "first discovery settlement"
+    );
+    await f.submit(handle, binding, "discover-2", "[discover-forged]");
+    const forged = await waitFor(
+      () => f.calls(binding),
+      (values) =>
+        values.some(
+          (value) => value.discovery && value.operationId === "discover-2"
+        ),
+      "forged identity rejection"
+    );
+    const error = forged.find(
+      (value) => value.discovery && value.operationId === "discover-2"
+    )!.discovery as ObjectValue;
+    assert.equal((error.data as ObjectValue).code, "invalid_payload");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("fleet discovery without a manifest and policy grant exposes no roster", async () => {
+  const f = await fixture();
+  try {
+    const handle = await f.start();
+    const binding = await f.binding(handle);
+    await f.submit(handle, binding, "ungranted-discovery", "[discover]");
+    const calls = await waitFor(
+      () => f.calls(binding),
+      (values) => values.some((value) => value.discovery),
+      "discovery grant refusal"
+    );
+    const result = calls.find((value) => value.discovery)!
+      .discovery as ObjectValue;
+    assert.equal((result.data as ObjectValue).code, "capability_unavailable");
+    assert.equal(result.bots, undefined);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("HTTP permissions interrupt a pending submit and retain one late resolution and decision", async () => {
+  const f = await fixture(true);
+  try {
+    const handle = await f.start();
+    const binding = await f.binding(handle);
+    const { ws, events } = await f.socket(handle);
+    try {
+      assert.equal(
+        (await f.submit(handle, binding, "permission-target", "[permission]"))
+          .status,
+        202
+      );
+      const request = await waitFor<ObjectValue>(
+        () => events.find((e) => e.entry?.permission)?.entry.permission,
+        Boolean
+      );
+      const decision = {
+        kind: "permission",
+        operationId: "permission-decision",
+        conversationId: binding.conversationId,
+        bindingId: request.bindingId,
+        instanceId: request.instanceId,
+        targetOperationId: request.operationId,
+        turnId: request.turnId,
+        interactionId: request.interactionId,
+        optionsDigest: request.optionsDigest,
+        expiresAt: request.expiresAt,
+        revision: request.revision,
+        optionId: "once-17",
+      };
+      const decide = (body = decision) =>
+        f.request(
+          handle,
+          `/api/bots/fixture/permissions/${encodeURIComponent(request.interactionId)}`,
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-tidy-client-contract": "2",
+              "x-tidy-binding-revision": binding.bindingRevision,
+            },
+            body: JSON.stringify(body),
+          }
+        );
+      assert.equal(
+        (await decide({ ...decision, revision: "wrong" })).status,
+        409
+      );
+      assert.equal((await decide()).status, 202);
+      const receipt = await waitFor(
+        () => f.inspect(handle, decision.operationId),
+        (v) => v.execution === "ended"
+      );
+      assert.deepEqual(receipt.result, { status: "applied" });
+      await waitFor(
+        () => events.filter((e) => e.entry?.permissionResolved),
+        (v) => v.length === 1
+      );
+      assert.deepEqual((await decide()).body, receipt);
+      assert.equal(
+        (await decide({ ...decision, optionId: "deny-17" })).status,
+        409
+      );
+      assert.equal(
+        (await f.inspect(handle, "permission-target")).execution,
+        "ended"
+      );
+      assert.equal(
+        (await f.calls(binding)).filter(
+          (c) => c.method === "interaction.respond"
+        ).length,
+        1
+      );
+      assert.equal(events.filter((e) => e.entry?.permissionResolved).length, 1);
+      assert.equal(events.filter((e) => e.entry?.role === "user").length, 1);
+    } finally {
+      ws.close();
+    }
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("hard gateway crash recovers expired ownership without repeating native admission", async () => {
+  const f = await fixture();
+  const readyPath = join(f.dir, "ready.json");
+  const source = new URL("../src/daemon.ts", import.meta.url).href;
+  const driver = spawn(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      "--input-type=module",
+      "--eval",
+      `import {startFleet} from ${JSON.stringify(source)}; import {writeFileSync} from 'node:fs'; const h=await startFleet({dir:${JSON.stringify(f.dir)},port:0,token:'disposable-test-token',log:()=>{}}); writeFileSync(${JSON.stringify(readyPath)},JSON.stringify({url:h.url,port:h.port}));`,
+    ],
+    { stdio: "ignore" }
+  );
+  try {
+    const running = (await waitFor(
+      async () => {
+        try {
+          return JSON.parse(await readFile(readyPath, "utf8"));
+        } catch {
+          return null;
+        }
+      },
+      Boolean,
+      "child gateway readiness"
+    )) as FleetHandle;
+    const binding = await f.binding(running);
+    assert.equal(
+      (await f.submit(running, binding, "parent-crash", "[hold]")).status,
+      202
+    );
+    await waitFor(
+      () => f.inspect(running, "parent-crash"),
+      (value) => value.execution === "running"
+    );
+    const childExit = new Promise<void>((resolve) =>
+      driver.once("exit", () => resolve())
+    );
+    driver.kill("SIGKILL");
+    await childExit;
+    const journal = new GatewayJournal(join(f.dir, ".fleet/gateway.sqlite"));
+    const previous = journal.getWriterState()!;
+    assert.equal(previous.reconciled, false);
+    assert.ok(
+      journal
+        .getSupervisorRecord()!
+        .launches.some((launch) => launch.state === "started")
+    );
+    journal.close();
+    await assert.rejects(f.start(), { code: "writer_busy" });
+    // Lease expiry is necessary but not sufficient: startup also checks the old
+    // controller and every recorded owned group. This uses the real TTL.
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.max(0, previous.expiresAt - Date.now()) + 10)
+    );
+    const restarted = await f.start();
+    const receipt = await f.inspect(restarted, "parent-crash");
+    assert.equal(receipt.delivery, "accepted");
+    assert.equal(receipt.execution, "unknown");
+    assert.equal(receipt.observation, "reconciliation_required");
+    const calls = await f.calls(binding);
+    assert.equal(
+      calls.filter((call) => call.method === "operation.submit").length,
+      1
+    );
+    assert.equal(
+      calls.filter((call) => call.method === "session.open").length,
+      1
+    );
+  } finally {
+    if (driver.exitCode === null && driver.signalCode === null) {
+      const childExit = new Promise<void>((resolve) =>
+        driver.once("exit", () => resolve())
+      );
+      driver.kill("SIGKILL");
+      await childExit;
+    }
+    await f.cleanup();
+  }
+});
+
+test("stopped-fleet snapshot refuses future storage and restores current unknown state", async () => {
+  const f = await fixture();
+  try {
+    let handle = await f.start();
+    const binding = await f.binding(handle);
+    await f.submit(handle, binding, "migration-unknown", "[unknown]");
+    await waitFor(
+      () => f.inspect(handle, "migration-unknown"),
+      (receipt) => receipt.delivery === "unknown"
+    );
+    await handle.stop();
+
+    const journalPath = join(f.dir, ".fleet/gateway.sqlite");
+    const backupPath = join(f.dir, ".fleet/gateway.sqlite.migration-backup");
+    const manifestBackupPath = join(f.dir, ".fleet/bots.toml.migration-backup");
+    const current = await readFile(journalPath);
+    await writeFile(backupPath, current, { mode: 0o600 });
+    assert.deepEqual(await readFile(backupPath), current);
+    const manifest = await readFile(join(f.dir, "bots.toml"));
+    await writeFile(manifestBackupPath, manifest, { mode: 0o600 });
+    const checkpointPath = join(
+      f.dir,
+      ".fleet/plugins",
+      binding.bindingId,
+      "calls.jsonl"
+    );
+    const checkpoint = await readFile(checkpointPath);
+    const callsBefore = await f.calls(binding);
+    const incompatibleDir = `${f.dir}-incompatible`;
+    await cp(f.dir, incompatibleDir, { recursive: true });
+    const incompatibleJournalPath = join(
+      incompatibleDir,
+      ".fleet/gateway.sqlite"
+    );
+    const future = new DatabaseSync(incompatibleJournalPath);
+    const schema = Number(
+      (future.prepare("PRAGMA user_version").get() as { user_version: number })
+        .user_version
+    );
+    future.exec(`PRAGMA user_version = ${schema + 1}`);
+    future.close();
+    const incompatibleCheckpoint = join(
+      incompatibleDir,
+      ".fleet/plugins",
+      binding.bindingId,
+      "calls.jsonl"
+    );
+    const incompatibleBefore = await readFile(incompatibleCheckpoint);
+    await assert.rejects(
+      startFleet({
+        dir: incompatibleDir,
+        port: 0,
+        token: "disposable-test-token",
+        log: () => {},
+      }),
+      (error: any) => {
+        assert.equal(error?.code, "incompatible_storage");
+        return true;
+      }
+    );
+    assert.deepEqual(
+      await readFile(incompatibleCheckpoint),
+      incompatibleBefore
+    );
+    await rm(incompatibleDir, { recursive: true, force: true });
+
+    handle = await f.start();
+    const retained = await f.inspect(handle, "migration-unknown");
+    assert.equal(retained.operationId, "migration-unknown");
+    assert.equal(retained.bindingId, binding.bindingId);
+    assert.equal(retained.delivery, "unknown");
+    assert.equal(retained.observation, "reconciliation_required");
+    const callsAfter = await f.calls(binding);
+    assert.deepEqual(await readFile(join(f.dir, "bots.toml")), manifest);
+    assert.deepEqual(await readFile(manifestBackupPath), manifest);
+    assert.ok((await readFile(checkpointPath)).length >= checkpoint.length);
+    assert.equal(
+      callsAfter.filter((call) => call.method === "operation.submit").length,
+      callsBefore.filter((call) => call.method === "operation.submit").length
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("compatible config rollback retains current journal and plugin checkpoint", async () => {
+  const f = await fixture();
+  try {
+    let handle = await f.start();
+    const binding = await f.binding(handle);
+    await f.submit(handle, binding, "rollback-unknown", "[unknown]");
+    await waitFor(
+      () => f.inspect(handle, "rollback-unknown"),
+      (receipt) => receipt.delivery === "unknown"
+    );
+    assert.equal(
+      (
+        await f.submit(
+          handle,
+          binding,
+          "rollback-queued",
+          "queued after unknown"
+        )
+      ).status,
+      202
+    );
+    await handle.stop();
+
+    const manifestPath = join(f.dir, "bots.toml");
+    const originalManifest = await readFile(manifestPath);
+    const checkpointPath = join(
+      f.dir,
+      ".fleet/plugins",
+      binding.bindingId,
+      "calls.jsonl"
+    );
+    const checkpointBefore = await readFile(checkpointPath);
+    const callsBefore = await f.calls(binding);
+    const submitCountBefore = callsBefore.filter(
+      (call) => call.method === "operation.submit"
+    ).length;
+    assert.equal(submitCountBefore, 1);
+
+    // A bot title is a compatible presentation change and is outside the
+    // binding policy, so the existing journal/binding remains usable.
+    await writeFile(manifestPath, `${f.manifest}title = "candidate"\n`);
+    handle = await f.start();
+    const candidateFleet = await f.request(handle, "/api/fleet");
+    assert.equal(candidateFleet.status, 200);
+    assert.equal(candidateFleet.body.bots[0].title, "candidate");
+    await handle.stop();
+
+    // Roll back only the manifest. The current journal and plugin checkpoint
+    // stay in place; no older snapshot is restored over them.
+    await writeFile(manifestPath, originalManifest);
+    handle = await f.start();
+    const restoredFleet = await f.request(handle, "/api/fleet");
+    assert.equal(restoredFleet.body.bots[0].title, "");
+    const unknown = await f.inspect(handle, "rollback-unknown");
+    const queued = await f.inspect(handle, "rollback-queued");
+    assert.equal(unknown.delivery, "unknown");
+    assert.equal(unknown.observation, "reconciliation_required");
+    assert.equal(queued.delivery, "queued");
+    assert.equal(queued.execution, "not_started");
+    const callsAfter = await f.calls(binding);
+    assert.equal(
+      callsAfter.filter((call) => call.method === "operation.submit").length,
+      submitCountBefore
+    );
+    const checkpointAfter = await readFile(checkpointPath);
+    assert.ok(checkpointAfter.length >= checkpointBefore.length);
+    assert.deepEqual(
+      checkpointAfter.subarray(0, checkpointBefore.length),
+      checkpointBefore
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("external routine fire API fences owners and dedupes stable occurrences", async () => {
+  const f = await fixture();
+  try {
+    const handle = await f.start();
+    const registered = await f.request(
+      handle,
+      "/api/schedules/scribe%3Anightly/register",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ owner: "legacy-gateway" }),
+      }
+    );
+    assert.equal(registered.status, 200);
+    assert.equal(registered.body.generation, 1);
+    const binding = await f.binding(handle);
+    const fire = () =>
+      f.request(handle, "/api/bots/fixture/schedules/scribe%3Anightly/fire", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-tidy-client-contract": "2",
+          "x-tidy-binding-revision": binding.bindingRevision,
+        },
+        body: JSON.stringify({
+          occurrence: "2026-08-31T10:05:00-05:00",
+          owner: "legacy-gateway",
+          ownerGeneration: 1,
+          text: "scheduled status",
+        }),
+      });
+    const first = await fire();
+    assert.equal(first.status, 202);
+    assert.equal(first.body.created, true);
+    await waitFor(
+      () => f.inspect(handle, first.body.receipt.operationId),
+      (receipt) => ["ended", "failed"].includes(receipt.execution)
+    );
+    const retry = await fire();
+    assert.equal(retry.body.created, false);
+    assert.equal(
+      retry.body.receipt.operationId,
+      first.body.receipt.operationId
+    );
+    const changed = await f.request(
+      handle,
+      "/api/bots/fixture/schedules/scribe%3Anightly/fire",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-tidy-client-contract": "2",
+          "x-tidy-binding-revision": binding.bindingRevision,
+        },
+        body: JSON.stringify({
+          occurrence: "2026-08-31T10:05:00-05:00",
+          owner: "legacy-gateway",
+          ownerGeneration: 1,
+          text: "changed intent",
+        }),
+      }
+    );
+    assert.equal(changed.status, 409);
+    assert.equal(changed.body.error, "operation_conflict");
+    assert.equal(
+      (await f.calls(binding)).filter(
+        (call) => call.method === "operation.submit"
+      ).length,
+      1
+    );
+    const cutover = await f.request(
+      handle,
+      "/api/schedules/scribe%3Anightly/cutover",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          expectedOwner: "legacy-gateway",
+          expectedGeneration: 1,
+          nextOwner: "hermes",
+        }),
+      }
+    );
+    assert.equal(cutover.body.generation, 2);
+    const stale = await f.request(
+      handle,
+      "/api/bots/fixture/schedules/scribe%3Anightly/fire",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-tidy-client-contract": "2",
+          "x-tidy-binding-revision": binding.bindingRevision,
+        },
+        body: JSON.stringify({
+          occurrence: "2026-08-31T10:06:00-05:00",
+          owner: "legacy-gateway",
+          ownerGeneration: 1,
+          text: "stale",
+        }),
+      }
+    );
+    assert.equal(stale.status, 409);
+    assert.equal(stale.body.error, "schedule_owner_conflict");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("routine fire retry returns durable receipt after native EOF offline", async () => {
+  const f = await fixture();
+  try {
+    const handle = await f.start();
+    const registered = await f.request(
+      handle,
+      "/api/schedules/scribe%3Anightly/register",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ owner: "legacy-gateway" }),
+      }
+    );
+    const binding = await f.binding(handle);
+    const fire = (text: string) =>
+      f.request(handle, "/api/bots/fixture/schedules/scribe%3Anightly/fire", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-tidy-client-contract": "2",
+          "x-tidy-binding-revision": binding.bindingRevision,
+        },
+        body: JSON.stringify({
+          occurrence: "2026-08-31T11:05:00-05:00",
+          owner: "legacy-gateway",
+          ownerGeneration: registered.body.generation,
+          text,
+        }),
+      });
+    const first = await fire("[exit-after-native]");
+    assert.equal(first.status, 202);
+    const unknown = await waitFor(
+      () => f.inspect(handle, first.body.receipt.operationId),
+      (receipt) => receipt.delivery === "unknown"
+    );
+    await waitFor(
+      () => f.request(handle, "/api/fleet"),
+      (fleet) => fleet.body.bots[0].online === false
+    );
+    const retry = await fire("[exit-after-native]");
+    assert.equal(retry.status, 202);
+    assert.equal(retry.body.created, false);
+    assert.deepEqual(retry.body.receipt, unknown);
+    const changed = await fire("changed after EOF");
+    assert.equal(changed.status, 409);
+    assert.equal(changed.body.error, "operation_conflict");
+    assert.equal(
+      (await f.calls(binding)).filter(
+        (call) => call.method === "operation.submit"
+      ).length,
+      1
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("established binding refuses erased plugin storage before starting a replacement", async () => {
+  const f = await fixture();
+  try {
+    const handle = await f.start();
+    const binding = await f.binding(handle);
+    await handle.stop();
+    const dataDir = join(f.dir, ".fleet/plugins", binding.bindingId);
+    await rm(dataDir, { recursive: true });
+    await assert.rejects(f.start(), { code: "corrupt_storage" });
+    await assert.rejects(readFile(join(dataDir, "calls.jsonl")), {
+      code: "ENOENT",
+    });
+    await assert.rejects(readFile(join(dataDir, ".gateway-namespace.json")), {
+      code: "ENOENT",
+    });
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("real startFleet gateway advertises only implemented capabilities and requires HTTP/WS auth and contract revision", async () => {
+  const f = await fixture();
+  try {
+    const handle = await f.start(),
+      binding = await f.binding(handle);
+    assert.ok(handle.port && handle.port > 0);
+    assert.equal((await fetch(handle.url + "/api/fleet")).status, 401);
+    assert.equal(
+      (await fetch(handle.url + "/api/fleet?token=disposable-test-token"))
+        .status,
+      401
+    );
+    const version = await f.request(handle, "/api/version");
+    assert.ok(version.body.capabilities.includes("backend-capabilities-v1"));
+    assert.ok(version.body.capabilities.includes("operation-receipts-v1"));
+    assert.equal(binding.backend.id, "org.example.independent");
+    assert.equal(binding.capabilities.configuration.model, false);
+    assert.equal(binding.capabilities.configuration.thinking, false);
+    assert.equal(binding.capabilities.configuration.compact, false);
+    const legacy = await f.request(handle, "/api/bots/fixture/message", {
+      method: "POST",
+    });
+    assert.equal(legacy.status, 426);
+    const stale = await f.submit(
+      handle,
+      { ...binding, bindingRevision: "old" },
+      "stale",
+      "hello"
+    );
+    assert.equal(stale.status, 409);
+    assert.equal(
+      (await f.calls(binding)).filter(
+        (call) => call.method === "operation.submit"
+      ).length,
+      0
+    );
+    const cors = await fetch(handle.url + "/api/bots/fixture/message", {
+      method: "OPTIONS",
+    });
+    assert.equal(cors.status, 204);
+    assert.match(
+      cors.headers.get("access-control-allow-headers")!,
+      /X-Tidy-Binding-Revision/
+    );
+    const rejected = new WebSocket(
+      handle.url.replace("http", "ws") + "/api/ws?token=wrong"
+    );
+    await new Promise<void>((resolve) => {
+      rejected.once("unexpected-response", (_request, response) => {
+        assert.equal(response.statusCode, 401);
+        response.resume();
+        rejected.terminate();
+        resolve();
+      });
+      rejected.on("error", () => {});
+    });
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("message admission correlates one canonical entry, complete-text snapshots, deterministic finals, and immutable retries", async () => {
+  const f = await fixture();
+  try {
+    const handle = await f.start(),
+      binding = await f.binding(handle),
+      { ws, events } = await f.socket(handle);
+    const admitted = await f.submit(handle, binding, "message-1", "hello");
+    assert.equal(admitted.status, 202);
+    assert.equal(admitted.body.delivery, "queued");
+    assert.equal(admitted.body.operationId, "message-1");
+    const final = await waitFor(
+      () => f.inspect(handle, "message-1"),
+      (receipt) => receipt.execution === "ended",
+      "terminal receipt"
+    );
+    assert.equal(final.result.taskOutcome, "unknown");
+    assert.equal(final.observation, "complete");
+    const transcript = (await f.request(handle, "/api/bots/fixture/transcript"))
+      .body.transcript;
+    assert.equal(transcript.length, 2);
+    assert.equal(transcript[0].id, admitted.body.userEntryId);
+    assert.equal(transcript[0].operationId, "message-1");
+    assert.equal(transcript[1].text, "Reply: hello");
+    assert.deepEqual(transcript[1].parts, [
+      { type: "text", text: "Reply: hello" },
+    ]);
+    const snapshots = events.filter(
+      (event) =>
+        event.type === "bubble" && event.phase === "parts" && event.text
+    );
+    assert.deepEqual(
+      snapshots.map((event) => event.text),
+      ["Reply", "Reply: hello"]
+    );
+    assert.equal(
+      (await f.submit(handle, binding, "message-1", "hello")).body.userEntryId,
+      admitted.body.userEntryId
+    );
+    const conflict = await f.submit(handle, binding, "message-1", "changed");
+    assert.equal(conflict.status, 409);
+    assert.equal(conflict.body.error, "operation_conflict");
+    assert.equal(
+      (await f.calls(binding)).filter(
+        (call) => call.method === "operation.submit"
+      ).length,
+      1
+    );
+    ws.terminate();
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("same-conversation FIFO and fresh post-hello snapshots survive reconnect without new native submission", async () => {
+  const f = await fixture();
+  try {
+    const handle = await f.start(),
+      binding = await f.binding(handle);
+    const first = await f.socket(handle);
+    await f.submit(handle, binding, "first", "[hold]");
+    await waitFor(
+      () => first.events,
+      (events) =>
+        events.some(
+          (event) => event.type === "bubble" && event.text === "Reply: [hold]"
+        )
+    );
+    await f.submit(handle, binding, "second", "second");
+    assert.equal((await f.inspect(handle, "second")).delivery, "queued");
+    const since = Math.max(
+      ...first.events.map((event) => Number(event.seq ?? 0))
+    );
+    first.ws.terminate();
+    const next = await f.socket(handle, since);
+    const hello = next.events.find((event) => event.type === "hello")!;
+    const snapshot = await waitFor(
+      () =>
+        next.events.find(
+          (event) => event.type === "bubble" && event.text === "Reply: [hold]"
+        ),
+      Boolean
+    );
+    assert.ok(snapshot!.seq > hello.seq);
+    assert.equal(
+      (await f.calls(binding)).filter(
+        (call) => call.method === "operation.submit"
+      ).length,
+      1
+    );
+    await writeFile(
+      join(f.dir, ".fleet/plugins", binding.bindingId, "release-first"),
+      "yes"
+    );
+    await waitFor(
+      () => f.inspect(handle, "second"),
+      (receipt) => receipt.execution === "ended"
+    );
+    assert.deepEqual(
+      (await f.calls(binding))
+        .filter((call) => call.method === "operation.submit")
+        .map((call) => call.operationId),
+      ["first", "second"]
+    );
+    next.ws.terminate();
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("interleaved assistant messages retain their started order when finals arrive in reverse order", async () => {
+  const f = await fixture();
+  try {
+    const handle = await f.start(),
+      binding = await f.binding(handle);
+    await f.submit(handle, binding, "ordered", "[interleaved]");
+    await waitFor(
+      () => f.inspect(handle, "ordered"),
+      (receipt) => receipt.execution === "ended"
+    );
+    const entries = (await f.request(handle, "/api/bots/fixture/transcript"))
+      .body.transcript;
+    assert.deepEqual(
+      entries.map((entry: ObjectValue) => entry.text),
+      ["[interleaved]", "First", "Second"]
+    );
+    assert.equal(
+      new Set(entries.map((entry: ObjectValue) => entry.id)).size,
+      3
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("auth-required initialization does not reserve or create a native session", async () => {
+  const f = await fixture();
+  try {
+    await writeFile(
+      join(f.dir, "bots.toml"),
+      f.manifest + '[bot.backend_config]\nhealth = "auth_required"\n'
+    );
+    const handle = await f.start(),
+      binding = await f.binding(handle);
+    assert.equal(
+      (await f.calls(binding)).filter((call) => call.method === "session.open")
+        .length,
+      0
+    );
+    assert.equal(
+      (await f.submit(handle, binding, "no-auth", "hello")).status,
+      503
+    );
+    assert.equal(
+      (await f.request(handle, "/api/fleet")).body.bots[0].gatewayStatus,
+      "auth_required"
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("shutdown preserves queued messages without making another native reservation", async () => {
+  const f = await fixture();
+  try {
+    let handle = await f.start();
+    const binding = await f.binding(handle);
+    await f.submit(handle, binding, "active", "[hold]");
+    await waitFor(
+      () => f.inspect(handle, "active"),
+      (receipt) => receipt.execution === "running"
+    );
+    await f.submit(handle, binding, "waiting", "queued");
+    await handle.stop();
+    handle = await f.start();
+    assert.equal((await f.inspect(handle, "waiting")).delivery, "queued");
+    assert.equal(
+      (await f.calls(binding)).filter(
+        (call) => call.method === "operation.submit"
+      ).length,
+      1
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+for (const prompt of ["[unknown]", "[exit-after-native]"]) {
+  test(`ambiguous ${prompt} is retained across daemon restart and never resent`, async () => {
+    const f = await fixture();
+    try {
+      let handle = await f.start();
+      const binding = await f.binding(handle);
+      const admitted = await f.submit(handle, binding, "unknown-1", prompt);
+      await waitFor(
+        () => f.inspect(handle, "unknown-1"),
+        (receipt) => receipt.delivery === "unknown"
+      );
+      assert.equal(
+        (await f.submit(handle, binding, "unknown-1", prompt)).body.operationId,
+        "unknown-1"
+      );
+      await handle.stop();
+      handle = await f.start();
+      const restarted = await f.binding(handle);
+      assert.deepEqual(restarted, binding);
+      const receipt = await f.inspect(handle, "unknown-1");
+      assert.equal(receipt.delivery, "unknown");
+      assert.equal(receipt.userEntryId, admitted.body.userEntryId);
+      assert.equal(
+        (await f.request(handle, "/api/bots/fixture/transcript")).body
+          .transcript.length,
+        1
+      );
+      assert.equal(
+        (await f.calls(binding)).filter(
+          (call) => call.method === "operation.submit"
+        ).length,
+        1
+      );
+      assert.equal(
+        (await f.calls(binding)).filter(
+          (call) => call.method === "session.open"
+        ).length,
+        1
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+}
+
+test("unsupported media and complete encoded frame overflow are rejected before any receipt or native dispatch", async () => {
+  const f = await fixture();
+  try {
+    const handle = await f.start(),
+      binding = await f.binding(handle);
+    const media = await f.submit(handle, binding, "media", "with image", {
+      images: [{ mediaType: "image/png", data: "AAAA" }],
+    });
+    assert.equal(media.status, 422);
+    const overhead = Buffer.byteLength(
+      JSON.stringify({
+        operationId: "large",
+        clientMessageId: "large",
+        conversationId: binding.conversationId,
+        text: "",
+      })
+    );
+    // HTTP itself fits; the larger plugin envelope (binding, turn, digest,
+    // policy, RPC ID and LF) must still be rejected before durable admission.
+    const oversized = await f.submit(
+      handle,
+      binding,
+      "large",
+      '"'.repeat(Math.floor((1024 * 1024 - overhead) / 2) - 10)
+    );
+    assert.equal(oversized.status, 413);
+    assert.equal(
+      (await f.request(handle, "/api/bots/fixture/transcript")).body.transcript
+        .length,
+      0
+    );
+    assert.equal(
+      (await f.calls(binding)).filter(
+        (call) => call.method === "operation.submit"
+      ).length,
+      0
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("backend config cannot fall through to legacy execution or silently accept Pi-only keys", async () => {
+  const f = await fixture();
+  try {
+    await writeFile(
+      join(f.dir, "bots.toml"),
+      '[[bot]]\nname = "fixture"\nbackend = "org.example.independent"\n'
+    );
+    assert.throws(() => loadFleetConfig(f.dir), /requires \[gateway\]/);
+    await writeFile(
+      join(f.dir, "bots.toml"),
+      f.manifest + 'model = "opaque-model"\n'
+    );
+    assert.throws(() => loadFleetConfig(f.dir), /legacy Pi key/);
+    await writeFile(
+      join(f.dir, "bots.toml"),
+      f.manifest + "[bot.backend_config]\nunknown = true\n"
+    );
+    await assert.rejects(f.start(), { code: "invalid_config" });
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("the shipped CLI selects the neutral gateway and awaits journal shutdown before immediate restart", async () => {
+  const f = await fixture();
+  let child: ChildProcess | undefined;
+  const launch = async (): Promise<FleetHandle> => {
+    await mkdir(join(f.dir, "home"), { recursive: true });
+    child = spawn(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        fileURLToPath(new URL("../bin/pi-tidy-bots.mjs", import.meta.url)),
+        "start",
+        f.dir,
+        "--port",
+        "0",
+        "--host",
+        "127.0.0.1",
+        "--json",
+      ],
+      {
+        env: {
+          PATH: process.env.PATH,
+          HOME: join(f.dir, "home"),
+          PI_TIDY_BOTS_REGISTRY: join(f.dir, "fleets.json"),
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      }
+    );
+    let output = "",
+      errors = "";
+    child.stdout!.on("data", (data) => {
+      output += data;
+    });
+    child.stderr!.on("data", (data) => {
+      errors += data;
+    });
+    const readiness = await waitFor<ObjectValue | undefined>(
+      () => {
+        if (child!.exitCode !== null)
+          throw new Error(`CLI exited before readiness: ${errors}`);
+        return output
+          .split("\n")
+          .flatMap((line) => {
+            try {
+              return [JSON.parse(line)];
+            } catch {
+              return [];
+            }
+          })
+          .find((value) => value.url);
+      },
+      Boolean,
+      "CLI gateway readiness"
+    );
+    assert.equal(
+      typeof readiness!.token,
+      "string",
+      "gateway CLI mints authentication on loopback"
+    );
+    assert.equal(
+      (await readFile(join(f.dir, ".fleet/token"), "utf8")).trim(),
+      readiness!.token
+    );
+    f.setToken(readiness!.token);
+    return { url: readiness!.url } as FleetHandle;
+  };
+  const stopChild = async () => {
+    if (!child || child.exitCode !== null || child.signalCode !== null) return;
+    const current = child;
+    const stopped = new Promise<void>((resolve) =>
+      current.once("exit", () => resolve())
+    );
+    current.kill("SIGTERM");
+    await stopped;
+  };
+  try {
+    let handle = await launch();
+    const { probeDaemonIdentity } = await import("../src/cli-core.ts");
+    assert.deepEqual(
+      await probeDaemonIdentity(
+        Number(new URL(handle.url).port),
+        f.dir,
+        undefined,
+        (await readFile(join(f.dir, ".fleet/token"), "utf8")).trim()
+      ),
+      { kind: "match", fleetDir: f.dir },
+      "lifecycle commands can identify this authenticated gateway before signalling it"
+    );
+    const binding = await f.binding(handle);
+    const admitted = await f.submit(
+      handle,
+      binding,
+      "cli-message",
+      "through the bin"
+    );
+    assert.equal(admitted.status, 202);
+    await waitFor(
+      () => f.inspect(handle, "cli-message"),
+      (receipt) => receipt.execution === "ended"
+    );
+    await stopChild();
+    handle = await launch();
+    assert.deepEqual(await f.binding(handle), binding);
+    assert.equal((await f.inspect(handle, "cli-message")).execution, "ended");
+    assert.equal(
+      (await f.calls(binding)).filter(
+        (call) => call.method === "operation.submit"
+      ).length,
+      1
+    );
+  } finally {
+    await stopChild();
+    await f.cleanup();
+  }
+});
+
+test("HTTP cancellation retains identity and waits for terminal evidence before the next prompt", async () => {
+  const f = await fixture();
+  try {
+    const handle = await f.start();
+    const binding = await f.binding(handle);
+    await f.submit(handle, binding, "active", "[cancel-hold]");
+    await waitFor(
+      () => f.inspect(handle, "active"),
+      (value) => value.execution === "running"
+    );
+    await f.submit(handle, binding, "next", "after cancellation");
+    const cancel = () =>
+      f.request(handle, "/api/bots/fixture/operations/active/cancel", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-tidy-client-contract": "2",
+          "x-tidy-binding-revision": binding.bindingRevision,
+        },
+        body: JSON.stringify({
+          kind: "cancel",
+          operationId: "cancel-active",
+          targetOperationId: "active",
+          conversationId: binding.conversationId,
+        }),
+      });
+    assert.equal((await cancel()).status, 202);
+    await waitFor(
+      () => f.inspect(handle, "cancel-active"),
+      (value) => value.result?.status === "requested"
+    );
+    assert.equal(
+      (await f.inspect(handle, "active")).execution,
+      "cancel_requested"
+    );
+    assert.equal((await f.inspect(handle, "next")).delivery, "queued");
+    assert.equal((await cancel()).status, 202);
+    await writeFile(
+      join(f.dir, ".fleet/plugins", binding.bindingId, "release-cancel"),
+      "release"
+    );
+    await waitFor(
+      () => f.inspect(handle, "active"),
+      (value) => value.execution === "cancelled"
+    );
+    await waitFor(
+      () => f.inspect(handle, "next"),
+      (value) => value.execution === "ended"
+    );
+    const calls = await f.calls(binding);
+    assert.equal(
+      calls.filter((call: ObjectValue) => call.method === "operation.cancel")
+        .length,
+      1
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("lost cancellation response survives restart without replay or releasing queued work", async () => {
+  const f = await fixture();
+  try {
+    let handle = await f.start();
+    const binding = await f.binding(handle);
+    await f.submit(handle, binding, "active", "[cancel-lost]");
+    await waitFor(
+      () => f.inspect(handle, "active"),
+      (value) => value.execution === "running"
+    );
+    await f.submit(handle, binding, "next", "must remain queued");
+    const cancel = () =>
+      f.request(handle, "/api/bots/fixture/operations/active/cancel", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-tidy-client-contract": "2",
+          "x-tidy-binding-revision": binding.bindingRevision,
+        },
+        body: JSON.stringify({
+          kind: "cancel",
+          operationId: "cancel-active",
+          targetOperationId: "active",
+          conversationId: binding.conversationId,
+        }),
+      });
+    assert.equal((await cancel()).status, 202);
+    await waitFor(
+      () => f.inspect(handle, "cancel-active"),
+      (value) => value.execution === "unknown"
+    );
+    const saved = await f.inspect(handle, "cancel-active");
+    assert.equal(saved.observation, "reconciliation_required");
+    assert.equal((await f.inspect(handle, "next")).delivery, "queued");
+    await handle.stop();
+    handle = await f.start();
+    assert.deepEqual(await f.inspect(handle, "cancel-active"), saved);
+    assert.deepEqual((await cancel()).body, saved);
+    assert.equal((await f.inspect(handle, "next")).delivery, "queued");
+    const calls = await f.calls(binding);
+    assert.equal(
+      calls.filter((call) => call.method === "operation.cancel").length,
+      1
+    );
+    assert.equal(
+      calls.filter((call) => call.method === "operation.submit").length,
+      1
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("uploaded text reaches the plugin as scoped artifact chunks and durable transcript metadata", async () => {
+  const f = await fixture(false, false, true);
+  try {
+    let handle = await f.start();
+    const binding = await f.binding(handle);
+    const images = [
+      {
+        name: "note.txt",
+        mediaType: "text/plain",
+        data: Buffer.from("Unicode 🦋 attachment").toString("base64"),
+      },
+    ];
+    const send = () =>
+      f.submit(handle, binding, "artifact-message", "Read attachment", {
+        images,
+      });
+    assert.equal((await send()).status, 202);
+    await waitFor(
+      () => f.inspect(handle, "artifact-message"),
+      (value) => value.execution === "ended"
+    );
+    const calls = await f.calls(binding);
+    const chunks = calls
+      .filter((call) => call.artifactRead)
+      .map((call) => Buffer.from(call.artifactRead.data, "base64"));
+    assert.equal(Buffer.concat(chunks).toString(), "Unicode 🦋 attachment");
+    const submitted = calls.find((call) => call.method === "operation.submit")!;
+    assert.equal(submitted.input[1].type, "artifact");
+    assert.equal(JSON.stringify(submitted).includes(images[0].data), false);
+    const transcript = (await f.request(handle, "/api/bots/fixture/transcript"))
+      .body.transcript;
+    assert.equal(
+      transcript[0].attachments[0].artifactId,
+      submitted.input[1].artifactId
+    );
+    await handle.stop();
+    handle = await f.start();
+    assert.equal((await send()).status, 202);
+    assert.equal(
+      (await f.calls(binding)).filter(
+        (call) => call.method === "operation.submit"
+      ).length,
+      1
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+for (const mode of ["wrong", "malformed", "lost"]) {
+  test(`gateway leaves uncertain settings controls unreplayed and blocks later work: ${mode}`, async () => {
+    const f = await fixture(false, false, false, true);
+    try {
+      let handle = await f.start();
+      const binding = await f.binding(handle);
+      const { ws, events } = await f.socket(handle);
+      try {
+        const payload = {
+          kind: "model",
+          operationId: "change-model",
+          conversationId: binding.conversationId,
+          model: `fixture/${mode}`,
+        };
+        const configure = () =>
+          f.request(handle, "/api/bots/fixture/model", {
+            method: "PUT",
+            headers: {
+              "content-type": "application/json",
+              "x-tidy-client-contract": "2",
+              "x-tidy-binding-revision": binding.bindingRevision,
+            },
+            body: JSON.stringify(payload),
+          });
+        assert.equal((await configure()).status, 202);
+        await waitFor(
+          () => f.calls(binding),
+          (calls) => calls.some((call) => call.method === "session.configure")
+        );
+        assert.equal(
+          (
+            await f.submit(
+              handle,
+              binding,
+              "later-message",
+              "must remain queued"
+            )
+          ).status,
+          202
+        );
+        if (mode === "lost")
+          await writeFile(
+            join(
+              f.dir,
+              ".fleet/plugins",
+              binding.bindingId,
+              "release-lost-control"
+            ),
+            "release"
+          );
+        const unknown = await waitFor(
+          () => f.inspect(handle, "change-model"),
+          (receipt) => receipt.execution === "unknown"
+        );
+        assert.equal(unknown.observation, "reconciliation_required");
+        assert.notEqual(unknown.result?.status, "applied");
+        assert.equal((await configure()).body.operationId, "change-model");
+        assert.equal(
+          (await f.inspect(handle, "later-message")).delivery,
+          "queued"
+        );
+        assert.equal(
+          (await f.calls(binding)).filter(
+            (call) => call.method === "session.configure"
+          ).length,
+          1
+        );
+        assert.equal(
+          (await f.calls(binding)).filter(
+            (call) => call.method === "operation.submit"
+          ).length,
+          0
+        );
+        assert.equal(
+          JSON.stringify(events).includes("PRIVATE_SETTINGS_CANARY"),
+          false
+        );
+        await handle.stop();
+        handle = await f.start();
+        assert.equal(
+          (await f.inspect(handle, "change-model")).execution,
+          "unknown"
+        );
+        assert.equal(
+          (await f.inspect(handle, "later-message")).delivery,
+          "queued"
+        );
+        assert.equal(
+          (await f.calls(binding)).filter(
+            (call) => call.method === "session.configure"
+          ).length,
+          1
+        );
+      } finally {
+        ws.close();
+      }
+    } finally {
+      await f.cleanup();
+    }
+  });
+}
+
+test("throwing plugin fault diagnostics cannot suppress bot isolation", async () => {
+  const f = await fixture(false, false, false, true);
+  try {
+    const handle = await f.start({
+      onPluginFault() {
+        throw new Error("diagnostic observer failure");
+      },
+    });
+    const binding = await f.binding(handle);
+    const configure = await f.request(handle, "/api/bots/fixture/model", {
+      method: "PUT",
+      headers: {
+        "content-type": "application/json",
+        "x-tidy-client-contract": "2",
+        "x-tidy-binding-revision": binding.bindingRevision,
+      },
+      body: JSON.stringify({
+        kind: "model",
+        operationId: "observer-isolation",
+        conversationId: binding.conversationId,
+        model: "fixture/lost",
+      }),
+    });
+    assert.equal(configure.status, 202);
+    await waitFor(
+      () => f.calls(binding),
+      (calls) => calls.some((call) => call.method === "session.configure")
+    );
+    await writeFile(
+      join(f.dir, ".fleet/plugins", binding.bindingId, "release-lost-control"),
+      "release"
+    );
+    const receipt = await waitFor(
+      () => f.inspect(handle, "observer-isolation"),
+      (value) => value.execution === "unknown"
+    );
+    assert.equal(receipt.observation, "reconciliation_required");
+    const later = await f.submit(
+      handle,
+      binding,
+      "after-observer-fault",
+      "must be rejected while isolated"
+    );
+    assert.equal(later.status, 503);
+    assert.equal(later.body.error, "session_unavailable");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("session-open RPC errors retain unknown state and expose only a typed diagnostic", async () => {
+  const f = await fixture();
+  const faults: PluginFaultObservation[] = [];
+  try {
+    await writeFile(
+      join(f.dir, "bots.toml"),
+      f.manifest +
+        '[bot.backend_config]\nopenError = "native_contract_unavailable"\n'
+    );
+    const handle = await f.start({
+      onPluginFault: (fault) => faults.push(fault),
+    });
+    const binding = await f.binding(handle);
+    const fault = await waitFor(
+      async () => faults,
+      (items) =>
+        items.some(
+          (item) => item.code === "session_open:native_contract_unavailable"
+        )
+    );
+    assert.equal(fault.length, 1);
+    assert.equal(fault[0].bindingId, binding.bindingId);
+    assert.equal(typeof fault[0].instanceId, "string");
+    assert.ok(fault[0].instanceId);
+    assert.equal(
+      (await f.calls(binding)).filter((call) => call.method === "session.open")
+        .length,
+      1
+    );
+    assert.equal(
+      (await f.request(handle, "/api/bots/fixture/operations/open:ignored"))
+        .status,
+      404
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("session-open uncertainty result exposes a stable diagnostic without replay", async () => {
+  const f = await fixture();
+  const faults: PluginFaultObservation[] = [];
+  try {
+    await writeFile(
+      join(f.dir, "bots.toml"),
+      f.manifest + '[bot.backend_config]\nopenStatus = "creation_unknown"\n'
+    );
+    const handle = await f.start({
+      onPluginFault: (fault) => faults.push(fault),
+    });
+    const binding = await f.binding(handle);
+    const fault = await waitFor(
+      async () => faults,
+      (items) =>
+        items.some((item) => item.code === "session_open:creation_unknown")
+    );
+    assert.equal(fault.length, 1);
+    assert.equal(fault[0].bindingId, binding.bindingId);
+    assert.equal(
+      (await f.calls(binding)).filter((call) => call.method === "session.open")
+        .length,
+      1
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("gateway settings reads project only authoritative public values and gate unsupported controls", async () => {
+  const f = await fixture(false, false, false, true);
+  try {
+    const handle = await f.start();
+    const binding = await f.binding(handle);
+    assert.deepEqual(
+      (await f.request(handle, "/api/bots/fixture/model")).body,
+      { model: "fixture/current" }
+    );
+    assert.equal(
+      (await f.request(handle, "/api/bots/fixture/thinking")).status,
+      422
+    );
+    const headers = {
+      "content-type": "application/json",
+      "x-tidy-client-contract": "2",
+      "x-tidy-binding-revision": binding.bindingRevision,
+    };
+    for (const [route, body, status] of [
+      ["thinking", { kind: "thinking", thinking: "high" }, 422],
+      ["model", { kind: "thinking", thinking: "high" }, 400],
+      ["model", { kind: "model", model: ["fixture/current"] }, 400],
+      ["model", { kind: "model", model: "fixture/current", extra: true }, 400],
+    ] as const) {
+      assert.equal(
+        (
+          await f.request(handle, `/api/bots/fixture/${route}`, {
+            method: "PUT",
+            headers,
+            body: JSON.stringify({
+              operationId: "invalid-control",
+              conversationId: binding.conversationId,
+              ...body,
+            }),
+          })
+        ).status,
+        status
+      );
+    }
+    assert.equal(
+      (await f.request(handle, "/api/bots/fixture/operations/invalid-control"))
+        .status,
+      404
+    );
+    assert.equal(
+      (await f.calls(binding)).filter(
+        (call) => call.method === "session.configure"
+      ).length,
+      0
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+for (const mode of ["applied", "failed", "missing", "fast"]) {
+  test(`gateway compact controls await correlated application evidence without chat output: ${mode}`, async () => {
+    const f = await fixture(false, false, false, true);
+    try {
+      const handle = await f.start();
+      const binding = await f.binding(handle);
+      assert.equal(binding.capabilities.configuration.compact, true);
+      const { ws, events } = await f.socket(handle);
+      try {
+        const operationId = mode === "fast" ? "compact-fast" : "compact-one";
+        const headers = {
+          "content-type": "application/json",
+          "x-tidy-client-contract": "2",
+          "x-tidy-binding-revision": binding.bindingRevision,
+        };
+        const payload = {
+          kind: "compact",
+          operationId,
+          conversationId: binding.conversationId,
+        };
+        const compact = () =>
+          f.request(handle, "/api/bots/fixture/compact", {
+            method: "POST",
+            headers,
+            body: JSON.stringify(payload),
+          });
+        assert.equal((await compact()).status, 202);
+        if (mode !== "fast") {
+          const running = await waitFor(
+            () => f.inspect(handle, operationId),
+            (receipt) => receipt.execution === "running"
+          );
+          assert.equal(running.delivery, "accepted");
+          assert.equal(running.result, undefined);
+          assert.equal(
+            (
+              await f.submit(
+                handle,
+                binding,
+                "after-compact",
+                "queued after compact"
+              )
+            ).status,
+            202
+          );
+          assert.equal(
+            (await f.inspect(handle, "after-compact")).delivery,
+            "queued"
+          );
+          assert.equal((await compact()).body.execution, "running");
+          await writeFile(
+            join(
+              f.dir,
+              ".fleet/plugins",
+              binding.bindingId,
+              "complete-compaction"
+            ),
+            mode
+          );
+        }
+        const final = await waitFor(
+          () => f.inspect(handle, operationId),
+          (receipt) =>
+            ["ended", "failed", "unknown"].includes(receipt.execution)
+        );
+        assert.equal(final.kind, "compact");
+        assert.equal(
+          final.observation,
+          mode === "missing" ? "reconciliation_required" : "complete"
+        );
+        assert.equal(
+          final.result?.status,
+          mode === "missing"
+            ? undefined
+            : mode === "failed"
+              ? "failed"
+              : "applied"
+        );
+        if (mode === "missing")
+          assert.equal(
+            (await f.inspect(handle, "after-compact")).delivery,
+            "queued"
+          );
+        else if (mode !== "fast")
+          await waitFor(
+            () => f.inspect(handle, "after-compact"),
+            (receipt) => receipt.execution === "ended"
+          );
+        assert.equal((await compact()).body.operationId, operationId);
+        assert.equal(
+          (await f.calls(binding)).filter(
+            (call) => call.method === "session.compact"
+          ).length,
+          1
+        );
+        const nativeControl = (await f.calls(binding)).find(
+          (call) => call.method === "session.compact"
+        )!;
+        assert.equal(typeof nativeControl.turnId, "string");
+        assert.equal(
+          events.some(
+            (event) =>
+              event.type === "bubble" && event.turnId === nativeControl.turnId
+          ),
+          false
+        );
+        assert.equal(
+          JSON.stringify(events).includes("PRIVATE_COMPACTION_CANARY"),
+          false
+        );
+        const transcript = (
+          await f.request(handle, "/api/bots/fixture/transcript")
+        ).body.transcript;
+        assert.equal(
+          transcript.some(
+            (entry: ObjectValue) => entry.operationId === operationId
+          ),
+          false
+        );
+        assert.equal(
+          (
+            await f.request(handle, "/api/bots/fixture/compact", {
+              method: "POST",
+              headers,
+              body: JSON.stringify({
+                ...payload,
+                operationId: "invalid-compact",
+                compact: true,
+              }),
+            })
+          ).status,
+          400
+        );
+        assert.equal(
+          (
+            await f.request(
+              handle,
+              "/api/bots/fixture/operations/invalid-compact"
+            )
+          ).status,
+          404
+        );
+        await handle.stop();
+        const restarted = await f.start();
+        const retained = await f.inspect(restarted, operationId);
+        assert.equal(retained.execution, final.execution);
+        assert.deepEqual(retained.result, final.result);
+        assert.equal(
+          (await f.calls(binding)).filter(
+            (call) => call.method === "session.compact"
+          ).length,
+          1
+        );
+      } finally {
+        ws.close();
+      }
+    } finally {
+      await f.cleanup();
+    }
+  });
+}

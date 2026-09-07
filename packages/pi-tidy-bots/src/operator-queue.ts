@@ -47,12 +47,12 @@ export interface OperatorQueueStore {
     receipts?: QueueReceipt[];
     source: string;
   }): OperatorQueueItem;
-  clear(id: string): { cleared: OperatorQueueItem; promoted?: OperatorQueueItem } | null;
+  clear(
+    id: string
+  ): { cleared: OperatorQueueItem; promoted?: OperatorQueueItem } | null;
 }
 
-export function createOperatorQueueStore(
-  fleetDir: string
-): OperatorQueueStore {
+export function createOperatorQueueStore(fleetDir: string): OperatorQueueStore {
   const file = join(fleetDir, ".fleet", "operator-queue.jsonl");
 
   /** Per-line tolerant load (issue 143 idiom): torn lines skip loudly. */

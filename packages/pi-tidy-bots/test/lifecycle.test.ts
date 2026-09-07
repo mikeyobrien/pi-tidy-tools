@@ -25,10 +25,14 @@ const PORT = 4694;
  * in cleanup (this run's own leaks from mid-test assertion misses).
  */
 function sweepGhostDaemons(port: number): number {
-  const held = spawnSync("lsof", ["-nP", "-t", "-sTCP:LISTEN", `-iTCP:${port}`], {
-    encoding: "utf8",
-    timeout: 5_000,
-  });
+  const held = spawnSync(
+    "lsof",
+    ["-nP", "-t", "-sTCP:LISTEN", `-iTCP:${port}`],
+    {
+      encoding: "utf8",
+      timeout: 5_000,
+    }
+  );
   let swept = 0;
   for (const line of (held.stdout ?? "").split("\n")) {
     const pid = Number(line.trim());
@@ -167,7 +171,9 @@ test(
       // 3. Sanctioned restart — returns (daemonize parent health-checks).
       const restart = runCli(["restart", "--fleet", "rt", "--json"]);
       assert.equal(restart.status, 0, `restart stderr: ${restart.stderr}`);
-      const first = JSON.parse(restart.stdout.trim().split("\n").at(-1) ?? "{}");
+      const first = JSON.parse(
+        restart.stdout.trim().split("\n").at(-1) ?? "{}"
+      );
       assert.equal(first.restarted, true);
       assert.notEqual(
         first.pid,
@@ -225,7 +231,10 @@ test("cleanup: sanctioned stop before rmSync + port release (issue 162)", async 
   for (;;) {
     const probe = spawnSync(
       process.execPath,
-      ["-e", "net.connect(4694).on('error',()=>process.exit(0)).on('connect',()=>process.exit(1))"],
+      [
+        "-e",
+        "net.connect(4694).on('error',()=>process.exit(0)).on('connect',()=>process.exit(1))",
+      ],
       { timeout: 5_000 }
     );
     if (probe.status === 0) break;
@@ -318,4 +327,3 @@ test(
     rmSync(broken, { recursive: true, force: true });
   }
 );
-

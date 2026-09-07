@@ -22,6 +22,7 @@ import {
 import { DAEMON_REVISION } from "./revision.ts";
 import { loadFleetConfig, ConfigError, NAME_PATTERN } from "./config.ts";
 import { createRotatingLogWriter } from "./logs.ts";
+import { isFleetLockFree } from "./lock.ts";
 import {
   closestFlag,
   CliError,
@@ -74,6 +75,7 @@ const COMMAND_FLAGS: Record<string, string[]> = {
   ],
   add: ["dir", "title", "avatar", "description"],
   chat: ["bot", "url", "token"],
+  health: ["bot", "url", "token", "stale-min", "token-budget"],
   status: ["fleet"],
   stop: ["fleet"],
   restart: ["fleet"],
@@ -128,6 +130,7 @@ Usage:
   pi-tidy-bots add <name> [--dir fleetDir] [--title t] [--avatar e] [--description d]
                                           Scaffold a bot and append its manifest row
   pi-tidy-bots status [fleetDir]          Show daemon pid, port, per-bot state
+  pi-tidy-bots health [url]               Fail-closed probe: stale delivering or over-budget context
   pi-tidy-bots fleets [--prune]           List registered fleets and running state
   pi-tidy-bots start --fleet <name>       Target a registered fleet by name
   pi-tidy-bots stop [fleetDir]            Gracefully stop the running fleet
@@ -136,7 +139,7 @@ Usage:
 Start flags:
   --port <n>        Web UI port (default 4317, or [fleet] port in bots.toml)
   --host <addr>     Bind address (default 127.0.0.1). Non-loopback binds (0.0.0.0 or a LAN IP) auto-enable token auth: a token is minted and stored in .fleet/token if none exists, and printed in the ready block.
-  --token <token>   Opt-in access token for the web UI (off by default — secure via your network instead)
+  --token <token>   Explicit access token; gateway mode and network binds generate one when absent
   --qr              Print a terminal QR pairing the phone console (LAN IP + token)
   --rotate-token    Regenerate the stored fleet token (.fleet/token) before starting
   --tool-output <m> Tool output visibility in the console: off | reasons | full (default reasons)
@@ -325,6 +328,28 @@ function bestEffortPort(fleetDir: string): number {
   }
 }
 
+/** Persist the daemon bind host into .fleet/state.json so restarts replay it. */
+function persistDaemonHost(fleetDir: string, host: string): void {
+  try {
+    const statePath = join(fleetDir, ".fleet", "state.json");
+    let state: Record<string, unknown> = {};
+    try {
+      state = JSON.parse(readFileSync(statePath, "utf8")) as Record<
+        string,
+        unknown
+      >;
+    } catch {
+      // First boot: no state yet.
+    }
+    if (state.host === host) return;
+    state.host = host;
+    mkdirSync(join(fleetDir, ".fleet"), { recursive: true });
+    writeFileSync(statePath, JSON.stringify(state, null, 2));
+  } catch {
+    // Best-effort: host persistence must never block a start.
+  }
+}
+
 async function cmdStart(args: Args): Promise<void> {
   // Target resolution (issue 42): --fleet <name> resolves via the registry; a
   // path argument keeps working and registers implicitly under its basename.
@@ -359,6 +384,11 @@ async function cmdStart(args: Args): Promise<void> {
   }
   const json = args.flags.json === true;
   const daemonize = args.flags.daemon === true;
+  // Issue 51 follow-up: remember an explicit bind host so sanctioned restarts
+  // replay it instead of silently rebinding to 127.0.0.1.
+  if (typeof args.flags.host === "string" && args.flags.host !== "127.0.0.1") {
+    persistDaemonHost(dir, args.flags.host);
+  }
   // Issue 51: tee daemon output to .fleet/logs/daemon.log (size-capped).
   const logWriter = createRotatingLogWriter(
     join(dir, ".fleet", "logs"),
@@ -389,7 +419,6 @@ async function cmdStart(args: Args): Promise<void> {
     const host =
       typeof args.flags.host === "string" ? args.flags.host : "127.0.0.1";
     const displayHost = host === "0.0.0.0" ? "127.0.0.1" : host;
-    const token = readStoredToken(dir);
     const readyMs = Number(process.env.PI_TIDY_BOTS_DAEMON_READY_MS ?? "15000");
 
     // Issue 42 regression fix: with --port 0 the OS-assigned port is unknown
@@ -415,9 +444,21 @@ async function cmdStart(args: Args): Promise<void> {
       const probeHeaders: Record<string, string> = probeToken
         ? { authorization: `Bearer ${probeToken}` }
         : {};
+      let boundPort = 0;
+      if (portFlag === 0) {
+        try {
+          boundPort = Number(readFileSync(join(dir, ".fleet", "port"), "utf8"));
+        } catch {
+          /* The child has not reported its listener yet. */
+        }
+      }
       const port =
         record?.port ??
-        (portFlag !== undefined ? portFlag : bestEffortPort(dir));
+        (portFlag === 0
+          ? boundPort
+          : portFlag !== undefined
+            ? portFlag
+            : bestEffortPort(dir));
       if (port) {
         const url = `http://${displayHost}:${port}`;
         try {
@@ -480,6 +521,9 @@ async function cmdStart(args: Args): Promise<void> {
       );
     }
     const pid = readDaemonPid(dir) ?? child.pid ?? 0;
+    // The child can mint its required token during startup; the parent must
+    // return the credential that actually passed readiness, not a preboot read.
+    const token = readStoredToken(dir);
     if (json) {
       console.log(
         JSON.stringify(startReadinessPayload(readyUrl, readyPort, pid, token))
@@ -503,12 +547,14 @@ async function cmdStart(args: Args): Promise<void> {
   // Token resolution (issue 29 item 1): --rotate-token mints fresh; --token
   // persists an explicit one; --qr generates for pairing; and a non-loopback
   // bind ALWAYS carries a token (0.0.0.0 auto-enables auth).
+  const gatewayMode = loadFleetConfig(dir).gateway !== undefined;
   const resolution = resolveStartToken({
     fleetDir: dir,
     host,
     explicitToken,
     wantsQr,
     wantsRotate,
+    requireAuth: gatewayMode,
   });
   const resolvedToken = resolution.token;
   if (resolution.rotated) console.log(`rotated fleet token: ${resolvedToken}`);
@@ -579,25 +625,37 @@ async function cmdStart(args: Args): Promise<void> {
   // discoverable record (manifest may lack [fleet] port), and lifecycle
   // identity needs pid↔port binding before any signal.
   writeFileSync(join(dir, ".fleet", "port"), String(handle.port));
-  if (process.env.PI_TIDY_BOTS_DAEMON_CHILD !== "1") {
-    const releasePidFile = () => {
-      try {
-        if (readFileSync(pidFile, "utf8").trim() === String(process.pid))
-          rmSync(pidFile, { force: true });
-      } catch {
-        /* already gone */
+  const releasePidFile = () => {
+    try {
+      if (readFileSync(pidFile, "utf8").trim() === String(process.pid))
+        rmSync(pidFile, { force: true });
+    } catch {
+      /* already gone */
+    }
+  };
+  process.on("exit", releasePidFile);
+  // One shutdown path for foreground and daemonized starts. An earlier
+  // foreground listener called process.exit before handle.stop could run,
+  // leaving the fleet lock fresh and skipping server/child cleanup. Repeated
+  // signals share this in-flight shutdown instead of exiting half-way through.
+  let stopping = false;
+  const shutdown = () => {
+    if (stopping) return;
+    stopping = true;
+    void handle.stop().then(
+      () => {
+        releasePidFile();
+        process.exit(0);
+      },
+      (error: unknown) => {
+        console.error(`fleet shutdown failed: ${String(error)}`);
+        releasePidFile();
+        process.exit(1);
       }
-    };
-    process.on("exit", releasePidFile);
-    process.on("SIGINT", () => {
-      releasePidFile();
-      process.exit(0);
-    });
-    process.on("SIGTERM", () => {
-      releasePidFile();
-      process.exit(0);
-    });
-  }
+    );
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
   if (json) {
     // One clean readiness line on stdout — daemon chatter goes to stderr.
     console.log(
@@ -631,16 +689,11 @@ async function cmdStart(args: Args): Promise<void> {
       }
     }
     console.log(
-      "Ctrl-C stops the fleet. Sessions persist under .fleet/sessions/.\n"
+      gatewayMode
+        ? "Ctrl-C stops the fleet. Gateway receipts persist under .fleet/gateway.sqlite.\n"
+        : "Ctrl-C stops the fleet. Sessions persist under .fleet/sessions/.\n"
     );
   }
-  process.on("SIGINT", () => {
-    console.log("\nstopping fleet…");
-    void handle.stop().then(() => process.exit(0));
-  });
-  process.on("SIGTERM", () => {
-    void handle.stop().then(() => process.exit(0));
-  });
   await new Promise<never>(() => {});
 }
 
@@ -815,7 +868,8 @@ async function resolveManageableDaemon(
         }
       }
       const id = await identity(stop.pid);
-      if (id === "match") return { status: "manage", pid: stop.pid, from: stop.from };
+      if (id === "match")
+        return { status: "manage", pid: stop.pid, from: stop.from };
       return {
         status: "foreign-fleet",
         pid: stop.pid,
@@ -838,7 +892,8 @@ async function resolveManageableDaemon(
     const pid = match ? Number(match[1]) : undefined;
     if (pid !== undefined) {
       const check = verifyDaemonPid(pid);
-      if (check.kind === "alive-daemon") return { status: "manage", pid, from: "port" };
+      if (check.kind === "alive-daemon")
+        return { status: "manage", pid, from: "port" };
     }
   }
   return { status: "absent" };
@@ -855,7 +910,10 @@ async function stopFleetAt(dir: string): Promise<number> {
   if (resolved.status === "foreign-fleet") {
     throw new CliError(
       `refusing to signal pid ${resolved.pid}: it belongs to fleet ${resolved.fleetDir} (or is not serving) — not ${dir}. Concurrent-fleet ambiguity; investigate before stopping.`,
-      { exitCode: EXIT.conflict, remedy: "check pi-tidy-bots fleets; fix the pidfile or registry entry" }
+      {
+        exitCode: EXIT.conflict,
+        remedy: "check pi-tidy-bots fleets; fix the pidfile or registry entry",
+      }
     );
   }
   if (resolved.status === "absent" || resolved.status === "stale") {
@@ -878,11 +936,20 @@ async function stopFleetAt(dir: string): Promise<number> {
   } catch {
     // Died between the liveness probe and the signal - same as stopped.
   }
-  const graceful = await waitForReady(() => !pidAlive(stop.pid), 10_000, 200);
+  // 30s grace: an 11-bot fleet under load takes longer than 10s to tear down
+  // every child session; a premature SIGKILL strands state and pidfiles.
+  const graceful = await waitForReady(() => !pidAlive(stop.pid), 30_000, 200);
   if (!graceful) {
     process.kill(stop.pid, "SIGKILL");
     await waitForReady(() => !pidAlive(stop.pid), 3_000, 100);
   }
+  // Issue 178: pid death is not enough — SIGKILL / mid-exit leaves
+  // lock.json with a fresh heartbeat. Wait until the lock is gone or
+  // the holder pid is dead so the replacement boot can acquire it.
+  const lockClear = await waitForReady(() => isFleetLockFree(dir), 8_000, 100);
+  process.stderr.write(
+    `[stop] pid=${stop.pid} dead=${!pidAlive(stop.pid)} lockFree=${lockClear}\n`
+  );
   // The daemon is gone: clear its pidfile either way.
   rmSync(daemonPidPath(dir), { force: true });
   return stop.pid;
@@ -921,6 +988,19 @@ async function cmdRestart(args: Args, json: boolean): Promise<void> {
   // 2. Wait for the port to release before booting the replacement.
   const port = bestEffortPort(dir);
   await waitPortReleased(port, 10_000);
+  // Replay a persisted non-loopback bind host (issue 51): a sanctioned
+  // restart must not silently rebind the fleet to 127.0.0.1.
+  let host: string | undefined;
+  try {
+    const state = JSON.parse(
+      readFileSync(join(dir, ".fleet", "state.json"), "utf8")
+    ) as { host?: string };
+    if (typeof state.host === "string" && state.host !== "127.0.0.1") {
+      host = state.host;
+    }
+  } catch {
+    // No state file: default binding applies.
+  }
   // 3. Boot daemonized; the daemonize parent health-checks /api/fleet (with
   //    the preserved .fleet/token) before reporting ready. Spawned via the
   //    package bin (issue 51): native stripping first, tsx fallback resolved
@@ -931,7 +1011,7 @@ async function cmdRestart(args: Args, json: boolean): Promise<void> {
   //    flake).
   const child = spawn(
     process.execPath,
-    restartSpawnArgs(dir, port, fleetName),
+    restartSpawnArgs(dir, port, fleetName, host),
     {
       stdio: "inherit",
     }
@@ -956,9 +1036,8 @@ function cliEntry(): string {
 }
 
 /**
- * The package bin shim — the cwd-independent way to run this CLI. It prefers
- * Node's native type stripping (engines: >=22.19) and falls back to tsx via
- * require.resolve from the package itself, so it boots from ANY cwd.
+ * The package bin is the cwd-independent entry. Its bundled runtime dependency
+ * registers the TypeScript loader in-process, preserving argv and signal ownership.
  */
 export function binEntry(): string {
   return fileURLToPath(new URL("../bin/pi-tidy-bots.mjs", import.meta.url));
@@ -981,7 +1060,8 @@ export function daemonRespawnArgs(argv: string[]): string[] {
 export function restartSpawnArgs(
   dir: string,
   port: number,
-  fleetName?: string
+  fleetName?: string,
+  host?: string
 ): string[] {
   return [
     binEntry(),
@@ -991,6 +1071,7 @@ export function restartSpawnArgs(
     "--json",
     "--port",
     String(port),
+    ...(host ? ["--host", host] : []),
     ...(fleetName ? ["--fleet", fleetName] : []),
   ];
 }
@@ -1044,7 +1125,11 @@ async function cmdChat(args: Args): Promise<void> {
 export async function main(): Promise<void> {
   const [command, ...rest] = process.argv.slice(2);
   try {
-    const args = parseArgs(rest, command);
+    const globalFlags = command?.startsWith("-") === true;
+    const args = parseArgs(
+      globalFlags ? [command!, ...rest] : rest,
+      globalFlags ? undefined : command
+    );
     if (args.flags.version !== undefined) {
       printVersion(args.flags.json === true);
       return;
@@ -1054,6 +1139,29 @@ export async function main(): Promise<void> {
     if (command === "chat") return void (await cmdChat(args));
     if (command === "add") cmdAdd(args);
     if (command === "start") return void (await cmdStart(args));
+    if (command === "health") {
+      const { runHealthProbeCli } = await import("./health-probe.ts");
+      const argv = [
+        ...(typeof args.flags.url === "string"
+          ? ["--url", args.flags.url]
+          : args.positional[0]
+            ? [args.positional[0]]
+            : []),
+        ...(typeof args.flags.bot === "string"
+          ? ["--bot", args.flags.bot]
+          : []),
+        ...(typeof args.flags.token === "string"
+          ? ["--token", args.flags.token]
+          : []),
+        ...(typeof args.flags["stale-min"] === "string"
+          ? ["--stale-min", args.flags["stale-min"]]
+          : []),
+        ...(typeof args.flags["token-budget"] === "string"
+          ? ["--token-budget", args.flags["token-budget"]]
+          : []),
+      ];
+      process.exit(await runHealthProbeCli(argv));
+    }
     if (command === "status") {
       await cmdStatus(args, args.flags.json === true);
       return;

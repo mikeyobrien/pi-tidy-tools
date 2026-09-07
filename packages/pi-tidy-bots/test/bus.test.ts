@@ -83,7 +83,9 @@ test("coerceMessageMedia routes video/files to journal records (issue 110)", asy
     ]);
   }
   // application/* → same journaling.
-  const pdf = coerceMessageMedia([{ mediaType: "application/pdf", data: "JVBERiA=" }]);
+  const pdf = coerceMessageMedia([
+    { mediaType: "application/pdf", data: "JVBERiA=" },
+  ]);
   assert.equal(pdf.ok, true);
   if (pdf.ok)
     assert.deepEqual(pdf.attachments, [{ mediaType: "application/pdf" }]);

@@ -21,9 +21,7 @@ export interface GeneratedImage {
 }
 
 export type ImageProviderError =
-  | "missing_auth"
-  | "provider_failure"
-  | "unsupported_size";
+  "missing_auth" | "provider_failure" | "unsupported_size";
 
 export type ImageGenerateResult =
   | { ok: true; images: GeneratedImage[] }

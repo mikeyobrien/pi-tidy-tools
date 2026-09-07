@@ -186,7 +186,8 @@ export default async function bridge(pi: any): Promise<void> {
     ],
     parameters: Type.Object({
       summary: Type.String({
-        description: "One line, e.g. 'fixed the badge reason drop — re-landed as 93b927b'",
+        description:
+          "One line, e.g. 'fixed the badge reason drop — re-landed as 93b927b'",
       }),
     }),
     async execute(_toolCallId: string, params: { summary: string }) {
@@ -231,7 +232,10 @@ export default async function bridge(pi: any): Promise<void> {
       }
       return {
         content: [
-          { type: "text", text: "Summary attached to the latest completion entry." },
+          {
+            type: "text",
+            text: "Summary attached to the latest completion entry.",
+          },
         ],
         details: { attached: true },
       };

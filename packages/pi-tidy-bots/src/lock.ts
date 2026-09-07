@@ -56,6 +56,32 @@ function isFresh(holder: FleetLockHolder, staleMs: number): boolean {
   return Number.isFinite(age) && age < staleMs;
 }
 
+/** Signal-0 probe — a lock held by a dead pid is an orphan, not an owner. */
+function holderProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Issue 178: true when no *live* owner holds the fleet lock — missing file,
+ * stale heartbeat, or a holder pid that is already gone. Restart must not
+ * treat a dying/dead generation's leftover lock.json as a live owner.
+ */
+export function isFleetLockFree(
+  fleetDir: string,
+  staleMs: number = DEFAULT_STALE_MS
+): boolean {
+  const existing = readHolder(fleetDir);
+  if (!existing) return true;
+  if (!holderProcessAlive(existing.pid)) return true;
+  return !isFresh(existing, staleMs);
+}
+
 /** Atomically replace the lock file, then verify we still own it (race loser detects theft). */
 function writeHolder(fleetDir: string, holder: FleetLockHolder): boolean {
   const path = lockPath(fleetDir);
@@ -67,8 +93,10 @@ function writeHolder(fleetDir: string, holder: FleetLockHolder): boolean {
 }
 
 /**
- * Acquire the fleet session-ownership lock. Refuses while a fresh holder exists;
- * takes over a stale one (dead owner). Heartbeats every `heartbeatMs`.
+ * Acquire the fleet session-ownership lock. Refuses while a fresh *and live*
+ * holder exists; takes over a stale heartbeat or a dead-pid orphan
+ * (issue 178 — SIGKILL / mid-exit skips lock.release() but leaves a
+ * fresh heartbeat). Heartbeats every `heartbeatMs`.
  */
 export function acquireFleetLock(
   fleetDir: string,
@@ -79,7 +107,7 @@ export function acquireFleetLock(
   mkdirSync(join(fleetDir, ".fleet"), { recursive: true });
 
   const existing = readHolder(fleetDir);
-  if (existing && isFresh(existing, staleMs)) {
+  if (existing && !isFleetLockFree(fleetDir, staleMs)) {
     return { ok: false, holder: existing };
   }
 

@@ -18,10 +18,8 @@ import { join } from "node:path";
 // fires only on activity-bearing kinds; status pings (fire-and-forget UI)
 // and raw `event` frames never stamp.
 
-const runner = new URL(
-  "./fixtures/rpc/streaming-pi.mjs",
-  import.meta.url
-).pathname;
+const runner = new URL("./fixtures/rpc/streaming-pi.mjs", import.meta.url)
+  .pathname;
 
 async function waitFor(
   probe: () => Promise<boolean> | boolean,
@@ -76,7 +74,10 @@ setInterval(() => {
 `
     );
     const wrapper = join(fleetDir, "pi.sh");
-    writeFileSync(wrapper, `#!/bin/sh\\nexec node ${quiet}\\n`.replace("\\\\n", "\\n"));
+    writeFileSync(
+      wrapper,
+      `#!/bin/sh\\nexec node ${quiet}\\n`.replace("\\\\n", "\\n")
+    );
     writeFileSync(wrapper, "#!/bin/sh\nexec node " + quiet + "\n");
     spawnSync("chmod", ["+x", wrapper]);
     delete process.env.PTB_STUB_TRACE;

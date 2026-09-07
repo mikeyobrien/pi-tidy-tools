@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acquireFleetLock } from "../src/lock.ts";
+import { acquireFleetLock, isFleetLockFree } from "../src/lock.ts";
 
 function freshFleetDir(): string {
   const dir = mkdtempSync(join(tmpdir(), "pi-tidy-bots-lock-"));
@@ -68,4 +68,44 @@ test("stale lock is taken over by a new owner", async () => {
   const after = JSON.parse(readFileSync(path, "utf8"));
   assert.notEqual(after.birth, "dead-owner");
   if (acquired.ok) acquired.lock.release();
+});
+
+test("dead holder with a fresh heartbeat is an orphan (issue 178)", () => {
+  const dir = freshFleetDir();
+  const path = join(dir, ".fleet", "lock.json");
+  mkdirSync(join(dir, ".fleet"), { recursive: true });
+  writeFileSync(
+    path,
+    JSON.stringify({
+      pid: 999_999,
+      birth: "killed-mid-exit",
+      host: "local",
+      acquiredAt: new Date().toISOString(),
+      heartbeatAt: new Date().toISOString(),
+    })
+  );
+  assert.equal(
+    isFleetLockFree(dir, 10_000),
+    true,
+    "dead pid is free even when heartbeat is fresh"
+  );
+  const acquired = acquireFleetLock(dir, { heartbeatMs: 50, staleMs: 10_000 });
+  assert.ok(
+    acquired.ok,
+    "replacement boot must take over a dead holder's leftover lock"
+  );
+  const after = JSON.parse(readFileSync(path, "utf8"));
+  assert.notEqual(after.birth, "killed-mid-exit");
+  if (acquired.ok) acquired.lock.release();
+});
+
+test("live holder with a fresh heartbeat still refuses (issue 178)", () => {
+  const dir = freshFleetDir();
+  const first = acquireFleetLock(dir, { heartbeatMs: 50, staleMs: 10_000 });
+  assert.ok(first.ok);
+  assert.equal(isFleetLockFree(dir, 10_000), false, "live owner is not free");
+  const second = acquireFleetLock(dir, { heartbeatMs: 50, staleMs: 10_000 });
+  assert.ok(!second.ok, "must not steal from a live owner");
+  if (first.ok) first.lock.release();
+  assert.equal(isFleetLockFree(dir, 10_000), true, "release frees the lock");
 });

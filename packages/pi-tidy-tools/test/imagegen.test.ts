@@ -41,7 +41,9 @@ test("tool: fake provider writes files, returns paths only", async () => {
       providerId: "fake-a",
       outputRoot: out,
     });
-    const result = (await (tool as { execute: (id: string, params: unknown) => Promise<unknown> }).execute("t1", {
+    const result = (await (
+      tool as { execute: (id: string, params: unknown) => Promise<unknown> }
+    ).execute("t1", {
       prompt: "a tidy diagram",
       count: 2,
     })) as {
@@ -53,9 +55,16 @@ test("tool: fake provider writes files, returns paths only", async () => {
     for (const path of paths) {
       assert.ok(existsSync(path), `file written: ${path}`);
       assert.match(path, /\.png$/, "mediaType-derived extension");
-      assert.ok(!path.includes(process.env.HOME ?? "/Users"), "under output root");
+      assert.ok(
+        !path.includes(process.env.HOME ?? "/Users"),
+        "under output root"
+      );
     }
-    assert.equal(result.content[0]?.text, paths.join("\n"), "paths on the wire");
+    assert.equal(
+      result.content[0]?.text,
+      paths.join("\n"),
+      "paths on the wire"
+    );
     assert.ok(
       !JSON.stringify(result).includes(Buffer.from("fake").toString("base64")),
       "no inline image data"
@@ -75,7 +84,9 @@ test("tool: typed errors — unsupported size, provider failure, missing auth", 
       params: Record<string, unknown>
     ) => {
       const tool = buildGenerateImageTool({ providerId, outputRoot: out });
-      return (await (tool as { execute: (id: string, params: unknown) => Promise<unknown> }).execute("t", params)) as {
+      return (await (
+        tool as { execute: (id: string, params: unknown) => Promise<unknown> }
+      ).execute("t", params)) as {
         details: { error: string };
       };
     };

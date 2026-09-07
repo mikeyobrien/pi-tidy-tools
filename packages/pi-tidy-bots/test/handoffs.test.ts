@@ -355,11 +355,15 @@ test(
       );
       const part = turn?.parts?.find((p) => p.receipt?.name === "bb");
       assert.equal(part?.tool, "message_agent");
-      assert.deepEqual(part?.receipt, {
-        name: "bb",
-        avatar: "B",
-        title: "Worker",
-      }, "structured receipt from bot config");
+      assert.deepEqual(
+        part?.receipt,
+        {
+          name: "bb",
+          avatar: "B",
+          title: "Worker",
+        },
+        "structured receipt from bot config"
+      );
       assert.ok(
         (part?.reason ?? "").length <= 60,
         `reason bounded — got ${part?.reason?.length} chars`

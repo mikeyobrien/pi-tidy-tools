@@ -1,0 +1,116 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://tidy.invalid/backend-protocol/v1/manifest.schema.json",
+  "type": "object",
+  "properties": {
+    "manifestVersion": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)+$"
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "protocol": {
+      "type": "object",
+      "properties": {
+        "major": {
+          "const": 1
+        },
+        "minMinor": {
+          "const": 0
+        },
+        "maxMinor": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": ["major", "minMinor", "maxMinor"],
+      "additionalProperties": false
+    },
+    "entrypoint": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^/]"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["path", "args"],
+      "additionalProperties": false
+    },
+    "configSchema": {
+      "type": "string",
+      "minLength": 1
+    },
+    "runtime": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "testedVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "transport": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["name", "testedVersion", "transport"],
+      "additionalProperties": false
+    },
+    "requestedAccess": {
+      "type": "object",
+      "properties": {
+        "workspace": {
+          "enum": ["none", "read", "read-write"]
+        },
+        "nativeProfile": {
+          "type": "boolean"
+        },
+        "network": {
+          "type": "boolean"
+        },
+        "gatewayTools": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "fleet.discover",
+              "fleet.send",
+              "fleet.action.inspect",
+              "operator.enqueue",
+              "artifact.read"
+            ]
+          }
+        }
+      },
+      "required": ["workspace", "nativeProfile", "network", "gatewayTools"],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "manifestVersion",
+    "id",
+    "version",
+    "protocol",
+    "entrypoint",
+    "configSchema",
+    "runtime",
+    "requestedAccess"
+  ],
+  "additionalProperties": false
+}

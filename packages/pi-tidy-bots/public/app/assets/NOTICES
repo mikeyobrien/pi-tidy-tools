@@ -1593,6 +1593,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 --------------------------------------------------------------------------------
 connectivity_plus
+package_info_plus
+package_info_plus_platform_interface
 
 Copyright 2017 The Chromium Authors. All rights reserved.
 

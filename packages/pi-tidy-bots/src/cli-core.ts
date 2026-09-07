@@ -75,6 +75,8 @@ export function resolveStartToken(opts: {
   explicitToken?: string;
   wantsQr: boolean;
   wantsRotate: boolean;
+  /** Neutral gateway mode always requires authentication, including loopback. */
+  requireAuth?: boolean;
 }): StartTokenResolution {
   if (opts.wantsRotate)
     return { token: rotateStoredToken(opts.fleetDir), rotated: true };
@@ -87,7 +89,7 @@ export function resolveStartToken(opts: {
   // on loopback boots.
   const stored = readStoredToken(opts.fleetDir);
   if (stored) return { token: stored };
-  if (!isLoopbackHost(opts.host))
+  if (opts.requireAuth || !isLoopbackHost(opts.host))
     return { token: ensureStoredToken(opts.fleetDir).token };
   if (opts.wantsQr)
     return { token: ensureStoredToken(opts.fleetDir, undefined, true).token };
@@ -169,7 +171,9 @@ export function pickStopPid(
  * daemonized.
  */
 export function daemonCommandMatches(command: string): boolean {
-  return /pi-tidy-bots(\.mjs)?|cli\.ts/.test(command) && /\bstart\b/.test(command);
+  return (
+    /pi-tidy-bots(\.mjs)?|cli\.ts/.test(command) && /\bstart\b/.test(command)
+  );
 }
 
 export type DaemonIdentityCheck =
@@ -200,15 +204,21 @@ export async function probeDaemonIdentity(
     });
     if (!res.ok) return { kind: "unreachable" };
     const payload = (await res.json()) as { fleetDir?: string };
-    const reported = payload.fleetDir ? resolveLike(expectedDir, payload.fleetDir) : undefined;
-    if (reported === expectedDir) return { kind: "match", fleetDir: payload.fleetDir ?? "" };
+    const reported = payload.fleetDir
+      ? resolveLike(expectedDir, payload.fleetDir)
+      : undefined;
+    if (reported === expectedDir)
+      return { kind: "match", fleetDir: payload.fleetDir ?? "" };
     return { kind: "foreign-fleet", fleetDir: payload.fleetDir ?? "" };
   } catch {
     return { kind: "unreachable" };
   }
 }
 
-function resolveLike(expectedDir: string, reported: string): string | undefined {
+function resolveLike(
+  expectedDir: string,
+  reported: string
+): string | undefined {
   // Compare resolved paths without importing node:path resolve twice.
   return reported.replace(/\/$/, "") === expectedDir.replace(/\/$/, "")
     ? expectedDir

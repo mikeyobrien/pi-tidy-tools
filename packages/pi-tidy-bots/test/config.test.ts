@@ -6,8 +6,10 @@ import {
   loadFleetConfig,
   ConfigError,
   botDisclosure,
+  convertLegacyManifest,
 } from "../src/config.ts";
-import { scaffoldBot } from "../src/cli.ts";
+import { parse } from "smol-toml";
+import { scaffoldBot, restartSpawnArgs } from "../src/cli.ts";
 import {
   stripActionMarkers,
   attributionPrefix,
@@ -25,6 +27,59 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const fixtureFleet = new URL("./fixtures/fleet/", import.meta.url).pathname;
+
+test("legacy manifest conversion preserves bot values and adds only explicit bindings", () => {
+  const source = `title = "Fleet"\n[[bot]]\nname = "one"\ndir = "."\ntitle = "Primary"\napprove = true\nroutes = ["two"]\nmodel = "fixture/model"\nthinking = "high"\n[[bot.routines]]\nname = "daily"\nschedule = "0 9 * * *"\nprompt = "status"\n[[bot]]\nname = "two"\ndir = "."\nno_skills = true\n`;
+  const converted = convertLegacyManifest(source, {
+    registry: "registry.json",
+    backend: { one: "org.example.one", two: "org.example.two" },
+    environment: ["PATH"],
+  });
+  const before = parse(source) as Record<string, unknown>;
+  const after = parse(converted) as Record<string, unknown>;
+  assert.deepEqual(after.title, before.title);
+  assert.deepEqual(
+    (after.bot as Record<string, unknown>[]).map(
+      ({ backend: _backend, ...bot }) => bot
+    ),
+    before.bot
+  );
+  assert.deepEqual(after.gateway, {
+    registry: "registry.json",
+    environment: ["PATH"],
+    workspace_access: "none",
+    native_profile: false,
+    network: false,
+    gateway_tools: [],
+  });
+});
+
+test("legacy conversion rejects already migrated or ambiguously bound manifests", () => {
+  assert.throws(
+    () =>
+      convertLegacyManifest('[gateway]\nregistry="x"\n[[bot]]\nname="one"\n', {
+        registry: "registry.json",
+        backend: "org.example.backend",
+      }),
+    /already in gateway mode/
+  );
+  assert.throws(
+    () =>
+      convertLegacyManifest('[[bot]]\nname="one"\n', {
+        registry: "registry.json",
+        backend: { two: "org.example.backend" },
+      }),
+    /unknown bot/
+  );
+  assert.throws(
+    () =>
+      convertLegacyManifest('[[bot]]\nname="one"\n', {
+        registry: "registry.json",
+        backend: { one: "org.example.backend", typo: "org.example.other" },
+      }),
+    /unknown bot/
+  );
+});
 
 test("loadFleetConfig parses the fixture fleet with defaults", () => {
   const fleet = loadFleetConfig(fixtureFleet, { port: 4599 });
@@ -365,4 +420,37 @@ test("bridge never touches the child working directory (ADR 0002)", async () => 
   // Non-coupling contract: orchestration only — no cwd writes, no chdir.
   assert.ok(!/cwd\s*[:=]/.test(source), "bridge must not set child cwd");
   assert.ok(!source.includes("process.chdir"), "bridge must not chdir");
+});
+
+test("thinking rows validate against pi's level set and reach the config", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ptb-thinking-"));
+  try {
+    const botDir = join(dir, "atlas");
+    mkdirSync(botDir, { recursive: true });
+    writeFileSync(join(botDir, "AGENTS.md"), "# atlas\n");
+    writeFileSync(
+      join(dir, "bots.toml"),
+      `[[bot]]\nname = "atlas"\ndir = "atlas"\nthinking = "max"\n`
+    );
+    const fleet = loadFleetConfig(dir);
+    assert.equal(fleet.bots[0].thinking, "max");
+
+    writeFileSync(
+      join(dir, "bots.toml"),
+      `[[bot]]\nname = "atlas"\ndir = "atlas"\nthinking = "yolo"\n`
+    );
+    assert.throws(() => loadFleetConfig(dir), /thinking "yolo" must be one of/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("restartSpawnArgs replays a persisted host and omits it when absent", () => {
+  const dir = "/tmp/fleet-x";
+  const plain = restartSpawnArgs(dir, 4317);
+  assert.ok(!plain.includes("--host"), "no host flag when absent");
+  assert.equal(plain[plain.indexOf("--port") + 1], "4317");
+  const withHost = restartSpawnArgs(dir, 4317, undefined, "0.0.0.0");
+  assert.ok(withHost.includes("--host"));
+  assert.equal(withHost[withHost.indexOf("--host") + 1], "0.0.0.0");
 });

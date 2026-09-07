@@ -82,6 +82,32 @@ test("probeDaemonIdentity fingerprints the serving fleet (issue 154)", async () 
   );
 });
 
+test("probeDaemonIdentity carries the stored token (issue 178)", async () => {
+  const { probeDaemonIdentity } = await import("../src/cli-core.ts");
+  let seenAuth: string | null = null;
+  const authed = (_url: string, init?: RequestInit) => {
+    seenAuth = new Headers(init?.headers).get("authorization");
+    return Promise.resolve(
+      new Response(JSON.stringify({ fleetDir: "/fleets/alpha" }), {
+        status: 200,
+      })
+    );
+  };
+  assert.deepEqual(
+    await probeDaemonIdentity(4000, "/fleets/alpha", authed, "sekrit"),
+    { kind: "match", fleetDir: "/fleets/alpha" }
+  );
+  assert.equal(seenAuth, "Bearer sekrit", "token rides the identity probe");
+
+  const unauthorized = () =>
+    Promise.resolve(new Response("nope", { status: 401 }));
+  assert.deepEqual(
+    await probeDaemonIdentity(4000, "/fleets/alpha", unauthorized),
+    { kind: "unreachable" },
+    "401 without credentials is not a foreign-fleet match"
+  );
+});
+
 test("daemonCommandMatches recognizes bin and source daemons only (issue 135)", async () => {
   const { daemonCommandMatches, verifyDaemonPid } =
     await import("../src/cli-core.ts");

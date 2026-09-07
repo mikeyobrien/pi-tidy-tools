@@ -22,6 +22,7 @@ import {
 import { DAEMON_REVISION } from "./revision.ts";
 import { loadFleetConfig, ConfigError, NAME_PATTERN } from "./config.ts";
 import { createRotatingLogWriter } from "./logs.ts";
+import { isFleetLockFree } from "./lock.ts";
 import {
   closestFlag,
   CliError,
@@ -917,6 +918,13 @@ async function stopFleetAt(dir: string): Promise<number> {
     process.kill(stop.pid, "SIGKILL");
     await waitForReady(() => !pidAlive(stop.pid), 3_000, 100);
   }
+  // Issue 178: pid death is not enough — SIGKILL / mid-exit leaves
+  // lock.json with a fresh heartbeat. Wait until the lock is gone or
+  // the holder pid is dead so the replacement boot can acquire it.
+  const lockClear = await waitForReady(() => isFleetLockFree(dir), 8_000, 100);
+  process.stderr.write(
+    `[stop] pid=${stop.pid} dead=${!pidAlive(stop.pid)} lockFree=${lockClear}\n`
+  );
   // The daemon is gone: clear its pidfile either way.
   rmSync(daemonPidPath(dir), { force: true });
   return stop.pid;

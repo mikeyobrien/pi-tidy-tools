@@ -3,22 +3,101 @@ import test from "node:test";
 import {
   chmod,
   copyFile,
+  cp,
   mkdir,
   mkdtemp,
   rm,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { digestArtifact } from "../src/gateway/registry.ts";
 import {
   immutableReceiptMatches,
   matchingEffectLines,
+  noCompletedAssistant,
   normalizeConformanceTrace,
+  postNativeEofMatches,
   publicEventEvidence,
   runLocalConformance,
 } from "../src/conformance.ts";
+
+const pythonCandidate = "/opt/homebrew/opt/python@3.14/bin/python3.14";
+const python =
+  process.env.TIDY_TEST_PYTHON ??
+  (existsSync(pythonCandidate) ? pythonCandidate : "python3");
+const pythonSdk = fileURLToPath(
+  new URL("../sdk/python/tidy_backend_sdk", import.meta.url)
+);
+const pythonBackend = fileURLToPath(
+  new URL("./fixtures/gateway-python/backend.py", import.meta.url)
+);
+
+async function pythonCrashArtifact(
+  root: string
+): Promise<{ registry: string; pluginId: string }> {
+  const artifact = join(root, "python-plugin");
+  await mkdir(join(artifact, "sdk"), { recursive: true });
+  await cp(pythonSdk, join(artifact, "sdk", "tidy_backend_sdk"), {
+    recursive: true,
+    filter: (path) => !path.includes("__pycache__"),
+  });
+  await copyFile(pythonBackend, join(artifact, "backend.py"));
+  await writeFile(
+    join(artifact, "plugin"),
+    `#!/bin/sh\nexec ${python} -B "$(dirname "$0")/backend.py"\n`
+  );
+  await chmod(join(artifact, "plugin"), 0o700);
+  await writeFile(
+    join(artifact, "backend.json"),
+    JSON.stringify({
+      manifestVersion: 1,
+      id: "org.example.python",
+      version: "1.0.0",
+      protocol: { major: 1, minMinor: 0, maxMinor: 0 },
+      entrypoint: { path: "plugin", args: [] },
+      configSchema: "config.schema.json",
+      runtime: {
+        name: "independent-python",
+        testedVersion: "fixture",
+        transport: "stdio",
+      },
+      requestedAccess: {
+        workspace: "none",
+        nativeProfile: false,
+        network: false,
+        gatewayTools: [],
+      },
+    })
+  );
+  await writeFile(
+    join(artifact, "config.schema.json"),
+    JSON.stringify({
+      type: "object",
+      properties: { mode: { type: "string" } },
+      additionalProperties: false,
+    })
+  );
+  const registry = join(root, "python-registry.json");
+  await writeFile(
+    registry,
+    JSON.stringify({
+      registryVersion: 1,
+      plugins: [
+        {
+          id: "org.example.python",
+          version: "1.0.0",
+          artifactPath: "python-plugin",
+          sha256: await digestArtifact(artifact),
+          enabled: true,
+        },
+      ],
+    })
+  );
+  return { registry, pluginId: "org.example.python" };
+}
 
 test("local conformance runner uses the shipped daemon with an explicit pinned fixture", async () => {
   const root = await mkdtemp(join(tmpdir(), "tidy-conformance-test-"));
@@ -156,6 +235,53 @@ test("local conformance runner uses the shipped daemon with an explicit pinned f
   }
 });
 
+test("runner proves post-native-write Python EOF remains uncertain and is never replayed", async () => {
+  const root = await mkdtemp(join(tmpdir(), "tidy-conformance-python-eof-"));
+  try {
+    const { registry, pluginId } = await pythonCrashArtifact(root);
+    const report = await runLocalConformance({
+      registryPath: registry,
+      pluginId,
+      config: { mode: "crash-submit" },
+      fixture: {
+        version: 1,
+        cells: [
+          {
+            id: "python-post-write-eof",
+            kind: "post_native_eof",
+            operationId: "python-eof",
+            text: "lost native response",
+            effect: {
+              file: "native-calls.jsonl",
+              contains: '"kind": "submit", "operationId": "python-eof"',
+              expectedOccurrences: 1,
+            },
+            expect: {
+              status: 202,
+              execution: "unknown",
+              observation: "reconciliation_required",
+            },
+          },
+        ],
+      },
+    });
+    assert.deepEqual(
+      report.cells.map((cell) => cell.status),
+      ["passed"]
+    );
+    assert.equal((report.cells[0].evidence.nativeEffects as any).count, 1);
+    assert.equal(report.cells[0].evidence.noCompletedAssistant as any, true);
+    assert.deepEqual(report.scope.exercised, [
+      "C03",
+      "L10",
+      "C04.post_write_eof",
+      "C05.post_write_eof_recovery",
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("shipped conformance export loads its runtime entrypoint", async () => {
   const runtime = await import(
     new URL("../src/conformance.mjs", import.meta.url).href
@@ -209,6 +335,87 @@ test("conformance trace normalization preserves ID relationships and event corre
   assert.equal(
     (publicEventEvidence(matched, "op", expected) as any).terminalFinalCount,
     1
+  );
+});
+
+test("EOF public completion evidence ignores unrelated finals and rejects the correlated assistant turn", () => {
+  assert.equal(
+    noCompletedAssistant(
+      [
+        { type: "append", entry: { operationId: "op", role: "user" } },
+        { type: "bubble", phase: "final", turnId: "unrelated" },
+      ],
+      "op"
+    ),
+    true
+  );
+  assert.equal(
+    noCompletedAssistant(
+      [
+        {
+          type: "append",
+          entry: { operationId: "op", role: "assistant", turnId: "turn-op" },
+        },
+        { type: "bubble", phase: "final", turnId: "turn-op" },
+      ],
+      "op"
+    ),
+    false
+  );
+});
+
+test("post-native EOF matching rejects false completion and a second native write", () => {
+  const receipt = {
+    fleetId: "fleet",
+    botId: "bot",
+    conversationId: "conversation",
+    bindingId: "binding",
+    bindingRevision: "revision",
+    operationId: "op",
+    userEntryId: "entry",
+    execution: "unknown",
+    observation: "reconciliation_required",
+  };
+  const expected = {
+    status: 202,
+    execution: "unknown" as const,
+    observation: "reconciliation_required" as const,
+  };
+  assert.equal(
+    postNativeEofMatches(
+      { status: 202, body: receipt },
+      receipt,
+      { ...receipt, execution: "ended" },
+      expected,
+      ["native"],
+      ["native"],
+      true
+    ),
+    false
+  );
+  assert.equal(
+    postNativeEofMatches(
+      { status: 202, body: receipt },
+      receipt,
+      receipt,
+      expected,
+      ["native"],
+      ["native", "native"],
+      true
+    ),
+    false
+  );
+  assert.equal(
+    postNativeEofMatches(
+      { status: 202, body: receipt },
+      receipt,
+      receipt,
+      expected,
+      ["native"],
+      ["native"],
+      false
+    ),
+    false
   );
 });
 

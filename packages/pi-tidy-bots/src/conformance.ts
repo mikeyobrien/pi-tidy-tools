@@ -9,14 +9,18 @@ import { nonempty, object, type JsonObject } from "./gateway/protocol.ts";
 export type ConformanceStatus = "passed" | "failed" | "unsupported" | "not-run";
 export interface LocalConformanceCell {
   id: string;
-  kind: "message";
+  kind: "message" | "post_native_eof";
   operationId: string;
   text: string;
   retry?: "same" | "conflict";
   effect?: { file: string; expectedOccurrences: number; contains: string };
   /** Public stream predicates; one fixture bot executes cells serially. */
   events?: { minFrames: number; terminalFinals: 1 };
-  expect: { status: number; execution?: "ended" | "failed" | "cancelled" };
+  expect: {
+    status: number;
+    execution?: "ended" | "failed" | "cancelled" | "unknown";
+    observation?: "complete" | "reconciliation_required";
+  };
   skip?: boolean;
 }
 export interface LocalConformanceFixture {
@@ -97,7 +101,7 @@ function validFixture(value: LocalConformanceFixture): void {
     value.cells.some(
       (cell) =>
         !nonempty(cell.id) ||
-        cell.kind !== "message" ||
+        !["message", "post_native_eof"].includes(cell.kind) ||
         !nonempty(cell.operationId) ||
         typeof cell.text !== "string" ||
         !object(cell.expect) ||
@@ -110,7 +114,11 @@ function validFixture(value: LocalConformanceFixture): void {
         (cell.events !== undefined &&
           (!Number.isInteger(cell.events.minFrames) ||
             cell.events.minFrames < 1 ||
-            cell.events.terminalFinals !== 1))
+            cell.events.terminalFinals !== 1)) ||
+        (cell.kind === "post_native_eof" &&
+          (!cell.effect ||
+            cell.expect.execution !== "unknown" ||
+            cell.expect.observation !== "reconciliation_required"))
     )
   )
     throw new Error("Invalid local conformance fixture");
@@ -123,17 +131,20 @@ function validFixture(value: LocalConformanceFixture): void {
 }
 async function waitFor(
   fetchReceipt: () => Promise<JsonObject>,
-  execution: string
+  execution: string,
+  observation?: string
 ): Promise<JsonObject> {
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
     const receipt = await fetchReceipt();
-    if (receipt.execution === execution) return receipt;
+    if (
+      receipt.execution === execution &&
+      (observation === undefined || receipt.observation === observation)
+    )
+      return receipt;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  throw new Error(
-    "Conformance receipt did not reach its expected terminal state"
-  );
+  throw new Error("Conformance receipt did not reach its expected state");
 }
 
 interface PublicTrace {
@@ -261,6 +272,65 @@ async function waitForEffect(
   }
   throw new Error("Fixture write evidence did not settle");
 }
+async function stableEffect(
+  path: string,
+  contains: string,
+  expectedOccurrences: number
+): Promise<string> {
+  const first = await waitForEffect(path, contains, expectedOccurrences);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  const second = await readFile(path, "utf8");
+  if (
+    JSON.stringify(matchingEffectLines(first, contains)) !==
+    JSON.stringify(matchingEffectLines(second, contains))
+  )
+    throw new Error("Fixture native write changed during recovery observation");
+  return second;
+}
+/** A public final is relevant only when an assistant entry establishes this operation's turn identity. */
+export function noCompletedAssistant(
+  trace: JsonObject[],
+  operationId: string
+): boolean {
+  const assistantTurns = trace.flatMap((frame) =>
+    object(frame.entry) &&
+    frame.entry.operationId === operationId &&
+    frame.entry.role === "assistant" &&
+    typeof frame.entry.turnId === "string"
+      ? [String(frame.entry.turnId)]
+      : []
+  );
+  return (
+    assistantTurns.length === 0 ||
+    !trace.some(
+      (frame) =>
+        frame.type === "bubble" &&
+        frame.phase === "final" &&
+        assistantTurns.includes(String(frame.turnId))
+    )
+  );
+}
+export function postNativeEofMatches(
+  first: { status: number; body: JsonObject },
+  before: JsonObject,
+  after: JsonObject,
+  expected: LocalConformanceCell["expect"],
+  effectBefore: string[],
+  effectAfter: string[],
+  noCompletedAssistant: boolean
+): boolean {
+  return (
+    first.status === expected.status &&
+    before.execution === "unknown" &&
+    before.observation === "reconciliation_required" &&
+    after.execution === "unknown" &&
+    after.observation === "reconciliation_required" &&
+    immutableReceiptMatches(first.body, before) &&
+    immutableReceiptMatches(before, after) &&
+    JSON.stringify(effectBefore) === JSON.stringify(effectAfter) &&
+    noCompletedAssistant
+  );
+}
 export function immutableReceiptMatches(
   first: JsonObject,
   terminal: JsonObject
@@ -326,12 +396,14 @@ export async function runLocalConformance(
   const cells: LocalConformanceReceipt[] = [];
   let report: LocalConformanceReport | undefined;
   try {
-    handle = await startFleet({
-      dir: directory,
-      port: 0,
-      token: "local-conformance-token",
-      log() {},
-    });
+    const launch = () =>
+      startFleet({
+        dir: directory,
+        port: 0,
+        token: "local-conformance-token",
+        log() {},
+      });
+    handle = await launch();
     const request = async (path: string, init: RequestInit = {}) => {
       const response = await fetch(handle!.url + path, {
         ...init,
@@ -368,7 +440,7 @@ export async function runLocalConformance(
       "x-tidy-client-contract": "2",
       "x-tidy-binding-revision": String(binding.bindingRevision),
     };
-    const publicTrace = await collectPublicTrace(handle.url);
+    let publicTrace = await collectPublicTrace(handle.url);
     try {
       for (const cell of options.fixture.cells) {
         if (cell.skip) {
@@ -399,6 +471,135 @@ export async function runLocalConformance(
             }),
           });
         try {
+          if (cell.kind === "post_native_eof") {
+            const traceStart = publicTrace.frames.length;
+            const initialBootId = publicTrace.frames.find(
+              (frame) => frame.type === "hello"
+            )?.bootId;
+            const first = await submit(cell.text);
+            const inspect = () =>
+              request(
+                `/api/bots/fixture/operations/${encodeURIComponent(cell.operationId)}`
+              ).then((value) => value.body);
+            const before = await waitFor(
+              inspect,
+              "unknown",
+              "reconciliation_required"
+            );
+            const effectPath = join(
+              directory,
+              ".fleet",
+              "plugins",
+              String(binding.bindingId),
+              cell.effect!.file
+            );
+            const beforeFile = await stableEffect(
+              effectPath,
+              cell.effect!.contains,
+              cell.effect!.expectedOccurrences
+            );
+            const beforeEffects = matchingEffectLines(
+              beforeFile,
+              cell.effect!.contains
+            );
+            const beforeTrace = publicTrace.frames.slice(traceStart);
+            publicTrace.close();
+            await handle!.stop();
+            handle = await launch();
+            const recoveredBinding = (
+              await request("/api/bots/fixture/capabilities")
+            ).body;
+            if (
+              !object(recoveredBinding) ||
+              !nonempty(recoveredBinding.bindingId) ||
+              !nonempty(recoveredBinding.conversationId)
+            )
+              throw new Error(
+                "Conformance recovery did not reach supervisor readiness"
+              );
+            publicTrace = await collectPublicTrace(handle.url);
+            const recoveryBootId = publicTrace.frames.find(
+              (frame) => frame.type === "hello"
+            )?.bootId;
+            const sameBinding =
+              recoveredBinding.bindingId === binding.bindingId &&
+              recoveredBinding.bindingRevision === binding.bindingRevision &&
+              recoveredBinding.conversationId === binding.conversationId;
+            const rosterReady = publicTrace.frames.some(
+              (frame) =>
+                frame.type === "roster" &&
+                Array.isArray(frame.bots) &&
+                frame.bots.some(
+                  (bot) =>
+                    object(bot) && bot.name === "fixture" && bot.online === true
+                )
+            );
+            const supervisorReady =
+              sameBinding &&
+              rosterReady &&
+              nonempty(initialBootId) &&
+              nonempty(recoveryBootId) &&
+              initialBootId !== recoveryBootId;
+            if (!supervisorReady)
+              throw new Error(
+                "Conformance recovery lacks a new ready supervisor with the original binding"
+              );
+            const after = await waitFor(
+              inspect,
+              "unknown",
+              "reconciliation_required"
+            );
+            const afterFile = await stableEffect(
+              effectPath,
+              cell.effect!.contains,
+              cell.effect!.expectedOccurrences
+            );
+            const afterEffects = matchingEffectLines(
+              afterFile,
+              cell.effect!.contains
+            );
+            const recoveryTrace = publicTrace.frames.slice();
+            const noAssistantCompletion = noCompletedAssistant(
+              [...beforeTrace, ...recoveryTrace],
+              cell.operationId
+            );
+            const matched = postNativeEofMatches(
+              first,
+              before,
+              after,
+              cell.expect,
+              beforeEffects,
+              afterEffects,
+              noAssistantCompletion
+            );
+            cells.push({
+              id: cell.id,
+              status: matched ? "passed" : "failed",
+              evidence: {
+                firstStatus: first.status,
+                recoveryReady: supervisorReady,
+                recoveryState: "ready",
+                noCompletedAssistant: noAssistantCompletion,
+                nativeEffects: {
+                  file: cell.effect!.file,
+                  count: afterEffects.length,
+                  unchanged:
+                    JSON.stringify(beforeEffects) ===
+                    JSON.stringify(afterEffects),
+                },
+                receipts: normalizeConformanceTrace({
+                  first: first.body,
+                  before,
+                  after,
+                }) as JsonObject,
+                events: normalizeConformanceTrace({
+                  beforeRestart: beforeTrace,
+                  afterRestart: recoveryTrace,
+                }) as JsonObject,
+              },
+            });
+            continue;
+          }
           const traceStart = publicTrace.frames.length;
           const first = await submit(cell.text);
           const receipt = cell.expect.execution
@@ -517,6 +718,9 @@ export async function runLocalConformance(
     const eventCells = options.fixture.cells
       .filter((cell) => cell.events && !cell.skip)
       .map((cell) => cell.id);
+    const eofCells = options.fixture.cells
+      .filter((cell) => cell.kind === "post_native_eof" && !cell.skip)
+      .map((cell) => cell.id);
     report = {
       scope: {
         mode: "local_disposable",
@@ -534,8 +738,12 @@ export async function runLocalConformance(
           "C03",
           "L10",
           ...(eventCells.length ? ["C05.public_ordered_terminal"] : []),
+          ...(eofCells.length
+            ? ["C04.post_write_eof", "C05.post_write_eof_recovery"]
+            : []),
         ],
         eventCells,
+        eofCells,
         notRun: [
           "C01",
           "C02",

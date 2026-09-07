@@ -182,6 +182,9 @@ export type RpcEvent =
       options?: string[];
       message?: string;
       placeholder?: string;
+      prefill?: string;
+      timeoutMs?: number;
+      invalidTimeout?: boolean;
     }
   | { kind: "event"; raw: Record<string, unknown> };
 
@@ -795,6 +798,19 @@ export class RpcSession {
               typeof parsed.placeholder === "string"
                 ? parsed.placeholder
                 : undefined,
+            prefill:
+              typeof parsed.prefill === "string" ? parsed.prefill : undefined,
+            timeoutMs:
+              Number.isSafeInteger(parsed.timeout) &&
+              Number(parsed.timeout) > 0 &&
+              Number(parsed.timeout) <= 24 * 60 * 60 * 1000
+                ? Number(parsed.timeout)
+                : undefined,
+            invalidTimeout:
+              parsed.timeout !== undefined &&
+              (!Number.isSafeInteger(parsed.timeout) ||
+                Number(parsed.timeout) < 0 ||
+                Number(parsed.timeout) > 24 * 60 * 60 * 1000),
           });
         }
         return;

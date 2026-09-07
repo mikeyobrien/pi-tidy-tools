@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile, realpath, mkdir, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -44,7 +45,7 @@ export const PI_CAPABILITIES: CapabilityDescriptor = {
     cancel: "cooperative",
     steer: false,
   },
-  interactions: { permissions: "none", questions: false },
+  interactions: { permissions: "none", questions: true },
   configuration: { model: true, thinking: true, compact: true },
   fleetTools: true,
 };
@@ -175,6 +176,11 @@ interface Turn {
   order: number;
   message?: { id: string; text: string; revision: number };
 }
+interface PendingQuestion {
+  id: string;
+  descriptor: JsonObject;
+  submitted: boolean;
+}
 interface CompactionControl {
   operationId: string;
   turnId: string;
@@ -194,6 +200,7 @@ export function startPiAdapter(): PluginRuntime {
   let conversationId: string | undefined;
   let nativeReference: string | undefined;
   let active: Turn | undefined;
+  const questions = new Map<string, PendingQuestion>();
   let compacting: CompactionControl | undefined;
   let preparing = false;
   let settingsRevision = 0;
@@ -213,6 +220,22 @@ export function startPiAdapter(): PluginRuntime {
       type,
       payload,
     });
+  };
+  const closeQuestions = (status: "expired" | "unknown") => {
+    for (const question of questions.values()) {
+      emit(
+        "interaction.resolved",
+        {
+          ...question.descriptor,
+          status: question.submitted ? "unknown" : status,
+          ...(question.submitted
+            ? { transport: "submitted", consumption: "unconfirmed" }
+            : {}),
+        },
+        { interactionId: question.id }
+      );
+    }
+    questions.clear();
   };
   const loseObservation = () => {
     if (observationLost || stopping) return;
@@ -426,8 +449,52 @@ export function startPiAdapter(): PluginRuntime {
       )
         return;
       if (event.kind === "ui_request") {
-        // Interactive native UI is outside the granted fleet-tool profile.
-        loseObservation();
+        if (
+          !active ||
+          !active.started ||
+          !active.nativeStarted ||
+          !["select", "confirm", "input", "editor"].includes(event.method) ||
+          event.invalidTimeout ||
+          questions.has(event.id) ||
+          questions.size >= 16
+        )
+          throw new Error("Uncorrelated native UI request");
+        const descriptor: JsonObject = {
+          kind: "question",
+          bindingId: context.initialization.bindingId,
+          instanceId: context.initialization.instanceId,
+          operationId: active.operationId,
+          turnId: active.turnId,
+          interactionId: event.id,
+          revision: "1",
+          optionsDigest: `sha256:${createHash("sha256")
+            .update(
+              JSON.stringify([
+                event.method,
+                event.title,
+                event.options ?? [],
+                event.message ?? "",
+                event.placeholder ?? "",
+                event.prefill ?? "",
+              ])
+            )
+            .digest("hex")}`,
+          method: event.method,
+          title: event.title,
+          ...(event.options ? { options: event.options } : {}),
+          ...(event.message !== undefined ? { message: event.message } : {}),
+          ...(event.placeholder !== undefined
+            ? { placeholder: event.placeholder }
+            : {}),
+          ...(event.prefill !== undefined ? { prefill: event.prefill } : {}),
+          ...(event.timeoutMs !== undefined
+            ? {
+                expiresAt: new Date(Date.now() + event.timeoutMs).toISOString(),
+              }
+            : {}),
+        };
+        questions.set(event.id, { id: event.id, descriptor, submitted: false });
+        emit("interaction.requested", descriptor, { interactionId: event.id });
         return;
       }
       if (!active)
@@ -440,7 +507,9 @@ export function startPiAdapter(): PluginRuntime {
       } else if (event.kind === "tool_start") {
         if (
           !active.nativeStarted ||
-          !["fleet_send", "fleet_discover"].includes(event.toolName) ||
+          !["fleet_send", "fleet_discover", "ask_user_question"].includes(
+            event.toolName
+          ) ||
           !nonempty(event.toolCallId) ||
           active.tools.has(event.toolCallId) ||
           active.tools.size >= 4096
@@ -453,7 +522,9 @@ export function startPiAdapter(): PluginRuntime {
             label:
               event.toolName === "fleet_send"
                 ? "Send fleet task"
-                : "Discover fleet peers",
+                : event.toolName === "fleet_discover"
+                  ? "Discover fleet peers"
+                  : "Ask user a question",
             state: "running",
           },
           { toolCallId: event.toolCallId }
@@ -521,6 +592,7 @@ export function startPiAdapter(): PluginRuntime {
             throw new Error("Native history not settled");
           await retainSettings(state);
           if (stopping || observationLost || active !== turn) return;
+          closeQuestions("expired");
           emit("turn.terminal", {
             execution: turn.execution,
             observation: "complete",
@@ -623,7 +695,7 @@ export function startPiAdapter(): PluginRuntime {
           bridgePath: fileURLToPath(
             new URL("./fleet-extension.mjs", import.meta.url)
           ),
-          tools: ["fleet_discover", "fleet_send"],
+          tools: ["fleet_discover", "fleet_send", "ask_user_question"],
           isolatedEnv: configuration.environment,
           daemonUrl: "",
           childSecret: "",
@@ -1117,6 +1189,64 @@ export function startPiAdapter(): PluginRuntime {
             return { disposition: "rejected" };
           }
           return { disposition: "unknown" };
+        }
+      },
+      async "interaction.respond"(params) {
+        if (
+          !native?.alive ||
+          observationLost ||
+          stopping ||
+          params.kind !== "question" ||
+          !nonempty(params.interactionId)
+        )
+          return { status: "unknown" };
+        const question = questions.get(String(params.interactionId));
+        if (!question || question.submitted) return { status: "expired" };
+        const descriptor = question.descriptor;
+        for (const key of [
+          "bindingId",
+          "instanceId",
+          "targetOperationId",
+          "turnId",
+          "interactionId",
+          "optionsDigest",
+          "revision",
+        ]) {
+          const expected =
+            descriptor[key === "targetOperationId" ? "operationId" : key];
+          if (params[key] !== expected) return { status: "stale" };
+        }
+        if (descriptor.method === "confirm") {
+          if (
+            typeof params.confirmed !== "boolean" ||
+            params.cancelled !== undefined
+          )
+            return { status: "unsupported" };
+        } else if (
+          params.cancelled !== true &&
+          (typeof params.value !== "string" ||
+            (descriptor.method === "select" &&
+              !(descriptor.options as string[]).includes(params.value)))
+        )
+          return { status: "unsupported" };
+        try {
+          native.respondUi(
+            String(params.interactionId),
+            params.cancelled === true
+              ? { cancel: true }
+              : descriptor.method === "confirm"
+                ? { confirmed: Boolean(params.confirmed) }
+                : { value: String(params.value) }
+          );
+          question.submitted = true;
+          return {
+            status: "unknown",
+            transport: "submitted",
+            consumption: "unconfirmed",
+          };
+        } catch {
+          loseObservation();
+          return { status: "unknown" };
         }
       },
       async "operation.cancel"(params, ctx) {

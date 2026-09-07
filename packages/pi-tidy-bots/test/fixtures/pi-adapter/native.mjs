@@ -66,6 +66,19 @@ log({
   profile: process.env.PI_CODING_AGENT_DIR,
 });
 const send = (frame) => process.stdout.write(JSON.stringify(frame) + "\n");
+const uiPending = new Map();
+let uiCounter = 0;
+const askUi = (method, title, args = {}) => {
+  const id = `ui-fixture-${++uiCounter}`;
+  send({ type: "extension_ui_request", id, method, title, ...args });
+  return new Promise((resolve) => uiPending.set(id, resolve));
+};
+ctx.ui = {
+  select: (title, options) => askUi("select", title, { options }),
+  confirm: (title, message) => askUi("confirm", title, { message }),
+  input: (title, placeholder) => askUi("input", title, { placeholder }),
+  editor: (title, prefill) => askUi("editor", title, { prefill }),
+};
 const response = (request, data, success = true) =>
   send({
     type: "response",
@@ -105,6 +118,7 @@ const settle = () => {
   send({ type: "agent_settled" });
 };
 let held = false;
+let pendingUi;
 let compacting = false;
 let heldCompaction;
 let compactMode = "success";
@@ -185,6 +199,76 @@ for await (const line of createInterface({ input: process.stdin })) {
       compactMode = request.message.slice(1, -1).replace("compact-", "");
     send({ type: "agent_start" });
     await handlers.get("agent_start")?.({}, ctx);
+    if (request.message === "[ask-user]") {
+      void (async () => {
+        const askArgs = {
+          method: "select",
+          title: "Choose a release window",
+          options: ["Morning", "Evening"],
+        };
+        send({
+          type: "tool_execution_start",
+          toolCallId: "ask-tool-call",
+          toolName: "ask_user_question",
+          args: askArgs,
+        });
+        const result = await tools
+          .get("ask_user_question")
+          .execute("ask-tool-call", askArgs, undefined, undefined, ctx);
+        send({
+          type: "tool_execution_end",
+          toolCallId: "ask-tool-call",
+          result,
+          isError: false,
+        });
+        start();
+        final(result.content[0].text);
+        settle();
+      })();
+      continue;
+    }
+    const uiMode = {
+      "[ui-select]": {
+        method: "select",
+        title: "Choose a release window",
+        options: ["Morning", "Evening"],
+      },
+      "[ui-confirm]": {
+        method: "confirm",
+        title: "Confirm release",
+        message: "Publish the release?",
+      },
+      "[ui-input]": {
+        method: "input",
+        title: "Release name",
+        placeholder: "name",
+      },
+      "[ui-editor]": {
+        method: "editor",
+        title: "Release notes",
+        prefill: "Initial notes",
+      },
+      "[ui-timeout]": {
+        method: "select",
+        title: "Short lived question",
+        options: ["Only"],
+        timeout: 10,
+      },
+    }[request.message];
+    if (uiMode) {
+      pendingUi = { id: `ui-${request.id}`, request };
+      send({ type: "extension_ui_request", id: pendingUi.id, ...uiMode });
+      if (uiMode.timeout) {
+        setTimeout(() => {
+          if (!pendingUi || pendingUi.request !== request) return;
+          pendingUi = undefined;
+          start();
+          final("UI cancelled");
+          settle();
+        }, uiMode.timeout + 5);
+      }
+      continue;
+    }
     if (
       ["[fleet-send]", "[fleet-no-events]", "[fleet-send:hermes]"].includes(
         request.message
@@ -313,6 +397,31 @@ for await (const line of createInterface({ input: process.stdin })) {
       settle();
     }
     response(request);
+  } else if (request.type === "extension_ui_response") {
+    const resolveUi = uiPending.get(request.id);
+    if (resolveUi) {
+      uiPending.delete(request.id);
+      resolveUi(
+        request.cancelled
+          ? undefined
+          : request.confirmed !== undefined
+            ? request.confirmed
+            : request.value
+      );
+      continue;
+    }
+    if (!pendingUi || request.id !== pendingUi.id) continue;
+    pendingUi = undefined;
+    const answer = request.cancelled
+      ? "cancelled"
+      : request.confirmed !== undefined
+        ? request.confirmed
+          ? "confirmed"
+          : "declined"
+        : (request.value ?? "");
+    start();
+    final(`UI ${answer}`);
+    settle();
   }
 }
 handlers.get("session_shutdown")?.({}, ctx);

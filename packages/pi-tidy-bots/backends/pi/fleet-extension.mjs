@@ -10,7 +10,7 @@ import {
   validateLimits,
 } from "@mobrienv/pi-tidy-bots/plugin-protocol";
 
-const names = ["fleet_discover", "fleet_send"];
+const names = ["ask_user_question", "fleet_discover", "fleet_send"];
 const valid = (value) =>
   nonempty(value) &&
   value.trim() &&
@@ -21,7 +21,7 @@ const unavailable = () =>
 
 /** Explicit Pi 0.85 extension. FD 3 is supplied only by the owning adapter.
  * No credentials, task text or gateway operation IDs enter argv or environment.
- * The adapter must use --tools fleet_discover,fleet_send: no-builtin-tools alone
+ * The adapter must use --tools ask_user_question,fleet_discover,fleet_send: no-builtin-tools alone
  * disables built-ins but retains their definitions in Pi's getAllTools().
  */
 export default function fleetExtension(pi) {
@@ -68,7 +68,11 @@ export default function fleetExtension(pi) {
     write({
       jsonrpc: "2.0",
       id: initId,
-      result: { nativeSessionId: sessionId, tools: names, bridgeVersion: 1 },
+      result: {
+        nativeSessionId: sessionId,
+        tools: ["fleet_discover", "fleet_send"],
+        bridgeVersion: 1,
+      },
     });
     initId = undefined;
     initialized = true;
@@ -166,7 +170,98 @@ export default function fleetExtension(pi) {
   });
   pi.on("session_shutdown", fail);
 
-  for (const name of names)
+  pi.registerTool({
+    name: "ask_user_question",
+    label: "Ask user question",
+    description:
+      "Ask one bounded generic UI question; this is not tool permission approval.",
+    parameters: Type.Object(
+      {
+        method: Type.Union([
+          Type.Literal("select"),
+          Type.Literal("confirm"),
+          Type.Literal("input"),
+          Type.Literal("editor"),
+        ]),
+        title: Type.String(),
+        options: Type.Optional(Type.Array(Type.String())),
+        message: Type.Optional(Type.String()),
+        placeholder: Type.Optional(Type.String()),
+        prefill: Type.Optional(Type.String()),
+      },
+      { additionalProperties: false }
+    ),
+    async execute(toolCallId, args, signal, _onUpdate, ctx) {
+      if (
+        closed ||
+        !initialized ||
+        !active ||
+        !valid(toolCallId) ||
+        ctx.sessionManager.getSessionId() !== sessionId ||
+        signal?.aborted ||
+        !object(args) ||
+        typeof args.method !== "string" ||
+        !["select", "confirm", "input", "editor"].includes(args.method) ||
+        typeof args.title !== "string" ||
+        args.title.length > 16384
+      )
+        throw unavailable();
+      const allowed = new Set([
+        "method",
+        "title",
+        "options",
+        "message",
+        "placeholder",
+        "prefill",
+      ]);
+      if (Object.keys(args).some((key) => !allowed.has(key)))
+        throw unavailable();
+      if (args.method === "select") {
+        if (
+          !Array.isArray(args.options) ||
+          args.options.length < 1 ||
+          args.options.length > 32 ||
+          !args.options.every(
+            (value) => typeof value === "string" && value.length <= 4096
+          ) ||
+          new Set(args.options).size !== args.options.length
+        )
+          throw unavailable();
+      } else if (args.options !== undefined) throw unavailable();
+      for (const key of ["message", "placeholder", "prefill"])
+        if (
+          args[key] !== undefined &&
+          (typeof args[key] !== "string" || args[key].length > 16384)
+        )
+          throw unavailable();
+      if (!ctx.ui) throw unavailable();
+      let result;
+      if (args.method === "select")
+        result = await ctx.ui.select(args.title, args.options, { signal });
+      else if (args.method === "confirm")
+        result = await ctx.ui.confirm(args.title, args.message ?? "", {
+          signal,
+        });
+      else if (args.method === "input")
+        result = await ctx.ui.input(args.title, args.placeholder, { signal });
+      else result = await ctx.ui.editor(args.title, args.prefill);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              status: "answered",
+              method: args.method,
+              result: result ?? null,
+            }),
+          },
+        ],
+        details: {},
+      };
+    },
+  });
+
+  for (const name of ["fleet_discover", "fleet_send"])
     pi.registerTool({
       name,
       label: name === "fleet_send" ? "Send fleet task" : "Discover fleet peers",

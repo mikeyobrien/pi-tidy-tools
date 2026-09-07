@@ -2176,3 +2176,67 @@ test("artifact bytes expire with bodies while retained operation identity reject
     "operation_expired"
   );
 });
+
+test("generic question admission is immutable, instance-fenced, and never stores applied consumption", (t) => {
+  const f = fixture(t);
+  accepted(f.journal, f.lease);
+  const turnId = f.journal.getOperationRecord(key())!.turnId!;
+  const descriptor: JsonObject = {
+    bindingId: binding.bindingId,
+    instanceId: "question-instance",
+    operationId: key().operationId,
+    turnId,
+    interactionId: "ui-1",
+    optionsDigest: "sha256:question-options",
+    revision: "1",
+    kind: "question",
+    method: "select",
+    title: "Choose",
+    options: ["A", "B"],
+    expiresAt: new Date(1050).toISOString(),
+  };
+  f.journal.commitPluginEvent(
+    f.lease,
+    source(f.lease, 1, {
+      type: "interaction.requested",
+      turnId,
+      interactionId: "ui-1",
+      payload: descriptor,
+    }),
+    { question: { request: descriptor } }
+  );
+  const decision = intent("question-answer", {
+    kind: "question",
+    payload: {
+      ...descriptor,
+      operationId: "question-answer",
+      targetOperationId: descriptor.operationId,
+      value: "B",
+    },
+  });
+  const first = f.journal.admitQuestion(f.lease, decision, "question-instance");
+  assert.equal(first.created, true);
+  assert.deepEqual(
+    f.journal.admitQuestion(f.lease, decision, "question-instance"),
+    { receipt: first.receipt, created: false }
+  );
+  code(
+    () =>
+      f.journal.admitQuestion(
+        f.lease,
+        { ...decision, payload: { ...decision.payload, value: "A" } },
+        "question-instance"
+      ),
+    "operation_conflict"
+  );
+  code(
+    () =>
+      f.journal.admitQuestion(
+        f.lease,
+        { ...decision, operationId: "wrong-instance" },
+        "different-instance"
+      ),
+    "operation_conflict"
+  );
+  assert.equal(f.journal.getQuestion(descriptor)?.resolution, undefined);
+});

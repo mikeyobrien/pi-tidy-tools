@@ -647,13 +647,31 @@ export class PluginRuntime {
       );
     if (
       method === "interaction.respond" &&
-      !["instanceId", "interactionId", "optionId"].every((key) =>
-        nonempty(params[key])
+      !["instanceId", "interactionId"].every((key) => nonempty(params[key]))
+    )
+      throw new ProtocolError(
+        "invalid_request",
+        "Interaction decision requires exact process and request identity"
+      );
+    if (
+      method === "interaction.respond" &&
+      params.kind === "permission" &&
+      !nonempty(params.optionId)
+    )
+      throw new ProtocolError(
+        "invalid_request",
+        "Permission decision requires an exact option identity"
+      );
+    if (
+      method === "interaction.respond" &&
+      !(
+        params.kind === undefined ||
+        ["permission", "question"].includes(String(params.kind))
       )
     )
       throw new ProtocolError(
         "invalid_request",
-        "Interaction decision requires exact process, request and option identity"
+        "Interaction decision kind is unavailable"
       );
     const key = `${method === "session.open" ? "open" : "operation"}:${identifier}`;
     const existing = this.store!.reservation(key);

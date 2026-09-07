@@ -382,6 +382,19 @@ export async function startGatewayFleet(
           );
           return;
         }
+        const question = /^questions\/([^/]+)$/.exec(action);
+        if (request.method === "POST" && question) {
+          json(
+            response,
+            202,
+            application.admitQuestion(
+              name,
+              decodeURIComponent(question[1]),
+              await body(request)
+            )
+          );
+          return;
+        }
         throw new ProtocolError(
           "capability_unavailable",
           "This control is unavailable for the effective binding"

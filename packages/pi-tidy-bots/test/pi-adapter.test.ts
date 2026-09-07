@@ -1727,3 +1727,569 @@ test("Pi configuration readback and checkpoint failures leave uncertainty", asyn
     }
   }
 });
+
+test("Pi generic UI response is one bridge write, remains consumption-unconfirmed, and permits the next turn", async () => {
+  const f = await setup();
+  try {
+    const host = await f.start();
+    await f.open(host);
+    assert.equal(host.capabilities.interactions.permissions, "none");
+    assert.equal(host.capabilities.interactions.questions, true);
+    assert.deepEqual(await f.submit(host, "[ui-select]", "ui-target"), {
+      disposition: "accepted",
+    });
+    await until(() =>
+      f.events.some(
+        (event) =>
+          event.type === "interaction.requested" ||
+          event.type === "observation.gap"
+      )
+    );
+    assert.ok(
+      f.events.some((event) => event.type === "interaction.requested"),
+      JSON.stringify(f.events)
+    );
+    const descriptor = f.events.find(
+      (event) => event.type === "interaction.requested"
+    )!.payload as JsonObject;
+    assert.equal(descriptor.kind, "question");
+    assert.equal(descriptor.method, "select");
+    assert.deepEqual(descriptor.options, ["Morning", "Evening"]);
+    const answer = {
+      kind: "question",
+      operationId: "ui-answer",
+      conversationId: "conversation",
+      bindingId: descriptor.bindingId,
+      instanceId: descriptor.instanceId,
+      targetOperationId: descriptor.operationId,
+      turnId: descriptor.turnId,
+      interactionId: descriptor.interactionId,
+      optionsDigest: descriptor.optionsDigest,
+      revision: descriptor.revision,
+      value: "Evening",
+      payloadDigest: "ui-answer-digest",
+      policyRevision: "policy",
+    };
+    assert.deepEqual(await host.request("interaction.respond", answer), {
+      status: "unknown",
+      transport: "submitted",
+      consumption: "unconfirmed",
+    });
+    await until(() => f.events.some((event) => event.type === "turn.terminal"));
+    assert.equal(
+      (await f.effects()).filter((e) => e.command === "extension_ui_response")
+        .length,
+      1
+    );
+    assert.deepEqual(await f.submit(host, "after question", "after-question"), {
+      disposition: "accepted",
+    });
+    await until(
+      () =>
+        f.events.filter((event) => event.type === "turn.terminal").length === 2
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("startFleet admits Pi questions through exact HTTP controls without certifying native consumption", async () => {
+  const f = await setup();
+  let handle: FleetHandle | undefined;
+  try {
+    await writeFile(
+      join(f.directory, "AGENTS.md"),
+      "Disposable Pi UI HTTP fixture.\n"
+    );
+    await writeFile(
+      join(f.directory, "bots.toml"),
+      [
+        "[gateway]",
+        'registry = "registry.json"',
+        'environment = ["PATH"]',
+        'workspace_access = "read-write"',
+        "native_profile = true",
+        "network = true",
+        'gateway_tools = ["fleet.discover", "fleet.send", "artifact.read"]',
+        "[[bot]]",
+        'name = "pi"',
+        'dir = "."',
+        'backend = "tidy.pi"',
+        "[bot.backend_config]",
+        ...Object.entries(f.config).map(
+          ([key, value]) => `${key} = ${JSON.stringify(value)}`
+        ),
+        "",
+      ].join("\n")
+    );
+    handle = await startFleet({
+      dir: f.directory,
+      port: 0,
+      token: "pi-ui-token",
+      log() {},
+    });
+    const request = async (path: string, options: RequestInit = {}) => {
+      const response = await fetch(handle!.url + path, {
+        ...options,
+        headers: { authorization: "Bearer pi-ui-token", ...options.headers },
+      });
+      return {
+        status: response.status,
+        body: (await response.json()) as Record<string, any>,
+      };
+    };
+    const binding = (await request("/api/bots/pi/capabilities")).body;
+    assert.equal(binding.capabilities.interactions.questions, true);
+    assert.equal(binding.capabilities.interactions.permissions, "none");
+    const headers = {
+      "content-type": "application/json",
+      "x-tidy-client-contract": "2",
+      "x-tidy-binding-revision": binding.bindingRevision,
+    };
+    const submit = (operationId: string, text: string) =>
+      request("/api/bots/pi/message", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          operationId,
+          clientMessageId: operationId,
+          conversationId: binding.conversationId,
+          text,
+        }),
+      });
+    const initial = await submit("ui-http-target", "[ask-user]");
+    assert.equal(initial.status, 202, JSON.stringify(initial.body));
+    await until(async () =>
+      Boolean(
+        (
+          (await request("/api/bots/pi/transcript")).body
+            .transcript as JsonObject[]
+        ).find((entry) => entry.question)?.question
+      )
+    );
+    const question = (
+      (await request("/api/bots/pi/transcript")).body.transcript as JsonObject[]
+    ).find((entry) => entry.question)!.question as JsonObject;
+    const answer = {
+      kind: "question",
+      operationId: "ui-http-answer",
+      conversationId: binding.conversationId,
+      bindingId: question.bindingId,
+      instanceId: question.instanceId,
+      targetOperationId: question.operationId,
+      turnId: question.turnId,
+      interactionId: question.interactionId,
+      optionsDigest: question.optionsDigest,
+      revision: question.revision,
+      value: "Evening",
+    };
+    const decide = (body = answer) =>
+      request(
+        `/api/bots/pi/questions/${encodeURIComponent(String(question.interactionId))}`,
+        { method: "POST", headers, body: JSON.stringify(body) }
+      );
+    assert.equal((await decide()).status, 202);
+    await until(
+      async () =>
+        (await request("/api/bots/pi/operations/ui-http-answer")).body
+          .execution === "ended"
+    );
+    const decision = (await request("/api/bots/pi/operations/ui-http-answer"))
+      .body;
+    assert.deepEqual(decision.result, {
+      status: "unknown",
+      transport: "submitted",
+      consumption: "unconfirmed",
+    });
+    assert.deepEqual((await decide()).body, decision);
+    assert.equal((await decide({ ...answer, value: "Morning" })).status, 409);
+    await until(
+      async () =>
+        (await request("/api/bots/pi/operations/ui-http-target")).body
+          .execution === "ended"
+    );
+    assert.equal(
+      (await submit("ui-http-followup", "after HTTP question")).status,
+      202
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(
+      (await request("/api/bots/pi/operations/ui-http-followup")).body
+        .execution,
+      "ended",
+      JSON.stringify(
+        (await request("/api/bots/pi/operations/ui-http-followup")).body
+      )
+    );
+    for (const [mode, response] of [
+      ["[ui-confirm]", { confirmed: true }],
+      ["[ui-input]", { value: "alpha" }],
+      ["[ui-editor]", { value: "notes" }],
+    ] as const) {
+      const target = `http-${mode.slice(4, -1)}`;
+      assert.equal((await submit(target, mode)).status, 202);
+      await until(async () =>
+        Boolean(
+          (
+            (await request("/api/bots/pi/transcript")).body
+              .transcript as JsonObject[]
+          ).find((entry) => entry.question?.operationId === target)
+        )
+      );
+      const q = (
+        (await request("/api/bots/pi/transcript")).body
+          .transcript as JsonObject[]
+      ).find((entry) => entry.question?.operationId === target)!
+        .question as JsonObject;
+      const body = {
+        kind: "question",
+        operationId: `${target}-answer`,
+        conversationId: binding.conversationId,
+        bindingId: q.bindingId,
+        instanceId: q.instanceId,
+        targetOperationId: q.operationId,
+        turnId: q.turnId,
+        interactionId: q.interactionId,
+        optionsDigest: q.optionsDigest,
+        revision: q.revision,
+        ...response,
+      };
+      assert.equal(
+        (
+          await request(
+            `/api/bots/pi/questions/${encodeURIComponent(String(q.interactionId))}`,
+            { method: "POST", headers, body: JSON.stringify(body) }
+          )
+        ).status,
+        202
+      );
+      await until(
+        async () =>
+          (await request(`/api/bots/pi/operations/${target}`)).body
+            .execution === "ended"
+      );
+    }
+
+    const effectsBeforeTimeout = (await f.effects()).filter(
+      (effect) => effect.command === "extension_ui_response"
+    ).length;
+    assert.equal(
+      (await submit("ui-timeout-target", "[ui-timeout]")).status,
+      202
+    );
+    await until(async () =>
+      Boolean(
+        (
+          (await request("/api/bots/pi/transcript")).body
+            .transcript as JsonObject[]
+        ).find((entry) => entry.question?.operationId === "ui-timeout-target")
+      )
+    );
+    const timed = (
+      (await request("/api/bots/pi/transcript")).body.transcript as JsonObject[]
+    ).find((entry) => entry.question?.operationId === "ui-timeout-target")!
+      .question as JsonObject;
+    assert.equal(typeof timed.expiresAt, "string");
+    await until(
+      async () =>
+        (await request("/api/bots/pi/operations/ui-timeout-target")).body
+          .execution === "ended"
+    );
+    const late = {
+      kind: "question",
+      operationId: "ui-timeout-late",
+      conversationId: binding.conversationId,
+      bindingId: timed.bindingId,
+      instanceId: timed.instanceId,
+      targetOperationId: timed.operationId,
+      turnId: timed.turnId,
+      interactionId: timed.interactionId,
+      optionsDigest: timed.optionsDigest,
+      revision: timed.revision,
+      expiresAt: timed.expiresAt,
+      value: "Only",
+    };
+    assert.equal(
+      (
+        await request(
+          `/api/bots/pi/questions/${encodeURIComponent(String(timed.interactionId))}`,
+          { method: "POST", headers, body: JSON.stringify(late) }
+        )
+      ).status,
+      410
+    );
+    assert.equal(
+      (await f.effects()).filter(
+        (effect) => effect.command === "extension_ui_response"
+      ).length,
+      effectsBeforeTimeout
+    );
+  } finally {
+    await handle?.stop();
+    await f.cleanup();
+  }
+});
+
+test("startFleet fences persisted Pi questions across daemon replacement without replaying native responses", async () => {
+  const f = await setup();
+  let handle: FleetHandle | undefined;
+  try {
+    await writeFile(
+      join(f.directory, "AGENTS.md"),
+      "Disposable Pi question recovery fixture.\n"
+    );
+    await writeFile(
+      join(f.directory, "bots.toml"),
+      [
+        "[gateway]",
+        'registry = "registry.json"',
+        'environment = ["PATH"]',
+        'workspace_access = "read-write"',
+        "native_profile = true",
+        "network = true",
+        'gateway_tools = ["fleet.discover", "fleet.send", "artifact.read"]',
+        "[[bot]]",
+        'name = "pi"',
+        'dir = "."',
+        'backend = "tidy.pi"',
+        "[bot.backend_config]",
+        ...Object.entries(f.config).map(
+          ([key, value]) => `${key} = ${JSON.stringify(value)}`
+        ),
+        "",
+      ].join("\n")
+    );
+    const boot = async () =>
+      (handle = await startFleet({
+        dir: f.directory,
+        port: 0,
+        token: "pi-question-recovery-token",
+        log() {},
+      }));
+    const request = async (path: string, options: RequestInit = {}) => {
+      const response = await fetch(handle!.url + path, {
+        ...options,
+        headers: {
+          authorization: "Bearer pi-question-recovery-token",
+          ...options.headers,
+        },
+      });
+      return {
+        status: response.status,
+        body: (await response.json()) as Record<string, any>,
+      };
+    };
+    const headers = (binding: Record<string, any>) => ({
+      "content-type": "application/json",
+      "x-tidy-client-contract": "2",
+      "x-tidy-binding-revision": binding.bindingRevision,
+    });
+    const ready = () =>
+      until(async () =>
+        Boolean((await request("/api/fleet")).body.bots?.[0]?.online)
+      );
+    const submit = (
+      binding: Record<string, any>,
+      operationId: string,
+      text: string
+    ) =>
+      request("/api/bots/pi/message", {
+        method: "POST",
+        headers: headers(binding),
+        body: JSON.stringify({
+          operationId,
+          clientMessageId: operationId,
+          conversationId: binding.conversationId,
+          text,
+        }),
+      });
+    const questionFor = async (operationId: string) => {
+      await until(async () =>
+        Boolean(
+          (
+            (await request("/api/bots/pi/transcript")).body
+              .transcript as JsonObject[]
+          ).find((entry) => entry.question?.operationId === operationId)
+        )
+      );
+      return (
+        (await request("/api/bots/pi/transcript")).body
+          .transcript as JsonObject[]
+      ).find((entry) => entry.question?.operationId === operationId)!
+        .question as Record<string, any>;
+    };
+    const answerFor = (
+      binding: Record<string, any>,
+      question: Record<string, any>,
+      operationId: string
+    ) => ({
+      kind: "question",
+      operationId,
+      conversationId: binding.conversationId,
+      bindingId: question.bindingId,
+      instanceId: question.instanceId,
+      targetOperationId: question.operationId,
+      turnId: question.turnId,
+      interactionId: question.interactionId,
+      optionsDigest: question.optionsDigest,
+      revision: question.revision,
+      value: "Evening",
+    });
+    const respond = (
+      binding: Record<string, any>,
+      question: Record<string, any>,
+      body: Record<string, any>
+    ) =>
+      request(
+        `/api/bots/pi/questions/${encodeURIComponent(String(question.interactionId))}`,
+        {
+          method: "POST",
+          headers: headers(binding),
+          body: JSON.stringify(body),
+        }
+      );
+
+    await boot();
+    await ready();
+    let binding = (await request("/api/bots/pi/capabilities")).body;
+    // A fully settled target produces Pi's inspected checkpoint, so the next
+    // daemon can launch a replacement native session from verified history.
+    assert.equal(
+      (await submit(binding, "restart-submitted", "[ui-select]")).status,
+      202
+    );
+    const submittedQuestion = await questionFor("restart-submitted");
+    const submittedAnswer = answerFor(
+      binding,
+      submittedQuestion,
+      "restart-submitted-answer"
+    );
+    assert.equal(
+      (await respond(binding, submittedQuestion, submittedAnswer)).status,
+      202
+    );
+    await until(
+      async () =>
+        (await request("/api/bots/pi/operations/restart-submitted")).body
+          .execution === "ended"
+    );
+    const canonical = (
+      await request("/api/bots/pi/operations/restart-submitted-answer")
+    ).body;
+    assert.deepEqual(canonical.result, {
+      status: "unknown",
+      transport: "submitted",
+      consumption: "unconfirmed",
+    });
+    const writesBeforeSubmittedRestart = (await f.effects()).filter(
+      (effect) => effect.command === "extension_ui_response"
+    ).length;
+    await handle.stop();
+    await boot();
+    await ready();
+    binding = (await request("/api/bots/pi/capabilities")).body;
+    const retried = await respond(binding, submittedQuestion, submittedAnswer);
+    assert.equal(retried.status, 202, JSON.stringify(retried.body));
+    assert.deepEqual(retried.body, canonical);
+    assert.equal(
+      (await f.effects()).filter(
+        (effect) => effect.command === "extension_ui_response"
+      ).length,
+      writesBeforeSubmittedRestart,
+      "a persisted submitted answer retry must not replay the native response"
+    );
+    assert.equal(
+      (
+        await submit(
+          binding,
+          "restart-after-submitted",
+          "after submitted restart"
+        )
+      ).status,
+      202
+    );
+    await until(
+      async () =>
+        (await request("/api/bots/pi/operations/restart-after-submitted")).body
+          .execution === "ended"
+    );
+
+    // An unfinished native turn deliberately has no checkpoint. Replacement
+    // therefore refuses readiness; the old question is never targeted at a
+    // different native instance and the journal cannot replay its answer.
+    assert.equal(
+      (await submit(binding, "restart-pending", "[ui-select]")).status,
+      202
+    );
+    const pending = await questionFor("restart-pending");
+    const writesBeforePendingRestart = (await f.effects()).filter(
+      (effect) => effect.command === "extension_ui_response"
+    ).length;
+    await handle.stop();
+    await boot();
+    await until(
+      async () => (await request("/api/fleet")).body.bots?.[0]?.online === false
+    );
+    const stale = await respond(
+      binding,
+      pending,
+      answerFor(binding, pending, "restart-pending-answer")
+    );
+    assert.equal(stale.status, 503, JSON.stringify(stale.body));
+    assert.equal(stale.body.error, "session_unavailable");
+    assert.equal(
+      (await f.effects()).filter(
+        (effect) => effect.command === "extension_ui_response"
+      ).length,
+      writesBeforePendingRestart,
+      "an old pending question must never write after replacement refusal"
+    );
+    const pendingReceipt = (
+      await request("/api/bots/pi/operations/restart-pending")
+    ).body;
+    assert.equal(
+      pendingReceipt.execution,
+      "unknown",
+      JSON.stringify(pendingReceipt)
+    );
+    assert.equal(pendingReceipt.observation, "reconciliation_required");
+    assert.equal(pendingReceipt.result, undefined);
+  } finally {
+    await handle?.stop();
+    await f.cleanup();
+  }
+});
+
+test("owned ask_user_question bridge settles after a generic UI response", async () => {
+  const f = await setup();
+  try {
+    const h = await f.start();
+    await f.open(h);
+    await f.submit(h, "[ask-user]", "ask-debug");
+    await until(() => f.events.some((e) => e.type === "interaction.requested"));
+    const d = f.events.find((e) => e.type === "interaction.requested")!
+      .payload as JsonObject;
+    await h.request("interaction.respond", {
+      kind: "question",
+      operationId: "ask-debug-answer",
+      payloadDigest: "x",
+      policyRevision: "p",
+      conversationId: "conversation",
+      bindingId: d.bindingId,
+      instanceId: d.instanceId,
+      targetOperationId: d.operationId,
+      turnId: d.turnId,
+      interactionId: d.interactionId,
+      optionsDigest: d.optionsDigest,
+      revision: d.revision,
+      value: "Evening",
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    assert.ok(
+      f.events.some((e) => e.type === "turn.terminal"),
+      JSON.stringify(f.events)
+    );
+  } finally {
+    await f.cleanup();
+  }
+});

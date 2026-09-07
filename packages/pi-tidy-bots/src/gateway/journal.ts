@@ -10,6 +10,14 @@ import {
   type PermissionRecord,
   type PermissionProjection,
 } from "./permissions.ts";
+import {
+  questionKey,
+  questionRequest,
+  questionResolution,
+  matchQuestionDecision,
+  type QuestionRecord,
+  type QuestionProjection,
+} from "./questions.ts";
 
 /** Gateway storage is certified against this engine, rather than a best-effort substitute. */
 export const GATEWAY_SQLITE_VERSION = "3.53.4";
@@ -208,6 +216,7 @@ export interface CompletionDelivery {
 }
 export interface EventProjection {
   permission?: PermissionProjection;
+  question?: QuestionProjection;
   entries?: JsonObject[];
   operation?: OperationDisposition;
   completion?: CompletionDelivery;
@@ -348,6 +357,10 @@ function resolved(receipt: OperationReceipt): boolean {
     ["applied", "expired", "cancelled", "failed"].includes(
       String(receipt.result?.status)
     ) ||
+    (receipt.kind === "question" &&
+      receipt.result?.status === "unknown" &&
+      receipt.result?.transport === "submitted" &&
+      receipt.result?.consumption === "unconfirmed") ||
     (receipt.kind === "cancel" && receipt.result?.status === "requested")
   );
 }
@@ -1842,6 +1855,159 @@ export class GatewayJournal {
       return result;
     });
   }
+
+  getQuestion(scope: JsonObject): QuestionRecord | null {
+    const key = questionKey(scope);
+    const row = this.prepare("SELECT value FROM gateway_meta WHERE key=?").get(
+      key
+    );
+    if (!row) return null;
+    try {
+      const record = JSON.parse(String(row.value)) as QuestionRecord;
+      if (
+        questionKey(record.descriptor) !== key ||
+        canonicalJson(questionRequest(record.descriptor)) !==
+          canonicalJson(record.descriptor)
+      )
+        fail("corrupt_storage", "Retained question identity is invalid");
+      if (record.resolution)
+        questionResolution(record.resolution, record.descriptor);
+      return record;
+    } catch {
+      return fail(
+        "corrupt_storage",
+        "Retained question evidence is unreadable"
+      );
+    }
+  }
+  private saveQuestion(record: QuestionRecord): void {
+    this.prepare(
+      "INSERT INTO gateway_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+    ).run(questionKey(record.descriptor), canonicalJson(record));
+  }
+  /** Retire native futures lost with an instance without claiming native denial. */
+  closeQuestions(
+    lease: WriterLease,
+    binding: ConversationBinding,
+    botName: string,
+    keepInstanceId?: string
+  ): void {
+    this.write(lease, () => {
+      this.conversation(binding);
+      const rows = this.prepare(
+        "SELECT value FROM gateway_meta WHERE key LIKE 'question_v1:%'"
+      ).all();
+      for (const row of rows) {
+        const saved = parseObject(row.value);
+        const descriptor = saved.descriptor as JsonObject;
+        if (descriptor?.bindingId !== binding.bindingId) continue;
+        const record = this.getQuestion(descriptor)!;
+        if (descriptor.instanceId === keepInstanceId || record.resolution)
+          continue;
+        const decisionKey = {
+          ...binding,
+          operationId: record.decisionOperationId ?? "",
+        };
+        const decision = record.decisionOperationId
+          ? this.operationRow(decisionKey)
+          : undefined;
+        if (record.decisionOperationId && !decision)
+          fail("corrupt_storage", "Retained question decision is missing");
+        const uncertain =
+          decision &&
+          decision.delivery !== "queued" &&
+          decision.delivery !== "rejected";
+        const resolution = questionResolution(
+          {
+            ...descriptor,
+            status: uncertain ? "unknown" : "expired",
+          },
+          descriptor
+        );
+        if (decision?.delivery === "queued")
+          this.applyDisposition(decisionKey, {
+            delivery: "rejected",
+            execution: "not_started",
+            observation: "complete",
+            result: { status: "expired" },
+            evidence: "question_instance_lost_before_dispatch",
+          });
+        record.resolution = resolution;
+        this.saveQuestion(record);
+        const entry: JsonObject = {
+          id: payloadDigest({
+            question: questionKey(descriptor),
+            resolution,
+          }),
+          operationId: descriptor.operationId,
+          turnId: descriptor.turnId,
+          role: "assistant",
+          origin: "bot",
+          text: "",
+          ts: new Date(this.now()).toISOString(),
+          questionResolved: resolution,
+        };
+        this.insertEntry(binding, entry, String(descriptor.operationId));
+        this.insertPublicEvents(binding.bindingId, [
+          { type: "append", bot: botName, entry },
+        ]);
+      }
+    });
+  }
+  admitQuestion(
+    lease: WriterLease,
+    input: AdmitOperation,
+    instanceId: string
+  ): { receipt: OperationReceipt; created: boolean } {
+    return this.write(lease, () => {
+      if (input.kind !== "question")
+        fail("invalid_kind", "Question admission requires a question control");
+      const record = this.getQuestion(input.payload);
+      if (!record)
+        fail(
+          "question_not_found",
+          "No retained question request matches this decision"
+        );
+      if (record.descriptor.bindingId !== input.bindingId)
+        fail("question_conflict", "Question belongs to another binding");
+      matchQuestionDecision(record.descriptor, input.payload);
+      const known = this.operationRow(input);
+      if (known) return this.admitOperation(input);
+      if (record.decisionOperationId)
+        fail(
+          "operation_conflict",
+          "This question already has a durable decision"
+        );
+      if (
+        record.resolution ||
+        record.descriptor.instanceId !== instanceId ||
+        (record.descriptor.expiresAt !== undefined &&
+          Date.parse(String(record.descriptor.expiresAt)) <= this.now())
+      )
+        fail("interaction_expired", "Question request is no longer answerable");
+      const target = this.operationRow({
+        ...input,
+        operationId: String(record.descriptor.operationId),
+      });
+      if (
+        !target ||
+        target.binding_id !== input.bindingId ||
+        target.turn_id !== record.descriptor.turnId ||
+        target.delivery !== "accepted" ||
+        terminal(this.receipt(target))
+      )
+        fail("interaction_expired", "Question target is no longer active");
+      if (input.operationId === record.descriptor.operationId)
+        fail(
+          "invalid_payload",
+          "Decision and target operations must be distinct"
+        );
+      const result = this.admitOperation(input);
+      record.decisionOperationId = input.operationId;
+      this.saveQuestion(record);
+      return result;
+    });
+  }
   private operationRow(key: OperationKey): Row | undefined {
     return this.prepare(
       "SELECT * FROM operations WHERE bot_id=? AND conversation_id=? AND operation_id=?"
@@ -2392,6 +2558,52 @@ export class GatewayJournal {
                 evidence: `permission:${source.eventId}`,
               });
             }
+          }
+        }
+        if (effect.question) {
+          const value =
+            "request" in effect.question
+              ? effect.question.request
+              : effect.question.resolution;
+          if (
+            value.bindingId !== source.bindingId ||
+            value.operationId !== source.operationId ||
+            value.turnId !== source.turnId
+          )
+            fail(
+              "invalid_question",
+              "Question scope differs from its source event"
+            );
+          const existing = this.getQuestion(value);
+          if ("request" in effect.question) {
+            const descriptor = questionRequest(value);
+            if (
+              existing &&
+              canonicalJson(existing.descriptor) !== canonicalJson(descriptor)
+            )
+              fail(
+                "question_conflict",
+                "Question identity cannot be rebound to new facts"
+              );
+            if (!existing) this.saveQuestion({ descriptor });
+          } else {
+            if (!existing)
+              fail(
+                "question_not_found",
+                "Resolution requires retained request evidence"
+              );
+            const resolution = questionResolution(value, existing.descriptor);
+            if (
+              existing.resolution &&
+              existing.resolution.status !== "unknown" &&
+              canonicalJson(existing.resolution) !== canonicalJson(resolution)
+            )
+              fail(
+                "question_conflict",
+                "Terminal question resolution cannot change"
+              );
+            existing.resolution = resolution;
+            this.saveQuestion(existing);
           }
         }
         if (effect.operation) {

@@ -52,6 +52,8 @@ import {
   mergeTranscriptHistory,
   paginateTranscript,
 } from "./transcripts.ts";
+import { reconcileDelivering } from "./delivering.ts";
+import { evaluateFleetHealth } from "./health-probe.ts";
 import { createPendingStore, type PendingMessage } from "./pending.ts";
 import { createOperatorQueueStore } from "./operator-queue.ts";
 import { TurnPartsAccumulator, type TurnPart } from "./turnparts.ts";
@@ -835,6 +837,42 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       runtime.transcript.splice(0, runtime.transcript.length - 500);
     transcripts.append(runtime.config.name, entry);
     emit({ type: "append", bot: runtime.config.name, entry });
+  };
+
+  const persistDeliveringClears = (
+    runtime: BotRuntime,
+    cleared: TranscriptEntry[]
+  ): void => {
+    if (cleared.length === 0) return;
+    // Journal appends write delivering:true once; a save rewrites the
+    // current generation so a restart cannot rehydrate sticky flags.
+    transcripts.save(runtime.config.name, runtime.transcript);
+    for (const entry of cleared) {
+      emit({ type: "append", bot: runtime.config.name, entry });
+    }
+  };
+
+  const sweepDelivering = (
+    runtime: BotRuntime,
+    opts: { settled?: boolean } = {}
+  ): TranscriptEntry[] => {
+    const cleared = reconcileDelivering(runtime.transcript, {
+      pendingIds: pendingStore.load(runtime.config.name).map((m) => m.id),
+      activeDeliveryId: runtime.activeDeliveryId,
+      streaming: runtime.session?.streaming === true,
+      settled: opts.settled,
+    });
+    persistDeliveringClears(runtime, cleared);
+    return cleared;
+  };
+
+  const markNotDelivering = (
+    runtime: BotRuntime,
+    entry: TranscriptEntry | undefined
+  ): void => {
+    if (!entry || entry.delivering !== true) return;
+    entry.delivering = false;
+    persistDeliveringClears(runtime, [entry]);
   };
 
   /** Answer a pending UI question in the child and record the resolution. */
@@ -1654,6 +1692,10 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         transcripts.load(name) as TranscriptEntry[],
         mapped
       ).slice(-50);
+      // Journaled delivering:true is sticky across boot unless we rewrite
+      // it: entries not in the pending journal already settled or were
+      // abandoned (timeout / unclean death). Clear them now and persist.
+      sweepDelivering(runtime);
       const lastEntry = runtime.transcript.at(-1);
       // Issue 140: a marker left behind means a turn died at daemon restart.
       // Re-drive it once and tell every waiting handoff source — the old
@@ -1735,7 +1777,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           );
           runtime.activeDeliveryId = null;
           pendingStore.remove(name, message.id);
-          if (target) target.delivering = false;
+          markNotDelivering(runtime, target);
           log(`[${name}] replayed pending message (id ${message.id})`);
         } catch {
           // Keep it journalled; the next spawn retries.
@@ -1784,11 +1826,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
             const delivered = runtime.transcript.find(
               (candidate) => candidate.id === head.id
             );
-            if (delivered) {
-              delivered.delivering = false;
-              emit({ type: "append", bot: botName, entry: delivered });
-            }
+            if (delivered) markNotDelivering(runtime, delivered);
           }
+          sweepDelivering(runtime);
           emitRoster();
         }
         return;
@@ -1819,10 +1859,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
             (candidate) => candidate.id === runtime.activeDeliveryId
           );
           runtime.activeDeliveryId = null;
-          if (accepted?.delivering) {
-            accepted.delivering = false;
-            emit({ type: "append", bot: botName, entry: accepted });
-          }
+          markNotDelivering(runtime, accepted);
         }
         // Issue 148: replayed journal entries have no activeDeliveryId (it
         // died with the old daemon) — clear their delivering flags by id so
@@ -1832,10 +1869,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
             const replayed = runtime.transcript.find(
               (candidate) => candidate.id === id
             );
-            if (replayed?.delivering) {
-              replayed.delivering = false;
-              emit({ type: "append", bot: botName, entry: replayed });
-            }
+            markNotDelivering(runtime, replayed);
           }
           runtime.replayDeliveryIds.clear();
         }
@@ -2175,6 +2209,10 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         void maybeCompact(runtime, forceNext ? { force: true } : {}).catch(
           () => {}
         );
+        // Issue 149 claimed settle reconciles timeout leftovers — it did
+        // not. Pending follow-ups stay delivering; everything else clears
+        // and is rewritten to the journal.
+        sweepDelivering(runtime, { settled: true });
         return;
       }
       case "ui_request": {
@@ -2274,6 +2312,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           .catch(() => {});
       }
     }
+    sweepDelivering(runtime);
     emitRoster();
     log(`[${runtime.config.name}] exited (code=${code} signal=${signal})`);
     if (runtime.stopping) return;
@@ -2392,10 +2431,13 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       runtime.activeDeliveryId = entry.id;
       await session.prompt(injectRules(runtime, text), behavior, images);
       runtime.activeDeliveryId = null;
-      entry.delivering = false;
-      emit({ type: "append", bot: runtime.config.name, entry });
+      markNotDelivering(runtime, entry);
     } catch (error) {
-      runtime.activeDeliveryId = null;
+      // Keep activeDeliveryId on rpc_prompt_timeout (issue 149 UNKNOWN):
+      // agent_start / settle still need the id. Nulled here, those events
+      // cannot clear the flag and it sticks forever.
+      if (classifyFailure(String(error)) !== "rpc_prompt_timeout")
+        runtime.activeDeliveryId = null;
       // Fresh-bot boot race: the agent can reject plain prompts while its first
       // turn is still settling. One followUp queues behind it; genuine failures
       // (offline, provider errors) still throw to the caller.
@@ -2678,14 +2720,12 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           if (reason === "turn_in_flight") {
             // Issue 50: busy is never runtime_offline — reject distinctly and
             // visibly (the entry is marked failed, not half-delivered).
-            entry.delivering = false;
             entry.deliveryError = "turn_in_flight";
-            emit({ type: "append", bot: name, entry });
+            markNotDelivering(runtime, entry);
             return { status: 409, body: { error: "turn_in_flight" } };
           }
-          entry.delivering = false;
           entry.deliveryError = reason;
-          emit({ type: "append", bot: name, entry });
+          markNotDelivering(runtime, entry);
           return { status: 503, body: { error: reason } };
         }
       },
@@ -2838,6 +2878,12 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     }
   }, 30_000);
   keepalive.unref?.();
+  // Idle fleets never settle — a 30s sweep expires stale delivering so
+  // Atlas cannot sit on forever-true operator bubbles.
+  const deliveringSweep = setInterval(() => {
+    for (const runtime of runtimes.values()) sweepDelivering(runtime);
+  }, 30_000);
+  deliveringSweep.unref?.();
 
   httpServer.on("error", (error: Error) => {
     const message =
@@ -3049,6 +3095,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
           if (reconcileTimer) clearTimeout(reconcileTimer);
           schedulerTimer.unref?.();
           clearInterval(schedulerTimer);
+          clearInterval(deliveringSweep);
           for (const watcher of personaWatchers.values()) watcher.close();
           for (const runtime of runtimes.values()) {
             runtime.stopping = true;
@@ -3251,6 +3298,27 @@ function buildHttpServer(deps: ServerDeps): Hono {
       };
     });
     return context.json({ dir: deps.fleet.dir, bots });
+  });
+
+  app.get("/api/health", (context) => {
+    const now = Date.now();
+    const verdict = evaluateFleetHealth(
+      [...deps.runtimes.values()].map((runtime) => ({
+        name: runtime.config.name,
+        transcript: runtime.transcript,
+        context: {
+          inputTokens: runtime.inputTokens ?? null,
+          contextWindow: runtime.contextWindow ?? null,
+          overWindow:
+            runtime.inputTokens !== undefined &&
+            runtime.contextWindow !== undefined &&
+            runtime.inputTokens > runtime.contextWindow,
+          fill: runtime.fill ?? null,
+        },
+      })),
+      { now }
+    );
+    return context.json(verdict, verdict.ok ? 200 : 503);
   });
 
   app.get("/api/bots/:name/context", (context) => {

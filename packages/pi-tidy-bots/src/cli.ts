@@ -74,6 +74,7 @@ const COMMAND_FLAGS: Record<string, string[]> = {
   ],
   add: ["dir", "title", "avatar", "description"],
   chat: ["bot", "url", "token"],
+  health: ["bot", "url", "token", "stale-min", "token-budget"],
   status: ["fleet"],
   stop: ["fleet"],
   restart: ["fleet"],
@@ -128,6 +129,7 @@ Usage:
   pi-tidy-bots add <name> [--dir fleetDir] [--title t] [--avatar e] [--description d]
                                           Scaffold a bot and append its manifest row
   pi-tidy-bots status [fleetDir]          Show daemon pid, port, per-bot state
+  pi-tidy-bots health [url]               Fail-closed probe: stale delivering or over-budget context
   pi-tidy-bots fleets [--prune]           List registered fleets and running state
   pi-tidy-bots start --fleet <name>       Target a registered fleet by name
   pi-tidy-bots stop [fleetDir]            Gracefully stop the running fleet
@@ -1129,6 +1131,29 @@ export async function main(): Promise<void> {
     if (command === "chat") return void (await cmdChat(args));
     if (command === "add") cmdAdd(args);
     if (command === "start") return void (await cmdStart(args));
+    if (command === "health") {
+      const { runHealthProbeCli } = await import("./health-probe.ts");
+      const argv = [
+        ...(typeof args.flags.url === "string"
+          ? ["--url", args.flags.url]
+          : args.positional[0]
+            ? [args.positional[0]]
+            : []),
+        ...(typeof args.flags.bot === "string"
+          ? ["--bot", args.flags.bot]
+          : []),
+        ...(typeof args.flags.token === "string"
+          ? ["--token", args.flags.token]
+          : []),
+        ...(typeof args.flags["stale-min"] === "string"
+          ? ["--stale-min", args.flags["stale-min"]]
+          : []),
+        ...(typeof args.flags["token-budget"] === "string"
+          ? ["--token-budget", args.flags["token-budget"]]
+          : []),
+      ];
+      process.exit(await runHealthProbeCli(argv));
+    }
     if (command === "status") {
       await cmdStatus(args, args.flags.json === true);
       return;

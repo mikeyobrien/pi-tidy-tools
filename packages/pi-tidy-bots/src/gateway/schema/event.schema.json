@@ -1,6 +1,31 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://tidy.invalid/backend-protocol/v1/event.schema.json",
+  "$defs": {
+    "contextBudget": {
+      "type": "object",
+      "description": "Optional remaining-token projection. Adapter-reported or gateway-estimated; absence means unknown.",
+      "properties": {
+        "remainingTokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "usedTokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "windowTokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "source": {
+          "enum": ["adapter", "gateway"]
+        }
+      },
+      "required": ["remainingTokens", "source"],
+      "additionalProperties": true
+    }
+  },
   "type": "object",
   "properties": {
     "bindingId": {
@@ -324,9 +349,35 @@
               },
               "observation": {
                 "enum": ["complete", "live_gap", "reconciliation_required"]
+              },
+              "contextBudget": {
+                "$ref": "#/$defs/contextBudget"
               }
             },
             "required": ["execution", "observation"],
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "enum": ["turn.started", "usage.updated"]
+          }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "contextBudget": {
+                "$ref": "#/$defs/contextBudget"
+              }
+            },
             "additionalProperties": true
           }
         }

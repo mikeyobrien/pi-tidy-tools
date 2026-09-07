@@ -98,6 +98,34 @@ test("limits may only narrow defaults", () => {
   });
 });
 
+test("optional new_context is distinct from compact and rejects a non-boolean", () => {
+  assert.equal(
+    validateCapabilities(capabilities()).configuration.new_context,
+    undefined
+  );
+  assert.equal(
+    validateCapabilities({
+      ...capabilities(),
+      configuration: {
+        ...capabilities().configuration,
+        new_context: true,
+      },
+    }).configuration.new_context,
+    true
+  );
+  assert.throws(
+    () =>
+      validateCapabilities({
+        ...capabilities(),
+        configuration: {
+          ...capabilities().configuration,
+          new_context: "yes",
+        },
+      }),
+    { code: "invalid_capabilities" }
+  );
+});
+
 test("capabilities reject unbacked guarantees and unknown required extensions", () => {
   assert.equal(validateCapabilities(capabilities()).output.usage, "unknown");
   assert.throws(
@@ -183,6 +211,7 @@ test("published schemas compile strictly and agree with required capability and 
     "event",
     "manifest",
     "protocol",
+    "receipt",
     "registry",
   ])
     validators.set(
@@ -230,6 +259,59 @@ test("published schemas compile strictly and agree with required capability and 
   assert.throws(
     () => validateEvent({ ...terminal, payload: { execution: "success" } }),
     { code: "invalid_event" }
+  );
+  const budgeted = {
+    ...terminal,
+    type: "usage.updated",
+    payload: {
+      contextBudget: {
+        remainingTokens: 12,
+        source: "adapter",
+        windowTokens: 32,
+      },
+    },
+  };
+  assert.equal(validators.get("event")!(budgeted), true);
+  assert.deepEqual(validateEvent(budgeted), budgeted);
+  assert.equal(
+    validators.get("event")!({
+      ...budgeted,
+      payload: { contextBudget: { remainingTokens: -1, source: "adapter" } },
+    }),
+    false
+  );
+  assert.throws(
+    () =>
+      validateEvent({
+        ...budgeted,
+        payload: { contextBudget: { remainingTokens: 1, source: "guess" } },
+      }),
+    { code: "invalid_event" }
+  );
+  const reset = {
+    fleetId: "fleet",
+    botId: "bot",
+    conversationId: "conv",
+    bindingId: "binding",
+    bindingRevision: "binding:1",
+    operationId: "reset-1",
+    kind: "new_context",
+    delivery: "accepted",
+    execution: "ended",
+    observation: "complete",
+    result: {
+      status: "applied",
+      checkpoint: "no-summary",
+      contextGeneration: 1,
+    },
+  };
+  assert.equal(validators.get("receipt")!(reset), true);
+  assert.equal(
+    validators.get("receipt")!({
+      ...reset,
+      result: { status: "applied", checkpoint: "summary" },
+    }),
+    false
   );
   assert.equal(
     validators.get("protocol")!({ jsonrpc: "2.0", id: "01", result: {} }),

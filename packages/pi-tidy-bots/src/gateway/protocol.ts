@@ -175,7 +175,12 @@ export interface CapabilityDescriptor {
     steer: boolean;
   };
   interactions: { permissions: "exact-request" | "none"; questions: boolean };
-  configuration: { model: boolean; thinking: boolean; compact: boolean };
+  configuration: {
+    model: boolean;
+    thinking: boolean;
+    compact: boolean;
+    new_context?: boolean;
+  };
   fleetTools: boolean;
   [extension: string]: unknown;
 }
@@ -339,7 +344,25 @@ export function validateEvent(value: unknown): GatewayPluginEvent {
       "invalid_event",
       "Terminal event requires explicit execution and observation state"
     );
+  if (Object.hasOwn(payload, "contextBudget"))
+    validateContextBudget(payload.contextBudget);
   return value as GatewayPluginEvent;
+}
+
+function validateContextBudget(value: unknown): void {
+  if (
+    !object(value) ||
+    !Number.isSafeInteger(value.remainingTokens) ||
+    Number(value.remainingTokens) < 0 ||
+    !["adapter", "gateway"].includes(String(value.source)) ||
+    (Object.hasOwn(value, "usedTokens") &&
+      (!Number.isSafeInteger(value.usedTokens) ||
+        Number(value.usedTokens) < 0)) ||
+    (Object.hasOwn(value, "windowTokens") &&
+      (!Number.isSafeInteger(value.windowTokens) ||
+        Number(value.windowTokens) < 1))
+  )
+    throw new ProtocolError("invalid_event", "Malformed contextBudget");
 }
 export function validateCapabilities(value: unknown): CapabilityDescriptor {
   const fail = (message: string): never => {
@@ -360,7 +383,7 @@ export function validateCapabilities(value: unknown): CapabilityDescriptor {
       "steer",
     ],
     interactions: ["permissions", "questions"],
-    configuration: ["model", "thinking", "compact"],
+    configuration: ["model", "thinking", "compact", "new_context"],
   };
   for (const [name, keys] of Object.entries(sections)) {
     const section = value[name];
@@ -404,6 +427,11 @@ export function validateCapabilities(value: unknown): CapabilityDescriptor {
   ];
   if (!booleans.every((entry) => typeof entry === "boolean"))
     return fail("Missing boolean capability");
+  if (
+    descriptor.configuration.new_context !== undefined &&
+    typeof descriptor.configuration.new_context !== "boolean"
+  )
+    return fail("Invalid new_context capability");
   const enums: [unknown, string[]][] = [
     [descriptor.sessions.continuity, ["verified", "unverified"]],
     [descriptor.output.text, ["final-only", "snapshots"]],

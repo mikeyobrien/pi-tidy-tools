@@ -1,0 +1,179 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://tidy.invalid/backend-protocol/v1/receipt.schema.json",
+  "title": "Gateway operation receipt kinds and new_context vs compact results",
+  "$defs": {
+    "operationKind": {
+      "enum": [
+        "message",
+        "model",
+        "thinking",
+        "compact",
+        "new_context",
+        "instructions",
+        "question",
+        "permission",
+        "cancel",
+        "session_open"
+      ]
+    },
+    "continuityNote": {
+      "type": "object",
+      "description": "Gateway-owned continuity annotation. Not an OpenAI history-note clone.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": ["decision", "constraint", "handoff", "other"]
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": ["id", "kind", "text"],
+      "additionalProperties": true
+    },
+    "compactResult": {
+      "type": "object",
+      "description": "Summarize-and-continue checkpoint. May carry native summary evidence.",
+      "properties": {
+        "status": {
+          "enum": ["applied", "expired", "cancelled", "failed"]
+        }
+      },
+      "required": ["status"],
+      "additionalProperties": true
+    },
+    "newContextResult": {
+      "type": "object",
+      "description": "No-summary checkpoint. Working window wiped; fence state survives.",
+      "properties": {
+        "status": {
+          "enum": ["applied", "expired", "cancelled", "failed"]
+        },
+        "checkpoint": {
+          "const": "no-summary"
+        },
+        "contextGeneration": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "continuityNotes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/continuityNote"
+          }
+        }
+      },
+      "required": ["status", "checkpoint"],
+      "additionalProperties": true
+    },
+    "operationReceipt": {
+      "type": "object",
+      "properties": {
+        "fleetId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "botId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "conversationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bindingId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bindingRevision": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "$ref": "#/$defs/operationKind"
+        },
+        "delivery": {
+          "enum": ["queued", "dispatching", "accepted", "rejected", "unknown"]
+        },
+        "execution": {
+          "enum": [
+            "not_started",
+            "running",
+            "waiting_for_input",
+            "cancel_requested",
+            "ended",
+            "failed",
+            "cancelled",
+            "interrupted",
+            "unknown"
+          ]
+        },
+        "observation": {
+          "enum": ["complete", "live_gap", "reconciliation_required"]
+        },
+        "result": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "fleetId",
+        "botId",
+        "conversationId",
+        "bindingId",
+        "bindingRevision",
+        "operationId",
+        "delivery",
+        "execution",
+        "observation"
+      ],
+      "additionalProperties": true
+    }
+  },
+  "allOf": [
+    {
+      "$ref": "#/$defs/operationReceipt"
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "compact"
+          }
+        },
+        "required": ["kind", "result"]
+      },
+      "then": {
+        "properties": {
+          "result": {
+            "$ref": "#/$defs/compactResult"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "new_context"
+          }
+        },
+        "required": ["kind", "result"]
+      },
+      "then": {
+        "properties": {
+          "result": {
+            "$ref": "#/$defs/newContextResult"
+          }
+        }
+      }
+    }
+  ]
+}

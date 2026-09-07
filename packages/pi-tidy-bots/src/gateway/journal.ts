@@ -78,6 +78,7 @@ export type OperationKind =
   | "model"
   | "thinking"
   | "compact"
+  | "new_context"
   | "instructions"
   | "question"
   | "permission"
@@ -355,6 +356,7 @@ const operationKinds = new Set<OperationKind>([
   "model",
   "thinking",
   "compact",
+  "new_context",
   "instructions",
   "question",
   "permission",

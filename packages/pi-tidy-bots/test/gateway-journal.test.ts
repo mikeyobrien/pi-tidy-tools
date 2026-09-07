@@ -2279,10 +2279,10 @@ test("routine admission binds one stable fire to one canonical operation and own
     schedule.generation,
     "hermes"
   );
-  code(
-    () => f.journal.admitRoutineFire(f.lease, input),
-    "schedule_owner_conflict"
-  );
+  assert.deepEqual(f.journal.admitRoutineFire(f.lease, input), {
+    ...first,
+    created: false,
+  });
   const next = f.journal.admitRoutineFire(f.lease, {
     ...input,
     occurrence: "2026-08-31T10:06:00-05:00",
@@ -2360,6 +2360,71 @@ test("gateway journal refuses v1 upgrade while an old writer is live", (t) => {
   sql(
     f.path,
     "DROP TABLE routine_fires; DROP TABLE schedule_owners; PRAGMA user_version=1"
+  );
+  assert.throws(
+    () => f.open(),
+    (error: unknown) =>
+      error instanceof GatewayJournalError &&
+      error.code === "ownership_unreconciled"
+  );
+  const db = new DatabaseSync(f.path);
+  try {
+    assert.equal(
+      Number(
+        (db.prepare("PRAGMA user_version").get() as { user_version: number })
+          .user_version
+      ),
+      1
+    );
+    assert.equal(
+      db
+        .prepare("SELECT 1 FROM sqlite_master WHERE name='schedule_owners'")
+        .get(),
+      undefined
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test("gateway journal refuses v1 upgrade with corrupt fleet metadata without mutation", (t) => {
+  const f = fixture(t);
+  f.journal.close();
+  sql(
+    f.path,
+    "DROP TABLE routine_fires; DROP TABLE schedule_owners; UPDATE gateway_meta SET value=''; UPDATE writer_lease SET owner_id=NULL, expires_at=0, reconciled=1; PRAGMA user_version=1"
+  );
+  assert.throws(
+    () => f.open(),
+    (error: unknown) =>
+      error instanceof GatewayJournalError && error.code === "corrupt_storage"
+  );
+  const db = new DatabaseSync(f.path);
+  try {
+    assert.equal(
+      Number(
+        (db.prepare("PRAGMA user_version").get() as { user_version: number })
+          .user_version
+      ),
+      1
+    );
+    assert.equal(
+      db
+        .prepare("SELECT 1 FROM sqlite_master WHERE name='routine_fires'")
+        .get(),
+      undefined
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test("gateway journal refuses expired but unreconciled v1 storage without mutation", (t) => {
+  const f = fixture(t);
+  f.journal.close();
+  sql(
+    f.path,
+    "DROP TABLE routine_fires; DROP TABLE schedule_owners; UPDATE writer_lease SET owner_id=NULL, expires_at=0, reconciled=0; PRAGMA user_version=1"
   );
   assert.throws(
     () => f.open(),

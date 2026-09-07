@@ -890,12 +890,25 @@ export class GatewayApplication {
         "invalid_payload",
         "Routine text must be nonempty"
       );
+    const operationId = `routine-op:${payloadDigest({ scheduleId, occurrence }).slice(7)}`;
+    const admission = {
+      scheduleId,
+      occurrence,
+      owner,
+      ownerGeneration,
+      binding: bot.binding,
+      payload: { text },
+    };
+    if (this.journal.getOperation({ ...bot.binding, operationId }))
+      return this.journal.admitRoutineFire(
+        this.lease,
+        admission
+      ) as unknown as JsonObject;
     if (this.stopping || !bot.ready || !bot.host?.isReady)
       throw new ProtocolError(
         "session_unavailable",
         "The session is unavailable"
       );
-    const operationId = `routine-op:${payloadDigest({ scheduleId, occurrence }).slice(7)}`;
     bot.host.assertSubmitFits({
       operationId,
       payloadDigest: `sha256:${"0".repeat(64)}`,
@@ -904,14 +917,7 @@ export class GatewayApplication {
       policyRevision: bot.binding.policyRevision,
       input: [{ type: "text", text }],
     });
-    const admitted = this.journal.admitRoutineFire(this.lease, {
-      scheduleId,
-      occurrence,
-      owner,
-      ownerGeneration,
-      binding: bot.binding,
-      payload: { text },
-    });
+    const admitted = this.journal.admitRoutineFire(this.lease, admission);
     this.publishCommitted(bot, true);
     if (admitted.created)
       queueMicrotask(() => {

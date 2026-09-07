@@ -819,6 +819,26 @@ test("external routine fire API fences owners and dedupes stable occurrences", a
       retry.body.receipt.operationId,
       first.body.receipt.operationId
     );
+    const changed = await f.request(
+      handle,
+      "/api/bots/fixture/schedules/scribe%3Anightly/fire",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-tidy-client-contract": "2",
+          "x-tidy-binding-revision": binding.bindingRevision,
+        },
+        body: JSON.stringify({
+          occurrence: "2026-08-31T10:05:00-05:00",
+          owner: "legacy-gateway",
+          ownerGeneration: 1,
+          text: "changed intent",
+        }),
+      }
+    );
+    assert.equal(changed.status, 409);
+    assert.equal(changed.body.error, "operation_conflict");
     assert.equal(
       (await f.calls(binding)).filter(
         (call) => call.method === "operation.submit"

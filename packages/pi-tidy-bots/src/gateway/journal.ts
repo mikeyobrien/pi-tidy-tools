@@ -1357,18 +1357,6 @@ export class GatewayJournal {
     const operationId = `routine-op:${fireId.slice("routine-fire:".length)}`;
     const payloadDigestValue = payloadDigest(input.payload);
     return this.write(lease, () => {
-      const owner = this.prepare(
-        "SELECT owner,generation FROM schedule_owners WHERE schedule_id=?"
-      ).get(input.scheduleId);
-      if (!owner)
-        fail("schedule_not_registered", "Schedule owner is not registered");
-      if (owner.owner !== input.owner)
-        fail(
-          "schedule_owner_conflict",
-          "Schedule is owned by another scheduler"
-        );
-      if (Number(owner.generation) !== input.ownerGeneration)
-        fail("stale_schedule_owner", "Schedule owner generation is stale");
       const existing = this.prepare(
         "SELECT * FROM routine_fires WHERE fire_id=?"
       ).get(fireId);
@@ -1379,9 +1367,7 @@ export class GatewayJournal {
           existing.occurrence !== input.occurrence ||
           existing.bot_id !== input.binding.botId ||
           existing.conversation_id !== input.binding.conversationId ||
-          existing.binding_id !== input.binding.bindingId ||
-          existing.owner !== input.owner ||
-          Number(existing.owner_generation) !== input.ownerGeneration
+          existing.binding_id !== input.binding.bindingId
         )
           fail(
             "operation_conflict",
@@ -1396,6 +1382,18 @@ export class GatewayJournal {
           fail("corrupt_storage", "Routine fire operation is missing");
         return { receipt, created: false, fireId };
       }
+      const owner = this.prepare(
+        "SELECT owner,generation FROM schedule_owners WHERE schedule_id=?"
+      ).get(input.scheduleId);
+      if (!owner)
+        fail("schedule_not_registered", "Schedule owner is not registered");
+      if (owner.owner !== input.owner)
+        fail(
+          "schedule_owner_conflict",
+          "Schedule is owned by another scheduler"
+        );
+      if (Number(owner.generation) !== input.ownerGeneration)
+        fail("stale_schedule_owner", "Schedule owner generation is stale");
       const admitted = this.admitOperation({
         ...input.binding,
         operationId,

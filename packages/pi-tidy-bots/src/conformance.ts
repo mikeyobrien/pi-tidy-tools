@@ -13,16 +13,26 @@ import { nonempty, object, type JsonObject } from "./gateway/protocol.ts";
 export type ConformanceStatus = "passed" | "failed" | "unsupported" | "not-run";
 export interface LocalConformanceCell {
   id: string;
-  kind: "message" | "post_native_eof" | "malformed_plugin";
+  kind: "message" | "post_native_eof" | "malformed_plugin" | "cancel";
   operationId: string;
   text: string;
   retry?: "same" | "conflict";
   effect?: { file: string; expectedOccurrences: number; contains: string };
+  /** Separate, immutable control operation and native cancellation evidence. */
+  cancel?: {
+    operationId: string;
+    effect: { file: string; expectedOccurrences: number; contains: string };
+    expect: {
+      execution: "ended" | "unknown";
+      observation: "complete" | "reconciliation_required";
+    };
+  };
   /** Public stream predicates; one fixture bot executes cells serially. */
   events?: { minFrames: number; terminalFinals: 1 };
   expect: {
     status: number;
-    execution?: "ended" | "failed" | "cancelled" | "unknown";
+    execution?:
+      "ended" | "failed" | "cancelled" | "cancel_requested" | "unknown";
     observation?: "complete" | "reconciliation_required";
   };
   skip?: boolean;
@@ -143,7 +153,7 @@ function validFixture(value: LocalConformanceFixture): void {
     value.cells.some(
       (cell) =>
         !nonempty(cell.id) ||
-        !["message", "post_native_eof", "malformed_plugin"].includes(
+        !["message", "post_native_eof", "malformed_plugin", "cancel"].includes(
           cell.kind
         ) ||
         !nonempty(cell.operationId) ||
@@ -162,7 +172,23 @@ function validFixture(value: LocalConformanceFixture): void {
         (cell.kind === "post_native_eof" &&
           (!cell.effect ||
             cell.expect.execution !== "unknown" ||
-            cell.expect.observation !== "reconciliation_required"))
+            cell.expect.observation !== "reconciliation_required")) ||
+        (cell.kind === "cancel" &&
+          (!cell.effect ||
+            !cell.cancel ||
+            !nonempty(cell.cancel.operationId) ||
+            cell.cancel.operationId === cell.operationId ||
+            !/^[A-Za-z0-9_.-]+$/.test(cell.cancel.effect.file) ||
+            !nonempty(cell.cancel.effect.contains) ||
+            !Number.isInteger(cell.cancel.effect.expectedOccurrences) ||
+            cell.cancel.effect.expectedOccurrences < 1 ||
+            !["ended", "unknown"].includes(cell.cancel.expect.execution) ||
+            !["complete", "reconciliation_required"].includes(
+              cell.cancel.expect.observation
+            ) ||
+            !["cancelled", "cancel_requested", "unknown"].includes(
+              String(cell.expect.execution)
+            )))
     )
   )
     throw new Error("Invalid local conformance fixture");
@@ -179,8 +205,9 @@ async function waitFor(
   observation?: string
 ): Promise<JsonObject> {
   const deadline = Date.now() + 5000;
+  let last: JsonObject = {};
   while (Date.now() < deadline) {
-    const receipt = await fetchReceipt();
+    const receipt = (last = await fetchReceipt());
     if (
       receipt.execution === execution &&
       (observation === undefined || receipt.observation === observation)
@@ -188,7 +215,9 @@ async function waitFor(
       return receipt;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  throw new Error("Conformance receipt did not reach its expected state");
+  throw new Error(
+    `Conformance receipt did not reach ${execution}/${observation ?? "any"}: ${JSON.stringify(last)}`
+  );
 }
 
 interface PublicTrace {
@@ -375,6 +404,35 @@ export function postNativeEofMatches(
     noCompletedAssistant
   );
 }
+/** Durable cancellation controls and their target must retain their own immutable identities. */
+export function cancellationReceiptsMatch(
+  submit: JsonObject,
+  target: JsonObject,
+  admittedControl: JsonObject,
+  control: JsonObject,
+  retry: JsonObject,
+  controlAfterRetry: JsonObject,
+  targetAfterRetry: JsonObject,
+  nativeTargetMatches: boolean,
+  requiresRequestedResult: boolean
+): boolean {
+  return (
+    immutableReceiptMatches(submit, target) &&
+    immutableReceiptMatches(admittedControl, control) &&
+    immutableReceiptMatches(control, retry) &&
+    immutableReceiptMatches(control, controlAfterRetry) &&
+    immutableReceiptMatches(target, targetAfterRetry) &&
+    control.kind === "cancel" &&
+    (!requiresRequestedResult ||
+      (control.result !== null &&
+        object(control.result) &&
+        control.result.status === "requested")) &&
+    JSON.stringify(control) === JSON.stringify(controlAfterRetry) &&
+    JSON.stringify(target) === JSON.stringify(targetAfterRetry) &&
+    nativeTargetMatches
+  );
+}
+
 export function immutableReceiptMatches(
   first: JsonObject,
   terminal: JsonObject
@@ -641,6 +699,171 @@ export async function runLocalConformance(
             });
             continue;
           }
+          if (cell.kind === "cancel") {
+            const traceStart = publicTrace.frames.length;
+            const first = await submit(cell.text);
+            const inspect = (operationId: string) =>
+              request(
+                `/api/bots/fixture/operations/${encodeURIComponent(operationId)}`
+              ).then((value) => value.body);
+            const submitPath = join(
+              directory,
+              ".fleet",
+              "plugins",
+              String(binding.bindingId),
+              cell.effect!.file
+            );
+            await waitForEffect(
+              submitPath,
+              cell.effect!.contains,
+              cell.effect!.expectedOccurrences
+            );
+            await waitFor(inspect.bind(undefined, cell.operationId), "running");
+            const cancelBody = {
+              kind: "cancel",
+              operationId: cell.cancel!.operationId,
+              conversationId: binding.conversationId,
+              targetOperationId: cell.operationId,
+            };
+            const cancelPath = join(
+              directory,
+              ".fleet",
+              "plugins",
+              String(binding.bindingId),
+              cell.cancel!.effect.file
+            );
+            const cancel = (targetOperationId: string, payload: JsonObject) =>
+              request(
+                `/api/bots/fixture/operations/${encodeURIComponent(targetOperationId)}/cancel`,
+                {
+                  method: "POST",
+                  headers,
+                  body: JSON.stringify(payload),
+                }
+              );
+            const firstCancel = await cancel(cell.operationId, cancelBody);
+            const cancelEffects = await waitForEffect(
+              cancelPath,
+              cell.cancel!.effect.contains,
+              cell.cancel!.effect.expectedOccurrences
+            );
+            const control = await waitFor(
+              inspect.bind(undefined, cell.cancel!.operationId),
+              cell.cancel!.expect.execution,
+              cell.cancel!.expect.observation
+            );
+            const target = await waitFor(
+              inspect.bind(undefined, cell.operationId),
+              String(cell.expect.execution),
+              cell.expect.observation
+            );
+            const retry = await cancel(cell.operationId, cancelBody);
+            const conflictTarget = `${cell.operationId}-different`;
+            const conflict = await cancel(conflictTarget, {
+              ...cancelBody,
+              targetOperationId: conflictTarget,
+            });
+            const afterEffects = await stableEffect(
+              cancelPath,
+              cell.cancel!.effect.contains,
+              cell.cancel!.effect.expectedOccurrences
+            );
+            const targetEffects = await stableEffect(
+              submitPath,
+              cell.effect!.contains,
+              cell.effect!.expectedOccurrences
+            );
+            const controlAfterRetry = await inspect(cell.cancel!.operationId);
+            const targetAfterRetry = await inspect(cell.operationId);
+            const nativeTargetMatches = matchingEffectLines(
+              afterEffects,
+              cell.cancel!.effect.contains
+            ).every(
+              (line) =>
+                line.includes(`"operationId": "${cell.cancel!.operationId}"`) &&
+                line.includes(`"targetOperationId": "${cell.operationId}"`)
+            );
+            const trace = publicTrace.frames.slice(traceStart);
+            const noAssistantCompletion = noCompletedAssistant(
+              trace,
+              cell.operationId
+            );
+            const matched =
+              first.status === 202 &&
+              firstCancel.status === 202 &&
+              retry.status === 202 &&
+              conflict.status === 409 &&
+              cancellationReceiptsMatch(
+                first.body,
+                target,
+                firstCancel.body,
+                control,
+                retry.body,
+                controlAfterRetry,
+                targetAfterRetry,
+                nativeTargetMatches,
+                cell.cancel!.expect.execution === "ended"
+              ) &&
+              control.execution === cell.cancel!.expect.execution &&
+              control.observation === cell.cancel!.expect.observation &&
+              target.execution === cell.expect.execution &&
+              target.observation === cell.expect.observation &&
+              matchingEffectLines(cancelEffects, cell.cancel!.effect.contains)
+                .length === cell.cancel!.effect.expectedOccurrences &&
+              JSON.stringify(
+                matchingEffectLines(cancelEffects, cell.cancel!.effect.contains)
+              ) ===
+                JSON.stringify(
+                  matchingEffectLines(
+                    afterEffects,
+                    cell.cancel!.effect.contains
+                  )
+                ) &&
+              matchingEffectLines(targetEffects, cell.effect!.contains)
+                .length === cell.effect!.expectedOccurrences &&
+              noAssistantCompletion;
+            cells.push({
+              id: cell.id,
+              status: matched ? "passed" : "failed",
+              evidence: {
+                cancelRetryConflictStatus: conflict.status,
+                nativeTargetMatches,
+                noCompletedAssistant: noAssistantCompletion,
+                nativeEffects: {
+                  submitCount: matchingEffectLines(
+                    targetEffects,
+                    cell.effect!.contains
+                  ).length,
+                  cancelCount: matchingEffectLines(
+                    afterEffects,
+                    cell.cancel!.effect.contains
+                  ).length,
+                  cancelUnchangedAfterRetry:
+                    JSON.stringify(
+                      matchingEffectLines(
+                        cancelEffects,
+                        cell.cancel!.effect.contains
+                      )
+                    ) ===
+                    JSON.stringify(
+                      matchingEffectLines(
+                        afterEffects,
+                        cell.cancel!.effect.contains
+                      )
+                    ),
+                },
+                receipts: normalizeConformanceTrace({
+                  submit: first.body,
+                  cancel: firstCancel.body,
+                  control,
+                  target,
+                  retry: retry.body,
+                }) as JsonObject,
+                trace: normalizeConformanceTrace(trace) as JsonObject,
+              },
+            });
+            continue;
+          }
           if (cell.kind === "post_native_eof") {
             const traceStart = publicTrace.frames.length;
             const initialBootId = publicTrace.frames.find(
@@ -891,6 +1114,9 @@ export async function runLocalConformance(
     const eofCells = options.fixture.cells
       .filter((cell) => cell.kind === "post_native_eof" && !cell.skip)
       .map((cell) => cell.id);
+    const cancellationCells = options.fixture.cells
+      .filter((cell) => cell.kind === "cancel" && !cell.skip)
+      .map((cell) => cell.id);
     report = {
       scope: {
         mode: "local_disposable",
@@ -911,9 +1137,13 @@ export async function runLocalConformance(
           ...(eofCells.length
             ? ["C04.post_write_eof", "C05.post_write_eof_recovery"]
             : []),
+          ...(cancellationCells.length
+            ? ["L03.cancel_rest_acknowledged_delayed_lost"]
+            : []),
         ],
         eventCells,
         eofCells,
+        cancellationCells,
         notRun: [
           "C01",
           "C02",
@@ -926,7 +1156,12 @@ export async function runLocalConformance(
           "C10",
           "L01",
           "L02",
-          "L03",
+          ...(cancellationCells.length
+            ? [
+                "L03.cancel_impossible_or_unsupported",
+                "L03.tool_child_survives",
+              ]
+            : ["L03"]),
           "L04",
           "L05",
           "L06",

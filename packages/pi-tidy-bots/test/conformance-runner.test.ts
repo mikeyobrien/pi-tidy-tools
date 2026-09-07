@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { digestArtifact } from "../src/gateway/registry.ts";
 import {
+  cancellationReceiptsMatch,
   immutableReceiptMatches,
   latestPluginInstance,
   malformedPluginFaultMatches,
@@ -396,6 +397,97 @@ test("marker plus ordinary Python crash cannot certify malformed-frame isolation
   }
 });
 
+test("runner proves scoped REST cancellation outcomes without replaying native effects", async () => {
+  const root = await mkdtemp(join(tmpdir(), "tidy-conformance-cancel-"));
+  try {
+    const { registry, pluginId } = await pythonCrashArtifact(root);
+    for (const [mode, target] of [
+      ["cancel-ack", { execution: "cancelled", observation: "complete" }],
+      [
+        "cancel-delayed",
+        {
+          execution: "cancel_requested",
+          observation: "complete",
+        },
+      ],
+      [
+        "cancel-lost",
+        { execution: "unknown", observation: "reconciliation_required" },
+      ],
+    ] as const) {
+      const operationId = `target-${mode}`;
+      const cancelOperationId = `cancel-${mode}`;
+      const report = await runLocalConformance({
+        registryPath: registry,
+        pluginId,
+        config: { mode },
+        fixture: {
+          version: 1,
+          allowedUncertainty:
+            mode === "cancel-lost" ? ["native_cancel_response_lost"] : [],
+          cells: [
+            {
+              id: `L03.${mode}`,
+              kind: "cancel",
+              operationId,
+              text: "hold for cancellation",
+              effect: {
+                file: "native-calls.jsonl",
+                contains: `"kind": "submit", "operationId": "${operationId}"`,
+                expectedOccurrences: 1,
+              },
+              cancel: {
+                operationId: cancelOperationId,
+                effect: {
+                  file: "native-calls.jsonl",
+                  contains: `"kind": "cancel", "operationId": "${cancelOperationId}", "targetOperationId": "${operationId}"`,
+                  expectedOccurrences: 1,
+                },
+                expect:
+                  mode === "cancel-lost"
+                    ? {
+                        execution: "unknown",
+                        observation: "reconciliation_required",
+                      }
+                    : { execution: "ended", observation: "complete" },
+              },
+              expect: { status: 202, ...target },
+            },
+          ],
+        },
+      });
+      assert.equal(report.cells[0].status, "passed", JSON.stringify(report));
+      assert.ok(
+        (report.scope.exercised as unknown[]).includes(
+          "L03.cancel_rest_acknowledged_delayed_lost"
+        ),
+        JSON.stringify(report)
+      );
+      assert.ok(
+        (report.scope.notRun as unknown[]).includes(
+          "L03.cancel_impossible_or_unsupported"
+        ),
+        JSON.stringify(report)
+      );
+      const evidence = report.cells[0].evidence as {
+        nativeEffects: { submitCount: number; cancelCount: number };
+      };
+      assert.equal(
+        evidence.nativeEffects.submitCount,
+        1,
+        JSON.stringify(report)
+      );
+      assert.equal(
+        evidence.nativeEffects.cancelCount,
+        1,
+        JSON.stringify(report)
+      );
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("shipped conformance export loads its runtime entrypoint", async () => {
   const runtime = await import(
     new URL("../src/conformance.mjs", import.meta.url).href
@@ -608,6 +700,84 @@ test("malformed frame cell selects the latest matching ready instance", () => {
       "malformed-json",
       { ...first, code: "invalid_frame" },
       selected
+    ),
+    false
+  );
+});
+
+test("cancellation receipt matching rejects wrong target and control association", () => {
+  const target = {
+    fleetId: "fleet",
+    botId: "bot",
+    conversationId: "conversation",
+    bindingId: "binding",
+    bindingRevision: "revision",
+    operationId: "target",
+    userEntryId: "entry",
+  };
+  const control = {
+    fleetId: "fleet",
+    botId: "bot",
+    conversationId: "conversation",
+    bindingId: "binding",
+    bindingRevision: "revision",
+    operationId: "cancel",
+    kind: "cancel",
+    result: { status: "requested" },
+  };
+  assert.equal(
+    cancellationReceiptsMatch(
+      target,
+      target,
+      control,
+      control,
+      control,
+      control,
+      target,
+      true,
+      true
+    ),
+    true
+  );
+  assert.equal(
+    cancellationReceiptsMatch(
+      target,
+      { ...target, operationId: "wrong-target" },
+      control,
+      control,
+      control,
+      control,
+      target,
+      true,
+      true
+    ),
+    false
+  );
+  assert.equal(
+    cancellationReceiptsMatch(
+      target,
+      target,
+      control,
+      { ...control, kind: "message" },
+      control,
+      control,
+      target,
+      true,
+      true
+    ),
+    false
+  );
+  assert.equal(
+    cancellationReceiptsMatch(
+      target,
+      target,
+      control,
+      control,
+      control,
+      control,
+      target,
+      false,
+      true
     ),
     false
   );

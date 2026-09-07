@@ -16,6 +16,7 @@ owned = None
 launch_id = None
 control_fd = None
 attached_pid = None
+pending_submits = {}
 
 
 def record(ctx, kind, **values):
@@ -80,12 +81,21 @@ async def opened(p, ctx):
 
 
 async def submit(p, ctx):
+    global pending_submits
     record(ctx, "submit", operationId=p["operationId"], text=p["input"][0]["text"])
     if mode == "crash-submit":
         os._exit(18)
     if mode == "marker-crash":
         record(ctx, "malformed", mode=mode, operationId=p["operationId"])
         os._exit(19)
+    if mode in ("cancel-ack", "cancel-delayed", "cancel-lost"):
+        pending_submits[p["operationId"]] = {"params": p, "cancelled": asyncio.Event()}
+        try:
+            await ctx.emit({"operationId": p["operationId"], "turnId": p["turnId"], "type": "turn.started", "payload": {}})
+            await pending_submits[p["operationId"]]["cancelled"].wait()
+        finally:
+            pending_submits.pop(p["operationId"], None)
+        return {"disposition": "accepted"}
     if mode in ("malformed-json", "malformed-event", "oversize", "nonfinite"):
         record(ctx, "malformed", mode=mode, operationId=p["operationId"])
         if mode == "malformed-json":
@@ -122,7 +132,15 @@ async def submit(p, ctx):
 
 
 async def cancelled(p, ctx):
+    global pending_submits
     record(ctx, "cancel", operationId=p["operationId"], targetOperationId=p["targetOperationId"])
+    target = pending_submits.get(p["targetOperationId"])
+    if mode == "cancel-lost":
+        os._exit(20)
+    if mode == "cancel-ack" and target is not None:
+        ids = {"operationId": target["params"]["operationId"], "turnId": target["params"]["turnId"]}
+        await ctx.emit({**ids, "type": "turn.terminal", "payload": {"execution": "cancelled", "observation": "complete"}})
+        target["cancelled"].set()
     return {"status": "requested"}
 
 

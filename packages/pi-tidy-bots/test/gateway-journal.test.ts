@@ -2303,7 +2303,7 @@ test("gateway journal v1 upgrades schedule tables without erasing retained opera
   f.journal.close();
   sql(
     f.path,
-    "DROP TABLE routine_fires; DROP TABLE schedule_owners; UPDATE writer_lease SET expires_at=0; PRAGMA user_version=1"
+    "DROP TABLE routine_fires; DROP TABLE schedule_owners; UPDATE writer_lease SET owner_id=NULL, expires_at=0, reconciled=1; PRAGMA user_version=1"
   );
   const upgraded = f.open();
   const lease = upgraded.acquireWriterLease("writer-upgrade", {
@@ -2320,4 +2320,69 @@ test("gateway journal v1 upgrades schedule tables without erasing retained opera
     "hermes"
   );
   assert.equal(owner.generation, 1);
+});
+
+test("gateway journal refuses v1 upgrade for wrong fleet without mutating storage", (t) => {
+  const f = fixture(t);
+  f.journal.close();
+  sql(
+    f.path,
+    "DROP TABLE routine_fires; DROP TABLE schedule_owners; PRAGMA user_version=1"
+  );
+  assert.throws(
+    () => f.open("different-fleet"),
+    (error: unknown) =>
+      error instanceof GatewayJournalError && error.code === "fleet_mismatch"
+  );
+  const db = new DatabaseSync(f.path);
+  try {
+    assert.equal(
+      Number(
+        (db.prepare("PRAGMA user_version").get() as { user_version: number })
+          .user_version
+      ),
+      1
+    );
+    assert.equal(
+      db
+        .prepare("SELECT 1 FROM sqlite_master WHERE name='routine_fires'")
+        .get(),
+      undefined
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test("gateway journal refuses v1 upgrade while an old writer is live", (t) => {
+  const f = fixture(t);
+  f.journal.close();
+  sql(
+    f.path,
+    "DROP TABLE routine_fires; DROP TABLE schedule_owners; PRAGMA user_version=1"
+  );
+  assert.throws(
+    () => f.open(),
+    (error: unknown) =>
+      error instanceof GatewayJournalError &&
+      error.code === "ownership_unreconciled"
+  );
+  const db = new DatabaseSync(f.path);
+  try {
+    assert.equal(
+      Number(
+        (db.prepare("PRAGMA user_version").get() as { user_version: number })
+          .user_version
+      ),
+      1
+    );
+    assert.equal(
+      db
+        .prepare("SELECT 1 FROM sqlite_master WHERE name='schedule_owners'")
+        .get(),
+      undefined
+    );
+  } finally {
+    db.close();
+  }
 });

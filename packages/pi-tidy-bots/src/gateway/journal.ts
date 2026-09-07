@@ -542,6 +542,35 @@ export class GatewayJournal {
           );
         });
       if (schemaVersion === 1) {
+        const storedBeforeUpgrade = this.prepare(
+          "SELECT value FROM gateway_meta WHERE key='fleet_id'"
+        ).get();
+        if (
+          !storedBeforeUpgrade ||
+          typeof storedBeforeUpgrade.value !== "string" ||
+          !storedBeforeUpgrade.value
+        )
+          fail("corrupt_storage", "Gateway fleet identity is missing");
+        if (
+          options.fleetId !== undefined &&
+          storedBeforeUpgrade.value !== options.fleetId
+        )
+          fail(
+            "fleet_mismatch",
+            "Stored fleet ID differs from requested fleet ID"
+          );
+        const writer = this.prepare(
+          "SELECT * FROM writer_lease WHERE singleton=1"
+        ).get();
+        if (
+          writer?.owner_id !== null ||
+          Number(writer?.expires_at ?? 0) > this.now() ||
+          Number(writer?.reconciled ?? 0) !== 1
+        )
+          fail(
+            "ownership_unreconciled",
+            "Storage upgrade requires a stopped, reconciled gateway"
+          );
         this.transaction(() => {
           this.db.exec(`
             CREATE TABLE IF NOT EXISTS schedule_owners (schedule_id TEXT PRIMARY KEY, owner TEXT NOT NULL,

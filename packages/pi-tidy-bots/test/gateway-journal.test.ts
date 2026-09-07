@@ -2144,6 +2144,57 @@ test("artifact storage failure rolls back intent and corruption refuses both acc
   );
 });
 
+test("missing admitted artifact blob fails closed without creating a retry", (t) => {
+  const f = fixture(t);
+  const uploads = [
+    { name: "note.txt", mediaType: "text/plain", bytes: Buffer.from("hello") },
+  ];
+  f.journal.admitMessageArtifacts(f.lease, intent(), uploads);
+  const descriptor = (
+    f.journal.getOperationRecord(key())!.payload!.artifacts as JsonObject[]
+  )[0];
+  let deletedKey = "";
+  const db = new DatabaseSync(f.path);
+  try {
+    const row = db
+      .prepare(
+        "SELECT key FROM gateway_meta WHERE key LIKE 'artifact_v1:%' AND key LIKE ?"
+      )
+      .get(`%:${String(descriptor.artifactId)}`) as { key: string } | undefined;
+    assert.ok(row);
+    deletedKey = row.key;
+    assert.equal(
+      db.prepare("DELETE FROM gateway_meta WHERE key=?").run(row.key).changes,
+      1
+    );
+  } finally {
+    db.close();
+  }
+  code(
+    () =>
+      f.journal.readArtifact(
+        { ...key(), bindingId: binding.bindingId },
+        String(descriptor.artifactId)
+      ),
+    "corrupt_storage"
+  );
+  code(
+    () => f.journal.admitMessageArtifacts(f.lease, intent(), uploads),
+    "corrupt_storage"
+  );
+  assert.equal(f.journal.getOperation(key())?.operationId, key().operationId);
+  assert.equal(f.journal.listOperationRecords(binding).length, 1);
+  const verify = new DatabaseSync(f.path);
+  try {
+    assert.equal(
+      verify.prepare("SELECT 1 FROM gateway_meta WHERE key=?").get(deletedKey),
+      undefined
+    );
+  } finally {
+    verify.close();
+  }
+});
+
 test("artifact bytes expire with bodies while retained operation identity rejects reuse", (t) => {
   const f = fixture(t);
   const uploads = [

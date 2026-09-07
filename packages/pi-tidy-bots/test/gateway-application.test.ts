@@ -884,6 +884,63 @@ test("external routine fire API fences owners and dedupes stable occurrences", a
   }
 });
 
+test("routine fire retry returns durable receipt after native EOF offline", async () => {
+  const f = await fixture();
+  try {
+    const handle = await f.start();
+    const registered = await f.request(
+      handle,
+      "/api/schedules/scribe%3Anightly/register",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ owner: "legacy-gateway" }),
+      }
+    );
+    const binding = await f.binding(handle);
+    const fire = (text: string) =>
+      f.request(handle, "/api/bots/fixture/schedules/scribe%3Anightly/fire", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-tidy-client-contract": "2",
+          "x-tidy-binding-revision": binding.bindingRevision,
+        },
+        body: JSON.stringify({
+          occurrence: "2026-08-31T11:05:00-05:00",
+          owner: "legacy-gateway",
+          ownerGeneration: registered.body.generation,
+          text,
+        }),
+      });
+    const first = await fire("[exit-after-native]");
+    assert.equal(first.status, 202);
+    const unknown = await waitFor(
+      () => f.inspect(handle, first.body.receipt.operationId),
+      (receipt) => receipt.delivery === "unknown"
+    );
+    await waitFor(
+      () => f.request(handle, "/api/fleet"),
+      (fleet) => fleet.body.bots[0].online === false
+    );
+    const retry = await fire("[exit-after-native]");
+    assert.equal(retry.status, 202);
+    assert.equal(retry.body.created, false);
+    assert.deepEqual(retry.body.receipt, unknown);
+    const changed = await fire("changed after EOF");
+    assert.equal(changed.status, 409);
+    assert.equal(changed.body.error, "operation_conflict");
+    assert.equal(
+      (await f.calls(binding)).filter(
+        (call) => call.method === "operation.submit"
+      ).length,
+      1
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
 test("established binding refuses erased plugin storage before starting a replacement", async () => {
   const f = await fixture();
   try {

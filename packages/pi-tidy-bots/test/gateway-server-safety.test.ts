@@ -24,7 +24,8 @@ const headers = { authorization: `Bearer ${token}` };
 async function fixture(
   delayInitialize = false,
   delayShutdown = false,
-  failInitialize = false
+  failInitialize = false,
+  slowReaderFlood = false
 ) {
   const dir = await mkdtemp(join(tmpdir(), "tidy-gateway-server-safety-"));
   const artifact = join(dir, "plugin");
@@ -51,6 +52,28 @@ async function fixture(
     script = script.replace(
       'if (message.method === "initialize") {',
       'if (message.method === "shutdown") { record({method: "shutdown-pending", pid: process.pid}); setTimeout(() => { respond(message, {status: "closed"}); process.exit(0); }, 350); return; }\nif (message.method === "initialize") {'
+    );
+  if (slowReaderFlood)
+    script = script.replace(
+      "const text = request.input[0].text;",
+      `const text = request.input[0].text;
+  if (text === "[ws-slow-reader-flood]") {
+    event(request, "turn.started", {});
+    for (let order = 0; order < 32; order++) {
+      const messageId = \`message:\${request.operationId}:\${order}\`;
+      let state = order + 1;
+      let text = \`\${order}:\`;
+      while (text.length < 512_000) {
+        state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+        text += state.toString(36);
+      }
+      event(request, "message.started", { role: "assistant", order }, { messageId });
+      event(request, "text.snapshot", { revision: 1, text }, { messageId, blockId: "body" });
+      event(request, "message.finished", { ts: "2026-09-05T12:00:00.000Z", blocks: [{ type: "text", blockId: "body", revision: 1, text }] }, { messageId });
+    }
+    event(request, "turn.terminal", { execution: "ended", observation: "complete" });
+    return;
+  }`
     );
   await writeFile(join(artifact, "backend.mjs"), script);
   await chmod(join(artifact, "backend.mjs"), 0o755);
@@ -139,9 +162,10 @@ async function close(server: Server) {
 }
 async function eventually<T>(
   probe: () => Promise<T> | T,
-  ready: (value: T) => boolean
+  ready: (value: T) => boolean,
+  timeoutMs = 5_000
 ): Promise<T> {
-  const deadline = Date.now() + 5_000;
+  const deadline = Date.now() + timeoutMs;
   for (;;) {
     const value = await probe();
     if (ready(value)) return value;
@@ -502,6 +526,181 @@ test("oversized authenticated bodies return 413 without a durable operation", as
       404
     );
   } finally {
+    await f.cleanup();
+  }
+});
+
+test("a paused public WebSocket is evicted without stalling healthy delivery or native ingress", async () => {
+  const f = await fixture(false, false, false, true);
+  let slow: WebSocket | undefined;
+  let healthy: WebSocket | undefined;
+  try {
+    const handle = await f.start();
+    const descriptor = await binding(handle);
+    const connect = async (
+      onMessage?: (data: WebSocket.RawData) => void
+    ): Promise<WebSocket> => {
+      const socket = new WebSocket(
+        `${handle.url.replace("http", "ws")}/api/ws?token=${token}`
+      );
+      if (onMessage) socket.on("message", onMessage);
+      await new Promise<void>((resolve, reject) => {
+        socket.once("open", resolve);
+        socket.once("error", reject);
+      });
+      return socket;
+    };
+    const slowEvents: Record<string, unknown>[] = [];
+    slow = await connect((data) => slowEvents.push(JSON.parse(String(data))));
+    const healthyEvents: Record<string, unknown>[] = [];
+    healthy = await connect((data) =>
+      healthyEvents.push(JSON.parse(String(data)))
+    );
+    await eventually(
+      () => healthyEvents,
+      (events) => events.some((event) => event.type === "roster")
+    );
+    await eventually(
+      () => slowEvents,
+      (events) => events.some((event) => event.type === "roster")
+    );
+
+    // Pause the actual TCP receive side after the WS handshake. The server must
+    // observe its own bufferedAmount bound; this does not mock `send` or the
+    // gateway's subscriber path.
+    const slowSocket = (
+      slow as unknown as { _socket?: { pause(): void; resume(): void } }
+    )._socket;
+    assert.ok(slowSocket, "ws client exposes its live TCP socket");
+    slowSocket.pause();
+    let slowClosed = false;
+    let slowError: Error | undefined;
+    let wakeSlowClose: (() => void) | undefined;
+    slow.once("close", () => {
+      slowClosed = true;
+      wakeSlowClose?.();
+    });
+    slow.once("error", (error) => {
+      slowError = error;
+      wakeSlowClose?.();
+    });
+
+    const admit = async (operationId: string, text: string) => {
+      const response = await fetch(`${handle.url}/api/bots/fixture/message`, {
+        method: "POST",
+        headers: {
+          ...headers,
+          "content-type": "application/json",
+          "x-tidy-client-contract": "2",
+          "x-tidy-binding-revision": String(descriptor.bindingRevision),
+        },
+        body: JSON.stringify({
+          text,
+          operationId,
+          clientMessageId: operationId,
+          conversationId: descriptor.conversationId,
+        }),
+      });
+      assert.equal(response.status, 202);
+      return (await response.json()) as Record<string, unknown>;
+    };
+
+    await admit("slow-reader-flood", "[ws-slow-reader-flood]");
+    await eventually(
+      () => healthyEvents,
+      (events) =>
+        events.filter(
+          (event) =>
+            event.type === "append" &&
+            (event.entry as Record<string, unknown>)?.operationId ===
+              "slow-reader-flood" &&
+            (event.entry as Record<string, unknown>)?.role === "assistant"
+        ).length === 32,
+      20_000
+    );
+    // The independent healthy client has received the entire native flood;
+    // now resume only to observe the server's already-issued close frame.
+    slowSocket.resume();
+    if (!slowClosed && !slowError)
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("Timed out waiting for slow WS eviction")),
+          10_000
+        );
+        wakeSlowClose = () => {
+          clearTimeout(timer);
+          if (slowError) reject(slowError);
+          else resolve();
+        };
+      });
+    if (slowError) throw slowError;
+    assert.equal(slowClosed, true, "server evicted the paused WebSocket");
+
+    const after = await admit("after-slow-reader", "native ingress continues");
+    const afterEvents = await eventually(
+      () => healthyEvents,
+      (events) =>
+        events.some(
+          (event) =>
+            event.type === "append" &&
+            (event.entry as Record<string, unknown>)?.operationId ===
+              after.operationId &&
+            (event.entry as Record<string, unknown>)?.role === "assistant"
+        )
+    );
+    const afterEntry = afterEvents.find(
+      (event) =>
+        event.type === "append" &&
+        (event.entry as Record<string, unknown>)?.operationId ===
+          after.operationId &&
+        (event.entry as Record<string, unknown>)?.role === "assistant"
+    )!.entry as Record<string, unknown>;
+    assert.equal(afterEntry.operationId, "after-slow-reader");
+    assert.equal(typeof afterEntry.turnId, "string");
+    assert.ok(String(afterEntry.turnId));
+    await eventually(
+      () => healthyEvents,
+      (events) =>
+        events.some(
+          (event) =>
+            event.type === "bubble" &&
+            event.phase === "final" &&
+            event.turnId === afterEntry.turnId
+        )
+    );
+    const sequences = healthyEvents
+      .filter((event) => event.type !== "hello")
+      .map((event) => Number(event.seq));
+    assert.equal(new Set(sequences).size, sequences.length);
+    assert.ok(
+      sequences.every((seq, index) => index === 0 || seq > sequences[index - 1])
+    );
+    const calls = (
+      await readFile(
+        join(
+          f.dir,
+          ".fleet",
+          "plugins",
+          String(descriptor.bindingId),
+          "calls.jsonl"
+        ),
+        "utf8"
+      )
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    assert.equal(
+      calls.filter(
+        (call) =>
+          call.method === "operation.submit" &&
+          call.operationId === "after-slow-reader"
+      ).length,
+      1
+    );
+  } finally {
+    slow?.terminate();
+    healthy?.terminate();
     await f.cleanup();
   }
 });

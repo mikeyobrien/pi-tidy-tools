@@ -1,0 +1,5 @@
+{
+  "type": "object",
+  "properties": { "mode": { "type": "string", "enum": ["normal"] } },
+  "additionalProperties": false
+}

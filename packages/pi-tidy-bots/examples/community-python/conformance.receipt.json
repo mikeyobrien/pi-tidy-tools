@@ -1,0 +1,170 @@
+{
+  "format": "pi-tidy-community-conformance-receipt",
+  "version": 1,
+  "provenance": {
+    "bundle": "community-python",
+    "bundleVersion": "1.0.0",
+    "artifactDigest": "sha256:c618e30a01997da02a982b72b8d60e1bb6b646ce47a8c369f30bc81b3f9ed24d",
+    "fixtureDigest": "sha256:5789b6901ad4503f839a67b50f4d717f903bc962663d030e1f00e4111a7de1bc",
+    "installation": "registry_digest_pinned",
+    "supervisor": "startFleet",
+    "nativeProvider": "not-certified",
+    "assets": "package_relative"
+  },
+  "report": {
+    "scope": {
+      "mode": "local_disposable",
+      "daemon": "startFleet",
+      "registryPath": "<generated-registry>",
+      "pluginId": "<id:1>",
+      "artifact": {
+        "id": "<id:1>",
+        "version": "1.0.0",
+        "artifactPath": "<prepared-community-python-artifact>",
+        "sha256": "sha256:c618e30a01997da02a982b72b8d60e1bb6b646ce47a8c369f30bc81b3f9ed24d",
+        "enabled": true
+      },
+      "fixtureSha256": "sha256:7709c766eccbf50bc91cd2c277e2c8e691707ce4312bb11864e8c65855164b2f",
+      "allowedUncertainty": ["native_provider_not_run"],
+      "injection": {
+        "kind": "none",
+        "fixtureId": "<id:2>"
+      },
+      "exercised": ["C05.public_ordered_terminal"],
+      "eventCells": ["community-python-message"],
+      "eofCells": [],
+      "cancellationCells": [],
+      "retryCells": [],
+      "notRun": [
+        "C01",
+        "C02",
+        "C03",
+        "C04",
+        "C05.source_replay_crash",
+        "C06",
+        "C07",
+        "C08",
+        "C09",
+        "C10",
+        "L01",
+        "L02",
+        "L03",
+        "L04",
+        "L05",
+        "L06",
+        "L07",
+        "L08",
+        "L09",
+        "L10"
+      ],
+      "nativeProvider": "not-run"
+    },
+    "cells": [
+      {
+        "id": "<id:3>",
+        "status": "passed",
+        "evidence": {
+          "firstStatus": 202,
+          "immutableReceipt": true,
+          "retryUnchanged": true,
+          "receipt": {
+            "fleetId": "<id:4>",
+            "botId": "<id:5>",
+            "conversationId": "<id:6>",
+            "bindingId": "<id:7>",
+            "bindingRevision": "<id:8>",
+            "operationId": "<id:9>",
+            "userEntryId": "<id:10>",
+            "delivery": "accepted",
+            "execution": "ended",
+            "observation": "complete",
+            "result": {
+              "taskOutcome": "unknown"
+            }
+          },
+          "effects": {
+            "file": "native-calls.jsonl",
+            "count": 1,
+            "unchanged": true
+          },
+          "events": {
+            "frameCount": 6,
+            "linkedAppendCount": 1,
+            "terminalFinalCount": 1,
+            "ordered": true,
+            "turnId": "<id:11>",
+            "trace": [
+              {
+                "bot": "fixture",
+                "phase": "working",
+                "text": "",
+                "turnId": "<id:12>",
+                "type": "bubble",
+                "seq": "<sequence:1>"
+              },
+              {
+                "bot": "fixture",
+                "parts": [
+                  {
+                    "text": "Python: hello from the packaged community fixture",
+                    "type": "text"
+                  }
+                ],
+                "phase": "parts",
+                "text": "Python: hello from the packaged community fixture",
+                "turnId": "<id:12>",
+                "type": "bubble",
+                "seq": "<sequence:2>"
+              },
+              {
+                "bot": "fixture",
+                "entry": {
+                  "id": "<id:13>",
+                  "operationId": "<id:14>",
+                  "origin": "bot",
+                  "parts": [
+                    {
+                      "text": "Python: hello from the packaged community fixture",
+                      "type": "text"
+                    }
+                  ],
+                  "role": "assistant",
+                  "text": "Python: hello from the packaged community fixture",
+                  "ts": "<clock>",
+                  "turnId": "<id:12>"
+                },
+                "type": "append",
+                "seq": "<sequence:3>"
+              },
+              {
+                "bot": "fixture",
+                "phase": "working",
+                "text": "",
+                "turnId": "<id:12>",
+                "type": "bubble",
+                "seq": "<sequence:4>"
+              },
+              {
+                "bot": "fixture",
+                "parts": [],
+                "phase": "parts",
+                "text": "",
+                "turnId": "<id:12>",
+                "type": "bubble",
+                "seq": "<sequence:5>"
+              },
+              {
+                "bot": "fixture",
+                "phase": "final",
+                "text": "",
+                "turnId": "<id:12>",
+                "type": "bubble",
+                "seq": "<sequence:6>"
+              }
+            ]
+          }
+        }
+      }
+    ]
+  }
+}

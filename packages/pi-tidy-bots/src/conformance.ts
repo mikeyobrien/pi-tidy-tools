@@ -111,7 +111,11 @@ export function malformedPluginFaultMatches(
 export function normalizeConformanceTrace(value: unknown): unknown {
   const identifiers = new Map<string, number>();
   const normalize = (item: unknown, key?: string): unknown => {
-    if (typeof item === "string" && key && /(?:id|reference)$/i.test(key)) {
+    if (
+      typeof item === "string" &&
+      key &&
+      /(?:id|reference|revision)$/i.test(key)
+    ) {
       const ordinal = identifiers.get(item) ?? identifiers.size + 1;
       identifiers.set(item, ordinal);
       return `<id:${ordinal}>`;
@@ -119,7 +123,7 @@ export function normalizeConformanceTrace(value: unknown): unknown {
     if (
       typeof item === "string" &&
       key &&
-      /(?:ts|timestamp|createdAt|updatedAt)$/i.test(key)
+      /(?:ts|timestamp|createdAt|updatedAt|lastActive)$/i.test(key)
     )
       return "<clock>";
     if (Array.isArray(item)) return item.map((entry) => normalize(entry));
@@ -286,24 +290,39 @@ export function publicEventEvidence(
       frame.phase === "final" &&
       frame.turnId === turnId
   );
-  const sequenced = trace.filter((frame) => typeof frame.seq === "number");
+  const correlated = trace.filter(
+    (frame) =>
+      (frame.type === "bubble" && frame.turnId === turnId) ||
+      (frame.type === "append" &&
+        object(frame.entry) &&
+        frame.entry.operationId === operationId &&
+        frame.entry.turnId === turnId)
+  );
+  const sequenced = correlated.filter((frame) => typeof frame.seq === "number");
   const ordered = sequenced.every(
     (frame, index) =>
       index === 0 || Number(frame.seq) > Number(sequenced[index - 1].seq)
   );
   if (
-    trace.length < expected.minFrames ||
+    correlated.length < expected.minFrames ||
     terminal.length !== expected.terminalFinals ||
     !ordered
   )
     return undefined;
   return {
-    frameCount: trace.length,
+    frameCount: correlated.length,
     linkedAppendCount: linked.length,
     terminalFinalCount: terminal.length,
     ordered,
     turnId: `<correlated>`,
-    trace: normalizeConformanceTrace(trace) as JsonObject,
+    // Roster frames are concurrent state snapshots, not operation evidence. Keep
+    // only the exact operation/turn and normalize their order without losing it.
+    trace: normalizeConformanceTrace(
+      correlated.map((frame, index) => ({
+        ...frame,
+        seq: `<sequence:${index + 1}>`,
+      }))
+    ) as JsonObject,
   };
 }
 async function publicEvidence(
@@ -1117,6 +1136,9 @@ export async function runLocalConformance(
     const cancellationCells = options.fixture.cells
       .filter((cell) => cell.kind === "cancel" && !cell.skip)
       .map((cell) => cell.id);
+    const retryCells = options.fixture.cells
+      .filter((cell) => cell.retry && !cell.skip)
+      .map((cell) => cell.id);
     report = {
       scope: {
         mode: "local_disposable",
@@ -1131,8 +1153,7 @@ export async function runLocalConformance(
           fixtureId: "none",
         },
         exercised: [
-          "C03",
-          "L10",
+          ...(retryCells.length || cancellationCells.length ? ["C03"] : []),
           ...(eventCells.length ? ["C05.public_ordered_terminal"] : []),
           ...(eofCells.length
             ? ["C04.post_write_eof", "C05.post_write_eof_recovery"]
@@ -1144,9 +1165,11 @@ export async function runLocalConformance(
         eventCells,
         eofCells,
         cancellationCells,
+        retryCells,
         notRun: [
           "C01",
           "C02",
+          ...(retryCells.length || cancellationCells.length ? [] : ["C03"]),
           "C04",
           "C05.source_replay_crash",
           "C06",
@@ -1168,6 +1191,7 @@ export async function runLocalConformance(
           "L07",
           "L08",
           "L09",
+          "L10",
         ],
         nativeProvider: "not-run",
       },

@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "cells": [
+    {
+      "id": "community-python-message",
+      "kind": "message",
+      "operationId": "community-python-message-1",
+      "text": "hello from the packaged community fixture",
+      "effect": {
+        "file": "native-calls.jsonl",
+        "contains": "\"kind\": \"submit\", \"operationId\": \"community-python-message-1\"",
+        "expectedOccurrences": 1
+      },
+      "events": { "minFrames": 3, "terminalFinals": 1 },
+      "expect": { "status": 202, "execution": "ended" }
+    }
+  ],
+  "allowedUncertainty": ["native_provider_not_run"]
+}

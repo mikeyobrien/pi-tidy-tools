@@ -252,7 +252,6 @@ test("local conformance runner uses the shipped daemon with an explicit pinned f
     assert.equal((report.cells[0].evidence.events as any).ordered, true);
     assert.deepEqual(report.scope.exercised, [
       "C03",
-      "L10",
       "C05.public_ordered_terminal",
     ]);
   } finally {
@@ -297,8 +296,6 @@ test("runner proves post-native-write Python EOF remains uncertain and is never 
     assert.equal((report.cells[0].evidence.nativeEffects as any).count, 1);
     assert.equal(report.cells[0].evidence.noCompletedAssistant as any, true);
     assert.deepEqual(report.scope.exercised, [
-      "C03",
-      "L10",
       "C04.post_write_eof",
       "C05.post_write_eof_recovery",
     ]);
@@ -541,6 +538,21 @@ test("conformance trace normalization preserves ID relationships and event corre
   assert.equal(
     (publicEventEvidence(matched, "op", expected) as any).terminalFinalCount,
     1
+  );
+  const withUnrelatedRosters = [
+    { seq: 1, type: "roster", counts: { active: 1 } },
+    ...matched,
+    { seq: 3, type: "roster", counts: { active: 0 } },
+  ];
+  const evidence = publicEventEvidence(
+    withUnrelatedRosters,
+    "op",
+    expected
+  ) as any;
+  assert.equal(evidence.frameCount, 2);
+  assert.deepEqual(
+    evidence.trace.map((frame: any) => frame.seq),
+    ["<sequence:1>", "<sequence:2>"]
   );
 });
 

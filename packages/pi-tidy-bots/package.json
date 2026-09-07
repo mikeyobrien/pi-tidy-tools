@@ -35,6 +35,10 @@
     "./conformance": {
       "types": "./src/conformance.ts",
       "default": "./src/conformance.mjs"
+    },
+    "./community-example": {
+      "types": "./src/community-example.ts",
+      "default": "./src/community-example.mjs"
     }
   },
   "bin": {
@@ -44,10 +48,12 @@
     "bin/*.mjs",
     "src/**/*.ts",
     "src/conformance.mjs",
+    "src/community-example.mjs",
     "src/gateway/*.mjs",
     "src/plugin-sdk/*.mjs",
     "src/gateway/schema/*.json",
     "sdk/python/**/*.py",
+    "examples/community-python/**",
     "backends/pi/*",
     "backends/hermes/*.py",
     "backends/hermes/*.ts",

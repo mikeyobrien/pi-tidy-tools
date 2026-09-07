@@ -68,6 +68,13 @@ try {
         "sdk/python/tidy_backend_sdk/runtime.py",
         "sdk/python/tidy_backend_sdk/store.py",
         "sdk/python/tidy_backend_sdk/protocol.py",
+        "src/community-example.mjs",
+        "examples/community-python/backend.json",
+        "examples/community-python/config.schema.json",
+        "examples/community-python/backend.py",
+        "examples/community-python/plugin",
+        "examples/community-python/conformance.fixture.json",
+        "examples/community-python/conformance.receipt.json",
       ]) {
         if (!listing.includes(`package/${file}`))
           throw new Error(`${name} omitted shipped plugin runtime ${file}`);

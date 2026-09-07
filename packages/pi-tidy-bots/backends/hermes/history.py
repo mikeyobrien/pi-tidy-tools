@@ -21,6 +21,23 @@ def _digest(value):
     return hashlib.sha256(encoded).hexdigest()
 
 
+# get_session() flushes queued usage deltas before reading the row. These are
+# accounting observations, not native restoration inputs. Keep every other
+# field (including unknown fields, lineage and runtime billing fallbacks) in
+# the stability proof so a schema change fails closed by default.
+_ACCOUNTING_ROW_FIELDS = frozenset((
+    "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
+    "reasoning_tokens", "api_call_count", "estimated_cost_usd", "actual_cost_usd",
+    "cost_status", "cost_source", "pricing_version",
+))
+
+
+def _stable_session_row(row):
+    if not isinstance(row, dict):
+        raise HistoryUnavailable()
+    return {key: value for key, value in row.items() if key not in _ACCOUNTING_ROW_FIELDS}
+
+
 def history_checkpoint(manager, state):
     """Compare live history with both raw and native-restorable active rows.
 
@@ -61,7 +78,7 @@ def history_checkpoint(manager, state):
             raise HistoryUnavailable()
         # Refuse a torn metadata/history observation instead of accepting one
         # successful read as proof of a stable persisted session.
-        if (_digest(db.get_session(sid)) != _digest(row)
+        if (_digest(_stable_session_row(db.get_session(sid))) != _digest(_stable_session_row(row))
                 or _digest(db.get_messages_as_conversation(sid, repair_alternation=False)) != live_digest
                 or _digest(state.history) != live_digest):
             raise HistoryUnavailable()

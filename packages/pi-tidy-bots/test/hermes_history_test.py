@@ -100,6 +100,44 @@ class HistoryTests(unittest.TestCase):
         self.db.get_session = changing
         self.unavailable()
 
+    def test_accounting_flush_between_row_reads_preserves_exact_history(self):
+        original = self.db.get_session
+        count = 0
+        changes = {
+            "input_tokens": 3, "output_tokens": 5, "cache_read_tokens": 7,
+            "cache_write_tokens": 11, "reasoning_tokens": 13, "api_call_count": 17,
+            "estimated_cost_usd": 19.0, "actual_cost_usd": 23.0,
+            "cost_status": "estimated", "cost_source": "usage", "pricing_version": "v2",
+        }
+        def accounting_flush(sid):
+            nonlocal count
+            count += 1
+            return {**original(sid), **(changes if count > 1 else {})}
+        self.db.get_session = accounting_flush
+        self.assertEqual(history.history_checkpoint(self.manager, self.state)["messageCount"], 2)
+
+    def test_semantic_or_unknown_row_change_between_reads_rejects(self):
+        original = self.db.get_session
+        for key, changed in (
+            ("model", "other-model"),
+            ("model_config", json.dumps({"cwd": self.state.cwd, "provider": "other"})),
+            ("system_prompt", "changed"),
+            ("system_prompt_hash", "changed"),
+            ("parent_session_id", "rotated-parent"),
+            ("billing_provider", "other-provider"),
+            ("billing_base_url", "https://other.invalid"),
+            ("billing_mode", "other-mode"),
+            ("unknown_lineage_field", "changed"),
+        ):
+            count = 0
+            def changing(sid, *, key=key, changed=changed):
+                nonlocal count
+                count += 1
+                return {**original(sid), **({key: changed} if count > 1 else {})}
+            self.db.get_session = changing
+            self.unavailable()
+        self.db.get_session = original
+
     def test_store_survives_restart_and_is_binding_scoped(self):
         checkpoint = history.history_checkpoint(self.manager, self.state)
         with tempfile.TemporaryDirectory() as directory:

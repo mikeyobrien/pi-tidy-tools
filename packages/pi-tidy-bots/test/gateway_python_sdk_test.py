@@ -1,4 +1,6 @@
 import json
+import hashlib
+import base64
 import os
 from pathlib import Path
 import sqlite3
@@ -9,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sdk" / "python"))
-from tidy_backend_sdk import DurableStore, SDKError, PluginRuntime
+from tidy_backend_sdk import DurableStore, SDKError, PluginRuntime, read_artifact
 from tidy_backend_sdk.protocol import encode_frame, parse_frame, validate_capabilities
 
 
@@ -299,6 +301,64 @@ class OwnershipSDKTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(caught.exception.code, "request_timeout")
         self.assertEqual(runtime._reverse, {})
         self.assertEqual(len(frames), 1)
+
+
+class ArtifactSDKTests(unittest.IsolatedAsyncioTestCase):
+    def descriptor(self, data):
+        return {"type": "artifact", "artifactId": "fixture", "name": "note.txt",
+                "mediaType": "text/plain", "size": len(data),
+                "sha256": "sha256:" + hashlib.sha256(data).hexdigest()}
+
+    def context(self, data, mutate=lambda value: None):
+        descriptor = self.descriptor(data)
+        calls = []
+        class Context:
+            initialization = {"limits": {"maxFrameBytes": 4096}}
+            async def host_call(self, name, arguments, **identity):
+                calls.append((name, arguments, identity))
+                end = arguments["offset"] + arguments["limit"]
+                result = {"artifact": dict(descriptor),
+                          "data": base64.b64encode(data[arguments["offset"]:end]).decode("ascii"),
+                          "nextOffset": end if end < len(data) else None}
+                mutate(result)
+                return result
+        return Context(), descriptor, calls
+
+    async def test_scoped_chunk_reader_preserves_bytes_and_fresh_call_ids(self):
+        data = "🦋 data ".encode("utf-8") * 5000
+        context, descriptor, calls = self.context(data)
+        self.assertEqual(await read_artifact(context, "op-1", descriptor, 100000), data)
+        self.assertGreater(len(calls), 1)
+        self.assertEqual({call[0] for call in calls}, {"artifact.read"})
+        self.assertEqual({call[2]["operation_id"] for call in calls}, {"op-1"})
+        self.assertEqual(len({call[2]["call_id"] for call in calls}), len(calls))
+        self.assertTrue(all(set(call[1]) == {"artifactId", "offset", "limit"} for call in calls))
+
+    async def test_scoped_chunk_reader_rejects_metadata_range_encoding_and_digest_mismatch(self):
+        data = b"x" * 10000
+        for kind in ("metadata", "offset", "encoding", "digest"):
+            with self.subTest(kind=kind):
+                def mutate(value):
+                    if kind == "metadata": value["artifact"]["name"] = "other"
+                    if kind == "offset": value["nextOffset"] = 0
+                    if kind == "encoding": value["data"] = "!"
+                    if kind == "digest": value["data"] = base64.b64encode(b"y" * len(base64.b64decode(value["data"]))).decode("ascii")
+                context, descriptor, _ = self.context(data, mutate)
+                with self.assertRaises(SDKError) as caught:
+                    await read_artifact(context, "op-1", descriptor, 100000)
+                self.assertEqual(caught.exception.code, "invalid_artifact")
+
+    async def test_scoped_chunk_reader_rejects_paths_and_oversized_references_before_host_access(self):
+        data = b"safe"
+        context, descriptor, calls = self.context(data)
+        for invalid in ({**descriptor, "path": "/tmp/secret"}, {**descriptor, "size": 0}):
+            with self.assertRaises(SDKError) as caught:
+                await read_artifact(context, "op-1", invalid, 100000)
+            self.assertEqual(caught.exception.code, "invalid_payload")
+        with self.assertRaises(SDKError) as caught:
+            await read_artifact(context, "op-1", descriptor, 2)
+        self.assertEqual(caught.exception.code, "invalid_payload")
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

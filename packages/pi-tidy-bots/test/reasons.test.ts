@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { classifyFailure, isRetryable } from "../src/reasons.ts";
+import {
+  classifyCompactRefusal,
+  classifyFailure,
+  isRetryable,
+} from "../src/reasons.ts";
 
 test("classifies provider and delivery failures into typed reasons", () => {
   assert.equal(
@@ -40,10 +44,29 @@ test("issue 49 follow-up: compact refusal on a small session is not a fatal", ()
   // A forced compact on a small session: pi refuses; the daemon must treat
   // the refusal as a noop success, never a 500.
   assert.equal(
+    classifyCompactRefusal("Nothing to compact (session too small)"),
+    "nothing_to_compact"
+  );
+  assert.equal(
     classifyFailure("Nothing to compact (session too small)"),
     "delivery_failed",
-    "the refusal is a clean noop, not offline/port/usage"
+    "the delivery classifier is the wrong layer — compact paths must not use it"
   );
+});
+
+test("issue 79: Already compacted is a terminal compact no-op", () => {
+  for (const message of [
+    "Already compacted",
+    'rpc command failed: {"success":false,"error":"Already compacted"}',
+    "Native RPC command was rejected: Already compacted",
+  ]) {
+    assert.equal(classifyCompactRefusal(message), "already_compacted", message);
+  }
+  assert.equal(classifyCompactRefusal("mystery"), undefined);
+  // The delivery classifier still falls through — that is the overnight
+  // loop if compact paths forget to consult classifyCompactRefusal first.
+  assert.equal(classifyFailure("Already compacted"), "delivery_failed");
+  assert.ok(!isRetryable("delivery_failed"));
 });
 
 test("issue 50: a busy child is turn_in_flight, never runtime_offline", () => {

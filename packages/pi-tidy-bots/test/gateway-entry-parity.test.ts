@@ -736,16 +736,16 @@ test(
       );
       assert.deepEqual(
         await fleet.request("/api/bots/aa/compact", {}),
-        expected.compactionRefusal
+        expected.compactionAlreadyDone
       );
       assert.equal(
         fleet
           .native()
-          .some(
+          .filter(
             (item) => item.direction === "in" && item.frame.type === "compact"
-          ),
-        false,
-        "unknown fill makes compacted=false before native execution"
+          ).length,
+        1,
+        "get_state tokens make fill known so force compact reaches the child once"
       );
       await fleet.request("/api/bots/aa/message", { text: "usage" });
       await until(
@@ -759,10 +759,17 @@ test(
         await fleet.request("/api/bots/aa/compact", {}),
         expected.compactionAlreadyDone
       );
+      const already = (await fleet.transcript()).filter((item) =>
+        /already compacted/i.test(item.text)
+      );
+      assert.ok(already.length >= 1, "terminal no-op is visible once");
       assert.ok(
-        (await fleet.transcript()).some((item) =>
-          /already compacted/i.test(item.text)
-        )
+        fleet
+          .native()
+          .filter(
+            (item) => item.direction === "in" && item.frame.type === "compact"
+          ).length <= 2,
+        "at most one retry after the first already-compacted refusal"
       );
     } finally {
       await fleet.dispose();

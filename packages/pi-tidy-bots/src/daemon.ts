@@ -42,7 +42,11 @@ import {
 import { createEventLog, resolveSinceCursor } from "./eventlog.ts";
 import { createRpcEventHandler, deltaThrottleDue } from "./events.ts";
 import { attributionPrefix, stripActionMarkers } from "./actions.ts";
-import { classifyFailure, isRetryable } from "./reasons.ts";
+import {
+  classifyCompactRefusal,
+  classifyFailure,
+  isRetryable,
+} from "./reasons.ts";
 import {
   createTranscriptStore,
   mergeTranscriptHistory,
@@ -445,6 +449,29 @@ export function computeFill(
 ): number | undefined {
   if (contextWindow <= 0) return undefined;
   return inputTokens / contextWindow;
+}
+
+/**
+ * Issue 79 layer 2: pi get_state usage is ground truth over file/window
+ * estimates. Accept the field names real children have used.
+ */
+export function tokensFromGetState(state: unknown): number | undefined {
+  const data =
+    state && typeof state === "object" && "data" in state
+      ? (state as { data?: unknown }).data
+      : state;
+  const usage =
+    data && typeof data === "object" && "usage" in data
+      ? (data as { usage?: unknown }).usage
+      : undefined;
+  if (!usage || typeof usage !== "object") return undefined;
+  const record = usage as Record<string, unknown>;
+  for (const key of ["input", "inputTokens", "promptTokens"] as const) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0)
+      return value;
+  }
+  return undefined;
 }
 
 /** Issue 43 amendment default: flash/spark-class fallback summarizer. */
@@ -1023,31 +1050,17 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
    * ran because the daemon's stale estimate said compact while pi's
    * compaction state said done.
    */
+  const applyGetStateTokens = (runtime: BotRuntime, state: unknown): void => {
+    const input = tokensFromGetState(state);
+    if (input === undefined) return;
+    runtime.inputTokens = input;
+    if (runtime.contextWindow)
+      runtime.fill = computeFill(input, runtime.contextWindow);
+  };
+
   const reconcileUsageFromChild = async (runtime: BotRuntime) => {
     try {
-      const state = (await runtime.session?.getState()) as {
-        data?: {
-          usage?: {
-            input?: unknown;
-            inputTokens?: unknown;
-            promptTokens?: unknown;
-          };
-        };
-      };
-      const usage = state?.data?.usage;
-      const input =
-        typeof usage?.input === "number"
-          ? usage.input
-          : typeof usage?.inputTokens === "number"
-            ? usage.inputTokens
-            : typeof usage?.promptTokens === "number"
-              ? usage.promptTokens
-              : undefined;
-      if (input !== undefined && input >= 0) {
-        runtime.inputTokens = input;
-        if (runtime.contextWindow)
-          runtime.fill = computeFill(input, runtime.contextWindow);
-      }
+      applyGetStateTokens(runtime, await runtime.session?.getState());
     } catch {
       /* child unreachable: keep daemon estimates */
     }
@@ -1062,6 +1075,10 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     // pi-core 0.85.0 crash class (undefined.signal in the child's manual-
     // compact path): deterministic per child — respawn clears the blackout.
     if (runtime.compactCrashBlackout) return false;
+    // Issue 79 layer 2: prefer the child's get_state tokens before deciding
+    // whether compact is even warranted — stale file/window estimates are
+    // what kept forcing a terminal no-op overnight.
+    await reconcileUsageFromChild(runtime);
     const trigger: "threshold" | "idle" | "force" = opts.force
       ? "force"
       : opts.idle === true
@@ -1164,7 +1181,8 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
       // failure; the old classifier fed it to escalation as
       // delivery_failed and retried at every settled boundary (118+
       // identical entries overnight).
-      if (/already compacted/i.test(String(error))) {
+      const compactRefusal = classifyCompactRefusal(String(error));
+      if (compactRefusal === "already_compacted") {
         // Restore the session model first if a fallback switch happened.
         if (fallback && sessionModelId) {
           try {
@@ -1221,8 +1239,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         );
         return true;
       }
-      refused = /nothing to compact/i.test(String(error));
-      refused = /nothing to compact/i.test(String(error));
+      refused = compactRefusal === "nothing_to_compact";
       if (!refused) {
         const errorText = String(error);
         // pi-core 0.85.0 crash class: the child's manual-compact path can
@@ -1561,6 +1578,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         (state as any)?.data?.contextWindow;
       if (typeof window === "number" && window > 0)
         runtime.contextWindow = window;
+      // Issue 79: prefer the child's get_state token count when it reports
+      // one — file/window estimates are the fallback, not the source.
+      applyGetStateTokens(runtime, state);
       // Issue 43 amendment: every window (re)learn recomputes fill from the
       // tokens we already carry and schedules a FORCED compaction at the
       // next settled boundary when fill ≥ 60% of the NEW window — a model

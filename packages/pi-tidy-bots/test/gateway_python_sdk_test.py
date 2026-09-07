@@ -233,6 +233,52 @@ class OwnershipSDKTests(unittest.IsolatedAsyncioTestCase):
                                   "ownershipServices": ["ownership.prepare", "ownership.record", "ownership.inspect", "ownership.stopped"]}
         return runtime
 
+    async def test_question_decisions_are_distinct_from_permission_options(self):
+        runtime = self.runtime()
+        runtime.capabilities["interactions"]["questions"] = True
+        calls = []
+
+        async def respond(params, _runtime):
+            calls.append(params)
+            return {"status": "submitted"}
+
+        runtime.handlers["interaction.respond"] = respond
+        temp = tempfile.TemporaryDirectory()
+        runtime.store = DurableStore(temp.name, "org.example.python", "binding", 1)
+        responses = []
+
+        async def response(request, result=None, error=None):
+            responses.append((request["id"], result, error.code if error else None))
+
+        runtime._response = response
+        question = {
+            "operationId": "question-answer",
+            "payloadDigest": "question-digest",
+            "targetOperationId": "op",
+            "instanceId": "instance",
+            "interactionId": "question-1",
+            "kind": "question",
+            "value": "Evening",
+            "optionsDigest": "options",
+            "revision": 1,
+            "bindingId": "binding",
+            "leaseGeneration": 7,
+        }
+        await runtime._dispatch({"id": "question-request", "method": "interaction.respond", "params": question})
+        self.assertEqual(calls, [question])
+        self.assertEqual(responses[-1], ("question-request", {"status": "submitted"}, None))
+
+        for request_id, params in (
+            ("permission-request", {**question, "operationId": "permission-answer", "kind": "permission"}),
+            ("unknown-request", {**question, "operationId": "unknown-answer", "kind": "other"}),
+            ("missing-scope-request", {**question, "operationId": "missing-scope", "interactionId": ""}),
+        ):
+            await runtime._dispatch({"id": request_id, "method": "interaction.respond", "params": params})
+            self.assertEqual(responses[-1], (request_id, None, "invalid_payload"))
+        self.assertEqual(len(calls), 1)
+        runtime.store.close()
+        temp.cleanup()
+
     async def test_lifecycle_services_use_negotiated_lease_without_fleet_tool_grant(self):
         runtime = self.runtime()
         frames = []

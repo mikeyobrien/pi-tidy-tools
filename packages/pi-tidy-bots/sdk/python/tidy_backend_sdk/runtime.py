@@ -119,7 +119,11 @@ class PluginRuntime:
         if method in ("operation.cancel", "interaction.respond"):
             if not identity(params.get("targetOperationId")) or params.get("operationId") == params["targetOperationId"]:
                 raise SDKError("invalid_payload", "A control has a distinct immutable identity")
-        if method == "interaction.respond" and not all(identity(params.get(key)) for key in ("instanceId", "interactionId", "optionId")):
+        if method == "interaction.respond" and not all(identity(params.get(key)) for key in ("instanceId", "interactionId")):
+            raise SDKError("invalid_payload")
+        if method == "interaction.respond" and params.get("kind") not in (None, "permission", "question"):
+            raise SDKError("invalid_payload")
+        if method == "interaction.respond" and params.get("kind") == "permission" and not identity(params.get("optionId")):
             raise SDKError("invalid_payload")
         if method == "operation.submit":
             if not all(identity(params.get(key)) for key in ("conversationId", "turnId", "policyRevision")) or not isinstance(params.get("input"), list) or not params["input"]:

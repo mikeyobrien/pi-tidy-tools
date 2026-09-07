@@ -134,6 +134,14 @@ async function setup() {
         input: [{ type: "text", text }],
       });
     },
+    compact(host: PluginHost, id = "compact-one") {
+      return host.request("session.compact", {
+        operationId: id,
+        turnId: `turn:${id}`,
+        payloadDigest: `sha256:${id}`,
+        conversationId: "conversation",
+      });
+    },
     async effects(): Promise<JsonObject[]> {
       try {
         return (await readFile(join(dataDir, "native-effects.jsonl"), "utf8"))
@@ -317,6 +325,36 @@ test("startFleet HTTP contract admits and projects messages through the shipped 
     );
     assert.equal(new Set(transcript.map((entry) => entry.id)).size, 3);
     assert.equal((await send()).body.userEntryId, receipt.body.userEntryId);
+    const beforeCompactTranscript = transcript;
+    const compact = () =>
+      request("/api/bots/pi/compact", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-tidy-client-contract": "2",
+          "x-tidy-binding-revision": binding.bindingRevision,
+        },
+        body: JSON.stringify({
+          kind: "compact",
+          operationId: "http-compact",
+          conversationId: binding.conversationId,
+        }),
+      });
+    assert.equal((await compact()).status, 202);
+    await until(
+      async () =>
+        (await request("/api/bots/pi/operations/http-compact")).body
+          .execution === "ended"
+    );
+    const compactReceipt = (
+      await request("/api/bots/pi/operations/http-compact")
+    ).body;
+    assert.deepEqual(compactReceipt.result, { status: "applied" });
+    assert.deepEqual(
+      (await request("/api/bots/pi/transcript")).body.transcript,
+      beforeCompactTranscript
+    );
+    assert.equal((await compact()).body.operationId, "http-compact");
     const effects = (
       await readFile(
         join(
@@ -912,6 +950,137 @@ test("Pi snapshots preserve split Unicode, corrections, multiple messages and na
     await f.cleanup();
   }
 });
+
+test("Pi native compaction admits on start, persists an inspected checkpoint, and emits no chat", async () => {
+  const f = await setup();
+  try {
+    const host = await f.start();
+    await f.open(host);
+    await f.submit(host, "before compact");
+    await until(() => f.events.some((event) => event.type === "turn.terminal"));
+    const before = f.events.length;
+    assert.deepEqual(await f.compact(host), { disposition: "accepted" });
+    await until(() =>
+      f.events.some(
+        (event) =>
+          event.operationId === "compact-one" && event.type === "turn.terminal"
+      )
+    );
+    const compactEvents = f.events
+      .slice(before)
+      .filter((event) => event.operationId === "compact-one");
+    assert.deepEqual(
+      compactEvents.map((event) => event.type),
+      ["operation.disposition", "turn.started", "turn.terminal"]
+    );
+    assert.deepEqual(compactEvents.at(-1)!.payload, {
+      execution: "ended",
+      observation: "complete",
+      result: { status: "applied" },
+      evidence: "native_compaction_history_verified",
+    });
+    const checkpoint = JSON.parse(
+      await readFile(join(f.dataDir, "pi-history.json"), "utf8")
+    );
+    assert.ok(checkpoint.history.size > 0);
+    assert.ok(
+      (await readFile(checkpoint.history.file, "utf8")).includes("compaction")
+    );
+    assert.equal(
+      (await f.effects()).filter((effect) => effect.command === "compact")
+        .length,
+      1
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+for (const [mode, execution] of [
+  ["[compact-fail]", "failed"],
+  ["[compact-hold]", "cancelled"],
+] as const) {
+  test(`Pi native compaction ${execution} keeps the settled context unchanged`, async () => {
+    const f = await setup();
+    try {
+      const host = await f.start();
+      await f.open(host);
+      await f.submit(host, mode);
+      await until(() =>
+        f.events.some((event) => event.type === "turn.terminal")
+      );
+      const before = JSON.parse(
+        await readFile(join(f.dataDir, "pi-history.json"), "utf8")
+      );
+      assert.deepEqual(await f.compact(host, `compact-${execution}`), {
+        disposition: "accepted",
+      });
+      if (execution === "cancelled")
+        assert.deepEqual(
+          await host.request("operation.cancel", {
+            operationId: "cancel-compact",
+            targetOperationId: "compact-cancelled",
+            payloadDigest: "cancel-compact",
+            conversationId: "conversation",
+          }),
+          { status: "requested" }
+        );
+      await until(() =>
+        f.events.some(
+          (event) =>
+            event.operationId === `compact-${execution}` &&
+            event.type === "turn.terminal"
+        )
+      );
+      const terminal = f.events.find(
+        (event) =>
+          event.operationId === `compact-${execution}` &&
+          event.type === "turn.terminal"
+      )!;
+      assert.equal(terminal.payload.execution, execution);
+      assert.deepEqual(terminal.payload.result, { status: execution });
+      assert.deepEqual(
+        JSON.parse(await readFile(join(f.dataDir, "pi-history.json"), "utf8")),
+        before
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+}
+
+for (const mode of [
+  "[compact-missing-evidence]",
+  "[compact-history-mismatch]",
+]) {
+  test(`Pi ${mode} records an observation gap instead of a compaction result`, async () => {
+    const f = await setup();
+    try {
+      const host = await f.start();
+      await f.open(host);
+      await f.submit(host, mode);
+      await until(() =>
+        f.events.some((event) => event.type === "turn.terminal")
+      );
+      assert.deepEqual(await f.compact(host, `compact-${mode}`), {
+        disposition: "accepted",
+      });
+      await until(() =>
+        f.events.some((event) => event.type === "observation.gap")
+      );
+      assert.equal(
+        f.events.some(
+          (event) =>
+            event.operationId === `compact-${mode}` &&
+            event.type === "turn.terminal"
+        ),
+        false
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+}
 
 test("Pi refusal is distinct from acceptance and exact cancellation does not target another turn", async () => {
   const f = await setup();

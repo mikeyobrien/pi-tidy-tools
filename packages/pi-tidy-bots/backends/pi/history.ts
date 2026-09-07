@@ -11,6 +11,12 @@ export interface PiHistoryIdentity {
   size: number;
   sha256: string;
 }
+export interface PiHistoryCompactionWitness {
+  previous: PiHistoryIdentity;
+  summary: string;
+  firstKeptEntryId: string;
+  tokensBefore: number;
+}
 const MAX_HISTORY_BYTES = 64 * 1024 * 1024;
 const unavailable = () =>
   new ProtocolError(
@@ -27,7 +33,8 @@ export async function inspectPiHistory(
   file: string,
   sessionId: string,
   workspace: string,
-  expected?: PiHistoryIdentity
+  expected?: PiHistoryIdentity,
+  compaction?: PiHistoryCompactionWitness
 ): Promise<PiHistoryIdentity> {
   try {
     if (!isAbsolute(file) || !sessionId || sessionId.includes("\0"))
@@ -96,6 +103,11 @@ export async function inspectPiHistory(
       )
         throw unavailable();
       // Pi can skip malformed trailing entries; restoration must not silently lose them.
+      let offsetInFile = Buffer.byteLength(lines[0] + "\n");
+      let latestCompaction:
+        { entry: Record<string, unknown>; offset: number } | undefined;
+      const ids = new Set<string>();
+      let idsBeforeLatestCompaction = new Set<string>();
       for (const line of lines.slice(1)) {
         const entry = JSON.parse(line);
         if (
@@ -103,6 +115,40 @@ export async function inspectPiHistory(
           typeof entry !== "object" ||
           Array.isArray(entry) ||
           typeof entry.type !== "string"
+        )
+          throw unavailable();
+        if (entry.type === "compaction") {
+          latestCompaction = { entry, offset: offsetInFile };
+          idsBeforeLatestCompaction = new Set(ids);
+        } else if (typeof entry.id === "string") {
+          ids.add(entry.id);
+        }
+        offsetInFile += Buffer.byteLength(line + "\n");
+      }
+      if (compaction) {
+        const old = compaction.previous;
+        if (
+          !Number.isSafeInteger(old.size) ||
+          old.size < 1 ||
+          old.size > MAX_HISTORY_BYTES ||
+          old.file !== actual ||
+          old.sessionId !== sessionId ||
+          old.cwd !== cwd ||
+          old.size >= bytes.length ||
+          !latestCompaction ||
+          latestCompaction.offset < old.size ||
+          createHash("sha256")
+            .update(bytes.subarray(0, old.size))
+            .digest("hex") !== old.sha256 ||
+          typeof compaction.summary !== "string" ||
+          typeof compaction.firstKeptEntryId !== "string" ||
+          !Number.isSafeInteger(compaction.tokensBefore) ||
+          compaction.tokensBefore < 0 ||
+          latestCompaction.entry.summary !== compaction.summary ||
+          latestCompaction.entry.firstKeptEntryId !==
+            compaction.firstKeptEntryId ||
+          latestCompaction.entry.tokensBefore !== compaction.tokensBefore ||
+          !idsBeforeLatestCompaction.has(compaction.firstKeptEntryId)
         )
           throw unavailable();
       }

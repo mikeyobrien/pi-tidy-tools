@@ -45,7 +45,7 @@ export const PI_CAPABILITIES: CapabilityDescriptor = {
     steer: false,
   },
   interactions: { permissions: "none", questions: false },
-  configuration: { model: true, thinking: true, compact: false },
+  configuration: { model: true, thinking: true, compact: true },
   fleetTools: true,
 };
 export const PI_VERSION = "0.85.0";
@@ -175,6 +175,14 @@ interface Turn {
   order: number;
   message?: { id: string; text: string; revision: number };
 }
+interface CompactionControl {
+  operationId: string;
+  turnId: string;
+  started: boolean;
+  end?: JsonObject;
+  acknowledge: (result: JsonObject) => void;
+  done?: Promise<void>;
+}
 
 /** One private Pi RPC child per binding. SDK reservations precede all native effects. */
 export function startPiAdapter(): PluginRuntime {
@@ -186,6 +194,7 @@ export function startPiAdapter(): PluginRuntime {
   let conversationId: string | undefined;
   let nativeReference: string | undefined;
   let active: Turn | undefined;
+  let compacting: CompactionControl | undefined;
   let preparing = false;
   let settingsRevision = 0;
   let settling = false;
@@ -351,6 +360,41 @@ export function startPiAdapter(): PluginRuntime {
     try {
       if (event.kind === "event") {
         if (
+          compacting &&
+          event.raw.reason === "manual" &&
+          ["compaction_start", "compaction_end"].includes(
+            String(event.raw.type)
+          )
+        ) {
+          const control = compacting;
+          const identity = {
+            operationId: control.operationId,
+            turnId: control.turnId,
+          };
+          if (event.raw.type === "compaction_start") {
+            if (control.started)
+              throw new Error("Duplicate native compaction start");
+            control.started = true;
+            emit(
+              "operation.disposition",
+              { disposition: "accepted", evidence: "native_compaction_start" },
+              identity
+            );
+            emit("turn.started", {}, identity);
+            control.acknowledge({ disposition: "accepted" });
+          } else {
+            if (
+              !control.started ||
+              control.end ||
+              typeof event.raw.aborted !== "boolean" ||
+              event.raw.willRetry !== false
+            )
+              throw new Error("Uncorrelated compaction end");
+            control.end = event.raw;
+          }
+          return;
+        }
+        if (
           event.raw.type === "message_start" &&
           object(event.raw.message) &&
           event.raw.message.role === "assistant"
@@ -501,17 +545,25 @@ export function startPiAdapter(): PluginRuntime {
     },
     async onClose(info) {
       if (info.mode === "drain") {
-        while (active && !observationLost && Date.now() < info.deadline - 100)
+        while (
+          (active || compacting) &&
+          !observationLost &&
+          Date.now() < info.deadline - 100
+        )
           await new Promise((resolve) => setTimeout(resolve, 10));
       }
       stopping = true;
+      const compactDone = compacting?.done;
       fleet?.close();
       if (!native) return { ownedResourcesStopped: true };
       native.stop();
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         const stopped = await Promise.race([
-          nativeClosed!.then(() => true),
+          nativeClosed!.then(async () => {
+            await compactDone;
+            return true;
+          }),
           new Promise<false>((resolve) => {
             timer = setTimeout(
               () => resolve(false),
@@ -792,6 +844,163 @@ export function startPiAdapter(): PluginRuntime {
           preparing = false;
         }
       },
+      async "session.compact"(params) {
+        if (
+          params.conversationId !== conversationId ||
+          !nonempty(params.operationId) ||
+          !nonempty(params.turnId)
+        )
+          return { disposition: "rejected", status: "failed" };
+        if (!native?.alive || !nativeReference || observationLost || stopping)
+          return { disposition: "unknown" };
+        if (active || preparing || compacting)
+          return { disposition: "rejected", status: "failed" };
+        preparing = true;
+        let before: JsonObject;
+        let previous: Awaited<ReturnType<typeof inspectPiHistory>>;
+        try {
+          before = await stateOf();
+          if (
+            before.isStreaming !== false ||
+            before.isCompacting !== false ||
+            before.pendingMessageCount !== 0 ||
+            Number(before.messageCount) < 1 ||
+            !nonempty(before.sessionFile)
+          )
+            throw new Error("Compaction requires settled history");
+          previous = await inspectPiHistory(
+            join(context.initialization.dataDir, "native-sessions"),
+            before.sessionFile,
+            String(before.sessionId),
+            context.initialization.workspace
+          );
+          if (stopping || observationLost || context.signal.aborted)
+            throw new Error("Session stopping");
+        } catch {
+          preparing = false;
+          return { disposition: "rejected", status: "failed" };
+        }
+        let acknowledge!: (result: JsonObject) => void;
+        const acceptance = new Promise<JsonObject>((resolve) => {
+          acknowledge = resolve;
+        });
+        const control: CompactionControl = {
+          operationId: params.operationId,
+          turnId: params.turnId,
+          started: false,
+          acknowledge,
+        };
+        compacting = control;
+        const identity = {
+          operationId: control.operationId,
+          turnId: control.turnId,
+        };
+        control.done = (async () => {
+          try {
+            let response: JsonObject | undefined;
+            let rejected = false;
+            try {
+              // Native execution outlives the admission RPC; completion is a durable event.
+              const reply = await native!.request<JsonObject>(
+                { type: "compact" },
+                5 * 60_000
+              );
+              if (!object(reply.data))
+                throw new Error("Missing native compaction result");
+              response = reply.data;
+            } catch (error) {
+              if (!(error instanceof RpcCommandRejected)) throw error;
+              rejected = true;
+            }
+            if (stopping || observationLost) return;
+            const after = await stateOf();
+            if (
+              !control.started ||
+              !control.end ||
+              after.isStreaming !== false ||
+              after.isCompacting !== false ||
+              after.pendingMessageCount !== 0 ||
+              !samePiSettings(after, piRuntimeSettings(before)) ||
+              after.sessionFile !== previous.file
+            )
+              throw new Error("Compaction observation incomplete");
+            let execution: "ended" | "failed" | "cancelled";
+            if (rejected) {
+              if (
+                control.end.result !== undefined ||
+                after.messageCount !== before.messageCount
+              )
+                throw new Error("Compaction rejection changed context");
+              await inspectPiHistory(
+                join(context.initialization.dataDir, "native-sessions"),
+                previous.file,
+                previous.sessionId,
+                context.initialization.workspace,
+                previous
+              );
+              execution = control.end.aborted === true ? "cancelled" : "failed";
+            } else {
+              if (
+                control.end.aborted !== false ||
+                !response ||
+                !nonempty(response.summary) ||
+                !nonempty(response.firstKeptEntryId) ||
+                !Number.isSafeInteger(response.tokensBefore) ||
+                Number(response.tokensBefore) < 0 ||
+                Number(after.messageCount) < 1 ||
+                !object(control.end.result) ||
+                control.end.result.summary !== response.summary ||
+                control.end.result.firstKeptEntryId !==
+                  response.firstKeptEntryId ||
+                control.end.result.tokensBefore !== response.tokensBefore
+              )
+                throw new Error(
+                  "Compaction result differs from native completion"
+                );
+              await inspectPiHistory(
+                join(context.initialization.dataDir, "native-sessions"),
+                previous.file,
+                previous.sessionId,
+                context.initialization.workspace,
+                undefined,
+                {
+                  previous,
+                  summary: response.summary,
+                  firstKeptEntryId: response.firstKeptEntryId,
+                  tokensBefore: Number(response.tokensBefore),
+                }
+              );
+              await retainSettings(after);
+              execution = "ended";
+            }
+            if (stopping || observationLost) return;
+            emit(
+              "turn.terminal",
+              {
+                execution,
+                observation: "complete",
+                result: {
+                  status:
+                    execution === "ended"
+                      ? "applied"
+                      : execution === "cancelled"
+                        ? "cancelled"
+                        : "failed",
+                },
+                evidence: "native_compaction_history_verified",
+              },
+              identity
+            );
+          } catch {
+            if (!stopping) loseObservation();
+          } finally {
+            acknowledge({ disposition: "unknown" });
+            if (compacting === control) compacting = undefined;
+            preparing = false;
+          }
+        })();
+        return acceptance;
+      },
       async "operation.submit"(params, ctx) {
         if (
           !native ||
@@ -912,8 +1121,9 @@ export function startPiAdapter(): PluginRuntime {
       },
       async "operation.cancel"(params, ctx) {
         if (
-          !active ||
-          params.targetOperationId !== active.operationId ||
+          (!active && !compacting) ||
+          params.targetOperationId !==
+            (active?.operationId ?? compacting?.operationId) ||
           !native?.alive ||
           observationLost
         )

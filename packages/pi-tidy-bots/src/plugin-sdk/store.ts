@@ -640,14 +640,25 @@ export class PluginStore {
           "SELECT method,params_json FROM reservations WHERE key=?",
           `operation:${event.operationId}`
         );
+        const controlLifecycle = [
+          "operation.disposition",
+          "turn.started",
+          "turn.terminal",
+        ].includes(event.type);
         if (
           !reservation ||
-          reservation.method !== "operation.submit" ||
+          !(
+            reservation.method === "operation.submit" ||
+            (controlLifecycle &&
+              ["session.compact", "session.configure"].includes(
+                String(reservation.method)
+              ))
+          ) ||
           JSON.parse(String(reservation.params_json)).turnId !== event.turnId
         )
           throw new ProtocolError(
             "invalid_event",
-            "Event operation and turn must match a durable native submit reservation"
+            "Event operation and turn must match its durable native reservation"
           );
       }
       const fingerprint = this.eventFingerprint(event);

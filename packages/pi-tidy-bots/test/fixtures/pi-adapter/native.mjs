@@ -105,6 +105,22 @@ const settle = () => {
   send({ type: "agent_settled" });
 };
 let held = false;
+let compacting = false;
+let heldCompaction;
+let compactMode = "success";
+const compactResult = (
+  summary = "fixture compacted",
+  firstKeptEntryId = "message-0",
+  tokensBefore = 42
+) => ({ summary, firstKeptEntryId, tokensBefore });
+const compactionEnd = (result, aborted = false) =>
+  send({
+    type: "compaction_end",
+    reason: "manual",
+    aborted,
+    willRetry: false,
+    ...(result ? { result } : {}),
+  });
 for await (const line of createInterface({ input: process.stdin })) {
   const request = JSON.parse(line);
   log({
@@ -125,6 +141,7 @@ for await (const line of createInterface({ input: process.stdin })) {
       model: settings.model,
       thinkingLevel: settings.thinkingLevel,
       pendingMessageCount: 0,
+      isCompacting: compacting,
     });
   } else if (request.type === "get_available_thinking_levels") {
     response(request, { levels: ["off", "low", "medium", "high"] });
@@ -157,6 +174,15 @@ for await (const line of createInterface({ input: process.stdin })) {
     }
     if (request.message === "[unknown]") continue;
     response(request);
+    if (
+      [
+        "[compact-hold]",
+        "[compact-fail]",
+        "[compact-missing-evidence]",
+        "[compact-history-mismatch]",
+      ].includes(request.message)
+    )
+      compactMode = request.message.slice(1, -1).replace("compact-", "");
     send({ type: "agent_start" });
     await handlers.get("agent_start")?.({}, ctx);
     if (
@@ -245,7 +271,42 @@ for await (const line of createInterface({ input: process.stdin })) {
       final(text, request.message === "[error]" ? "error" : "stop");
     }
     settle();
+  } else if (request.type === "compact") {
+    compacting = true;
+    send({ type: "compaction_start", reason: "manual" });
+    if (compactMode === "hold") {
+      heldCompaction = request;
+      continue;
+    }
+    if (compactMode === "fail") {
+      compacting = false;
+      compactionEnd();
+      response(request, undefined, false);
+      continue;
+    }
+    const result = compactResult(
+      compactMode === "history-mismatch"
+        ? "fixture wrong history"
+        : "fixture compacted"
+    );
+    if (compactMode !== "missing-evidence")
+      persistSetting({
+        type: "compaction",
+        ...result,
+        ...(compactMode === "history-mismatch"
+          ? { summary: "fixture persisted mismatch" }
+          : {}),
+      });
+    compacting = false;
+    compactionEnd(result);
+    response(request, result);
   } else if (request.type === "abort") {
+    if (heldCompaction) {
+      compacting = false;
+      compactionEnd(undefined, true);
+      response(heldCompaction, undefined, false);
+      heldCompaction = undefined;
+    }
     if (held) {
       final("stopped", "aborted");
       held = false;

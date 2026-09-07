@@ -4,6 +4,7 @@ import {
   mkdtemp,
   mkdir,
   writeFile,
+  appendFile,
   rm,
   realpath,
   symlink,
@@ -93,6 +94,121 @@ test("Pi history rejects symlinks, hardlinks, escaped paths and oversized files"
   await assert.rejects(inspectPiHistory(sessions, file, "one", dir), {
     code: "continuity_unverified",
   });
+});
+
+test("Pi compaction witness proves an append and the native result", async (t) => {
+  const dir = await realpath(
+    await mkdtemp(join(tmpdir(), "tidy-pi-compaction-"))
+  );
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const sessions = join(dir, "sessions");
+  await mkdir(sessions);
+  const file = join(sessions, "history.jsonl");
+  const header = { type: "session", version: 3, id: "compact-one", cwd: dir };
+  const base = [
+    header,
+    {
+      type: "message",
+      id: "kept-α",
+      parentId: null,
+      message: { role: "user", content: "héllo" },
+    },
+    {
+      type: "message",
+      id: "old",
+      parentId: "kept-α",
+      message: { role: "assistant", content: "earlier" },
+    },
+  ]
+    .map((entry) => JSON.stringify(entry) + "\n")
+    .join("");
+  await writeFile(file, base);
+  const previous = await inspectPiHistory(sessions, file, header.id, dir);
+  assert.ok(previous.size > base.length, "identity uses UTF-8 byte length");
+  const compaction = {
+    type: "compaction",
+    id: "compact-entry",
+    summary: "A compact summary",
+    firstKeptEntryId: "kept-α",
+    tokensBefore: 123,
+  };
+  const witness = {
+    previous,
+    summary: compaction.summary,
+    firstKeptEntryId: compaction.firstKeptEntryId,
+    tokensBefore: compaction.tokensBefore,
+  };
+  await appendFile(
+    file,
+    JSON.stringify(compaction) +
+      "\n" +
+      JSON.stringify({
+        type: "message",
+        id: "after",
+        message: { role: "user", content: "next" },
+      }) +
+      "\n"
+  );
+  const compacted = await inspectPiHistory(
+    sessions,
+    file,
+    header.id,
+    dir,
+    undefined,
+    witness
+  );
+  assert.ok(compacted.size > previous.size);
+
+  for (const [name, changed] of [
+    ["summary", { ...compaction, summary: "different" }],
+    ["first kept id", { ...compaction, firstKeptEntryId: "missing" }],
+    ["token count", { ...compaction, tokensBefore: 124 }],
+  ] as const) {
+    await writeFile(file, base + JSON.stringify(changed) + "\n");
+    await assert.rejects(
+      inspectPiHistory(sessions, file, header.id, dir, undefined, witness),
+      { code: "continuity_unverified" },
+      name
+    );
+  }
+
+  await writeFile(file, base);
+  await assert.rejects(
+    inspectPiHistory(sessions, file, header.id, dir, undefined, witness),
+    { code: "continuity_unverified" },
+    "unchanged history has no appended compaction"
+  );
+  await writeFile(file, base.replace("earlier", "changed!"));
+  await appendFile(file, JSON.stringify(compaction) + "\n");
+  await assert.rejects(
+    inspectPiHistory(sessions, file, header.id, dir, undefined, witness),
+    { code: "continuity_unverified" },
+    "rewritten prefix is rejected"
+  );
+
+  await writeFile(
+    file,
+    base +
+      JSON.stringify({
+        ...compaction,
+        id: "second",
+        summary: "second summary",
+      }) +
+      "\n"
+  );
+  await assert.rejects(
+    inspectPiHistory(sessions, file, header.id, dir, undefined, witness),
+    { code: "continuity_unverified" },
+    "a later compaction cannot be mistaken for the witnessed result"
+  );
+  await assert.rejects(
+    inspectPiHistory(sessions, file, header.id, dir, undefined, {
+      ...witness,
+      previous: { ...previous, sha256: "0".repeat(64) },
+    }),
+    { code: "continuity_unverified" },
+    "wrong old identity is rejected"
+  );
 });
 
 test("exact Pi launch selects only the verified file and rejects ambiguous resume", () => {

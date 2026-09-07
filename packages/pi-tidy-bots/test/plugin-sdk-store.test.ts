@@ -379,6 +379,83 @@ test("incomplete terminal observation and late handler rejection never reopen na
   }
 });
 
+test("compact and configuration reservations may emit only their exact lifecycle", () => {
+  const f = fixture();
+  const store = new PluginStore(f.path, options());
+  try {
+    for (const method of ["session.compact", "session.configure"] as const) {
+      const operationId =
+        method === "session.compact" ? "compact" : "configure";
+      const turnId = `turn:${operationId}`;
+      store.reserve(`operation:${operationId}`, method, operationId, {
+        operationId,
+        payloadDigest: operationId,
+        conversationId: "conversation",
+        turnId,
+      });
+      store.append({
+        type: "operation.disposition",
+        operationId,
+        turnId,
+        payload: { disposition: "accepted" },
+      });
+      store.append({ type: "turn.started", operationId, turnId, payload: {} });
+      store.append({
+        type: "turn.terminal",
+        operationId,
+        turnId,
+        payload: { execution: "ended", observation: "complete" },
+      });
+      assert.deepEqual(store.inspect(operationId), {
+        disposition: "accepted",
+        execution: "ended",
+        observation: "complete",
+      });
+    }
+    assert.throws(
+      () =>
+        store.append({
+          type: "message.started",
+          operationId: "compact",
+          turnId: "turn:compact",
+          messageId: "forged",
+          payload: { role: "assistant", order: 0 },
+        }),
+      { code: "invalid_event" }
+    );
+    assert.throws(
+      () =>
+        store.append({
+          type: "turn.started",
+          operationId: "compact",
+          turnId: "wrong",
+          payload: {},
+        }),
+      { code: "invalid_event" }
+    );
+    store.reserve("operation:cancel", "operation.cancel", "cancel", {
+      operationId: "cancel",
+      targetOperationId: "compact",
+      payloadDigest: "cancel",
+      conversationId: "conversation",
+      turnId: "turn:cancel",
+    });
+    assert.throws(
+      () =>
+        store.append({
+          type: "turn.started",
+          operationId: "cancel",
+          turnId: "turn:cancel",
+          payload: {},
+        }),
+      { code: "invalid_event" }
+    );
+  } finally {
+    store.close();
+    f.remove();
+  }
+});
+
 for (const corrupt of [
   "DELETE FROM reservations",
   "UPDATE reservations SET params_json='{}'",

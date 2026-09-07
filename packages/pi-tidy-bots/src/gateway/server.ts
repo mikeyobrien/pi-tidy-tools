@@ -267,6 +267,10 @@ export async function startGatewayFleet(
       const name = decodeURIComponent(match[1]),
         action = match[2];
       if (request.method === "GET") {
+        if (action === "model" || action === "thinking") {
+          json(response, 200, await application.settings(name, action));
+          return;
+        }
         if (action === "capabilities") {
           json(response, 200, application.binding(name));
           return;
@@ -331,6 +335,17 @@ export async function startGatewayFleet(
             String(request.headers["x-tidy-binding-revision"])
           );
           json(response, 202, receipt);
+          return;
+        }
+        if (
+          request.method === "PUT" &&
+          (action === "model" || action === "thinking")
+        ) {
+          json(
+            response,
+            202,
+            application.admitConfiguration(name, action, await body(request))
+          );
           return;
         }
         const cancellation = /^operations\/([^/]+)\/cancel$/.exec(action);

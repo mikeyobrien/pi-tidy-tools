@@ -127,7 +127,11 @@ function effectiveCapabilities(
       permissions: native.interactions.permissions,
       questions: false,
     },
-    configuration: { model: false, thinking: false, compact: false },
+    configuration: {
+      model: native.configuration.model,
+      thinking: native.configuration.thinking,
+      compact: false,
+    },
     fleetTools: false,
   };
 }
@@ -959,6 +963,104 @@ export class GatewayApplication {
     };
   }
 
+  async settings(
+    name: string,
+    kind: "model" | "thinking"
+  ): Promise<JsonObject> {
+    const bot = this.requireBot(name);
+    if (!bot.capabilities.configuration[kind])
+      throw new ProtocolError(
+        "capability_unavailable",
+        "Native settings are unavailable"
+      );
+    const host = bot.host;
+    if (this.stopping || !bot.ready || !host?.isReady)
+      throw new ProtocolError(
+        "session_unavailable",
+        "Settings session is unavailable"
+      );
+    const result = await host.request("session.snapshot", {
+      conversationId: bot.binding.conversationId,
+    });
+    if (
+      this.stopping ||
+      !bot.ready ||
+      !host.isReady ||
+      !object(result) ||
+      result.observation !== "complete" ||
+      result.disposition !== "known" ||
+      !object(result.settings) ||
+      typeof result.settings[kind] !== "string" ||
+      !String(result.settings[kind]).trim() ||
+      String(result.settings[kind]).length > 1025
+    )
+      throw new ProtocolError(
+        "session_unavailable",
+        "Authoritative native settings are unavailable"
+      );
+    // Native session paths and model/provider metadata never enter the public projection.
+    return { [kind]: result.settings[kind] };
+  }
+
+  admitConfiguration(
+    name: string,
+    kind: "model" | "thinking",
+    body: Record<string, unknown>
+  ): JsonObject {
+    const bot = this.requireBot(name);
+    if (
+      body.kind !== kind ||
+      body.conversationId !== bot.binding.conversationId ||
+      typeof body.operationId !== "string" ||
+      !body.operationId.trim() ||
+      body.operationId.length > 256 ||
+      typeof body[kind] !== "string" ||
+      !String(body[kind]).trim() ||
+      String(body[kind]).length > 1025 ||
+      String(body[kind]).includes("\0") ||
+      Object.keys(body).some(
+        (key) => !["kind", "operationId", "conversationId", kind].includes(key)
+      )
+    )
+      throw new ProtocolError(
+        "invalid_payload",
+        "Configuration requires exact identity and one settings value"
+      );
+    const known = this.journal.getOperation({
+      ...bot.binding,
+      operationId: body.operationId,
+    });
+    if (!known) {
+      if (!bot.capabilities.configuration[kind])
+        throw new ProtocolError(
+          "capability_unavailable",
+          "This native setting is unavailable"
+        );
+      if (this.stopping || !bot.ready || !bot.host?.isReady)
+        throw new ProtocolError(
+          "session_unavailable",
+          "Configuration session is unavailable"
+        );
+      bot.host.assertRequestFits("session.configure", {
+        ...body,
+        payloadDigest: `sha256:${"0".repeat(64)}`,
+        policyRevision: bot.binding.policyRevision,
+      });
+    }
+    const admitted = this.journal.admit(this.lease, {
+      ...bot.binding,
+      kind,
+      operationId: body.operationId,
+      payload: body as JsonObject,
+    });
+    this.publishCommitted(bot, true);
+    if (admitted.created)
+      queueMicrotask(() => {
+        void this.pump(bot);
+      });
+    return admitted.receipt as unknown as JsonObject;
+  }
+
   admitCancellation(
     name: string,
     targetOperationId: string,
@@ -1142,6 +1244,10 @@ export class GatewayApplication {
           await this.dispatchPermission(bot, op);
           continue;
         }
+        if (op.receipt.kind === "model" || op.receipt.kind === "thinking") {
+          await this.dispatchConfiguration(bot, op);
+          continue;
+        }
         if (
           op.receipt.kind ||
           !op.payload ||
@@ -1205,6 +1311,54 @@ export class GatewayApplication {
       );
     }
   }
+  private async dispatchConfiguration(
+    bot: BoundBot,
+    op: OperationRecord
+  ): Promise<void> {
+    const kind = op.receipt.kind as "model" | "thinking";
+    let result: unknown;
+    try {
+      result = await bot.host!.request("session.configure", {
+        ...op.payload,
+        operationId: op.receipt.operationId,
+        conversationId: bot.binding.conversationId,
+        kind,
+        payloadDigest: op.payloadDigest,
+        policyRevision: op.policyRevision,
+      });
+    } catch {
+      result = { status: "unknown" };
+    }
+    if (
+      object(result) &&
+      result.disposition === "accepted" &&
+      result.status === "applied" &&
+      object(result.settings) &&
+      result.settings[kind] === op.payload?.[kind]
+    ) {
+      this.journal.recordDisposition(this.lease, op.receipt, {
+        delivery: "accepted",
+        execution: "ended",
+        observation: "complete",
+        result: { status: "applied" },
+        evidence: "correlated_configuration_readback",
+      });
+    } else if (
+      object(result) &&
+      result.disposition === "rejected" &&
+      result.status === "failed"
+    ) {
+      this.journal.recordDisposition(this.lease, op.receipt, {
+        delivery: "rejected",
+        execution: "not_started",
+        observation: "complete",
+        result: { status: "failed" },
+        evidence: "configuration_rejected_before_native_write",
+      });
+    } else this.markUnknown(bot, op);
+    this.publishCommitted(bot, true);
+  }
+
   private async dispatchCancellation(
     bot: BoundBot,
     op: OperationRecord

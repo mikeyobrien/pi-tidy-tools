@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 let init;
+let model = "fixture/current";
 let sequence = 0;
 const permissions = new Map();
 const cancellable = new Map();
@@ -210,6 +211,7 @@ const methods = [
   "health",
   "session.open",
   "session.snapshot",
+  "session.configure",
   "operation.submit",
   "operation.inspect",
   "operation.cancel",
@@ -315,7 +317,11 @@ input.on("line", (line) => {
           permissions: p.config.permissions ? "exact-request" : "none",
           questions: false,
         },
-        configuration: { model: false, thinking: false, compact: false },
+        configuration: {
+          model: p.config.settings === true,
+          thinking: false,
+          compact: false,
+        },
         fleetTools: p.config.discovery === true,
       },
     });
@@ -338,6 +344,30 @@ input.on("line", (line) => {
     respond(message, {
       status: "opened",
       nativeReference: `session:${p.openId}`,
+    });
+  } else if (message.method === "session.configure") {
+    record({ method: "session.configure", ...p });
+    model = p.model;
+    if (p.model === "fixture/lost") {
+      const timer = setInterval(() => {
+        if (existsSync(join(dir, "release-lost-control"))) {
+          clearInterval(timer);
+          process.exit(0);
+        }
+      }, 10);
+    } else if (p.model === "fixture/malformed")
+      respond(message, { status: "applied" });
+    else
+      respond(message, {
+        disposition: "accepted",
+        status: "applied",
+        settings: { model: p.model === "fixture/wrong" ? "wrong" : model },
+      });
+  } else if (message.method === "session.snapshot") {
+    respond(message, {
+      disposition: "known",
+      observation: "complete",
+      settings: { model, thinking: "off", private: "PRIVATE_SETTINGS_CANARY" },
     });
   } else if (message.method === "operation.submit") {
     record({ method: "operation.submit", ...p });

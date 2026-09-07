@@ -281,6 +281,12 @@ test("startFleet HTTP contract admits and projects messages through the shipped 
     };
     const binding = (await request("/api/bots/pi/capabilities")).body;
     assert.equal(binding.backend.id, "tidy.pi");
+    assert.equal(binding.capabilities.configuration.model, true);
+    assert.equal(binding.capabilities.configuration.thinking, true);
+    assert.equal((await fetch(handle.url + "/api/bots/pi/model")).status, 401);
+    assert.deepEqual((await request("/api/bots/pi/model")).body, {
+      model: "fixture/saved-model",
+    });
     const send = () =>
       request("/api/bots/pi/message", {
         method: "POST",
@@ -517,6 +523,21 @@ test("startFleet HTTP contract admits and projects messages through the shipped 
         (await request("/api/bots/pi/operations/held")).body.execution ===
         "running"
     );
+    const queuedSetting = await request("/api/bots/pi/thinking", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({
+        kind: "thinking",
+        operationId: "queued-thinking",
+        conversationId: binding.conversationId,
+        thinking: "low",
+      }),
+    });
+    assert.equal(queuedSetting.status, 202);
+    assert.equal(
+      (await request("/api/bots/pi/operations/queued-thinking")).body.delivery,
+      "queued"
+    );
     const cancel = () =>
       request("/api/bots/pi/operations/held/cancel", {
         method: "POST",
@@ -540,6 +561,86 @@ test("startFleet HTTP contract admits and projects messages through the shipped 
           ?.status === "requested"
     );
     assert.equal((await cancel()).body.result.status, "requested");
+    await until(
+      async () =>
+        (await request("/api/bots/pi/operations/queued-thinking")).body.result
+          ?.status === "applied"
+    );
+    assert.deepEqual((await request("/api/bots/pi/thinking")).body, {
+      thinking: "low",
+    });
+    const configure = (
+      kind: "model" | "thinking",
+      value: string,
+      id: string,
+      revision = binding.bindingRevision
+    ) =>
+      request(`/api/bots/pi/${kind}`, {
+        method: "PUT",
+        headers: { ...headers, "x-tidy-binding-revision": revision },
+        body: JSON.stringify({
+          kind,
+          operationId: id,
+          conversationId: binding.conversationId,
+          [kind]: value,
+        }),
+      });
+    assert.equal(
+      (await configure("model", "fixture/next/model", "stale-model", "old"))
+        .status,
+      409
+    );
+    assert.equal(
+      (await request("/api/bots/pi/operations/stale-model")).status,
+      404
+    );
+    assert.equal(
+      (await configure("model", "fixture/next/model", "set-model")).status,
+      202
+    );
+    await until(
+      async () =>
+        (await request("/api/bots/pi/operations/set-model")).body.result
+          ?.status === "applied"
+    );
+    const modelReceipt = (
+      await configure("model", "fixture/next/model", "set-model")
+    ).body;
+    assert.equal(modelReceipt.kind, "model");
+    assert.equal(modelReceipt.delivery, "accepted");
+    assert.equal(modelReceipt.execution, "ended");
+    assert.equal(modelReceipt.observation, "complete");
+    assert.equal(
+      (await configure("model", "fixture/saved-model", "set-model")).status,
+      409
+    );
+    assert.deepEqual((await request("/api/bots/pi/model")).body, {
+      model: "fixture/next/model",
+    });
+    assert.equal(
+      (await configure("thinking", "high", "set-thinking")).status,
+      202
+    );
+    await until(
+      async () =>
+        (await request("/api/bots/pi/operations/set-thinking")).body.result
+          ?.status === "applied"
+    );
+    assert.deepEqual((await request("/api/bots/pi/thinking")).body, {
+      thinking: "high",
+    });
+    assert.equal(
+      (await configure("thinking", "xhigh", "unsupported-thinking")).status,
+      202
+    );
+    await until(
+      async () =>
+        (await request("/api/bots/pi/operations/unsupported-thinking")).body
+          .delivery === "rejected"
+    );
+    assert.deepEqual((await request("/api/bots/pi/thinking")).body, {
+      thinking: "high",
+    });
     const finalEffects = (
       await readFile(
         join(
@@ -557,6 +658,20 @@ test("startFleet HTTP contract admits and projects messages through the shipped 
     assert.equal(
       finalEffects.filter((effect) => effect.command === "abort").length,
       1
+    );
+    assert.equal(
+      finalEffects.filter((effect) => effect.command === "set_model").length,
+      1
+    );
+    assert.equal(
+      finalEffects.filter((effect) => effect.command === "set_thinking_level")
+        .length,
+      2
+    );
+    assert.ok(
+      finalEffects.findIndex(
+        (effect) => effect.command === "set_thinking_level"
+      ) > finalEffects.findIndex((effect) => effect.command === "abort")
     );
     const beforeRestart = (await request("/api/bots/pi/transcript")).body
       .transcript;
@@ -576,6 +691,22 @@ test("startFleet HTTP contract admits and projects messages through the shipped 
       (await request("/api/bots/pi/transcript")).body.transcript,
       beforeRestart
     );
+    assert.deepEqual((await request("/api/bots/pi/model")).body, {
+      model: "fixture/next/model",
+    });
+    assert.deepEqual((await request("/api/bots/pi/thinking")).body, {
+      thinking: "high",
+    });
+    const restartReceipt = (
+      await configure(
+        "model",
+        "fixture/next/model",
+        "set-model",
+        restoredBinding.bindingRevision
+      )
+    ).body;
+    assert.equal(restartReceipt.result.status, "applied");
+    assert.equal(restartReceipt.operationId, "set-model");
     const effectsFile = join(
       f.directory,
       ".fleet/plugins",
@@ -591,6 +722,15 @@ test("startFleet HTTP contract admits and projects messages through the shipped 
       finalEffects.filter((effect) => effect.command === "prompt").length
     );
     assert.equal(effectsAfter.filter((effect) => effect.launch).length, 2);
+    assert.equal(
+      effectsAfter.filter((effect) => effect.command === "set_model").length,
+      1
+    );
+    assert.equal(
+      effectsAfter.filter((effect) => effect.command === "set_thinking_level")
+        .length,
+      2
+    );
     const afterRestartImage = beforeRestart.find(
       (entry: any) => entry.images?.length
     )?.images[0];

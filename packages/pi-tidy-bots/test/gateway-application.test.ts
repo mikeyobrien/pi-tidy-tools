@@ -39,7 +39,8 @@ async function waitFor<T>(
 async function fixture(
   permissions = false,
   discovery = false,
-  artifacts = false
+  artifacts = false,
+  settings = false
 ) {
   const dir = await mkdtemp(join(tmpdir(), "tidy-gateway-application-"));
   const artifact = join(dir, "plugin");
@@ -90,6 +91,7 @@ async function fixture(
         permissions: { type: "boolean" },
         discovery: { type: "boolean" },
         artifacts: { type: "boolean" },
+        settings: { type: "boolean" },
       },
       additionalProperties: false,
     })
@@ -126,6 +128,11 @@ async function fixture(
         : manifest +
           (permissions ? "[bot.backend_config]\npermissions = true\n" : "")
   );
+  if (settings)
+    await writeFile(
+      join(dir, "bots.toml"),
+      manifest + "[bot.backend_config]\nsettings = true\n"
+    );
   const handles: FleetHandle[] = [];
   let fleetToken = "disposable-test-token";
   const start = async () => {
@@ -636,6 +643,8 @@ test("real startFleet gateway advertises only implemented capabilities and requi
     assert.ok(version.body.capabilities.includes("operation-receipts-v1"));
     assert.equal(binding.backend.id, "org.example.independent");
     assert.equal(binding.capabilities.configuration.model, false);
+    assert.equal(binding.capabilities.configuration.thinking, false);
+    assert.equal(binding.capabilities.configuration.compact, false);
     const legacy = await f.request(handle, "/api/bots/fixture/message", {
       method: "POST",
     });
@@ -1246,6 +1255,163 @@ test("uploaded text reaches the plugin as scoped artifact chunks and durable tra
         (call) => call.method === "operation.submit"
       ).length,
       1
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+for (const mode of ["wrong", "malformed", "lost"]) {
+  test(`gateway leaves uncertain settings controls unreplayed and blocks later work: ${mode}`, async () => {
+    const f = await fixture(false, false, false, true);
+    try {
+      let handle = await f.start();
+      const binding = await f.binding(handle);
+      const { ws, events } = await f.socket(handle);
+      try {
+        const payload = {
+          kind: "model",
+          operationId: "change-model",
+          conversationId: binding.conversationId,
+          model: `fixture/${mode}`,
+        };
+        const configure = () =>
+          f.request(handle, "/api/bots/fixture/model", {
+            method: "PUT",
+            headers: {
+              "content-type": "application/json",
+              "x-tidy-client-contract": "2",
+              "x-tidy-binding-revision": binding.bindingRevision,
+            },
+            body: JSON.stringify(payload),
+          });
+        assert.equal((await configure()).status, 202);
+        await waitFor(
+          () => f.calls(binding),
+          (calls) => calls.some((call) => call.method === "session.configure")
+        );
+        assert.equal(
+          (
+            await f.submit(
+              handle,
+              binding,
+              "later-message",
+              "must remain queued"
+            )
+          ).status,
+          202
+        );
+        if (mode === "lost")
+          await writeFile(
+            join(
+              f.dir,
+              ".fleet/plugins",
+              binding.bindingId,
+              "release-lost-control"
+            ),
+            "release"
+          );
+        const unknown = await waitFor(
+          () => f.inspect(handle, "change-model"),
+          (receipt) => receipt.execution === "unknown"
+        );
+        assert.equal(unknown.observation, "reconciliation_required");
+        assert.notEqual(unknown.result?.status, "applied");
+        assert.equal((await configure()).body.operationId, "change-model");
+        assert.equal(
+          (await f.inspect(handle, "later-message")).delivery,
+          "queued"
+        );
+        assert.equal(
+          (await f.calls(binding)).filter(
+            (call) => call.method === "session.configure"
+          ).length,
+          1
+        );
+        assert.equal(
+          (await f.calls(binding)).filter(
+            (call) => call.method === "operation.submit"
+          ).length,
+          0
+        );
+        assert.equal(
+          JSON.stringify(events).includes("PRIVATE_SETTINGS_CANARY"),
+          false
+        );
+        await handle.stop();
+        handle = await f.start();
+        assert.equal(
+          (await f.inspect(handle, "change-model")).execution,
+          "unknown"
+        );
+        assert.equal(
+          (await f.inspect(handle, "later-message")).delivery,
+          "queued"
+        );
+        assert.equal(
+          (await f.calls(binding)).filter(
+            (call) => call.method === "session.configure"
+          ).length,
+          1
+        );
+      } finally {
+        ws.close();
+      }
+    } finally {
+      await f.cleanup();
+    }
+  });
+}
+
+test("gateway settings reads project only authoritative public values and gate unsupported controls", async () => {
+  const f = await fixture(false, false, false, true);
+  try {
+    const handle = await f.start();
+    const binding = await f.binding(handle);
+    assert.deepEqual(
+      (await f.request(handle, "/api/bots/fixture/model")).body,
+      { model: "fixture/current" }
+    );
+    assert.equal(
+      (await f.request(handle, "/api/bots/fixture/thinking")).status,
+      422
+    );
+    const headers = {
+      "content-type": "application/json",
+      "x-tidy-client-contract": "2",
+      "x-tidy-binding-revision": binding.bindingRevision,
+    };
+    for (const [route, body, status] of [
+      ["thinking", { kind: "thinking", thinking: "high" }, 422],
+      ["model", { kind: "thinking", thinking: "high" }, 400],
+      ["model", { kind: "model", model: ["fixture/current"] }, 400],
+      ["model", { kind: "model", model: "fixture/current", extra: true }, 400],
+    ] as const) {
+      assert.equal(
+        (
+          await f.request(handle, `/api/bots/fixture/${route}`, {
+            method: "PUT",
+            headers,
+            body: JSON.stringify({
+              operationId: "invalid-control",
+              conversationId: binding.conversationId,
+              ...body,
+            }),
+          })
+        ).status,
+        status
+      );
+    }
+    assert.equal(
+      (await f.request(handle, "/api/bots/fixture/operations/invalid-control"))
+        .status,
+      404
+    );
+    assert.equal(
+      (await f.calls(binding)).filter(
+        (call) => call.method === "session.configure"
+      ).length,
+      0
     );
   } finally {
     await f.cleanup();

@@ -4,6 +4,7 @@ import {
   copyFile,
   mkdir,
   mkdtemp,
+  readFile,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -12,6 +13,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { startFleet } from "../src/daemon.ts";
+import { GatewayJournal } from "../src/gateway/journal.ts";
 import { digestArtifact } from "../src/gateway/registry.ts";
 
 type PiInput = {
@@ -22,6 +24,7 @@ type PiInput = {
   credentialKey: string;
 };
 const enabled = process.env.PI_TIDY_BOTS_REAL_SMOKE === "1";
+const fixturePython = process.env.TIDY_TEST_PYTHON;
 const realInput = (): PiInput => ({
   executable: process.env.TIDY_REAL_PI_EXECUTABLE ?? "",
   packageJson: process.env.TIDY_REAL_PI_PACKAGE_JSON ?? "",
@@ -230,3 +233,357 @@ test("generated Pi smoke proves gateway receipt, terminal correlation, and clean
     await rm(native, { recursive: true, force: true });
   }
 });
+
+type HermesInput = {
+  executable: string;
+  source: string;
+  provider: string;
+  model: string;
+  credentialKey: string;
+};
+
+const hermesEnabled = process.env.PI_TIDY_BOTS_REAL_HERMES_SMOKE === "1";
+const realHermesInput = (): HermesInput => ({
+  executable: process.env.TIDY_REAL_HERMES_PYTHON ?? "",
+  source: process.env.TIDY_REAL_HERMES_SOURCE ?? "",
+  provider: process.env.TIDY_REAL_HERMES_PROVIDER ?? "",
+  model: process.env.TIDY_REAL_HERMES_MODEL ?? "",
+  credentialKey: process.env.TIDY_REAL_HERMES_CREDENTIAL_KEY ?? "",
+});
+
+const validHermesInput = (input: HermesInput, source: string) =>
+  input.executable.startsWith("/") &&
+  source.startsWith("/") &&
+  /^[A-Z][A-Z0-9_]*$/.test(input.credentialKey) &&
+  !/^(TIDY_|PI_TIDY_|HERMES_|PYTHON|NODE_|LD_|DYLD_|HOME$|VIRTUAL_ENV$)/.test(
+    input.credentialKey
+  ) &&
+  typeof process.env[input.credentialKey] === "string" &&
+  input.provider.length > 0 &&
+  !input.provider.includes("/") &&
+  input.model.startsWith(`${input.provider}/`) &&
+  input.model.length > input.provider.length + 1;
+
+async function generatedHermesSource(dir: string) {
+  const source = join(dir, "source");
+  for (const path of [
+    join(source, "hermes_cli"),
+    join(source, "acp_adapter"),
+    join(source, "agent_client_protocol-0.9.0.dist-info"),
+    join(source, "mcp-2.0.0.dist-info"),
+  ])
+    await mkdir(path, { recursive: true });
+  await copyFile(
+    new URL("./fixtures/hermes-native/fixture.py", import.meta.url),
+    join(source, "hermes_cli/fixture.py")
+  );
+  await Promise.all([
+    writeFile(
+      join(source, "hermes_cli/__init__.py"),
+      "__version__='0.20.5'\nfrom .fixture import install\ninstall()\n"
+    ),
+    writeFile(join(source, "acp_adapter/__init__.py"), ""),
+    writeFile(
+      join(source, "acp_adapter/server.py"),
+      "from hermes_cli.fixture import FakeAgent as HermesACPAgent\n"
+    ),
+    writeFile(
+      join(source, "acp_adapter/entry.py"),
+      "def _setup_logging(): pass\n"
+    ),
+    writeFile(
+      join(source, "agent_client_protocol-0.9.0.dist-info/METADATA"),
+      "Name: agent-client-protocol\nVersion: 0.9.0\n"
+    ),
+    writeFile(
+      join(source, "mcp-2.0.0.dist-info/METADATA"),
+      "Name: mcp\nVersion: 2.0.0\n"
+    ),
+  ]);
+  return source;
+}
+
+async function generatedHermesFleet(
+  input: HermesInput,
+  setupSource?: (dir: string) => Promise<string>,
+  fixtureHistoryPersistence = false
+) {
+  const dir = await mkdtemp(join(tmpdir(), "tidy-hermes-smoke-"));
+  try {
+    const home = join(dir, "home");
+    const profile = join(dir, "profile");
+    await Promise.all([mkdir(home), mkdir(profile)]);
+    const source = setupSource ? await setupSource(dir) : input.source;
+    if (!validHermesInput(input, source))
+      throw new Error(
+        "Hermes smoke needs explicit runtime paths, one allowed credential name, and provider/model"
+      );
+    const artifact = fileURLToPath(
+      new URL("../backends/hermes", import.meta.url)
+    );
+    await Promise.all([
+      writeFile(join(dir, "AGENTS.md"), "Disposable Hermes smoke.\n"),
+      writeFile(
+        join(profile, "config.yaml"),
+        JSON.stringify({
+          approvals: { mode: "manual" },
+          // This fixture-only switch makes its deterministic ACP state file
+          // available for the native load assertion below. Real Hermes uses
+          // its installed persistence defaults and the durable gateway record.
+          ...(fixtureHistoryPersistence ? { historyPersistence: true } : {}),
+          // The installed Hermes profile contract selects a provider and its
+          // model separately. The adapter itself intentionally has no model
+          // configuration capability, so this is the only native input path.
+          model: {
+            provider: input.provider,
+            default: input.model.slice(input.provider.length + 1),
+          },
+        })
+      ),
+      writeFile(
+        join(dir, "registry.json"),
+        JSON.stringify({
+          registryVersion: 1,
+          plugins: [
+            {
+              id: "tidy.hermes",
+              version: "0.1.0-dev",
+              artifactPath: artifact,
+              sha256: await digestArtifact(artifact),
+              enabled: true,
+            },
+          ],
+        })
+      ),
+    ]);
+    await writeFile(
+      join(dir, "bots.toml"),
+      [
+        "[gateway]",
+        'registry="registry.json"',
+        `environment=["PATH",${JSON.stringify(input.credentialKey)}]`,
+        'workspace_access="read-write"',
+        "native_profile=true",
+        "network=true",
+        'gateway_tools=["fleet.discover","fleet.send","artifact.read"]',
+        "[[bot]]",
+        'name="hermes"',
+        'dir="."',
+        'backend="tidy.hermes"',
+        "[bot.backend_config]",
+        `executable=${JSON.stringify(input.executable)}`,
+        `source_dir=${JSON.stringify(source)}`,
+        `home_dir=${JSON.stringify(home)}`,
+        `profile_dir=${JSON.stringify(profile)}`,
+        `environment_keys=[${JSON.stringify(input.credentialKey)}]`,
+        "",
+      ].join("\n")
+    );
+    return {
+      dir,
+      profile,
+      cleanup: () => rm(dir, { recursive: true, force: true }),
+    };
+  } catch (error) {
+    await rm(dir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function runHermesSmoke(
+  input: HermesInput,
+  text: string,
+  timeoutMs: number,
+  setupSource?: (dir: string) => Promise<string>,
+  assertCheckpoint?: (profile: string) => Promise<void>,
+  fixtureHistoryPersistence = false
+) {
+  const fleet = await generatedHermesFleet(
+    input,
+    setupSource,
+    fixtureHistoryPersistence
+  );
+  let handle: Awaited<ReturnType<typeof startFleet>> | undefined;
+  try {
+    const token = `hermes-smoke-${crypto.randomUUID()}`;
+    const launch = () =>
+      startFleet({ dir: fleet.dir, port: 0, token, log() {} });
+    handle = await launch();
+    assert.notEqual(handle.port, 4317);
+    const submit = async (message: string) => {
+      const caps = (
+        await request(handle!.url, token, "/api/bots/hermes/capabilities")
+      ).body;
+      assert.equal(caps.capabilities.sessions.load, true);
+      const operationId = `hermes-smoke-${crypto.randomUUID()}`;
+      const submitted = await request(
+        handle!.url,
+        token,
+        "/api/bots/hermes/message",
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-tidy-client-contract": "2",
+            "x-tidy-binding-revision": caps.bindingRevision,
+          },
+          body: JSON.stringify({
+            operationId,
+            clientMessageId: operationId,
+            conversationId: caps.conversationId,
+            text: message,
+          }),
+        }
+      );
+      assert.equal(
+        submitted.status,
+        202,
+        `Hermes submit returned ${submitted.status}`
+      );
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const [operation, transcript] = await Promise.all([
+          request(
+            handle!.url,
+            token,
+            `/api/bots/hermes/operations/${operationId}`
+          ),
+          request(handle!.url, token, "/api/bots/hermes/transcript"),
+        ]);
+        if (
+          ["ended", "failed", "cancelled", "interrupted"].includes(
+            operation.body.execution
+          )
+        ) {
+          assert.equal(operation.body.execution, "ended");
+          assert.ok(
+            transcript.body.transcript.some(
+              (entry: any) =>
+                entry.operationId === operationId && entry.role === "assistant"
+            )
+          );
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      throw new Error(
+        "Hermes smoke terminal was not observed; no retry was attempted"
+      );
+    };
+    await submit(text);
+    await handle.stop();
+    handle = undefined;
+    const initial = readHermesSessionCheckpoint(fleet.dir, "open:");
+    handle = await launch();
+    await submit(`${text} after verified session load`);
+    await handle.stop();
+    handle = undefined;
+    const restored = readHermesSessionCheckpoint(fleet.dir, "load:");
+    assert.equal(restored.nativeReference, initial.nativeReference);
+    assert.equal(restored.conversationId, initial.conversationId);
+    await assertCheckpoint?.(fleet.profile);
+  } finally {
+    try {
+      await handle?.stop();
+    } finally {
+      await fleet.cleanup();
+    }
+  }
+}
+
+function readHermesSessionCheckpoint(dir: string, prefix: "open:" | "load:") {
+  const journal = new GatewayJournal(join(dir, ".fleet", "gateway.sqlite"));
+  try {
+    const record = journal
+      .listOperationRecords()
+      .find(
+        (candidate) =>
+          candidate.receipt.kind === "session_open" &&
+          candidate.receipt.operationId.startsWith(prefix) &&
+          candidate.receipt.execution === "ended" &&
+          candidate.receipt.observation === "complete"
+      );
+    assert.ok(record, `missing ${prefix} Hermes session checkpoint`);
+    const nativeReference = record.receipt.result?.nativeReference;
+    assert.equal(
+      typeof nativeReference,
+      "string",
+      `missing native reference in ${prefix} checkpoint (${Object.keys(record.receipt.result ?? {}).join(",")})`
+    );
+    assert.ok(nativeReference);
+    return {
+      nativeReference,
+      conversationId: record.receipt.conversationId,
+    };
+  } finally {
+    journal.close();
+  }
+}
+
+test(
+  "approved gateway Hermes smoke submits and reloads one bounded session",
+  { skip: !hermesEnabled },
+  async () => {
+    await runHermesSmoke(
+      realHermesInput(),
+      "Reply with exactly: smoke-ready",
+      60_000
+    );
+  }
+);
+
+test(
+  "generated Hermes fixture proves gateway receipt, terminal correlation, load checkpoint, and cleanup",
+  { skip: !fixturePython?.startsWith("/") },
+  async () => {
+    await assert.rejects(
+      generatedHermesFleet({
+        executable: "",
+        source: "",
+        provider: "",
+        model: "",
+        credentialKey: "",
+      })
+    );
+    const prior = process.env.SMOKE_HERMES_CREDENTIAL;
+    try {
+      process.env.SMOKE_HERMES_CREDENTIAL = "fixture-only";
+      await runHermesSmoke(
+        {
+          executable: fixturePython!,
+          source: "",
+          provider: "fixture",
+          model: "fixture/saved-model",
+          credentialKey: "SMOKE_HERMES_CREDENTIAL",
+        },
+        "fixture reply",
+        3_000,
+        generatedHermesSource,
+        async (profile) => {
+          const effects = (
+            await readFile(join(profile, "effects.jsonl"), "utf8")
+          )
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line));
+          assert.equal(
+            effects.filter((effect) => effect.kind === "new").length,
+            1
+          );
+          assert.equal(
+            effects.filter((effect) => effect.kind === "load").length,
+            1
+          );
+          assert.equal(
+            effects.filter((effect) => effect.kind === "prompt").length,
+            2
+          );
+        },
+        true
+      );
+    } finally {
+      if (prior === undefined) delete process.env.SMOKE_HERMES_CREDENTIAL;
+      else process.env.SMOKE_HERMES_CREDENTIAL = prior;
+    }
+  }
+);

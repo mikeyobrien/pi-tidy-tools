@@ -207,6 +207,8 @@ export interface PluginSourceEvent {
   type: string;
   operationId?: string;
   turnId?: string;
+  /** Optional native UI or permission interaction correlation. */
+  interactionId?: string;
   payload: JsonObject;
 }
 export interface CompletionDelivery {

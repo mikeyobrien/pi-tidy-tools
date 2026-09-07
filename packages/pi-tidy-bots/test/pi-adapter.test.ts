@@ -19,10 +19,23 @@ import { PluginRegistry, digestArtifact } from "../src/gateway/registry.ts";
 import { PluginHost } from "../src/gateway/plugin-host.ts";
 import { GatewayJournal } from "../src/gateway/journal.ts";
 import { startFleet, type FleetHandle } from "../src/daemon.ts";
-import type {
-  GatewayPluginEvent,
-  JsonObject,
+import {
+  object,
+  type GatewayPluginEvent,
+  type JsonObject,
 } from "../src/gateway/protocol.ts";
+
+function questionForOperation(
+  transcript: JsonObject[],
+  operationId: string
+): JsonObject | undefined {
+  const entry = transcript.find(
+    (candidate) =>
+      object(candidate.question) &&
+      candidate.question.operationId === operationId
+  );
+  return entry && object(entry.question) ? entry.question : undefined;
+}
 
 async function setup() {
   const directory = await mkdtemp(join(tmpdir(), "tidy-pi-adapter-"));
@@ -1867,9 +1880,11 @@ test("startFleet admits Pi questions through exact HTTP controls without certify
         ).find((entry) => entry.question)?.question
       )
     );
-    const question = (
-      (await request("/api/bots/pi/transcript")).body.transcript as JsonObject[]
-    ).find((entry) => entry.question)!.question as JsonObject;
+    const question = questionForOperation(
+      (await request("/api/bots/pi/transcript")).body
+        .transcript as JsonObject[],
+      "ui-http-target"
+    )!;
     const answer = {
       kind: "question",
       operationId: "ui-http-answer",
@@ -1930,17 +1945,20 @@ test("startFleet admits Pi questions through exact HTTP controls without certify
       assert.equal((await submit(target, mode)).status, 202);
       await until(async () =>
         Boolean(
-          (
+          ((await request("/api/bots/pi/transcript")).body
+            .transcript as JsonObject[]) &&
+          questionForOperation(
             (await request("/api/bots/pi/transcript")).body
-              .transcript as JsonObject[]
-          ).find((entry) => entry.question?.operationId === target)
+              .transcript as JsonObject[],
+            target
+          )
         )
       );
-      const q = (
+      const q = questionForOperation(
         (await request("/api/bots/pi/transcript")).body
-          .transcript as JsonObject[]
-      ).find((entry) => entry.question?.operationId === target)!
-        .question as JsonObject;
+          .transcript as JsonObject[],
+        target
+      )!;
       const body = {
         kind: "question",
         operationId: `${target}-answer`,
@@ -1979,16 +1997,20 @@ test("startFleet admits Pi questions through exact HTTP controls without certify
     );
     await until(async () =>
       Boolean(
-        (
+        ((await request("/api/bots/pi/transcript")).body
+          .transcript as JsonObject[]) &&
+        questionForOperation(
           (await request("/api/bots/pi/transcript")).body
-            .transcript as JsonObject[]
-        ).find((entry) => entry.question?.operationId === "ui-timeout-target")
+            .transcript as JsonObject[],
+          "ui-timeout-target"
+        )
       )
     );
-    const timed = (
-      (await request("/api/bots/pi/transcript")).body.transcript as JsonObject[]
-    ).find((entry) => entry.question?.operationId === "ui-timeout-target")!
-      .question as JsonObject;
+    const timed = questionForOperation(
+      (await request("/api/bots/pi/transcript")).body
+        .transcript as JsonObject[],
+      "ui-timeout-target"
+    )!;
     assert.equal(typeof timed.expiresAt, "string");
     await until(
       async () =>
@@ -2106,17 +2128,20 @@ test("startFleet fences persisted Pi questions across daemon replacement without
     const questionFor = async (operationId: string) => {
       await until(async () =>
         Boolean(
-          (
+          ((await request("/api/bots/pi/transcript")).body
+            .transcript as JsonObject[]) &&
+          questionForOperation(
             (await request("/api/bots/pi/transcript")).body
-              .transcript as JsonObject[]
-          ).find((entry) => entry.question?.operationId === operationId)
+              .transcript as JsonObject[],
+            operationId
+          )
         )
       );
-      return (
+      return questionForOperation(
         (await request("/api/bots/pi/transcript")).body
-          .transcript as JsonObject[]
-      ).find((entry) => entry.question?.operationId === operationId)!
-        .question as Record<string, any>;
+          .transcript as JsonObject[],
+        operationId
+      )!;
     };
     const answerFor = (
       binding: Record<string, any>,
@@ -2184,7 +2209,7 @@ test("startFleet fences persisted Pi questions across daemon replacement without
     const writesBeforeSubmittedRestart = (await f.effects()).filter(
       (effect) => effect.command === "extension_ui_response"
     ).length;
-    await handle.stop();
+    await handle!.stop();
     await boot();
     await ready();
     binding = (await request("/api/bots/pi/capabilities")).body;
@@ -2225,7 +2250,7 @@ test("startFleet fences persisted Pi questions across daemon replacement without
     const writesBeforePendingRestart = (await f.effects()).filter(
       (effect) => effect.command === "extension_ui_response"
     ).length;
-    await handle.stop();
+    await handle!.stop();
     await boot();
     await until(
       async () => (await request("/api/fleet")).body.bots?.[0]?.online === false

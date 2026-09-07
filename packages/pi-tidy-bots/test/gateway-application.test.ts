@@ -99,7 +99,9 @@ async function fixture(
         artifacts: { type: "boolean" },
         settings: { type: "boolean" },
         openError: { type: "string" },
+        openLoadError: { type: "string" },
         openStatus: { type: "string" },
+        sessionsLoad: { type: "boolean" },
       },
       additionalProperties: false,
     })
@@ -1850,6 +1852,62 @@ test("session-open RPC errors retain unknown state and expose only a typed diagn
       (await f.request(handle, "/api/bots/fixture/operations/open:ignored"))
         .status,
       404
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("reload history failure isolates as continuity_unverified with session_open:native_startup_history", async () => {
+  const f = await fixture();
+  const faults: PluginFaultObservation[] = [];
+  try {
+    await writeFile(
+      join(f.dir, "bots.toml"),
+      f.manifest + "[bot.backend_config]\nsessionsLoad = true\n"
+    );
+    const first = await f.start();
+    const binding = await f.binding(first);
+    const admitted = await f.submit(
+      first,
+      binding,
+      "before-reload",
+      "initial turn"
+    );
+    assert.equal(admitted.status, 202);
+    await waitFor(
+      () => f.inspect(first, "before-reload"),
+      (receipt) => receipt.execution === "ended"
+    );
+    await first.stop();
+    await writeFile(
+      join(f.dir, "bots.toml"),
+      f.manifest +
+        "[bot.backend_config]\nsessionsLoad = true\nopenLoadError = \"native_startup_history\"\n"
+    );
+    const handle = await f.start({
+      onPluginFault: (fault) => faults.push(fault),
+    });
+    await waitFor(
+      async () => faults,
+      (items) =>
+        items.some((item) => item.code === "session_open:native_startup_history")
+    );
+    const roster = await f.request(handle, "/api/fleet");
+    assert.equal(roster.body.bots[0].gatewayStatus, "continuity_unverified");
+    assert.equal(roster.body.bots[0].online, false);
+    const later = await f.submit(
+      handle,
+      binding,
+      "after-reload",
+      "must be rejected while continuity is unverified"
+    );
+    assert.equal(later.status, 503);
+    assert.equal(later.body.error, "session_unavailable");
+    assert.equal(
+      faults.filter((item) => item.code === "session_open:native_startup_history")
+        .length,
+      1
     );
   } finally {
     await f.cleanup();

@@ -46,6 +46,37 @@ for (const stage of ["initialize", "opened", "complete"]) {
   });
 }
 
+test("guarded history startup failure on load exposes native_startup_history", async (t) => {
+  const f = fixture(
+    t,
+    (request, send) => {
+      if (request.method !== "session/load") return;
+      send({
+        jsonrpc: "2.0",
+        method: "_tidy/startup_failure",
+        params: { stage: "history" },
+      });
+      send({
+        jsonrpc: "2.0",
+        id: request.id,
+        error: { code: -32000, message: "private native detail" },
+      });
+    },
+    { loadSession: true, newSessionResponse: false }
+  );
+  await assert.rejects(f.session.open("/disposable", undefined, "retained-one"), {
+    code: "native_startup_history",
+  });
+  assert.equal(
+    f.calls.filter((call) => call.method === "session/load").length,
+    1
+  );
+  assert.equal(
+    JSON.stringify(f.calls).includes("private native detail"),
+    false
+  );
+});
+
 test("guarded startup failure exposes only its allowlisted stage", async (t) => {
   const f = fixture(
     t,
@@ -144,6 +175,7 @@ function fixture(
     fleetProof?: { initialize?: boolean; opened?: boolean };
     nativeImages?: boolean;
     guardVersion?: number;
+    loadSession?: boolean;
     newSessionResponse?: boolean;
   } = {}
 ) {
@@ -165,7 +197,7 @@ function fixture(
           protocolVersion: 1,
           agentInfo: { name: "hermes-agent", version: "0.20.5" },
           agentCapabilities: {
-            loadSession: false,
+            loadSession: options.loadSession === true,
             promptCapabilities: { image: options.nativeImages ?? true },
           },
           _meta: {
@@ -174,6 +206,9 @@ function fixture(
               approvalPolicy: "ask",
               environment: "explicit",
               ownedWorkers: "local-pipe-v1",
+              ...(options.loadSession
+                ? { historyLoad: "checkpoint-v1" }
+                : {}),
               ...(options.fleetProof?.initialize
                 ? { fleetTools: "native-mcp-v1" }
                 : {}),

@@ -30,12 +30,35 @@ _ACCOUNTING_ROW_FIELDS = frozenset((
     "reasoning_tokens", "api_call_count", "estimated_cost_usd", "actual_cost_usd",
     "cost_status", "cost_source", "pricing_version",
 ))
+# Pinned Hermes 0.20.5 SessionDB stamps load-time bookkeeping onto every
+# decoded message (_db_persisted, _row_id, timestamp). Live ACP history after
+# a turn is result["messages"] without those keys. Treating them as
+# conversation identity left every first-turn checkpoint unavailable, so
+# reload failed as session_open:native_startup_history / continuity_unverified.
+_PERSISTENCE_BOOKKEEPING_KEYS = frozenset((
+    "_db_persisted", "_row_id", "_compressed_summary", "timestamp",
+))
 
 
 def _stable_session_row(row):
     if not isinstance(row, dict):
         raise HistoryUnavailable()
     return {key: value for key, value in row.items() if key not in _ACCOUNTING_ROW_FIELDS}
+
+
+def _conversation_identity(messages):
+    if not isinstance(messages, list):
+        raise HistoryUnavailable()
+    identity = []
+    for message in messages:
+        if not isinstance(message, dict):
+            raise HistoryUnavailable()
+        identity.append({
+            key: value for key, value in message.items()
+            if key not in _PERSISTENCE_BOOKKEEPING_KEYS
+            and not (isinstance(key, str) and key.startswith("_"))
+        })
+    return identity
 
 
 def history_checkpoint(manager, state):
@@ -52,7 +75,7 @@ def history_checkpoint(manager, state):
                 or state.queued_prompts or not isinstance(state.history, list)):
             raise HistoryUnavailable()
         cwd = str(Path(state.cwd).resolve(strict=True))
-        live_digest = _digest(state.history)
+        live_digest = _digest(_conversation_identity(state.history))
         # Do not call the lazy getter: it can create a database while proving
         # persistence. Only inspect the instance native saving already opened.
         db = getattr(manager, "_db_instance", None)
@@ -74,13 +97,15 @@ def history_checkpoint(manager, state):
         persisted = db.get_messages_as_conversation(sid, repair_alternation=False)
         restored = db.get_messages_as_conversation(sid, repair_alternation=True)
         if (not isinstance(persisted, list) or not isinstance(restored, list)
-                or _digest(persisted) != live_digest or _digest(restored) != live_digest):
+                or _digest(_conversation_identity(persisted)) != live_digest
+                or _digest(_conversation_identity(restored)) != live_digest):
             raise HistoryUnavailable()
         # Refuse a torn metadata/history observation instead of accepting one
         # successful read as proof of a stable persisted session.
         if (_digest(_stable_session_row(db.get_session(sid))) != _digest(_stable_session_row(row))
-                or _digest(db.get_messages_as_conversation(sid, repair_alternation=False)) != live_digest
-                or _digest(state.history) != live_digest):
+                or _digest(_conversation_identity(
+                    db.get_messages_as_conversation(sid, repair_alternation=False))) != live_digest
+                or _digest(_conversation_identity(state.history)) != live_digest):
             raise HistoryUnavailable()
         return {"version": 1, "sessionId": sid, "messageCount": len(persisted),
                 "historyDigest": live_digest, "metadataDigest": _digest(metadata),

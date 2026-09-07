@@ -319,8 +319,14 @@ export const PROMPT_CLASS_TIMEOUT_MS = 10 * 60_000;
 
 /** Correlated native refusal, distinct from transport loss or a timeout. */
 export class RpcCommandRejected extends Error {
-  constructor() {
-    super("Native RPC command was rejected");
+  readonly remoteError?: string;
+  constructor(remoteError?: string) {
+    super(
+      remoteError
+        ? `Native RPC command was rejected: ${remoteError}`
+        : "Native RPC command was rejected"
+    );
+    this.remoteError = remoteError;
   }
 }
 
@@ -656,9 +662,11 @@ export class RpcSession {
         if (pending) {
           this.pending.delete(id);
           if (parsed.success === false) {
+            const remoteError =
+              typeof parsed.error === "string" ? parsed.error : undefined;
             pending.reject(
               this.options.nativeProtocol
-                ? new RpcCommandRejected()
+                ? new RpcCommandRejected(remoteError)
                 : new Error(`rpc command failed: ${line}`)
             );
           } else {

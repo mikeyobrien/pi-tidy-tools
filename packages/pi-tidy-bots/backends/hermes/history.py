@@ -6,6 +6,7 @@ import os
 import stat
 from pathlib import Path
 from uuid import uuid4
+from types import SimpleNamespace
 
 
 class HistoryUnavailable(Exception):
@@ -30,7 +31,7 @@ def history_checkpoint(manager, state):
     try:
         sid = state.session_id
         if (not isinstance(sid, str) or not sid or len(sid) > 512 or "\0" in sid
-                or state.agent.session_id != sid or state.is_running
+                or state.agent.session_id != sid or state.agent.model != state.model or state.is_running
                 or state.queued_prompts or not isinstance(state.history, list)):
             raise HistoryUnavailable()
         cwd = str(Path(state.cwd).resolve(strict=True))
@@ -48,6 +49,11 @@ def history_checkpoint(manager, state):
                 or str(Path(metadata["cwd"]).resolve(strict=True)) != cwd
                 or (row.get("model") or "") != state.model):
             raise HistoryUnavailable()
+        for field in ("provider", "base_url", "api_mode"):
+            if field in metadata:
+                effective = getattr(state.agent, field, None)
+                if not isinstance(effective, str) or effective.strip() != metadata[field]:
+                    raise HistoryUnavailable()
         persisted = db.get_messages_as_conversation(sid, repair_alternation=False)
         restored = db.get_messages_as_conversation(sid, repair_alternation=True)
         if (not isinstance(persisted, list) or not isinstance(restored, list)
@@ -72,6 +78,31 @@ def verify_history_checkpoint(manager, state, expected):
     if actual != expected:
         raise HistoryUnavailable()
     return actual
+
+
+def prepare_history_load(manager, sid, cwd, expected, database_path):
+    """Prove persisted input before native restore can construct an agent or repair history."""
+    try:
+        path = Path(database_path)
+        if path.is_symlink() or not path.is_file() or path.stat().st_size < 1:
+            raise HistoryUnavailable()
+        if getattr(manager, "_db_instance", None) is None:
+            manager._get_db()
+        db = getattr(manager, "_db_instance", None)
+        if db is None or expected.get("sessionId") != sid:
+            raise HistoryUnavailable()
+        row = db.get_session(sid)
+        if not isinstance(row, dict):
+            raise HistoryUnavailable()
+        metadata = json.loads(row["model_config"])
+        native = SimpleNamespace(session_id=sid, model=row.get("model") or "",
+                                 **{field: metadata[field] for field in ("provider", "base_url", "api_mode") if field in metadata})
+        state = SimpleNamespace(session_id=sid, agent=native,
+                                cwd=cwd, model=row.get("model") or "", is_running=False, queued_prompts=[],
+                                history=db.get_messages_as_conversation(sid, repair_alternation=False))
+        return verify_history_checkpoint(manager, state, expected)
+    except Exception:
+        raise HistoryUnavailable() from None
 
 
 class HistoryStore:

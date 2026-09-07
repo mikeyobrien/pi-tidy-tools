@@ -255,6 +255,18 @@ test("Hermes guard invalidates previous history before native work and refuses w
   }
 });
 
+test("Hermes implicit default mode retains the ask policy when native state has no mode attribute", async () => {
+  const f = await fixture({
+    config: { approvals: { mode: "manual" }, omitMode: true },
+  });
+  try {
+    await f.ready();
+    assert.equal((await f.prompt()).stopReason, "end_turn");
+  } finally {
+    await f.cleanup();
+  }
+});
+
 test("Hermes guard reports authoritative final text without copying history or reasoning", async () => {
   const f = await fixture();
   try {

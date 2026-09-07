@@ -57,11 +57,33 @@ class FakeConversation:
                 "messages": [{"role": "assistant", "reasoning": "private thought"}]}
 
 
+class FakeHistoryDB:
+    """JSON-backed disposable persistence; this does not certify Hermes SQLite."""
+    def get_session(self, sid):
+        path = profile() / "state.db"
+        if not path.exists():
+            return None
+        value = json.loads(path.read_text())
+        return value["row"] if value["row"]["id"] == sid else None
+
+    def get_messages_as_conversation(self, sid, repair_alternation=False):
+        if config().get("historyReadError"):
+            raise RuntimeError("private database failure")
+        value = json.loads((profile() / "state.db").read_text())
+        return value["messages"] if value["row"]["id"] == sid else []
+
+    def save(self, state):
+        (profile() / "state.db").write_text(json.dumps({"row": {"id":state.session_id, "source":"acp",
+            "model":state.model, "model_config":json.dumps({"cwd":state.cwd})}, "messages":state.history}))
+
+
 class FakeAgent:
     def __init__(self):
         self.states = {}
         self.session_manager = SimpleNamespace(get_session=self.get_session,
                                                _sessions=self.states, _lock=Lock())
+        if config().get("historyPersistence"):
+            self.session_manager._db_instance = FakeHistoryDB()
 
     def on_connect(self, connection):
         self.connection = connection
@@ -81,10 +103,22 @@ class FakeAgent:
     async def new_session(self, cwd, **kwargs):
         state = SimpleNamespace(session_id="native-one", mode="default", cwd=cwd,
                                 agent=FakeConversation())
+        if config().get("omitMode"):
+            del state.mode
+        if config().get("historyPersistence"):
+            state.agent.session_id = state.session_id
+            state.agent.model = "fixture"
+            state.history, state.model, state.is_running, state.queued_prompts = [], "fixture", False, []
+            self.session_manager._db_instance.save(state)
         self.states[state.session_id] = state
-        if kwargs.get("mcp_servers"):
+        await self._register_fixture_mcp(state, kwargs.get("mcp_servers"))
+        record("new", cwd=cwd)
+        return SimpleNamespace(session_id=state.session_id, field_meta={})
+
+    async def _register_fixture_mcp(self, state, servers):
+        if servers:
             mcp = sys.modules["tools.mcp_tool"]
-            descriptor = kwargs["mcp_servers"][0]
+            descriptor = servers[0]
             mcp.descriptor = descriptor
             listed = await asyncio.to_thread(mcp_request, "tools/list", {})
             state.agent.valid_tool_names = set()
@@ -97,11 +131,31 @@ class FakeAgent:
                 if config().get("fleetRegistration") != "hidden":
                     state.agent.valid_tool_names.add(name)
             record("mcp_registered", count=len(state.agent.valid_tool_names))
-        record("new", cwd=cwd)
-        return SimpleNamespace(session_id=state.session_id, field_meta={})
+
+    async def load_session(self, cwd, session_id, mcp_servers=None, **kwargs):
+        record("load", session_id=session_id)
+        db = self.session_manager._db_instance
+        row = db.get_session(session_id)
+        if row is None:
+            return None
+        state = SimpleNamespace(session_id=session_id, mode="default", cwd=cwd, agent=FakeConversation(),
+                                model=row["model"], history=db.get_messages_as_conversation(session_id),
+                                is_running=False, queued_prompts=[])
+        state.agent.session_id = session_id
+        state.agent.model = state.model
+        if config().get("historyRestore") == "empty":
+            state.history = []
+        if config().get("historyRestore") == "policy":
+            state.mode = "session"
+        if config().get("historyRestore") == "rotated":
+            state.agent.session_id = "rotated"
+        self.states[session_id] = state
+        await self._register_fixture_mcp(state, mcp_servers)
+        await self.connection.session_update(session_id, {"sessionUpdate":"agent_message_chunk", "content":{"type":"text", "text":"PRIVATE_REPLAY"}})
+        return SimpleNamespace(field_meta={})
 
     def _edit_approval_policy_for_state(self, state):
-        return ("ask" if state.mode == "default" else "session", state.cwd)
+        return ("ask" if getattr(state, "mode", "default") == "default" else "session", state.cwd)
 
     async def prompt(self, prompt, session_id, **kwargs):
         text = "\n".join(part.text for part in prompt if part.type == "text")
@@ -117,7 +171,7 @@ class FakeAgent:
         if text in ("[fleet-send]", "[fleet-send:pi]"):
             def invoke():
                 approval = sys.modules["tools.approval"]
-                session_token = approval._approval_session_id.set("internal-one")
+                session_token = approval._approval_session_id.set(self.states[session_id].agent.session_id)
                 tool_token = approval._approval_tool_call_id.set("native-tool-one")
                 try:
                     for _ in range(2):
@@ -164,6 +218,10 @@ class FakeAgent:
                 await self.connection.session_update(session_id, {"fail": True})
             except Exception:
                 pass  # Native worker callbacks also swallow send failures.
+        if config().get("historyPersistence"):
+            state = self.states[session_id]
+            state.history += [{"role":"user", "content":content}, {"role":"assistant", "content":"Transformed final answer"}]
+            self.session_manager._db_instance.save(state)
         return SimpleNamespace(stop_reason="end_turn", field_meta={"hermes": {"preserved": True}})
 
     async def set_session_mode(self, mode_id, session_id, **kwargs):
@@ -248,8 +306,11 @@ async def run_agent(agent, **kwargs):
                     child.stdout.close()
                     child.stderr.close()
                     del agent._fixture_buffered_worker
-            elif method in ("session/load", "session/resume", "session/fork"):
-                handler = {"session/load": agent.load_session, "session/resume": agent.resume_session, "session/fork": agent.fork_session}[method]
+            elif method == "session/load":
+                servers = [SimpleNamespace(**{**server, "headers": [SimpleNamespace(**header) for header in server.get("headers", [])]}) for server in params.get("mcpServers", [])]
+                result = await agent.load_session(cwd=params["cwd"], session_id=params["sessionId"], mcp_servers=servers)
+            elif method in ("session/resume", "session/fork"):
+                handler = {"session/resume": agent.resume_session, "session/fork": agent.fork_session}[method]
                 result = await handler(**params)
             elif method == "session/set_mode":
                 result = await agent.set_session_mode(mode_id=params["modeId"], session_id="native-one")

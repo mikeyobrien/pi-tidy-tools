@@ -27,7 +27,7 @@ export const HERMES_CAPABILITIES: CapabilityDescriptor = {
     mediaTypes: ["text/plain", "image/png", "image/jpeg"],
     maxMediaBytes: 512 * 1024,
   },
-  sessions: { load: false, import: false, continuity: "unverified" },
+  sessions: { load: true, import: false, continuity: "verified" },
   output: { text: "snapshots", tools: true, usage: "unknown" },
   operations: {
     nativeDedupe: "none",
@@ -97,10 +97,10 @@ export function startHermesAdapter(): PluginRuntime {
     },
     handlers: {
       async "session.open"(params, ctx) {
-        if (params.mode !== "new")
+        if (params.mode !== "new" && params.mode !== "load")
           throw new ProtocolError(
             "continuity_unverified",
-            "Hermes cold load is not verified"
+            "Hermes requires an explicit new or load mode"
           );
         if (
           opening ||
@@ -124,12 +124,25 @@ export function startHermesAdapter(): PluginRuntime {
             return ctx.ownedProcess(method, values);
           },
         };
+        if (
+          params.mode === "load" &&
+          (typeof params.nativeReference !== "string" ||
+            !params.nativeReference.startsWith("hermes:") ||
+            params.nativeReference.length <= 7)
+        )
+          throw new ProtocolError(
+            "continuity_unverified",
+            "Hermes load requires an exact native reference"
+          );
         native = await openHermesRuntime(
           ownedContext,
           `tidy-launch-${randomUUID()}`,
           ctx.initialization.config,
           {
             fleetTools: true,
+            ...(params.mode === "load"
+              ? { nativeReference: String(params.nativeReference).slice(7) }
+              : {}),
             onFailure() {
               if (lost || stopping) return;
               lost = true;
@@ -148,7 +161,7 @@ export function startHermesAdapter(): PluginRuntime {
         return {
           status: "opened",
           nativeReference: `hermes:${native.nativeReference}`,
-          continuity: "unverified",
+          continuity: params.mode === "load" ? "verified" : "unverified",
         };
       },
       async "operation.submit"(params, ctx) {

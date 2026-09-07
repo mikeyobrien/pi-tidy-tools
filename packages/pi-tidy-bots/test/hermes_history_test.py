@@ -31,7 +31,7 @@ class Database:
 
 class HistoryTests(unittest.TestCase):
     def setUp(self):
-        self.state = SimpleNamespace(session_id="one", agent=SimpleNamespace(session_id="one"),
+        self.state = SimpleNamespace(session_id="one", agent=SimpleNamespace(session_id="one", model="fixture-model"),
                                      cwd=str(Path(__file__).parent.resolve()), model="fixture-model", is_running=False,
                                      queued_prompts=[], history=[{"role": "user", "content": "PRIVATE_HISTORY"},
                                                                 {"role": "assistant", "content": "answer"}])
@@ -78,6 +78,9 @@ class HistoryTests(unittest.TestCase):
             self.db.row = {**original, key: value}
             self.unavailable()
         self.db.row = original
+        self.state.agent.model = "different-effective-model"
+        self.unavailable()
+        self.state.agent.model = self.state.model
         self.state.agent.session_id = "rotated-child"
         self.unavailable()
         self.state.agent.session_id = "one"

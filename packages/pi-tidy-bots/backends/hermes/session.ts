@@ -160,7 +160,11 @@ export class HermesSession {
       onFailure: (error) => this.fail(error),
     });
   }
-  async open(cwd: string, fleetServer?: JsonObject): Promise<string> {
+  async open(
+    cwd: string,
+    fleetServer?: JsonObject,
+    restoreSessionId?: string
+  ): Promise<string> {
     if (this.opening || this.lost || !isAbsolute(cwd))
       throw new ProtocolError(
         "session_unavailable",
@@ -192,20 +196,55 @@ export class HermesSession {
       !object(initialized.agentCapabilities) ||
       !object(initialized.agentCapabilities.promptCapabilities) ||
       initialized.agentCapabilities.promptCapabilities.image !== true ||
-      initialized.agentCapabilities.loadSession !== false
+      (initialized.agentCapabilities.loadSession !== false &&
+        !(
+          initialized.agentCapabilities.loadSession === true &&
+          initialized._meta.tidy.historyLoad === "checkpoint-v1"
+        ))
     )
       throw new ProtocolError(
         "native_contract_unavailable",
         "Native runtime did not prove the required guarded contract"
       );
-    const opened = await this.transport.request("session/new", {
-      cwd,
-      mcpServers: fleetServer === undefined ? [] : [fleetServer],
-    });
-    if (!object(opened) || !nonempty(opened.sessionId))
+    if (
+      restoreSessionId !== undefined &&
+      (!nonempty(restoreSessionId) ||
+        initialized.agentCapabilities.loadSession !== true)
+    )
+      throw new ProtocolError(
+        "continuity_unverified",
+        "Guarded native load is unavailable"
+      );
+    const opened = await this.transport.request(
+      restoreSessionId === undefined ? "session/new" : "session/load",
+      {
+        cwd,
+        mcpServers: fleetServer === undefined ? [] : [fleetServer],
+        ...(restoreSessionId === undefined
+          ? {}
+          : { sessionId: restoreSessionId }),
+      }
+    );
+    if (
+      !object(opened) ||
+      (restoreSessionId === undefined && !nonempty(opened.sessionId))
+    )
       throw new ProtocolError(
         "session_unknown",
         "Native session creation has no correlated identity"
+      );
+    if (
+      restoreSessionId !== undefined &&
+      (!object(opened._meta) ||
+        !object(opened._meta.tidy) ||
+        opened._meta.tidy.historyLoad !== "checkpoint-v1" ||
+        opened._meta.tidy.sessionId !== restoreSessionId ||
+        !object(opened._meta.tidy.checkpoint) ||
+        opened._meta.tidy.checkpoint.sessionId !== restoreSessionId)
+    )
+      throw new ProtocolError(
+        "continuity_unverified",
+        "Native load did not prove the exact retained history"
       );
     if (
       fleetServer !== undefined &&
@@ -217,7 +256,7 @@ export class HermesSession {
         "native_contract_unavailable",
         "Native session did not prove fleet tool registration"
       );
-    this.sessionId = opened.sessionId;
+    this.sessionId = restoreSessionId ?? String(opened.sessionId);
     return this.sessionId;
   }
   /** Resolve native MCP identity against the live prompt, never caller-supplied

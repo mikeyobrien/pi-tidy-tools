@@ -90,6 +90,7 @@ async function fixture(version = "0.20.5") {
   const launchId = `tidy-launch-${randomUUID()}`;
   const calls: string[] = [];
   let pid: number | undefined;
+  let registered = false;
   const abort = new AbortController();
   const ctx: PluginContext = {
     initialization: {
@@ -112,10 +113,10 @@ async function fixture(version = "0.20.5") {
     },
     async ownedProcess(method, params) {
       calls.push(method);
-      assert.ok(store.reservation(`operation:${launchId}`));
+      assert.ok(store.reservation(`operation:${params.launchId}`));
       if (method === "prepare")
         return {
-          launchId,
+          launchId: params.launchId,
           state: "prepared",
           executable: process.execPath,
           launcherPath: fileURLToPath(
@@ -123,10 +124,16 @@ async function fixture(version = "0.20.5") {
           ),
         };
       pid = params.pid as number;
-      await assert.rejects(readFile(join(profile, "effects.jsonl")), {
-        code: "ENOENT",
-      });
-      return { launchId, state: "started", identity: { pid, token: launchId } };
+      if (!registered)
+        await assert.rejects(readFile(join(profile, "effects.jsonl")), {
+          code: "ENOENT",
+        });
+      registered = true;
+      return {
+        launchId: params.launchId,
+        state: "started",
+        identity: { pid, token: params.launchId },
+      };
     },
   };
   const config = {
@@ -293,6 +300,114 @@ test("Hermes cancellation requires immutable SDK reservation and waits for nativ
     await f.cleanup();
   }
 });
+
+for (const restore of [
+  "normal",
+  "fleet",
+  "empty",
+  "policy",
+  "rotated",
+  "read-error",
+]) {
+  test(`guarded Hermes cold restoration ${restore} preserves history and blocks unsafe prompts`, async () => {
+    const f = await fixture();
+    let runtime: HermesRuntime | undefined;
+    try {
+      const configuration = {
+        approvals: { mode: "manual" },
+        historyPersistence: true,
+      };
+      const successful = restore === "normal" || restore === "fleet";
+      const hooks = { ...f.hooks, fleetTools: restore === "fleet" };
+      let fleetCalls = 0;
+      f.ctx.hostCall = async (call) => {
+        const key = `action:${call.actionId}`;
+        const reservation = f.store.reserve(
+          key,
+          "host.call",
+          String(call.payloadDigest),
+          call
+        );
+        if (!reservation.created) return reservation.result;
+        fleetCalls++;
+        const result = { status: "admitted", dispatchId: "restored-dispatch" };
+        f.store.settle(key, result);
+        return result;
+      };
+      await writeFile(
+        join(f.profile, "config.yaml"),
+        JSON.stringify(configuration)
+      );
+      runtime = await openHermesRuntime(f.ctx, f.launchId, f.config, hooks);
+      f.store.reserve("operation:before", "operation.submit", "before", {
+        operationId: "before",
+        turnId: "before-turn",
+        conversationId: "c",
+      });
+      await runtime.session.submit("before", "before-turn", [
+        { type: "text", text: "before restart" },
+      ]);
+      await runtime.close();
+      runtime = undefined;
+      await writeFile(
+        join(f.profile, "config.yaml"),
+        JSON.stringify({
+          ...configuration,
+          historyRestore: restore,
+          historyReadError: restore === "read-error",
+        })
+      );
+      const load = () =>
+        openHermesRuntime(f.ctx, `tidy-launch-${randomUUID()}`, f.config, {
+          ...hooks,
+          nativeReference: "native-one",
+        });
+      if (successful) {
+        const count = f.events.length;
+        runtime = await load();
+        assert.equal(runtime.nativeReference, "native-one");
+        assert.equal(
+          f.events.length,
+          count,
+          "native replay is not new canonical output"
+        );
+        f.store.reserve("operation:after", "operation.submit", "after", {
+          operationId: "after",
+          turnId: "after-turn",
+          conversationId: "c",
+        });
+        await runtime.session.submit("after", "after-turn", [
+          {
+            type: "text",
+            text: restore === "fleet" ? "[fleet-send]" : "after restart",
+          },
+        ]);
+        const stored = JSON.parse(
+          await readFile(join(f.profile, "state.db"), "utf8")
+        );
+        assert.equal(stored.messages.length, 4);
+      } else await assert.rejects(load());
+      const effects = (await readFile(join(f.profile, "effects.jsonl"), "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      assert.equal(effects.filter((effect) => effect.kind === "new").length, 1);
+      assert.equal(
+        effects.filter((effect) => effect.kind === "load").length,
+        restore === "read-error" ? 0 : 1
+      );
+      assert.equal(
+        effects.filter((effect) => effect.kind === "prompt").length,
+        successful ? 2 : 1
+      );
+      if (restore === "fleet") assert.equal(fleetCalls, 1);
+      assert.equal(JSON.stringify(f.events).includes("PRIVATE_REPLAY"), false);
+    } finally {
+      await runtime?.close();
+      await f.cleanup();
+    }
+  });
+}
 
 test("guarded Hermes ACP runs through the reserved SDK launcher and normalizes native evidence", async () => {
   const f = await fixture();

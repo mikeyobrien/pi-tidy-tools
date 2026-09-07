@@ -258,6 +258,13 @@ for (const dispatch of [false, true]) {
       let ws: WebSocket | undefined;
       try {
         await f.host.close();
+        await writeFile(
+          join(f.profile, "config.yaml"),
+          JSON.stringify({
+            approvals: { mode: "manual" },
+            historyPersistence: true,
+          })
+        );
         const piHome = join(f.dir, "pi-home"),
           piProfile = join(f.dir, "pi-profile"),
           piNative = join(f.dir, "pi-native");
@@ -647,6 +654,11 @@ for (const dispatch of [false, true]) {
             .body.transcript;
           assert.deepEqual(transcript, retained[name]);
         }
+        assert.ok(
+          (await request("/api/fleet")).body.bots.every(
+            (bot: any) => bot.online
+          )
+        );
         const piCalls = (
           await readFile(
             join(
@@ -679,6 +691,36 @@ for (const dispatch of [false, true]) {
           hermesCalls.filter((call) => call.kind === "new").length,
           1
         );
+        assert.equal(
+          hermesCalls.filter((call) => call.kind === "load").length,
+          1
+        );
+        for (const name of ["pi", "hermes"]) {
+          assert.equal(
+            (
+              await request(`/api/bots/${name}/message`, {
+                method: "POST",
+                headers: {
+                  "content-type": "application/json",
+                  "x-tidy-client-contract": "2",
+                  "x-tidy-binding-revision": bindings[name].bindingRevision,
+                },
+                body: JSON.stringify({
+                  operationId: `resumed-${name}`,
+                  clientMessageId: `resumed-${name}`,
+                  conversationId: bindings[name].conversationId,
+                  text: "continue after restart",
+                }),
+              })
+            ).status,
+            202
+          );
+          await until(
+            async () =>
+              (await request(`/api/bots/${name}/operations/resumed-${name}`))
+                .body.execution === "ended"
+          );
+        }
       } finally {
         ws?.terminate();
         await fleet?.stop();
@@ -771,7 +813,7 @@ for (const text of ["hello", "[owned-worker]", "[fleet-send]"]) {
   test(`installed Hermes adapter preserves durable ${text} and registered cleanup`, async () => {
     const f = await setup();
     try {
-      assert.equal(f.host.capabilities.sessions.load, false);
+      assert.equal(f.host.capabilities.sessions.load, true);
       assert.equal(
         f.host.capabilities.interactions.permissions,
         "exact-request"

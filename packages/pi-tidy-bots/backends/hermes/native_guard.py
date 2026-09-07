@@ -126,7 +126,9 @@ class ApprovalGuard:
             if self.approval._permanent_approved or any(self.approval._session_approved.values()):
                 raise ApprovalPolicyUnavailable()
             if state is not None:
-                if state.mode != "default" or agent._edit_approval_policy_for_state(state)[0] != "ask":
+                # Pinned Hermes SessionState has no mode field until a mode
+                # change; its _session_modes treats an absent field as default.
+                if getattr(state, "mode", "default") != "default" or agent._edit_approval_policy_for_state(state)[0] != "ask":
                     raise ApprovalPolicyUnavailable()
                 keys = (state.session_id, state.agent.session_id)
                 if any(not isinstance(key, str) or not key or
@@ -138,12 +140,14 @@ class ApprovalGuard:
             raise ApprovalPolicyUnavailable() from None
 
 
-def guarded_agent(base, guard, prompt_response, worker_type, fleet=None, history_proof=None, history_store=None):
+def guarded_agent(base, guard, prompt_response, worker_type, fleet=None, history_proof=None, history_store=None,
+                  history_prepare=None, history_verify=None):
     class GuardedHermesACPAgent(base):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
             self._tidy_created_sessions = set()
             self._tidy_active_prompt = False
+            self._tidy_loading_session = None
             self._tidy_update_tickets = None
             self._tidy_update_lock = Lock()
             self._tidy_update_failed = False
@@ -199,6 +203,13 @@ def guarded_agent(base, guard, prompt_response, worker_type, fleet=None, history
                     })
 
                 def session_update(self, *args, **kwargs):
+                    sid = kwargs.get("session_id", args[0] if args else None)
+                    if sid is not None and sid == owner._tidy_loading_session:
+                        # Canonical history is already journaled. Native replay
+                        # is checked through its complete working state instead.
+                        async def replay_verified_separately():
+                            return None
+                        return replay_verified_separately()
                     # Native worker callbacks swallow update-send failures.
                     # Register before scheduling so even an unscheduled/dropped
                     # coroutine prevents a complete-observation claim.
@@ -270,7 +281,7 @@ def guarded_agent(base, guard, prompt_response, worker_type, fleet=None, history
             result = await super().initialize(*args, **kwargs)
             capabilities = getattr(result, "agent_capabilities", None)
             if capabilities is not None:
-                capabilities.load_session = False
+                capabilities.load_session = history_store is not None and history_prepare is not None and history_verify is not None
                 sessions = getattr(capabilities, "session_capabilities", None)
                 if sessions is not None:
                     sessions.fork = None
@@ -281,6 +292,8 @@ def guarded_agent(base, guard, prompt_response, worker_type, fleet=None, history
                              "environment": "explicit", "ownedWorkers": "local-pipe-v1"}
             if fleet is not None:
                 extra["tidy"]["fleetTools"] = "native-mcp-v1"
+            if history_store is not None and history_prepare is not None and history_verify is not None:
+                extra["tidy"]["historyLoad"] = "checkpoint-v1"
             result.field_meta = extra
             return result
 
@@ -480,8 +493,41 @@ def guarded_agent(base, guard, prompt_response, worker_type, fleet=None, history
             guard.check(state, self)
             return await super().set_config_option(config_id=config_id, value=value, session_id=session_id, **kwargs)
 
-        async def load_session(self, *args, **kwargs):
-            raise ApprovalPolicyUnavailable()
+        async def load_session(self, cwd, session_id, mcp_servers=None, **kwargs):
+            guard.check()
+            if (history_store is None or history_prepare is None or history_verify is None
+                    or self._tidy_created_sessions or self._tidy_active_prompt or self._tidy_loading_session is not None):
+                raise ApprovalPolicyUnavailable()
+            servers = mcp_servers or []
+            if fleet is not None:
+                fleet.validate(servers)
+            elif servers:
+                raise ApprovalPolicyUnavailable()
+            expected = history_store.load(session_id)
+            history_prepare(self.session_manager, session_id, cwd, expected, guard.profile / "state.db")
+            self._tidy_loading_session = session_id
+            try:
+                result = await super().load_session(cwd=cwd, session_id=session_id, mcp_servers=servers, **kwargs)
+                state = self._tidy_live_state(session_id)
+                if result is None or state is None:
+                    raise ApprovalPolicyUnavailable()
+                guard.check(state, self)
+                history_verify(self.session_manager, state, expected)
+                if fleet is not None:
+                    fleet.verify(state)
+                modes = getattr(result, "modes", None)
+                if modes is not None:
+                    if modes.current_mode_id != "default":
+                        raise ApprovalPolicyUnavailable()
+                    modes.available_modes = [mode for mode in modes.available_modes if mode.id == "default"]
+                proof = {"historyLoad": "checkpoint-v1", "sessionId": session_id, "checkpoint": expected}
+                if fleet is not None:
+                    proof["fleetTools"] = "native-mcp-v1"
+                result.field_meta = {**(result.field_meta or {}), "tidy": proof}
+                self._tidy_created_sessions.add(session_id)
+                return result
+            finally:
+                self._tidy_loading_session = None
 
         async def resume_session(self, *args, **kwargs):
             raise ApprovalPolicyUnavailable()
@@ -563,7 +609,8 @@ def main():
     history = module_from_spec(spec)
     spec.loader.exec_module(history)
     history_store = history.HistoryStore(directory(args.checkpoint_dir), args.binding_id) if args.checkpoint_dir else None
-    agent = guarded_agent(HermesACPAgent, guard, PromptResponse, owned.NativeWorkers, fleet, history.history_checkpoint, history_store)()
+    agent = guarded_agent(HermesACPAgent, guard, PromptResponse, owned.NativeWorkers, fleet, history.history_checkpoint, history_store,
+                          history.prepare_history_load, history.verify_history_checkpoint)()
     if fleet is not None:
         fleet_module.install_fleet_identity(mcp_tool, ClientSession, approval, agent._tidy_fleet_scope)
     from tools import process_registry

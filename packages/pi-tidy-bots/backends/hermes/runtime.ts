@@ -118,7 +118,10 @@ export async function openHermesRuntime(
   ctx: PluginContext,
   launchId: string,
   config: JsonObject,
-  hooks: Pick<HermesSessionOptions, "onFailure"> & { fleetTools?: boolean }
+  hooks: Pick<HermesSessionOptions, "onFailure"> & {
+    fleetTools?: boolean;
+    nativeReference?: string;
+  }
 ): Promise<HermesRuntime> {
   const configuration = await validateHermesConfiguration(config);
   const process = await spawnOwnedProcess(ctx, {
@@ -197,7 +200,8 @@ export async function openHermesRuntime(
     }
     const nativeReference = await session.open(
       ctx.initialization.workspace,
-      fleet?.descriptor
+      fleet?.descriptor,
+      hooks.nativeReference
     );
     ctx.signal.throwIfAborted();
     return {

@@ -212,6 +212,7 @@ const methods = [
   "session.open",
   "session.snapshot",
   "session.configure",
+  "session.compact",
   "operation.submit",
   "operation.inspect",
   "operation.cancel",
@@ -320,7 +321,7 @@ input.on("line", (line) => {
         configuration: {
           model: p.config.settings === true,
           thinking: false,
-          compact: false,
+          compact: p.config.settings === true,
         },
         fleetTools: p.config.discovery === true,
       },
@@ -345,6 +346,35 @@ input.on("line", (line) => {
       status: "opened",
       nativeReference: `session:${p.openId}`,
     });
+  } else if (message.method === "session.compact") {
+    record({ method: "session.compact", ...p });
+    event(p, "turn.started", {});
+    const finish = (mode) =>
+      event(p, "turn.terminal", {
+        execution: mode === "failed" ? "failed" : "ended",
+        observation: "complete",
+        ...(mode === "missing"
+          ? {}
+          : {
+              result: {
+                status: mode === "failed" ? "failed" : "applied",
+                summary: "PRIVATE_COMPACTION_CANARY",
+              },
+            }),
+      });
+    if (p.operationId === "compact-fast") {
+      finish("applied");
+      respond(message, { disposition: "accepted" });
+    } else {
+      respond(message, { disposition: "accepted" });
+      const timer = setInterval(() => {
+        const path = join(dir, "complete-compaction");
+        if (existsSync(path)) {
+          clearInterval(timer);
+          finish(readFileSync(path, "utf8"));
+        }
+      }, 10);
+    }
   } else if (message.method === "session.configure") {
     record({ method: "session.configure", ...p });
     model = p.model;

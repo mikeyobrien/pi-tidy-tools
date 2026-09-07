@@ -348,6 +348,14 @@ export async function startGatewayFleet(
           );
           return;
         }
+        if (request.method === "POST" && action === "compact") {
+          json(
+            response,
+            202,
+            application.admitConfiguration(name, "compact", await body(request))
+          );
+          return;
+        }
         const cancellation = /^operations\/([^/]+)\/cancel$/.exec(action);
         if (request.method === "POST" && cancellation) {
           json(

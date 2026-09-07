@@ -130,7 +130,7 @@ function effectiveCapabilities(
     configuration: {
       model: native.configuration.model,
       thinking: native.configuration.thinking,
-      compact: false,
+      compact: native.configuration.compact,
     },
     fleetTools: false,
   };
@@ -1004,7 +1004,7 @@ export class GatewayApplication {
 
   admitConfiguration(
     name: string,
-    kind: "model" | "thinking",
+    kind: "model" | "thinking" | "compact",
     body: Record<string, unknown>
   ): JsonObject {
     const bot = this.requireBot(name);
@@ -1014,12 +1014,19 @@ export class GatewayApplication {
       typeof body.operationId !== "string" ||
       !body.operationId.trim() ||
       body.operationId.length > 256 ||
-      typeof body[kind] !== "string" ||
-      !String(body[kind]).trim() ||
-      String(body[kind]).length > 1025 ||
-      String(body[kind]).includes("\0") ||
+      (kind !== "compact" &&
+        (typeof body[kind] !== "string" ||
+          !String(body[kind]).trim() ||
+          String(body[kind]).length > 1025 ||
+          String(body[kind]).includes("\0"))) ||
       Object.keys(body).some(
-        (key) => !["kind", "operationId", "conversationId", kind].includes(key)
+        (key) =>
+          ![
+            "kind",
+            "operationId",
+            "conversationId",
+            ...(kind === "compact" ? [] : [kind]),
+          ].includes(key)
       )
     )
       throw new ProtocolError(
@@ -1041,11 +1048,15 @@ export class GatewayApplication {
           "session_unavailable",
           "Configuration session is unavailable"
         );
-      bot.host.assertRequestFits("session.configure", {
-        ...body,
-        payloadDigest: `sha256:${"0".repeat(64)}`,
-        policyRevision: bot.binding.policyRevision,
-      });
+      bot.host.assertRequestFits(
+        kind === "compact" ? "session.compact" : "session.configure",
+        {
+          ...body,
+          turnId: `turn-${randomUUID()}`,
+          payloadDigest: `sha256:${"0".repeat(64)}`,
+          policyRevision: bot.binding.policyRevision,
+        }
+      );
     }
     const admitted = this.journal.admit(this.lease, {
       ...bot.binding,
@@ -1244,7 +1255,11 @@ export class GatewayApplication {
           await this.dispatchPermission(bot, op);
           continue;
         }
-        if (op.receipt.kind === "model" || op.receipt.kind === "thinking") {
+        if (
+          op.receipt.kind === "model" ||
+          op.receipt.kind === "thinking" ||
+          op.receipt.kind === "compact"
+        ) {
           await this.dispatchConfiguration(bot, op);
           continue;
         }
@@ -1315,26 +1330,37 @@ export class GatewayApplication {
     bot: BoundBot,
     op: OperationRecord
   ): Promise<void> {
-    const kind = op.receipt.kind as "model" | "thinking";
+    const kind = op.receipt.kind as "model" | "thinking" | "compact";
     let result: unknown;
     try {
-      result = await bot.host!.request("session.configure", {
-        ...op.payload,
-        operationId: op.receipt.operationId,
-        conversationId: bot.binding.conversationId,
-        kind,
-        payloadDigest: op.payloadDigest,
-        policyRevision: op.policyRevision,
-      });
+      result = await bot.host!.request(
+        kind === "compact" ? "session.compact" : "session.configure",
+        {
+          ...op.payload,
+          operationId: op.receipt.operationId,
+          conversationId: bot.binding.conversationId,
+          kind,
+          turnId: op.turnId,
+          payloadDigest: op.payloadDigest,
+          policyRevision: op.policyRevision,
+        }
+      );
     } catch {
       result = { status: "unknown" };
+    }
+    const latest = this.journal.getOperation(op.receipt)!;
+    // Durable terminal evidence may precede a delayed command acknowledgement.
+    if (terminal.has(latest.execution) || latest.delivery === "rejected") {
+      this.publishCommitted(bot, true);
+      return;
     }
     if (
       object(result) &&
       result.disposition === "accepted" &&
       result.status === "applied" &&
-      object(result.settings) &&
-      result.settings[kind] === op.payload?.[kind]
+      (kind === "compact" ||
+        (object(result.settings) &&
+          result.settings[kind] === op.payload?.[kind]))
     ) {
       this.journal.recordDisposition(this.lease, op.receipt, {
         delivery: "accepted",
@@ -1344,6 +1370,16 @@ export class GatewayApplication {
         evidence: "correlated_configuration_readback",
       });
     } else if (
+      object(result) &&
+      result.disposition === "accepted" &&
+      result.status === undefined
+    ) {
+      this.journal.recordDisposition(this.lease, op.receipt, {
+        delivery: "accepted",
+        evidence: "correlated_control_acceptance",
+      });
+    } else if (
+      latest.delivery !== "accepted" &&
       object(result) &&
       result.disposition === "rejected" &&
       result.status === "failed"
@@ -1594,6 +1630,71 @@ export class GatewayApplication {
         delivery: payload.disposition as OperationDisposition["delivery"],
         evidence: "correlated_plugin_event",
       };
+      return projection;
+    }
+    const control = event.operationId
+      ? this.journal.getOperationRecord({
+          ...bot.binding,
+          operationId: event.operationId,
+        })
+      : null;
+    if (
+      control &&
+      ["model", "thinking", "compact"].includes(String(control.receipt.kind))
+    ) {
+      if (event.type === "turn.started") {
+        projection.operation = {
+          delivery: "accepted",
+          execution: "running",
+          evidence: "correlated_control_started",
+        };
+      } else if (event.type === "turn.terminal") {
+        if (!terminal.has(String(payload.execution)))
+          throw new ProtocolError(
+            "invalid_event",
+            "Control terminal requires explicit execution state"
+          );
+        const kind = control.receipt.kind!;
+        const applied =
+          payload.execution === "ended" &&
+          object(payload.result) &&
+          payload.result.status === "applied" &&
+          (kind === "compact" ||
+            (object(payload.result.settings) &&
+              payload.result.settings[kind] === control.payload?.[kind]));
+        const failed =
+          ["failed", "cancelled", "interrupted"].includes(
+            String(payload.execution)
+          ) &&
+          object(payload.result) &&
+          ["failed", "cancelled"].includes(String(payload.result.status));
+        if (payload.observation === "complete" && (applied || failed)) {
+          projection.operation = {
+            delivery: "accepted",
+            execution: payload.execution as OperationDisposition["execution"],
+            observation: "complete",
+            result: {
+              status: applied
+                ? "applied"
+                : payload.execution === "cancelled"
+                  ? "cancelled"
+                  : "failed",
+            },
+            evidence: "correlated_control_terminal",
+          };
+        } else {
+          projection.operation = {
+            delivery: "accepted",
+            execution: "unknown",
+            observation: "reconciliation_required",
+            evidence: "control_terminal_missing_application_evidence",
+          };
+        }
+      } else
+        throw new ProtocolError(
+          "invalid_event",
+          "Settings controls cannot produce chat or tool output"
+        );
       return projection;
     }
     let turn = bot.turns.get(event.turnId!);

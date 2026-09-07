@@ -1417,3 +1417,165 @@ test("gateway settings reads project only authoritative public values and gate u
     await f.cleanup();
   }
 });
+
+for (const mode of ["applied", "failed", "missing", "fast"]) {
+  test(`gateway compact controls await correlated application evidence without chat output: ${mode}`, async () => {
+    const f = await fixture(false, false, false, true);
+    try {
+      const handle = await f.start();
+      const binding = await f.binding(handle);
+      assert.equal(binding.capabilities.configuration.compact, true);
+      const { ws, events } = await f.socket(handle);
+      try {
+        const operationId = mode === "fast" ? "compact-fast" : "compact-one";
+        const headers = {
+          "content-type": "application/json",
+          "x-tidy-client-contract": "2",
+          "x-tidy-binding-revision": binding.bindingRevision,
+        };
+        const payload = {
+          kind: "compact",
+          operationId,
+          conversationId: binding.conversationId,
+        };
+        const compact = () =>
+          f.request(handle, "/api/bots/fixture/compact", {
+            method: "POST",
+            headers,
+            body: JSON.stringify(payload),
+          });
+        assert.equal((await compact()).status, 202);
+        if (mode !== "fast") {
+          const running = await waitFor(
+            () => f.inspect(handle, operationId),
+            (receipt) => receipt.execution === "running"
+          );
+          assert.equal(running.delivery, "accepted");
+          assert.equal(running.result, undefined);
+          assert.equal(
+            (
+              await f.submit(
+                handle,
+                binding,
+                "after-compact",
+                "queued after compact"
+              )
+            ).status,
+            202
+          );
+          assert.equal(
+            (await f.inspect(handle, "after-compact")).delivery,
+            "queued"
+          );
+          assert.equal((await compact()).body.execution, "running");
+          await writeFile(
+            join(
+              f.dir,
+              ".fleet/plugins",
+              binding.bindingId,
+              "complete-compaction"
+            ),
+            mode
+          );
+        }
+        const final = await waitFor(
+          () => f.inspect(handle, operationId),
+          (receipt) =>
+            ["ended", "failed", "unknown"].includes(receipt.execution)
+        );
+        assert.equal(final.kind, "compact");
+        assert.equal(
+          final.observation,
+          mode === "missing" ? "reconciliation_required" : "complete"
+        );
+        assert.equal(
+          final.result?.status,
+          mode === "missing"
+            ? undefined
+            : mode === "failed"
+              ? "failed"
+              : "applied"
+        );
+        if (mode === "missing")
+          assert.equal(
+            (await f.inspect(handle, "after-compact")).delivery,
+            "queued"
+          );
+        else if (mode !== "fast")
+          await waitFor(
+            () => f.inspect(handle, "after-compact"),
+            (receipt) => receipt.execution === "ended"
+          );
+        assert.equal((await compact()).body.operationId, operationId);
+        assert.equal(
+          (await f.calls(binding)).filter(
+            (call) => call.method === "session.compact"
+          ).length,
+          1
+        );
+        const nativeControl = (await f.calls(binding)).find(
+          (call) => call.method === "session.compact"
+        )!;
+        assert.equal(typeof nativeControl.turnId, "string");
+        assert.equal(
+          events.some(
+            (event) =>
+              event.type === "bubble" && event.turnId === nativeControl.turnId
+          ),
+          false
+        );
+        assert.equal(
+          JSON.stringify(events).includes("PRIVATE_COMPACTION_CANARY"),
+          false
+        );
+        const transcript = (
+          await f.request(handle, "/api/bots/fixture/transcript")
+        ).body.transcript;
+        assert.equal(
+          transcript.some(
+            (entry: ObjectValue) => entry.operationId === operationId
+          ),
+          false
+        );
+        assert.equal(
+          (
+            await f.request(handle, "/api/bots/fixture/compact", {
+              method: "POST",
+              headers,
+              body: JSON.stringify({
+                ...payload,
+                operationId: "invalid-compact",
+                compact: true,
+              }),
+            })
+          ).status,
+          400
+        );
+        assert.equal(
+          (
+            await f.request(
+              handle,
+              "/api/bots/fixture/operations/invalid-compact"
+            )
+          ).status,
+          404
+        );
+        await handle.stop();
+        const restarted = await f.start();
+        const retained = await f.inspect(restarted, operationId);
+        assert.equal(retained.execution, final.execution);
+        assert.deepEqual(retained.result, final.result);
+        assert.equal(
+          (await f.calls(binding)).filter(
+            (call) => call.method === "session.compact"
+          ).length,
+          1
+        );
+      } finally {
+        ws.close();
+      }
+    } finally {
+      await f.cleanup();
+    }
+  });
+}

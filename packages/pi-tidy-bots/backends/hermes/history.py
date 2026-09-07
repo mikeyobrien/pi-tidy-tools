@@ -2,7 +2,10 @@
 
 import hashlib
 import json
+import os
+import stat
 from pathlib import Path
+from uuid import uuid4
 
 
 class HistoryUnavailable(Exception):
@@ -69,3 +72,87 @@ def verify_history_checkpoint(manager, state, expected):
     if actual != expected:
         raise HistoryUnavailable()
     return actual
+
+
+class HistoryStore:
+    """Private binding-scoped checkpoint files, atomically published and invalidated."""
+
+    def __init__(self, directory, binding_id):
+        if not isinstance(binding_id, str) or not binding_id or len(binding_id) > 512 or "\0" in binding_id:
+            raise HistoryUnavailable()
+        self.binding_id = binding_id
+        try:
+            self.fd = os.open(str(Path(directory).resolve(strict=True)), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except Exception:
+            raise HistoryUnavailable() from None
+
+    def close(self):
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+
+    def _name(self, sid):
+        if not isinstance(sid, str) or not sid or len(sid) > 512 or "\0" in sid or self.fd is None:
+            raise HistoryUnavailable()
+        return "hermes-history-" + _digest([self.binding_id, sid]) + ".json"
+
+    def invalidate(self, sid):
+        try:
+            name = self._name(sid)
+            try:
+                os.unlink(name, dir_fd=self.fd)
+            except FileNotFoundError:
+                pass
+            os.fsync(self.fd)
+        except Exception:
+            raise HistoryUnavailable() from None
+
+    def save(self, checkpoint):
+        temporary = ".hermes-history-" + str(uuid4()) + ".tmp"
+        try:
+            sid = checkpoint["sessionId"]
+            name = self._name(sid)
+            encoded = json.dumps({"version": 1, "bindingId": self.binding_id, "checkpoint": checkpoint},
+                                 allow_nan=False, sort_keys=True).encode("utf-8")
+            if len(encoded) > 16384:
+                raise HistoryUnavailable()
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=self.fd)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, name, src_dir_fd=self.fd, dst_dir_fd=self.fd)
+            os.fsync(self.fd)
+        except Exception:
+            raise HistoryUnavailable() from None
+        finally:
+            if self.fd is not None:
+                try:
+                    os.unlink(temporary, dir_fd=self.fd)
+                except FileNotFoundError:
+                    pass
+
+    def load(self, sid):
+        try:
+            fd = os.open(self._name(sid), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=self.fd)
+            with os.fdopen(fd, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or not 0 < info.st_size <= 16384:
+                    raise HistoryUnavailable()
+                encoded = stream.read(16385)
+            if len(encoded) != info.st_size:
+                raise HistoryUnavailable()
+            record = json.loads(encoded)
+            checkpoint = record["checkpoint"]
+            if (record.get("version") != 1 or record.get("bindingId") != self.binding_id
+                    or not isinstance(checkpoint, dict) or checkpoint.get("version") != 1
+                    or checkpoint.get("sessionId") != sid
+                    or type(checkpoint.get("messageCount")) is not int or checkpoint["messageCount"] < 0
+                    or set(checkpoint) != {"version", "sessionId", "messageCount", "historyDigest", "metadataDigest", "modelDigest", "cwdDigest"}
+                    or any(not isinstance(checkpoint[key], str) or len(checkpoint[key]) != 64
+                           or any(char not in "0123456789abcdef" for char in checkpoint[key])
+                           for key in ("historyDigest", "metadataDigest", "modelDigest", "cwdDigest"))):
+                raise HistoryUnavailable()
+            return checkpoint
+        except Exception:
+            raise HistoryUnavailable() from None

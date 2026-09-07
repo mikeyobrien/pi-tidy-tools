@@ -138,7 +138,7 @@ class ApprovalGuard:
             raise ApprovalPolicyUnavailable() from None
 
 
-def guarded_agent(base, guard, prompt_response, worker_type, fleet=None, history_proof=None):
+def guarded_agent(base, guard, prompt_response, worker_type, fleet=None, history_proof=None, history_store=None):
     class GuardedHermesACPAgent(base):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
@@ -373,6 +373,13 @@ def guarded_agent(base, guard, prompt_response, worker_type, fleet=None, history
             original = getattr(native, "run_conversation", None)
             if not callable(original):
                 return refuse("native_contract_unavailable")
+            if history_store is not None:
+                try:
+                    # An entered turn may change history even if its response or
+                    # persistence fails. Never retain the previous proof as current.
+                    history_store.invalidate(session_id)
+                except Exception:
+                    return refuse("continuity_unavailable")
             evidence = {"started": False, "settled": False, "failed": False,
                         "interrupted": False}
             had_override = "run_conversation" in vars(native)
@@ -433,6 +440,8 @@ def guarded_agent(base, guard, prompt_response, worker_type, fleet=None, history
                 if history_proof is not None:
                     try:
                         checkpoint = history_proof(self.session_manager, state)
+                        if history_store is not None:
+                            history_store.save(checkpoint)
                         extra["tidy"]["historyCheckpoint"] = {"status": "verified", "checkpoint": checkpoint}
                     except Exception:
                         # Native execution evidence is independent of persistence.
@@ -489,7 +498,11 @@ def main():
     parser.add_argument("--profile", required=True)
     parser.add_argument("--home", required=True)
     parser.add_argument("--fleet-tools", action="store_true")
+    parser.add_argument("--checkpoint-dir")
+    parser.add_argument("--binding-id")
     args = parser.parse_args()
+    if bool(args.checkpoint_dir) != bool(args.binding_id):
+        raise ApprovalPolicyUnavailable()
     if not sys.flags.isolated:
         raise ApprovalPolicyUnavailable()
     source, profile, home = directory(args.source), directory(args.profile), directory(args.home)
@@ -549,7 +562,8 @@ def main():
     spec = spec_from_file_location("tidy_hermes_history", Path(__file__).with_name("history.py"))
     history = module_from_spec(spec)
     spec.loader.exec_module(history)
-    agent = guarded_agent(HermesACPAgent, guard, PromptResponse, owned.NativeWorkers, fleet, history.history_checkpoint)()
+    history_store = history.HistoryStore(directory(args.checkpoint_dir), args.binding_id) if args.checkpoint_dir else None
+    agent = guarded_agent(HermesACPAgent, guard, PromptResponse, owned.NativeWorkers, fleet, history.history_checkpoint, history_store)()
     if fleet is not None:
         fleet_module.install_fleet_identity(mcp_tool, ClientSession, approval, agent._tidy_fleet_scope)
     from tools import process_registry
@@ -559,8 +573,12 @@ def main():
         try:
             await acp.run_agent(agent, use_unstable_protocol=True)
         finally:
-            if agent._tidy_workers is not None:
-                await agent._tidy_workers.close()
+            try:
+                if agent._tidy_workers is not None:
+                    await agent._tidy_workers.close()
+            finally:
+                if history_store is not None:
+                    history_store.close()
 
     asyncio.run(run())
 

@@ -1,6 +1,9 @@
 import copy
 import importlib.util
 import json
+import os
+import tempfile
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -93,6 +96,66 @@ class HistoryTests(unittest.TestCase):
             return {**original(sid), "revision": count}
         self.db.get_session = changing
         self.unavailable()
+
+    def test_store_survives_restart_and_is_binding_scoped(self):
+        checkpoint = history.history_checkpoint(self.manager, self.state)
+        with tempfile.TemporaryDirectory() as directory:
+            store = history.HistoryStore(directory, "binding-one")
+            store.save(checkpoint)
+            store.close()
+            restored = history.HistoryStore(directory, "binding-one")
+            other = history.HistoryStore(directory, "binding-two")
+            try:
+                self.assertEqual(restored.load("one"), checkpoint)
+                for reader, sid in ((other, "one"), (restored, "another")):
+                    with self.assertRaises(history.HistoryUnavailable):
+                        reader.load(sid)
+                restored.invalidate("one")
+                with self.assertRaises(history.HistoryUnavailable):
+                    restored.load("one")
+            finally:
+                restored.close()
+                other.close()
+
+    def test_failed_publish_after_invalidation_cannot_revive_old_proof(self):
+        checkpoint = history.history_checkpoint(self.manager, self.state)
+        with tempfile.TemporaryDirectory() as directory:
+            store = history.HistoryStore(directory, "binding-one")
+            try:
+                store.save(checkpoint)
+                store.invalidate("one")
+                with patch.object(history.os, "replace", side_effect=OSError("PRIVATE_HISTORY")):
+                    with self.assertRaises(history.HistoryUnavailable):
+                        store.save(checkpoint)
+                self.assertEqual(list(Path(directory).iterdir()), [])
+                with self.assertRaises(history.HistoryUnavailable):
+                    store.load("one")
+            finally:
+                store.close()
+
+    def test_store_rejects_corruption_links_and_oversized_records(self):
+        checkpoint = history.history_checkpoint(self.manager, self.state)
+        with tempfile.TemporaryDirectory() as directory:
+            store = history.HistoryStore(directory, "binding-one")
+            try:
+                store.save(checkpoint)
+                file = next(Path(directory).glob("hermes-history-*.json"))
+                for text in ("{broken", "{}", "x" * 16385):
+                    file.write_text(text)
+                    with self.assertRaises(history.HistoryUnavailable):
+                        store.load("one")
+                file.unlink()
+                target = Path(directory) / "target"
+                target.write_text("{}")
+                file.symlink_to(target)
+                with self.assertRaises(history.HistoryUnavailable):
+                    store.load("one")
+                file.unlink()
+                os.link(target, file)
+                with self.assertRaises(history.HistoryUnavailable):
+                    store.load("one")
+            finally:
+                store.close()
 
 
 if __name__ == "__main__":

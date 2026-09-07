@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import {
@@ -31,6 +32,7 @@ async function fixture(
     version?: string;
     environment?: Record<string, string>;
     isolate?: boolean;
+    checkpoints?: boolean;
   } = {}
 ) {
   const dir = await mkdtemp(join(tmpdir(), "tidy-hermes-guard-"));
@@ -87,6 +89,9 @@ async function fixture(
       profile,
       "--home",
       home,
+      ...(options.checkpoints
+        ? ["--checkpoint-dir", dir, "--binding-id", "fixture-binding"]
+        : []),
     ],
     {
       cwd: dir,
@@ -215,6 +220,36 @@ test("owned Hermes guard preserves ACP negotiation and suppresses implicit nativ
         "UNSCOPED_DOTENV_SECRET"
       )
     );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("Hermes guard invalidates previous history before native work and refuses when invalidation fails", async () => {
+  const f = await fixture({ checkpoints: true });
+  try {
+    await f.ready();
+    const name =
+      "hermes-history-" +
+      createHash("sha256")
+        .update(JSON.stringify(["fixture-binding", "native-one"]))
+        .digest("hex") +
+      ".json";
+    const path = join(f.dir, name);
+    await writeFile(path, "old checkpoint");
+    const response = await f.prompt();
+    assert.equal(response.stopReason, "end_turn");
+    assert.deepEqual(response._meta.tidy.historyCheckpoint, {
+      status: "unavailable",
+    });
+    await assert.rejects(readFile(path), { code: "ENOENT" });
+    await mkdir(path);
+    const before = await f.effects();
+    const refused = await f.prompt();
+    assert.equal(refused.stopReason, "refusal");
+    assert.equal(refused._meta.tidy.rejectedBeforePrompt, true);
+    assert.equal(refused._meta.tidy.code, "continuity_unavailable");
+    assert.deepEqual(await f.effects(), before);
   } finally {
     await f.cleanup();
   }

@@ -69,6 +69,7 @@ export interface CodexSessionOptions extends Pick<
   | "requestTimeoutMs"
 > {
   promptTimeoutMs?: number;
+  /** Isolated CODEX_HOME (`profile_dir`). Not Unix HOME (`home_dir`). */
   expectedHome: string;
   emit: (event: JsonObject) => void;
   onFailure: (error: ProtocolError) => void;
@@ -155,7 +156,7 @@ export class CodexSession {
           "continuity_unverified",
           "Codex load did not restore the exact retained thread"
         );
-      // Identity-only: expected home + returned thread id. No history
+      // Identity-only: expected CODEX_HOME + returned thread id. No history
       // digest, message count, or checkpoint comparison is available.
       this.threadId = resumedId;
       return this.threadId;
@@ -213,7 +214,11 @@ export class CodexSession {
         },
         this.options.requestTimeoutMs
       );
-      if (!object(started) || !object(started.turn) || !nonempty(started.turn.id))
+      if (
+        !object(started) ||
+        !object(started.turn) ||
+        !nonempty(started.turn.id)
+      )
         throw new Error();
       turn.nativeTurnId = String(started.turn.id);
       this.started(turn);
@@ -228,7 +233,10 @@ export class CodexSession {
         this.complete(turn, execution);
       }
       const timeout = setTimeout(
-        () => this.fail(new ProtocolError("native_timeout", "Codex turn timed out")),
+        () =>
+          this.fail(
+            new ProtocolError("native_timeout", "Codex turn timed out")
+          ),
         this.options.promptTimeoutMs ?? 3600000
       );
       try {
@@ -350,9 +358,7 @@ export class CodexSession {
       object(params.item)
     ) {
       const text = agentText(params.item);
-      const item = text
-        ? this.itemOf(turn, itemId)
-        : turn.items.get(itemId);
+      const item = text ? this.itemOf(turn, itemId) : turn.items.get(itemId);
       if (!item || item.finished) return;
       if (text) {
         this.started(turn);

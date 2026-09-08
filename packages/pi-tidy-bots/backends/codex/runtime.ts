@@ -20,6 +20,12 @@ export interface CodexConfiguration {
   environment: Record<string, string>;
 }
 
+/** Non-secret launch locations. HOME is Unix home; CODEX_HOME is profile_dir. */
+export interface CodexRuntimeDiagnostics {
+  home: string;
+  codexHome: string;
+}
+
 const keys = ["executable", "home_dir", "profile_dir", "environment_keys"];
 const absolute = (value: unknown): value is string =>
   nonempty(value) && isAbsolute(value) && !value.includes("\0");
@@ -70,7 +76,8 @@ export async function validateCodexConfiguration(
       executable,
       home,
       profile,
-      environment: { ...environment, HOME: home, CODEX_HOME: home },
+      // Same split as Pi/Hermes: HOME is Unix home, native store is profile.
+      environment: { ...environment, HOME: home, CODEX_HOME: profile },
     };
   } catch {
     throw new ProtocolError(
@@ -84,6 +91,7 @@ export interface CodexRuntime {
   session: CodexSession;
   nativeReference: string;
   launchId: string;
+  diagnostics: CodexRuntimeDiagnostics;
   closed: Promise<void>;
   close(): Promise<void>;
   cancel(params: JsonObject): unknown;
@@ -133,7 +141,8 @@ export async function openCodexRuntime(
       maxPendingRequests: ctx.initialization.limits.maxPendingRequests,
       requestTimeoutMs: ctx.initialization.limits.commandTimeoutMs,
       promptTimeoutMs: 3600000,
-      expectedHome: configuration.home,
+      // initialize.codexHome must match isolated CODEX_HOME (profile_dir).
+      expectedHome: configuration.profile,
       emit: (event) => ctx.emit(event as EventInput),
       onFailure,
     });
@@ -146,6 +155,10 @@ export async function openCodexRuntime(
       session,
       nativeReference,
       launchId,
+      diagnostics: {
+        home: configuration.home,
+        codexHome: configuration.profile,
+      },
       closed: process.closed,
       close,
       cancel: (params) => {

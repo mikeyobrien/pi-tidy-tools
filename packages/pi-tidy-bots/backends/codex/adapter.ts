@@ -18,7 +18,8 @@ import {
   type CodexRuntime,
 } from "./runtime.ts";
 
-// Load is fail-closed identity proof only: isolated home + exact thread id.
+// Load is fail-closed identity proof only: isolated CODEX_HOME
+// (profile_dir, not Unix HOME) + exact thread id.
 // That is not Pi/Hermes retained-history verification. Never-prompted seats
 // stay non-restorable (Codex unprompted threads may lack a resumable rollout).
 export const CODEX_CAPABILITIES: CapabilityDescriptor = {
@@ -166,11 +167,13 @@ export function startCodexAdapter(): PluginRuntime {
           nativeReference: `codex:${native.nativeReference}`,
           continuity: params.mode === "load" ? "verified" : "unverified",
           proof: params.mode === "load" ? "identity-only" : "none",
+          diagnostics: native.diagnostics,
           ...(params.mode === "load"
             ? {
                 evidence: {
                   provenance: "codex-thread-identity",
                   expectedHome: true,
+                  codexHome: native.diagnostics.codexHome,
                   threadId: native.nativeReference,
                 },
               }

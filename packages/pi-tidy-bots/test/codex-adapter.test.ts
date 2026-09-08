@@ -7,6 +7,7 @@ import {
   copyFile,
   mkdir,
   mkdtemp,
+  realpath,
   rm,
   symlink,
   writeFile,
@@ -49,7 +50,7 @@ async function setup(
     profile = join(dir, "profile");
   await mkdir(home);
   await mkdir(profile);
-  if (extras.lieHome) await writeFile(join(home, "lie-home"), "1\n");
+  if (extras.lieHome) await writeFile(join(profile, "lie-home"), "1\n");
   const executable = join(dir, "codex-fixture");
   await copyFile(fixtureExecutable, executable);
   await chmod(executable, 0o755);
@@ -202,7 +203,9 @@ test("packed Codex artifact contains its executable contract and runs after extr
         .execution,
       "ended"
     );
-    const snapshots = f.events.filter((event) => event.type === "text.snapshot");
+    const snapshots = f.events.filter(
+      (event) => event.type === "text.snapshot"
+    );
     assert.ok(snapshots.length >= 1);
     assert.equal(
       snapshots[snapshots.length - 1]!.payload.text,
@@ -221,23 +224,29 @@ test("Codex open/submit/stream/close uses app-server not Chat Completions", asyn
       nativeReference: string;
       continuity: string;
       proof: string;
+      diagnostics?: { home?: string; codexHome?: string };
     };
     assert.match(opened.nativeReference, /^codex:thr-fixture-/);
     assert.equal(opened.continuity, "unverified");
     assert.equal(opened.proof, "none");
+    assert.deepEqual(opened.diagnostics, {
+      home: await realpath(f.home),
+      codexHome: await realpath(f.profile),
+    });
+    assert.notEqual(opened.diagnostics!.home, opened.diagnostics!.codexHome);
     assert.equal(f.host.capabilities.sessions.proof, "identity-only");
     assert.equal(f.host.capabilities.sessions.emptySeat, "non-restorable");
     assert.notEqual(f.host.capabilities.sessions.proof, "retained-history");
     // New sessions stay unverified. Load proof is identity-only, not history.
     assert.equal(
-      ((await f.host.request("operation.submit", f.submit("hello"))) as {
-        disposition: string;
-      }).disposition,
+      (
+        (await f.host.request("operation.submit", f.submit("hello"))) as {
+          disposition: string;
+        }
+      ).disposition,
       "accepted"
     );
-    await until(() =>
-      f.events.some((event) => event.type === "turn.terminal")
-    );
+    await until(() => f.events.some((event) => event.type === "turn.terminal"));
     assert.ok(f.events.some((event) => event.type === "turn.started"));
     assert.ok(f.events.some((event) => event.type === "text.snapshot"));
     assert.equal(
@@ -263,9 +272,7 @@ test("two Codex assistant items stay two finished messages", async () => {
       ).disposition,
       "accepted"
     );
-    await until(() =>
-      f.events.some((event) => event.type === "turn.terminal")
-    );
+    await until(() => f.events.some((event) => event.type === "turn.terminal"));
     const finished = f.events.filter(
       (event) => event.type === "message.finished"
     );
@@ -303,16 +310,18 @@ test("stale Codex turn completion does not invent a terminal for the live turn",
       ).disposition,
       "accepted"
     );
-    await until(() =>
-      f.events.some((event) => event.type === "turn.terminal")
+    await until(() => f.events.some((event) => event.type === "turn.terminal"));
+    const terminals = f.events.filter(
+      (event) => event.type === "turn.terminal"
     );
-    const terminals = f.events.filter((event) => event.type === "turn.terminal");
     assert.equal(terminals.length, 1);
     assert.equal(terminals[0]!.operationId, "op1");
     assert.equal(terminals[0]!.turnId, "turn1");
     assert.equal(terminals[0]!.payload.execution, "ended");
     assert.equal(terminals[0]!.payload.observation, "complete");
-    const snapshots = f.events.filter((event) => event.type === "text.snapshot");
+    const snapshots = f.events.filter(
+      (event) => event.type === "text.snapshot"
+    );
     assert.equal(
       snapshots[snapshots.length - 1]!.payload.text,
       "codex:[stale-turn]"
@@ -367,9 +376,7 @@ test("Codex cancel losing the race to native completed keeps the receipt complet
       "operation.submit",
       f.submit("[cancel-then-completed]")
     );
-    await until(() =>
-      f.events.some((event) => event.type === "turn.started")
-    );
+    await until(() => f.events.some((event) => event.type === "turn.started"));
     const result = await f.host.request("operation.cancel", {
       operationId: "cancel1",
       targetOperationId: "op1",
@@ -401,9 +408,7 @@ test("Codex cancel is cooperative turn/interrupt and not terminal proof", async 
       "operation.submit",
       f.submit("[cancel-hold]")
     );
-    await until(() =>
-      f.events.some((event) => event.type === "turn.started")
-    );
+    await until(() => f.events.some((event) => event.type === "turn.started"));
     const cancel = {
       operationId: "cancel1",
       targetOperationId: "op1",
@@ -430,9 +435,7 @@ test("Codex load restores the same native thread across adapter restart", async 
       nativeReference: string;
     };
     await f.host.request("operation.submit", f.submit("remember"));
-    await until(() =>
-      f.events.some((event) => event.type === "turn.terminal")
-    );
+    await until(() => f.events.some((event) => event.type === "turn.terminal"));
     await f.host.close();
     const registry = join(f.dir, "registry.json");
     const installation = (
@@ -482,7 +485,11 @@ test("Codex load restores the same native thread across adapter restart", async 
         nativeReference: string;
         continuity: string;
         proof: string;
-        evidence?: { provenance?: string; threadId?: string };
+        evidence?: {
+          provenance?: string;
+          threadId?: string;
+          codexHome?: string;
+        };
       };
       assert.equal(loaded.nativeReference, first.nativeReference);
       assert.equal(loaded.continuity, "verified");
@@ -491,6 +498,7 @@ test("Codex load restores the same native thread across adapter restart", async 
       assert.deepEqual(loaded.evidence, {
         provenance: "codex-thread-identity",
         expectedHome: true,
+        codexHome: await realpath(f.profile),
         threadId: first.nativeReference.slice("codex:".length),
       });
       assert.equal(reload.capabilities.sessions.proof, "identity-only");
@@ -526,6 +534,7 @@ test("Codex load miss fails closed and never starts a fresh thread", async () =>
       }),
       { code: "session_not_found" }
     );
+    assert.equal(existsSync(join(f.profile, "threads.json")), false);
     assert.equal(existsSync(join(f.home, "threads.json")), false);
   } finally {
     await f.cleanup();
@@ -538,7 +547,80 @@ test("Codex initialize home mismatch fails closed", async () => {
     await assert.rejects(f.host.request("session.open", f.open), {
       code: "continuity_unverified",
     });
+    assert.equal(existsSync(join(f.profile, "threads.json")), false);
     assert.equal(existsSync(join(f.home, "threads.json")), false);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("distinct Codex profile_dir is CODEX_HOME; other profile rejects load", async () => {
+  const f = await setup();
+  try {
+    const first = (await f.host.request("session.open", f.open)) as {
+      nativeReference: string;
+      diagnostics?: { home?: string; codexHome?: string };
+    };
+    assert.deepEqual(first.diagnostics, {
+      home: await realpath(f.home),
+      codexHome: await realpath(f.profile),
+    });
+    await f.host.request("operation.submit", f.submit("remember-profile"));
+    await until(() => f.events.some((event) => event.type === "turn.terminal"));
+    assert.equal(existsSync(join(f.profile, "threads.json")), true);
+    assert.equal(existsSync(join(f.home, "threads.json")), false);
+    await f.host.close();
+    const otherProfile = join(f.dir, "other-profile");
+    await mkdir(otherProfile);
+    const registry = join(f.dir, "registry.json");
+    const installation = (
+      await PluginRegistry.load(registry, {
+        policy: {
+          workspace: "read-write",
+          nativeProfile: true,
+          network: true,
+          gatewayTools: [],
+        },
+      })
+    ).resolve("tidy.codex");
+    const miss = await PluginHost.start({
+      installation,
+      bindingId: "codex-binding",
+      leaseGeneration: 2,
+      workspace: f.dir,
+      dataDir: join(f.dir, "data-other-profile"),
+      allowedEnv: { PATH: dirname(process.execPath) },
+      config: {
+        executable: f.executable,
+        home_dir: f.home,
+        profile_dir: otherProfile,
+        environment_keys: ["PATH"],
+      },
+      onEvent: async (event) => event.sourceSequence,
+      onHostCall: async () => ({
+        status: "admitted",
+        dispatchId: "fixture-dispatch",
+      }),
+      onLaunchPrepared: () => {},
+      onLaunchRecorded: () => {},
+      onLaunchStopped: () => {},
+    });
+    try {
+      await assert.rejects(
+        miss.request("session.open", {
+          ...f.open,
+          openId: "open-other",
+          operationId: "opening-other",
+          mode: "load",
+          nativeReference: first.nativeReference,
+        }),
+        { code: "session_not_found" }
+      );
+      assert.equal(existsSync(join(otherProfile, "threads.json")), false);
+      assert.equal(existsSync(join(f.profile, "threads.json")), true);
+    } finally {
+      await miss.close();
+    }
   } finally {
     await f.cleanup();
   }
@@ -649,7 +731,10 @@ test("disposable dual-backend Codex and Pi fixture smoke stays off 4317", async 
           bindingRevision?: string;
           conversationId?: string;
           backend?: { id?: string };
-          capabilities?: { fleetTools?: boolean; sessions?: { load?: boolean } };
+          capabilities?: {
+            fleetTools?: boolean;
+            sessions?: { load?: boolean };
+          };
           execution?: string;
         },
       };

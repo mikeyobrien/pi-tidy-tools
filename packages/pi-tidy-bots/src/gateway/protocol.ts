@@ -157,6 +157,7 @@ export type SessionProof = "none" | "identity-only" | "retained-history";
 export type EmptySeatPolicy = "non-restorable" | "restartable";
 export type ContinuityStatus = "verified" | "unverified";
 export type SessionEvidenceProvenance =
+  | "native-identity"
   | "codex-thread-identity"
   | "pi-history-checkpoint"
   | "hermes-checkpoint-v1";
@@ -522,7 +523,10 @@ export function sessionOpenEvidenceMatches(
     return false;
   const provenance = String(result.evidence.provenance);
   if (advertised === "identity-only")
-    return provenance === "codex-thread-identity";
+    return (
+      provenance !== "pi-history-checkpoint" &&
+      provenance !== "hermes-checkpoint-v1"
+    );
   return (
     provenance === "pi-history-checkpoint" ||
     provenance === "hermes-checkpoint-v1"

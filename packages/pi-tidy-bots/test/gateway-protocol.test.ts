@@ -262,6 +262,17 @@ test("session open evidence distinguishes identity-only from retained-history", 
     },
   };
   assert.equal(sessionOpenEvidenceMatches(identity, "identity-only"), true);
+  assert.equal(
+    sessionOpenEvidenceMatches(
+      {
+        continuity: "verified",
+        proof: "identity-only",
+        evidence: { provenance: "native-identity", nativeReference: "session:1" },
+      },
+      "identity-only"
+    ),
+    true
+  );
   assert.equal(sessionOpenEvidenceMatches(identity, "retained-history"), false);
   assert.equal(sessionOpenEvidenceMatches(history, "retained-history"), true);
   assert.equal(sessionOpenEvidenceMatches(history, "identity-only"), false);

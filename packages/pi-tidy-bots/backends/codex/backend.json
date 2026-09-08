@@ -1,0 +1,19 @@
+{
+  "manifestVersion": 1,
+  "id": "tidy.codex",
+  "version": "0.1.0-dev",
+  "protocol": { "major": 1, "minMinor": 0, "maxMinor": 0 },
+  "entrypoint": { "path": "backend.mjs", "args": [] },
+  "configSchema": "config.schema.json",
+  "runtime": {
+    "name": "codex",
+    "testedVersion": "0.145.0",
+    "transport": "app-server"
+  },
+  "requestedAccess": {
+    "workspace": "read-write",
+    "nativeProfile": true,
+    "network": true,
+    "gatewayTools": []
+  }
+}

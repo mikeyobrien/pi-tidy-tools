@@ -688,9 +688,8 @@ test("dead-owner takeover clears native observation gap so a replacement can adm
     { encoding: "utf8" }
   );
   assert.equal(child.status, 9, child.stderr);
-  let store;
+  const store = new PluginStore(f.path, options(2));
   try {
-    store = new PluginStore(f.path, options(2));
     assert.equal(store.observationGap, undefined);
     assert.equal(
       store.reserve(
@@ -702,7 +701,7 @@ test("dead-owner takeover clears native observation gap so a replacement can adm
       true
     );
   } finally {
-    store?.close();
+    store.close();
     f.remove();
   }
 });
@@ -719,9 +718,8 @@ test("dead-owner takeover keeps capacity observation gaps sticky", () => {
     { encoding: "utf8" }
   );
   assert.equal(child.status, 9, child.stderr);
-  let store;
+  const store = new PluginStore(f.path, options(2));
   try {
-    store = new PluginStore(f.path, options(2));
     assert.equal(store.observationGap, "spool_capacity_exhausted");
     assert.throws(
       () =>
@@ -734,7 +732,7 @@ test("dead-owner takeover keeps capacity observation gaps sticky", () => {
       { code: "observation_gap" }
     );
   } finally {
-    store?.close();
+    store.close();
     f.remove();
   }
 });

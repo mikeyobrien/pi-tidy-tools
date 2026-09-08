@@ -135,7 +135,7 @@ test("native interrupted after cancel still reports cancelled", async (t) => {
 function fixture(t: TestContext) {
   const input = new PassThrough(),
     output = new PassThrough();
-  const events: JsonObject[] = [],
+  const events: any[] = [],
     failures: string[] = [];
   let threadId = "";
   let nativeTurnId = "";

@@ -676,6 +676,69 @@ test("explicit native observation gap durably stops new admission", () => {
   }
 });
 
+test("dead-owner takeover clears native observation gap so a replacement can admit again", () => {
+  const f = fixture();
+  const child = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `import { PluginStore } from ${JSON.stringify(new URL("../src/plugin-sdk/store.ts", import.meta.url).href)}; const store = new PluginStore(${JSON.stringify(f.path)}, ${JSON.stringify(options())}); store.append({type:'observation.gap',payload:{reason:'native_cursor_lost'}}); process.exit(9);`,
+    ],
+    { encoding: "utf8" }
+  );
+  assert.equal(child.status, 9, child.stderr);
+  let store;
+  try {
+    store = new PluginStore(f.path, options(2));
+    assert.equal(store.observationGap, undefined);
+    assert.equal(
+      store.reserve(
+        "operation:one",
+        "operation.submit",
+        "caller-digest",
+        params("hello", 2)
+      ).created,
+      true
+    );
+  } finally {
+    store?.close();
+    f.remove();
+  }
+});
+
+test("dead-owner takeover keeps capacity observation gaps sticky", () => {
+  const f = fixture();
+  const child = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `import { PluginStore } from ${JSON.stringify(new URL("../src/plugin-sdk/store.ts", import.meta.url).href)}; const store = new PluginStore(${JSON.stringify(f.path)}, ${JSON.stringify(options())}); store.append({type:'observation.gap',payload:{reason:'spool_capacity_exhausted'}}); process.exit(9);`,
+    ],
+    { encoding: "utf8" }
+  );
+  assert.equal(child.status, 9, child.stderr);
+  let store;
+  try {
+    store = new PluginStore(f.path, options(2));
+    assert.equal(store.observationGap, "spool_capacity_exhausted");
+    assert.throws(
+      () =>
+        store.reserve(
+          "operation:one",
+          "operation.submit",
+          "caller-digest",
+          params("hello", 2)
+        ),
+      { code: "observation_gap" }
+    );
+  } finally {
+    store?.close();
+    f.remove();
+  }
+});
+
 for (const mode of ["clean", "unclean"])
   test(`${mode} process replacement demotes nonterminal execution while preserving accepted and terminal evidence`, () => {
     const f = fixture();

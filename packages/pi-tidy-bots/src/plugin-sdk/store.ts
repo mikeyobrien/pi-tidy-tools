@@ -239,6 +239,19 @@ export class PluginStore {
               "stale_binding",
               "An unclean plugin replacement requires a new reconciled writer generation"
             );
+          // Dead-owner takeover already demotes in-flight ops to
+          // reconciliation_required. A sticky native observation gap would
+          // then skip session/load forever (503 session_unavailable) even
+          // when SessionDB + a verified checkpoint can restore the same
+          // native session. Capacity gaps stay sticky: the spool is still
+          // unwritable. Clean close keeps the gap (owner was cleared).
+          const gap = this.meta("gap");
+          if (
+            gap &&
+            gap !== "frame_capacity_exhausted" &&
+            gap !== "spool_capacity_exhausted"
+          )
+            this.set("gap", "");
         }
         if (!fresh)
           this.prepare(

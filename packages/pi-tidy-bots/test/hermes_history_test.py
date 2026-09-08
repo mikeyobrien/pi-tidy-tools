@@ -208,6 +208,28 @@ class HistoryTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_persist_history_checkpoint_from_sessiondb_without_live_state(self):
+        self.state.history = []
+        self.state.is_running = True
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "state.db"
+            database.write_bytes(b"x")
+            store = history.HistoryStore(directory, "binding-one")
+            try:
+                checkpoint = history.persist_history_checkpoint(
+                    self.manager, "one", self.state.cwd, store, database)
+                self.assertEqual(checkpoint["messageCount"], 2)
+                self.assertEqual(store.load("one"), checkpoint)
+                self.state.is_running = False
+                self.state.history = [{"role": "user", "content": "PRIVATE_HISTORY"},
+                                      {"role": "assistant", "content": "answer"}]
+                self.assertEqual(
+                    history.prepare_history_load(
+                        self.manager, "one", self.state.cwd, checkpoint, database),
+                    checkpoint)
+            finally:
+                store.close()
+
     def test_store_rejects_corruption_links_and_oversized_records(self):
         checkpoint = history.history_checkpoint(self.manager, self.state)
         with tempfile.TemporaryDirectory() as directory:

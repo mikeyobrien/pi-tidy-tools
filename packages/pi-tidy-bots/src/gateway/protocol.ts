@@ -153,12 +153,29 @@ export class FrameDecoder {
   }
 }
 
+export type SessionProof = "none" | "identity-only" | "retained-history";
+export type EmptySeatPolicy = "non-restorable" | "restartable";
+export type ContinuityStatus = "verified" | "unverified";
+export type SessionEvidenceProvenance =
+  | "codex-thread-identity"
+  | "pi-history-checkpoint"
+  | "hermes-checkpoint-v1";
+
+/** Load support, proof type, and evidence provenance are distinct.
+ * `load`/`import` mean restore is attempted. `proof` is what a successful
+ * load actually proved. `continuity: verified` means that advertised proof
+ * succeeded — not that every backend has Pi/Hermes-equivalent history.
+ * Never-prompted seats may stay `emptySeat: non-restorable`; fail closed
+ * rather than invent restart-availability.
+ */
 export interface CapabilityDescriptor {
   input: { text: true; mediaTypes: string[]; maxMediaBytes: number };
   sessions: {
     load: boolean;
     import: boolean;
-    continuity: "verified" | "unverified";
+    continuity: ContinuityStatus;
+    proof?: SessionProof;
+    emptySeat?: EmptySeatPolicy;
   };
   output: {
     text: "final-only" | "snapshots";
@@ -371,7 +388,7 @@ export function validateCapabilities(value: unknown): CapabilityDescriptor {
   if (!object(value)) return fail("Missing capabilities");
   const sections: Record<string, string[]> = {
     input: ["text", "mediaTypes", "maxMediaBytes"],
-    sessions: ["load", "import", "continuity"],
+    sessions: ["load", "import", "continuity", "proof", "emptySeat"],
     output: ["text", "tools", "usage"],
     operations: [
       "nativeDedupe",
@@ -446,6 +463,25 @@ export function validateCapabilities(value: unknown): CapabilityDescriptor {
   ];
   if (enums.some(([entry, allowed]) => !allowed.includes(String(entry))))
     return fail("Unknown capability value");
+  const restore = descriptor.sessions.load || descriptor.sessions.import;
+  const proof = descriptor.sessions.proof ?? "none";
+  if (!["none", "identity-only", "retained-history"].includes(proof))
+    return fail("Unknown session proof");
+  if (
+    descriptor.sessions.emptySeat !== undefined &&
+    descriptor.sessions.emptySeat !== "non-restorable" &&
+    descriptor.sessions.emptySeat !== "restartable"
+  )
+    return fail("Unknown empty-seat policy");
+  if (restore) {
+    if (descriptor.sessions.continuity !== "verified")
+      return fail("Session restoration requires verified continuity");
+    if (proof === "none")
+      return fail("Session restoration requires an explicit proof level");
+    if (descriptor.sessions.emptySeat === undefined)
+      return fail("Session restoration requires an explicit empty-seat policy");
+  } else if (proof !== "none")
+    return fail("Proof without load or import overclaims restoration");
   const positive = (entry: unknown) =>
     Number.isSafeInteger(entry) && Number(entry) > 0;
   if (
@@ -459,10 +495,36 @@ export function validateCapabilities(value: unknown): CapabilityDescriptor {
       descriptor.operations.nativeReplayGapSemantics !== "explicit-gap")
   )
     return fail("Cursor replay requires retention and explicit gap semantics");
-  if (
-    (descriptor.sessions.load || descriptor.sessions.import) &&
-    descriptor.sessions.continuity !== "verified"
-  )
-    return fail("Session restoration requires verified continuity");
   return descriptor;
+}
+
+export function sessionProofOf(
+  sessions: CapabilityDescriptor["sessions"]
+): SessionProof {
+  return sessions.proof ?? "none";
+}
+
+export function emptySeatOf(
+  sessions: CapabilityDescriptor["sessions"]
+): EmptySeatPolicy {
+  return sessions.emptySeat ?? "non-restorable";
+}
+
+export function sessionOpenEvidenceMatches(
+  result: JsonObject,
+  advertised: SessionProof
+): boolean {
+  if (advertised === "none")
+    return result.proof === "none" || result.proof === undefined;
+  if (result.continuity !== "verified" || result.proof !== advertised)
+    return false;
+  if (!object(result.evidence) || !nonempty(result.evidence.provenance))
+    return false;
+  const provenance = String(result.evidence.provenance);
+  if (advertised === "identity-only")
+    return provenance === "codex-thread-identity";
+  return (
+    provenance === "pi-history-checkpoint" ||
+    provenance === "hermes-checkpoint-v1"
+  );
 }

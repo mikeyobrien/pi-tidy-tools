@@ -38,6 +38,8 @@ import {
 import {
   object,
   ProtocolError,
+  sessionOpenEvidenceMatches,
+  sessionProofOf,
   type CapabilityDescriptor,
   type GatewayPluginEvent,
 } from "./protocol.ts";
@@ -124,6 +126,11 @@ function effectiveCapabilities(
         native.sessions.load && native.sessions.continuity === "verified"
           ? "verified"
           : "unverified",
+      proof:
+        native.sessions.load && native.sessions.continuity === "verified"
+          ? (native.sessions.proof ?? "none")
+          : "none",
+      emptySeat: native.sessions.emptySeat ?? "non-restorable",
     },
     output: {
       text: native.output.text,
@@ -659,7 +666,12 @@ export class GatewayApplication {
         response.status !== "opened" ||
         (existing &&
           (response.nativeReference !== nativeReference ||
-            response.continuity !== "verified"))
+            response.continuity !== "verified" ||
+            response.proof !== sessionProofOf(capabilities.sessions) ||
+            !sessionOpenEvidenceMatches(
+              response,
+              sessionProofOf(capabilities.sessions)
+            )))
       ) {
         observeOpenFailure(
           object(response) && response.status === "creation_unknown"

@@ -220,10 +220,15 @@ test("Codex open/submit/stream/close uses app-server not Chat Completions", asyn
     const opened = (await f.host.request("session.open", f.open)) as {
       nativeReference: string;
       continuity: string;
+      proof: string;
     };
     assert.match(opened.nativeReference, /^codex:thr-fixture-/);
     assert.equal(opened.continuity, "unverified");
-    // New sessions stay unverified. Load continuity is proven separately.
+    assert.equal(opened.proof, "none");
+    assert.equal(f.host.capabilities.sessions.proof, "identity-only");
+    assert.equal(f.host.capabilities.sessions.emptySeat, "non-restorable");
+    assert.notEqual(f.host.capabilities.sessions.proof, "retained-history");
+    // New sessions stay unverified. Load proof is identity-only, not history.
     assert.equal(
       ((await f.host.request("operation.submit", f.submit("hello"))) as {
         disposition: string;
@@ -473,8 +478,22 @@ test("Codex load restores the same native thread across adapter restart", async 
         operationId: "opening-2",
         mode: "load",
         nativeReference: first.nativeReference,
-      })) as { nativeReference: string };
+      })) as {
+        nativeReference: string;
+        continuity: string;
+        proof: string;
+        evidence?: { provenance?: string; threadId?: string };
+      };
       assert.equal(loaded.nativeReference, first.nativeReference);
+      assert.equal(loaded.continuity, "verified");
+      assert.equal(loaded.proof, "identity-only");
+      assert.notEqual(loaded.proof, "retained-history");
+      assert.deepEqual(loaded.evidence, {
+        provenance: "codex-thread-identity",
+        expectedHome: true,
+        threadId: first.nativeReference.slice("codex:".length),
+      });
+      assert.equal(reload.capabilities.sessions.proof, "identity-only");
       assert.equal(
         (
           (await reload.request("operation.submit", {

@@ -53,7 +53,7 @@ async function fixture(nativeProfile = false, sessionLoad = false) {
   if (sessionLoad)
     script = script.replace(
       'sessions: { load: false, import: false, continuity: "unverified" }',
-      'sessions: { load: true, import: false, continuity: "verified" }'
+      'sessions: { load: true, import: false, continuity: "verified", proof: "identity-only", emptySeat: "non-restorable" }'
     );
   await writeFile(
     join(artifact, "backend.mjs"),

@@ -155,6 +155,8 @@ export class CodexSession {
           "continuity_unverified",
           "Codex load did not restore the exact retained thread"
         );
+      // Identity-only: expected home + returned thread id. No history
+      // digest, message count, or checkpoint comparison is available.
       this.threadId = resumedId;
       return this.threadId;
     }

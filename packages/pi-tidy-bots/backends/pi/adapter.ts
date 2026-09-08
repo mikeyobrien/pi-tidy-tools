@@ -31,13 +31,21 @@ import {
 } from "@mobrienv/pi-tidy-bots/src/rpc.ts";
 
 // Expand this profile only after its native feature conformance cells pass.
+// Load proof is retained-history (binding + file + settings + messageCount).
+// Empty never-prompted seats stay non-restorable: checkpoint requires ≥1 message.
 export const PI_CAPABILITIES: CapabilityDescriptor = {
   input: {
     text: true,
     mediaTypes: ["text/plain", "image/png", "image/jpeg"],
     maxMediaBytes: 512 * 1024,
   },
-  sessions: { load: true, import: false, continuity: "verified" },
+  sessions: {
+    load: true,
+    import: false,
+    continuity: "verified",
+    proof: "retained-history",
+    emptySeat: "non-restorable",
+  },
   output: { text: "snapshots", tools: true, usage: "unknown" },
   operations: {
     nativeDedupe: "none",
@@ -778,6 +786,17 @@ export function startPiAdapter(): PluginRuntime {
           status: "opened",
           nativeReference,
           continuity: checkpoint ? "verified" : "unverified",
+          proof: checkpoint ? "retained-history" : "none",
+          ...(checkpoint
+            ? {
+                evidence: {
+                  provenance: "pi-history-checkpoint",
+                  sessionId: checkpoint.history.sessionId,
+                  sessionFile: checkpoint.history.file,
+                  messageCount: checkpoint.messageCount,
+                },
+              }
+            : {}),
         };
       },
       async "session.snapshot"(params) {

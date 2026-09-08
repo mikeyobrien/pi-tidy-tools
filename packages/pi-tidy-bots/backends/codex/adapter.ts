@@ -18,11 +18,18 @@ import {
   type CodexRuntime,
 } from "./runtime.ts";
 
-// Protocol requires load ⇒ verified. Fixture reload proved same-thread
-// resume and fail-closed miss. Native Codex reload smoke is still not-run.
+// Load is fail-closed identity proof only: isolated home + exact thread id.
+// That is not Pi/Hermes retained-history verification. Never-prompted seats
+// stay non-restorable (Codex unprompted threads may lack a resumable rollout).
 export const CODEX_CAPABILITIES: CapabilityDescriptor = {
   input: { text: true, mediaTypes: [], maxMediaBytes: 0 },
-  sessions: { load: true, import: false, continuity: "verified" },
+  sessions: {
+    load: true,
+    import: false,
+    continuity: "verified",
+    proof: "identity-only",
+    emptySeat: "non-restorable",
+  },
   output: { text: "snapshots", tools: false, usage: "unknown" },
   operations: {
     nativeDedupe: "none",
@@ -158,6 +165,16 @@ export function startCodexAdapter(): PluginRuntime {
           status: "opened",
           nativeReference: `codex:${native.nativeReference}`,
           continuity: params.mode === "load" ? "verified" : "unverified",
+          proof: params.mode === "load" ? "identity-only" : "none",
+          ...(params.mode === "load"
+            ? {
+                evidence: {
+                  provenance: "codex-thread-identity",
+                  expectedHome: true,
+                  threadId: native.nativeReference,
+                },
+              }
+            : {}),
         };
       },
       async "operation.submit"(params, ctx) {

@@ -27,7 +27,13 @@ export const HERMES_CAPABILITIES: CapabilityDescriptor = {
     mediaTypes: ["text/plain", "image/png", "image/jpeg"],
     maxMediaBytes: 512 * 1024,
   },
-  sessions: { load: true, import: false, continuity: "verified" },
+  sessions: {
+    load: true,
+    import: false,
+    continuity: "verified",
+    proof: "retained-history",
+    emptySeat: "non-restorable",
+  },
   output: { text: "snapshots", tools: true, usage: "unknown" },
   operations: {
     nativeDedupe: "none",
@@ -170,6 +176,15 @@ export function startHermesAdapter(): PluginRuntime {
           status: "opened",
           nativeReference: `hermes:${native.nativeReference}`,
           continuity: params.mode === "load" ? "verified" : "unverified",
+          proof: params.mode === "load" ? "retained-history" : "none",
+          ...(params.mode === "load"
+            ? {
+                evidence: {
+                  provenance: "hermes-checkpoint-v1",
+                  sessionId: native.nativeReference,
+                },
+              }
+            : {}),
         };
       },
       async "operation.submit"(params, ctx) {

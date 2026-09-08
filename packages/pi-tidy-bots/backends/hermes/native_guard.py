@@ -146,6 +146,7 @@ def guarded_agent(base, guard, prompt_response, worker_type, fleet=None, history
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
             self._tidy_created_sessions = set()
+            self._tidy_session_cwds = {}
             self._tidy_active_prompt = False
             self._tidy_loading_session = None
             self._tidy_update_tickets = None
@@ -321,10 +322,15 @@ def guarded_agent(base, guard, prompt_response, worker_type, fleet=None, history
             if history_store is None or history_persist is None:
                 return
             state = self._tidy_live_state(session_id)
-            if state is None:
+            if state is not None and isinstance(getattr(state, "cwd", None), str):
+                self._tidy_session_cwds[session_id] = state.cwd
+            cwd = self._tidy_session_cwds.get(session_id)
+            if not isinstance(cwd, str) or not cwd:
                 return
             try:
-                history_persist(self.session_manager, session_id, state.cwd, history_store,
+                # SessionDB may fill provider/base_url after session/new.
+                # Teardown must still publish even if the live map was evicted.
+                history_persist(self.session_manager, session_id, cwd, history_store,
                                 guard.profile / "state.db")
             except Exception:
                 pass

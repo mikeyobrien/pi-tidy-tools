@@ -25,6 +25,13 @@ const fixtureExecutable = fileURLToPath(
   new URL("./fixtures/codex-native/app-server.mjs", import.meta.url)
 );
 
+function finishedText(event: GatewayPluginEvent): string {
+  const blocks = event.payload.blocks;
+  if (!Array.isArray(blocks)) return "";
+  const block = blocks[0] as { text?: unknown } | undefined;
+  return typeof block?.text === "string" ? block.text : "";
+}
+
 async function until(probe: () => boolean | Promise<boolean>) {
   const deadline = Date.now() + 8000;
   while (!(await probe())) {
@@ -261,8 +268,8 @@ test("two Codex assistant items stay two finished messages", async () => {
     assert.equal(finished[0]!.messageId, "op1:message:0");
     assert.equal(finished[1]!.messageId, "op1:message:1");
     assert.notEqual(finished[0]!.messageId, finished[1]!.messageId);
-    assert.equal(finished[0]!.payload.blocks?.[0]?.text, "First");
-    assert.equal(finished[1]!.payload.blocks?.[0]?.text, "Second");
+    assert.equal(finishedText(finished[0]!), "First");
+    assert.equal(finishedText(finished[1]!), "Second");
     assert.equal(
       f.events.find((event) => event.type === "turn.terminal")!.payload
         .execution,

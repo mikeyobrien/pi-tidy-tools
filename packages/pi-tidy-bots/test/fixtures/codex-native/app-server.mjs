@@ -37,19 +37,26 @@ const thread = (id, cwd) => ({
   turns: [],
 });
 
-const completeTurn = (id, request, text, status = "completed") => {
-  const nativeTurnId = `turn-${++counter}`;
+const completeTurn = (
+  id,
+  request,
+  text,
+  status = "completed",
+  existingTurnId
+) => {
+  const nativeTurnId = existingTurnId ?? `turn-${++counter}`;
   const item = {
     id: `item-${counter}`,
     type: "agentMessage",
     text,
   };
-  send({
-    id,
-    result: {
-      turn: { id: nativeTurnId, items: [], status: "inProgress" },
-    },
-  });
+  if (!existingTurnId)
+    send({
+      id,
+      result: {
+        turn: { id: nativeTurnId, items: [], status: "inProgress" },
+      },
+    });
   send({
     method: "turn/started",
     params: {
@@ -87,7 +94,10 @@ const completeTurn = (id, request, text, status = "completed") => {
     method: "turn/completed",
     params: {
       threadId: request.threadId,
-      turn: { id: nativeTurnId, items: [item], status },
+      turn:
+        status === ""
+          ? { id: nativeTurnId, items: [item] }
+          : { id: nativeTurnId, items: [item], status },
     },
   });
 };
@@ -162,7 +172,7 @@ rl.on("line", (line) => {
     const text = Array.isArray(params.input)
       ? params.input.map((part) => part.text ?? "").join("")
       : "";
-    if (text.includes("[cancel-hold]")) {
+    if (text.includes("[cancel-hold]") || text.includes("[cancel-then-completed]")) {
       const nativeTurnId = `turn-${++counter}`;
       pending.set(nativeTurnId, { id, threadId: params.threadId, text });
       send({
@@ -180,6 +190,53 @@ rl.on("line", (line) => {
       });
       return;
     }
+    if (text.includes("[stale-turn]")) {
+      const nativeTurnId = `turn-${++counter}`;
+      const staleTurnId = `turn-stale-${counter}`;
+      const staleItem = {
+        id: `item-stale-${counter}`,
+        type: "agentMessage",
+        text: "stale-turn-invented",
+      };
+      send({
+        id,
+        result: {
+          turn: { id: nativeTurnId, items: [], status: "inProgress" },
+        },
+      });
+      send({
+        method: "turn/started",
+        params: {
+          threadId: params.threadId,
+          turn: { id: staleTurnId, items: [], status: "inProgress" },
+        },
+      });
+      send({
+        method: "item/completed",
+        params: {
+          threadId: params.threadId,
+          turnId: staleTurnId,
+          item: staleItem,
+        },
+      });
+      send({
+        method: "turn/completed",
+        params: {
+          threadId: params.threadId,
+          turn: { id: staleTurnId, items: [staleItem], status: "completed" },
+        },
+      });
+      completeTurn(id, params, `codex:${text}`, "completed", nativeTurnId);
+      return;
+    }
+    if (text.includes("[unknown-status]")) {
+      completeTurn(id, params, `codex:${text}`, "invented");
+      return;
+    }
+    if (text.includes("[missing-status]")) {
+      completeTurn(id, params, `codex:${text}`, "");
+      return;
+    }
     completeTurn(id, params, `codex:${text}`);
     return;
   }
@@ -190,12 +247,15 @@ rl.on("line", (line) => {
       return;
     }
     pending.delete(params.turnId);
-    send({ id, result: { turn: { id: params.turnId, items: [], status: "interrupted" } } });
+    const status = held.text.includes("[cancel-then-completed]")
+      ? "completed"
+      : "interrupted";
+    send({ id, result: { turn: { id: params.turnId, items: [], status } } });
     send({
       method: "turn/completed",
       params: {
         threadId: held.threadId,
-        turn: { id: params.turnId, items: [], status: "interrupted" },
+        turn: { id: params.turnId, items: [], status },
       },
     });
     return;

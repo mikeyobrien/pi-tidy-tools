@@ -11,17 +11,47 @@ import {
   type JsonObject,
 } from "@mobrienv/pi-tidy-bots/plugin-protocol";
 
+type Execution = "ended" | "failed" | "cancelled" | "interrupted";
+
 interface Turn {
   operationId: string;
   turnId: string;
   nativeTurnId?: string;
+  nativeItemId?: string;
   started: boolean;
   cancelRequested?: boolean;
   onAccepted?: () => void;
-  settle?: (execution: "ended" | "failed" | "cancelled" | "interrupted") => void;
+  settle?: (execution: Execution) => void;
   order: number;
   text: string;
   message?: { id: string; text: string; revision: number };
+}
+
+const LIVE_STATUS = new Set(["inProgress", "in_progress"]);
+
+function nativeTurnIdOf(params: JsonObject): string | undefined {
+  if (nonempty(params.turnId)) return params.turnId;
+  if (object(params.turn) && nonempty(params.turn.id))
+    return String(params.turn.id);
+  return undefined;
+}
+
+function nativeItemIdOf(params: JsonObject): string | undefined {
+  if (nonempty(params.itemId)) return params.itemId;
+  if (object(params.item) && nonempty(params.item.id))
+    return String(params.item.id);
+  return undefined;
+}
+
+function terminalExecution(
+  status: unknown,
+  cancelRequested: boolean
+): Execution | undefined {
+  if (status === "completed") return "ended";
+  if (status === "failed") return "failed";
+  if (status === "interrupted")
+    return cancelRequested ? "cancelled" : "interrupted";
+  return undefined;
 }
 
 export interface CodexSessionOptions extends Pick<
@@ -163,11 +193,9 @@ export class CodexSession {
       onAccepted,
     };
     this.active = turn;
-    const finished = new Promise<"ended" | "failed" | "cancelled" | "interrupted">(
-      (resolve) => {
-        turn.settle = resolve;
-      }
-    );
+    const finished = new Promise<Execution>((resolve) => {
+      turn.settle = resolve;
+    });
     try {
       const started = await this.transport.request(
         "turn/start",
@@ -181,16 +209,26 @@ export class CodexSession {
         throw new Error();
       turn.nativeTurnId = String(started.turn.id);
       this.started(turn);
-      if (started.turn.status === "completed") this.complete(turn, "ended");
-      else if (started.turn.status === "failed") this.complete(turn, "failed");
-      else if (started.turn.status === "interrupted")
-        this.complete(turn, "interrupted");
+      const rpcStatus = started.turn.status;
+      if (rpcStatus !== undefined && !LIVE_STATUS.has(String(rpcStatus))) {
+        const execution = terminalExecution(rpcStatus, !!turn.cancelRequested);
+        if (!execution)
+          throw new ProtocolError(
+            "native_observation_gap",
+            "Codex turn status is not an allowlisted terminal"
+          );
+        this.complete(turn, execution);
+      }
       const timeout = setTimeout(
         () => this.fail(new ProtocolError("native_timeout", "Codex turn timed out")),
         this.options.promptTimeoutMs ?? 3600000
       );
       try {
         const execution = await finished;
+        if (this.lost) {
+          this.active = undefined;
+          return { disposition: turn.started ? "accepted" : "unknown" };
+        }
         this.finishMessage(turn);
         this.emit(turn, "turn.terminal", {
           execution,
@@ -261,11 +299,21 @@ export class CodexSession {
   private observe(method: string, params: JsonObject): void {
     const turn = this.active;
     if (!turn || !this.threadId || params.threadId !== this.threadId) return;
+    const notificationTurnId = nativeTurnIdOf(params);
     if (method === "turn/started" && object(params.turn)) {
-      if (!turn.nativeTurnId && nonempty(params.turn.id))
-        turn.nativeTurnId = String(params.turn.id);
+      if (!nonempty(params.turn.id)) return;
+      const id = String(params.turn.id);
+      if (turn.nativeTurnId && turn.nativeTurnId !== id) return;
+      turn.nativeTurnId = id;
       this.started(turn);
       return;
+    }
+    if (!turn.nativeTurnId || notificationTurnId !== turn.nativeTurnId) return;
+    if (method.startsWith("item/")) {
+      const itemId = nativeItemIdOf(params);
+      if (!itemId) return;
+      if (turn.nativeItemId && turn.nativeItemId !== itemId) return;
+      turn.nativeItemId = itemId;
     }
     if (
       method === "item/agentMessage/delta" &&
@@ -288,23 +336,19 @@ export class CodexSession {
       return;
     }
     if (method === "turn/completed" && object(params.turn)) {
-      const status = params.turn.status;
-      this.complete(
-        turn,
-        status === "failed"
-          ? "failed"
-          : status === "interrupted" || turn.cancelRequested
-            ? turn.cancelRequested && status !== "failed"
-              ? "cancelled"
-              : "interrupted"
-            : "ended"
+      const execution = terminalExecution(
+        params.turn.status,
+        !!turn.cancelRequested
       );
+      if (!execution)
+        throw new ProtocolError(
+          "native_observation_gap",
+          "Codex turn status is not an allowlisted terminal"
+        );
+      this.complete(turn, execution);
     }
   }
-  private complete(
-    turn: Turn,
-    execution: "ended" | "failed" | "cancelled" | "interrupted"
-  ): void {
+  private complete(turn: Turn, execution: Execution): void {
     turn.settle?.(execution);
     turn.settle = undefined;
   }
@@ -381,6 +425,9 @@ export class CodexSession {
   private fail(error: ProtocolError): void {
     if (this.lost) return;
     this.lost = true;
+    const turn = this.active;
+    turn?.settle?.("failed");
+    if (turn) turn.settle = undefined;
     this.options.onFailure(error);
   }
 }

@@ -238,6 +238,109 @@ test("Codex open/submit/stream/close uses app-server not Chat Completions", asyn
   }
 });
 
+test("stale Codex turn completion does not invent a terminal for the live turn", async () => {
+  const f = await setup();
+  try {
+    await f.host.request("session.open", f.open);
+    assert.equal(
+      (
+        (await f.host.request(
+          "operation.submit",
+          f.submit("[stale-turn]")
+        )) as { disposition: string }
+      ).disposition,
+      "accepted"
+    );
+    await until(() =>
+      f.events.some((event) => event.type === "turn.terminal")
+    );
+    const terminals = f.events.filter((event) => event.type === "turn.terminal");
+    assert.equal(terminals.length, 1);
+    assert.equal(terminals[0]!.operationId, "op1");
+    assert.equal(terminals[0]!.turnId, "turn1");
+    assert.equal(terminals[0]!.payload.execution, "ended");
+    assert.equal(terminals[0]!.payload.observation, "complete");
+    const snapshots = f.events.filter((event) => event.type === "text.snapshot");
+    assert.equal(
+      snapshots[snapshots.length - 1]!.payload.text,
+      "codex:[stale-turn]"
+    );
+    assert.equal(
+      snapshots.some((event) =>
+        String(event.payload.text).includes("stale-turn-invented")
+      ),
+      false
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+for (const token of ["[unknown-status]", "[missing-status]"]) {
+  test(`Codex ${token} is explicit uncertainty and never success`, async () => {
+    const f = await setup();
+    try {
+      await f.host.request("session.open", f.open);
+      const submitted = (await f.host.request(
+        "operation.submit",
+        f.submit(token)
+      )) as { disposition: string };
+      assert.equal(submitted.disposition, "accepted");
+      await until(() =>
+        f.events.some((event) => event.type === "observation.gap")
+      );
+      assert.equal(
+        f.events.some(
+          (event) =>
+            event.type === "turn.terminal" &&
+            event.payload.observation === "complete"
+        ),
+        false
+      );
+      const gap = f.events.find((event) => event.type === "observation.gap");
+      assert.equal(gap?.operationId, "op1");
+      assert.equal(gap?.turnId, "turn1");
+      assert.deepEqual(gap?.payload, { code: "native_observation_gap" });
+    } finally {
+      await f.cleanup();
+    }
+  });
+}
+
+test("Codex cancel losing the race to native completed keeps the receipt completed", async () => {
+  const f = await setup();
+  try {
+    await f.host.request("session.open", f.open);
+    const submitting = f.host.request(
+      "operation.submit",
+      f.submit("[cancel-then-completed]")
+    );
+    await until(() =>
+      f.events.some((event) => event.type === "turn.started")
+    );
+    const result = await f.host.request("operation.cancel", {
+      operationId: "cancel1",
+      targetOperationId: "op1",
+      payloadDigest: "cancel-intent",
+    });
+    assert.deepEqual(result, { status: "requested" });
+    await submitting;
+    await until(() => f.events.some((event) => event.type === "turn.terminal"));
+    assert.equal(
+      f.events.find((event) => event.type === "turn.terminal")!.payload
+        .execution,
+      "ended"
+    );
+    assert.equal(
+      f.events.find((event) => event.type === "turn.terminal")!.payload
+        .observation,
+      "complete"
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
 test("Codex cancel is cooperative turn/interrupt and not terminal proof", async () => {
   const f = await setup();
   try {

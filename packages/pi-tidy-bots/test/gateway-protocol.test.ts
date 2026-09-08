@@ -7,6 +7,7 @@ import {
   encodeFrame,
   FrameDecoder,
   parseRpc,
+  sessionOpenEvidenceMatches,
   validateCapabilities,
   validateEvent,
   validateLimits,
@@ -160,6 +161,75 @@ test("capabilities reject unbacked guarantees and unknown required extensions", 
     () =>
       validateCapabilities({
         ...capabilities(),
+        sessions: {
+          load: true,
+          import: false,
+          continuity: "verified",
+        },
+      }),
+    { code: "invalid_capabilities" }
+  );
+  assert.throws(
+    () =>
+      validateCapabilities({
+        ...capabilities(),
+        sessions: {
+          load: true,
+          import: false,
+          continuity: "verified",
+          proof: "none",
+          emptySeat: "non-restorable",
+        },
+      }),
+    { code: "invalid_capabilities" }
+  );
+  assert.throws(
+    () =>
+      validateCapabilities({
+        ...capabilities(),
+        sessions: {
+          ...capabilities().sessions,
+          proof: "identity-only",
+        },
+      }),
+    { code: "invalid_capabilities" }
+  );
+  assert.deepEqual(
+    validateCapabilities({
+      ...capabilities(),
+      sessions: {
+        load: true,
+        import: false,
+        continuity: "verified",
+        proof: "identity-only",
+        emptySeat: "non-restorable",
+      },
+    }).sessions,
+    {
+      load: true,
+      import: false,
+      continuity: "verified",
+      proof: "identity-only",
+      emptySeat: "non-restorable",
+    }
+  );
+  assert.equal(
+    validateCapabilities({
+      ...capabilities(),
+      sessions: {
+        load: true,
+        import: false,
+        continuity: "verified",
+        proof: "retained-history",
+        emptySeat: "non-restorable",
+      },
+    }).sessions.proof,
+    "retained-history"
+  );
+  assert.throws(
+    () =>
+      validateCapabilities({
+        ...capabilities(),
         "org.example.feature": { required: true },
       }),
     { code: "invalid_capabilities" }
@@ -170,6 +240,59 @@ test("capabilities reject unbacked guarantees and unknown required extensions", 
       "org.example.feature": { required: false },
     })["org.example.feature"],
     { required: false }
+  );
+});
+
+test("session open evidence distinguishes identity-only from retained-history", () => {
+  const identity = {
+    continuity: "verified",
+    proof: "identity-only",
+    evidence: {
+      provenance: "codex-thread-identity",
+      expectedHome: true,
+      threadId: "thr-1",
+    },
+  };
+  const history = {
+    continuity: "verified",
+    proof: "retained-history",
+    evidence: {
+      provenance: "pi-history-checkpoint",
+      messageCount: 1,
+    },
+  };
+  assert.equal(sessionOpenEvidenceMatches(identity, "identity-only"), true);
+  assert.equal(
+    sessionOpenEvidenceMatches(
+      {
+        continuity: "verified",
+        proof: "identity-only",
+        evidence: { provenance: "native-identity", nativeReference: "session:1" },
+      },
+      "identity-only"
+    ),
+    true
+  );
+  assert.equal(sessionOpenEvidenceMatches(identity, "retained-history"), false);
+  assert.equal(sessionOpenEvidenceMatches(history, "retained-history"), true);
+  assert.equal(sessionOpenEvidenceMatches(history, "identity-only"), false);
+  assert.equal(
+    sessionOpenEvidenceMatches(
+      { continuity: "verified", proof: "identity-only" },
+      "identity-only"
+    ),
+    false
+  );
+  assert.equal(
+    sessionOpenEvidenceMatches(
+      {
+        continuity: "verified",
+        proof: "retained-history",
+        evidence: { provenance: "codex-thread-identity" },
+      },
+      "retained-history"
+    ),
+    false
   );
 });
 
@@ -236,6 +359,26 @@ test("published schemas compile strictly and agree with required capability and 
       operations: { ...capabilities().operations, nativeDedupe: "durable" },
     }),
     false
+  );
+  assert.equal(
+    check({
+      ...capabilities(),
+      sessions: { load: true, import: false, continuity: "verified" },
+    }),
+    false
+  );
+  assert.equal(
+    check({
+      ...capabilities(),
+      sessions: {
+        load: true,
+        import: false,
+        continuity: "verified",
+        proof: "identity-only",
+        emptySeat: "non-restorable",
+      },
+    }),
+    true
   );
   const terminal = {
     bindingId: "b",

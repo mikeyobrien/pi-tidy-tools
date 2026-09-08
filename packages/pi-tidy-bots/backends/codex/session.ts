@@ -13,18 +13,24 @@ import {
 
 type Execution = "ended" | "failed" | "cancelled" | "interrupted";
 
+interface ItemMessage {
+  nativeItemId: string;
+  id: string;
+  text: string;
+  revision: number;
+  finished: boolean;
+}
+
 interface Turn {
   operationId: string;
   turnId: string;
   nativeTurnId?: string;
-  nativeItemId?: string;
   started: boolean;
   cancelRequested?: boolean;
   onAccepted?: () => void;
   settle?: (execution: Execution) => void;
   order: number;
-  text: string;
-  message?: { id: string; text: string; revision: number };
+  items: Map<string, ItemMessage>;
 }
 
 const LIVE_STATUS = new Set(["inProgress", "in_progress"]);
@@ -63,6 +69,7 @@ export interface CodexSessionOptions extends Pick<
   | "requestTimeoutMs"
 > {
   promptTimeoutMs?: number;
+  /** Isolated CODEX_HOME (`profile_dir`). Not Unix HOME (`home_dir`). */
   expectedHome: string;
   emit: (event: JsonObject) => void;
   onFailure: (error: ProtocolError) => void;
@@ -149,6 +156,8 @@ export class CodexSession {
           "continuity_unverified",
           "Codex load did not restore the exact retained thread"
         );
+      // Identity-only: expected CODEX_HOME + returned thread id. No history
+      // digest, message count, or checkpoint comparison is available.
       this.threadId = resumedId;
       return this.threadId;
     }
@@ -189,7 +198,7 @@ export class CodexSession {
       turnId,
       started: false,
       order: 0,
-      text: "",
+      items: new Map(),
       onAccepted,
     };
     this.active = turn;
@@ -205,7 +214,11 @@ export class CodexSession {
         },
         this.options.requestTimeoutMs
       );
-      if (!object(started) || !object(started.turn) || !nonempty(started.turn.id))
+      if (
+        !object(started) ||
+        !object(started.turn) ||
+        !nonempty(started.turn.id)
+      )
         throw new Error();
       turn.nativeTurnId = String(started.turn.id);
       this.started(turn);
@@ -220,7 +233,10 @@ export class CodexSession {
         this.complete(turn, execution);
       }
       const timeout = setTimeout(
-        () => this.fail(new ProtocolError("native_timeout", "Codex turn timed out")),
+        () =>
+          this.fail(
+            new ProtocolError("native_timeout", "Codex turn timed out")
+          ),
         this.options.promptTimeoutMs ?? 3600000
       );
       try {
@@ -229,7 +245,7 @@ export class CodexSession {
           this.active = undefined;
           return { disposition: turn.started ? "accepted" : "unknown" };
         }
-        this.finishMessage(turn);
+        this.finishOpenItems(turn);
         this.emit(turn, "turn.terminal", {
           execution,
           observation: "complete",
@@ -309,19 +325,32 @@ export class CodexSession {
       return;
     }
     if (!turn.nativeTurnId || notificationTurnId !== turn.nativeTurnId) return;
-    if (method.startsWith("item/")) {
-      const itemId = nativeItemIdOf(params);
-      if (!itemId) return;
-      if (turn.nativeItemId && turn.nativeItemId !== itemId) return;
-      turn.nativeItemId = itemId;
+    if (!method.startsWith("item/")) {
+      if (method === "turn/completed" && object(params.turn)) {
+        const execution = terminalExecution(
+          params.turn.status,
+          !!turn.cancelRequested
+        );
+        if (!execution)
+          throw new ProtocolError(
+            "native_observation_gap",
+            "Codex turn status is not an allowlisted terminal"
+          );
+        this.complete(turn, execution);
+      }
+      return;
     }
+    const itemId = nativeItemIdOf(params);
+    if (!itemId) return;
     if (
       method === "item/agentMessage/delta" &&
       typeof params.delta === "string" &&
       params.delta
     ) {
+      const item = this.itemOf(turn, itemId);
+      if (item.finished) return;
       this.started(turn);
-      this.snapshot(turn, turn.text + params.delta);
+      this.snapshot(item, turn, item.text + params.delta);
       return;
     }
     if (
@@ -329,23 +358,13 @@ export class CodexSession {
       object(params.item)
     ) {
       const text = agentText(params.item);
+      const item = text ? this.itemOf(turn, itemId) : turn.items.get(itemId);
+      if (!item || item.finished) return;
       if (text) {
         this.started(turn);
-        this.snapshot(turn, text);
+        this.snapshot(item, turn, text);
       }
-      return;
-    }
-    if (method === "turn/completed" && object(params.turn)) {
-      const execution = terminalExecution(
-        params.turn.status,
-        !!turn.cancelRequested
-      );
-      if (!execution)
-        throw new ProtocolError(
-          "native_observation_gap",
-          "Codex turn status is not an allowlisted terminal"
-        );
-      this.complete(turn, execution);
+      if (method === "item/completed") this.finishItem(item, turn);
     }
   }
   private complete(turn: Turn, execution: Execution): void {
@@ -376,34 +395,43 @@ export class CodexSession {
     turn.started = true;
     turn.onAccepted?.();
   }
-  private snapshot(turn: Turn, text: string): void {
+  private itemOf(turn: Turn, nativeItemId: string): ItemMessage {
+    const existing = turn.items.get(nativeItemId);
+    if (existing) return existing;
+    const item: ItemMessage = {
+      nativeItemId,
+      id: `${turn.operationId}:message:${turn.order}`,
+      text: "",
+      revision: 0,
+      finished: false,
+    };
+    turn.items.set(nativeItemId, item);
+    return item;
+  }
+  private snapshot(item: ItemMessage, turn: Turn, text: string): void {
+    if (item.finished) return;
     if (Buffer.byteLength(text) > 512 * 1024) throw new Error();
-    if (!turn.message) {
+    if (!item.revision) {
       const order = turn.order++;
-      turn.message = {
-        id: `${turn.operationId}:message:${order}`,
-        text: "",
-        revision: 0,
-      };
+      item.id = `${turn.operationId}:message:${order}`;
       this.emit(
         turn,
         "message.started",
         { role: "assistant", order },
-        { messageId: turn.message.id }
+        { messageId: item.id }
       );
     }
-    turn.text = text;
-    turn.message.text = text;
+    item.text = text;
     this.emit(
       turn,
       "text.snapshot",
-      { text, revision: ++turn.message.revision },
-      { messageId: turn.message.id, blockId: "body" }
+      { text, revision: ++item.revision },
+      { messageId: item.id, blockId: "body" }
     );
   }
-  private finishMessage(turn: Turn): void {
-    if (!turn.message) return;
-    const message = turn.message;
+  private finishItem(item: ItemMessage, turn: Turn): void {
+    if (item.finished || !item.revision) return;
+    item.finished = true;
     this.emit(
       turn,
       "message.finished",
@@ -413,14 +441,16 @@ export class CodexSession {
           {
             type: "text",
             blockId: "body",
-            text: message.text,
-            revision: message.revision,
+            text: item.text,
+            revision: item.revision,
           },
         ],
       },
-      { messageId: message.id }
+      { messageId: item.id }
     );
-    turn.message = undefined;
+  }
+  private finishOpenItems(turn: Turn): void {
+    for (const item of turn.items.values()) this.finishItem(item, turn);
   }
   private fail(error: ProtocolError): void {
     if (this.lost) return;

@@ -112,6 +112,82 @@ test("cancel losing the race to native completed keeps the receipt completed", a
   assert.deepEqual(f.failures, []);
 });
 
+test("two native assistant items become two authoritative messages", async (t) => {
+  const f = fixture(t);
+  await f.session.open("/tmp");
+  const completion = f.session.submit("op1", "turn1", [
+    { type: "text", text: "multi-item" },
+  ]);
+  await until(() => f.events.some((event) => event.type === "turn.started"));
+  f.notify("item/agentMessage/delta", {
+    threadId: f.threadId,
+    turnId: f.nativeTurnId,
+    itemId: "item-a",
+    delta: "Fir",
+  });
+  f.notify("item/completed", {
+    threadId: f.threadId,
+    turnId: f.nativeTurnId,
+    item: { id: "item-a", type: "agentMessage", text: "First" },
+  });
+  f.notify("item/agentMessage/delta", {
+    threadId: f.threadId,
+    turnId: f.nativeTurnId,
+    itemId: "item-b",
+    delta: "Sec",
+  });
+  f.notify("item/completed", {
+    threadId: f.threadId,
+    turnId: f.nativeTurnId,
+    item: { id: "item-b", type: "agentMessage", text: "Second" },
+  });
+  f.notify("item/completed", {
+    threadId: f.threadId,
+    turnId: f.nativeTurnId,
+    item: { id: "item-a", type: "agentMessage", text: "Third" },
+  });
+  f.notify("item/agentMessage/delta", {
+    threadId: f.threadId,
+    turnId: f.nativeTurnId,
+    itemId: "item-b",
+    delta: "extra",
+  });
+  f.notify("turn/completed", {
+    threadId: f.threadId,
+    turn: { id: f.nativeTurnId, items: [], status: "completed" },
+  });
+  assert.deepEqual(await completion, { disposition: "accepted" });
+  const started = f.events.filter((event) => event.type === "message.started");
+  const finished = f.events.filter((event) => event.type === "message.finished");
+  assert.deepEqual(
+    started.map((event) => [event.messageId, event.payload.order]),
+    [
+      ["op1:message:0", 0],
+      ["op1:message:1", 1],
+    ]
+  );
+  assert.equal(finished.length, 2);
+  assert.equal(finished[0]?.messageId, "op1:message:0");
+  assert.equal(finished[1]?.messageId, "op1:message:1");
+  assert.equal(finished[0]?.payload.blocks?.[0]?.text, "First");
+  assert.equal(finished[1]?.payload.blocks?.[0]?.text, "Second");
+  assert.ok(
+    f.events.findIndex((event) => event.type === "message.finished") <
+      f.events.findIndex((event) => event.type === "turn.terminal")
+  );
+  assert.equal(
+    f.events.some((event) => String(event.payload?.text ?? "").includes("Third")),
+    false
+  );
+  assert.equal(
+    f.events.some((event) =>
+      String(event.payload?.text ?? "").includes("extra")
+    ),
+    false
+  );
+  assert.deepEqual(f.failures, []);
+});
+
 test("native interrupted after cancel still reports cancelled", async (t) => {
   const f = fixture(t);
   await f.session.open("/tmp");

@@ -190,6 +190,55 @@ rl.on("line", (line) => {
       });
       return;
     }
+    if (text.includes("[multi-item]")) {
+      const nativeTurnId = `turn-${++counter}`;
+      const first = { id: "item-a", type: "agentMessage", text: "First" };
+      const second = { id: "item-b", type: "agentMessage", text: "Second" };
+      send({
+        id,
+        result: {
+          turn: { id: nativeTurnId, items: [], status: "inProgress" },
+        },
+      });
+      send({
+        method: "turn/started",
+        params: {
+          threadId: params.threadId,
+          turn: { id: nativeTurnId, items: [], status: "inProgress" },
+        },
+      });
+      for (const item of [first, second]) {
+        send({
+          method: "item/started",
+          params: {
+            threadId: params.threadId,
+            turnId: nativeTurnId,
+            startedAtMs: 1,
+            item,
+          },
+        });
+        send({
+          method: "item/completed",
+          params: {
+            threadId: params.threadId,
+            turnId: nativeTurnId,
+            item,
+          },
+        });
+      }
+      send({
+        method: "turn/completed",
+        params: {
+          threadId: params.threadId,
+          turn: {
+            id: nativeTurnId,
+            items: [first, second],
+            status: "completed",
+          },
+        },
+      });
+      return;
+    }
     if (text.includes("[stale-turn]")) {
       const nativeTurnId = `turn-${++counter}`;
       const staleTurnId = `turn-stale-${counter}`;

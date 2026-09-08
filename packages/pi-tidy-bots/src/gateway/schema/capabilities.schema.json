@@ -50,7 +50,16 @@
           "type": "boolean"
         },
         "continuity": {
-          "enum": ["verified", "unverified"]
+          "enum": ["verified", "unverified"],
+          "description": "Whether this adapter's advertised proof succeeded. Not a claim that every backend has retained-history verification."
+        },
+        "proof": {
+          "enum": ["none", "identity-only", "retained-history"],
+          "description": "What a successful load actually proved. identity-only is not Pi/Hermes-equivalent history verification."
+        },
+        "emptySeat": {
+          "enum": ["non-restorable", "restartable"],
+          "description": "Never-prompted seats may remain explicitly non-restorable. Fail closed rather than invent restart-availability."
         }
       },
       "required": ["load", "import", "continuity"],
@@ -94,9 +103,16 @@
             ]
           },
           "then": {
+            "required": ["proof", "emptySeat"],
             "properties": {
               "continuity": {
                 "const": "verified"
+              },
+              "proof": {
+                "enum": ["identity-only", "retained-history"]
+              },
+              "emptySeat": {
+                "enum": ["non-restorable", "restartable"]
               }
             }
           }

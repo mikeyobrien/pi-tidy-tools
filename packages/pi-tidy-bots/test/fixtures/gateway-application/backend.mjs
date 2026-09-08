@@ -370,6 +370,12 @@ input.on("line", (line) => {
             p.config.discovery === true || p.config.sessionsLoad === true
               ? "verified"
               : "unverified",
+          ...(p.config.discovery === true || p.config.sessionsLoad === true
+            ? {
+                proof: "identity-only",
+                emptySeat: "non-restorable",
+              }
+            : {}),
         },
         output: { text: "snapshots", tools: true, usage: "unknown" },
         operations: {
@@ -424,7 +430,16 @@ input.on("line", (line) => {
     respond(message, {
       status: "opened",
       nativeReference,
-      ...(p.mode === "load" ? { continuity: "verified" } : {}),
+      ...(p.mode === "load"
+        ? {
+            continuity: "verified",
+            proof: "identity-only",
+            evidence: {
+              provenance: "native-identity",
+              nativeReference,
+            },
+          }
+        : { continuity: "unverified", proof: "none" }),
     });
   } else if (message.method === "session.compact") {
     record({ method: "session.compact", ...p });

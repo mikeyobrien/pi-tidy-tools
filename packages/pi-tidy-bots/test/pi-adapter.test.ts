@@ -1226,7 +1226,14 @@ test("Pi cold load restores exact checkpoint across process replacement without 
     };
     const restored = (await second.request("session.open", load)) as JsonObject;
     assert.equal(restored.continuity, "verified");
+    assert.equal(restored.proof, "retained-history");
     assert.equal(restored.nativeReference, opened.nativeReference);
+    assert.deepEqual(restored.evidence, {
+      provenance: "pi-history-checkpoint",
+      sessionId: checkpoint.history.sessionId,
+      sessionFile: checkpoint.history.file,
+      messageCount: 1,
+    });
     assert.deepEqual(await second.request("session.open", load), restored);
     let effects = await f.effects();
     assert.equal(

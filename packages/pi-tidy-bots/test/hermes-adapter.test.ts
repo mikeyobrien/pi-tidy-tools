@@ -848,6 +848,8 @@ for (const text of ["hello", "[owned-worker]", "[fleet-send]"]) {
     const f = await setup();
     try {
       assert.equal(f.host.capabilities.sessions.load, true);
+      assert.equal(f.host.capabilities.sessions.proof, "retained-history");
+      assert.equal(f.host.capabilities.sessions.emptySeat, "non-restorable");
       assert.equal(
         f.host.capabilities.interactions.permissions,
         "exact-request"

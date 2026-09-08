@@ -307,14 +307,15 @@ export class GatewayApplication {
       );
     } catch (error) {
       journal?.close();
-      // A storage-version refusal happens before the journal acquires a lease
-      // or any plugin is started.  It is a deterministic preflight failure,
-      // so the outer fleet lock can be released safely for callers inspecting
-      // or removing the disposable directory.
+      // Deterministic preflights that never took a writer lease or started
+      // plugins must not be wrapped as ownership failures: that path keeps
+      // the outer fleet lock, so a later restart after lease expiry sees
+      // writer_busy from this process's leftover heartbeat.
       if (
-        journal === undefined &&
-        error instanceof GatewayJournalError &&
-        error.code === "incompatible_storage"
+        (journal === undefined &&
+          error instanceof GatewayJournalError &&
+          error.code === "incompatible_storage") ||
+        (error instanceof ProtocolError && error.code === "writer_busy")
       )
         throw error;
       throw new GatewayStartupOwnershipError(error);

@@ -35,6 +35,11 @@ _ACCOUNTING_ROW_FIELDS = frozenset((
 # a turn is result["messages"] without those keys. Treating them as
 # conversation identity left every first-turn checkpoint unavailable, so
 # reload failed as session_open:native_startup_history / continuity_unverified.
+#
+# Live build_assistant_message always stamps reasoning=None. SessionDB
+# _rows_to_conversation omits falsy optional fields, so the same turn
+# projected from state.db has no reasoning key. None vs omit is not
+# conversation identity.
 _PERSISTENCE_BOOKKEEPING_KEYS = frozenset((
     "_db_persisted", "_row_id", "_compressed_summary", "timestamp",
 ))
@@ -57,6 +62,7 @@ def _conversation_identity(messages):
             key: value for key, value in message.items()
             if key not in _PERSISTENCE_BOOKKEEPING_KEYS
             and not (isinstance(key, str) and key.startswith("_"))
+            and value is not None
         })
     return identity
 
@@ -122,27 +128,51 @@ def verify_history_checkpoint(manager, state, expected):
     return actual
 
 
+def _sessiondb_state(manager, sid, cwd, database_path):
+    """Project SessionDB into the same state shape load already proves."""
+    path = Path(database_path)
+    if path.is_symlink() or not path.is_file() or path.stat().st_size < 1:
+        raise HistoryUnavailable()
+    if getattr(manager, "_db_instance", None) is None:
+        manager._get_db()
+    db = getattr(manager, "_db_instance", None)
+    if db is None:
+        raise HistoryUnavailable()
+    row = db.get_session(sid)
+    if not isinstance(row, dict):
+        raise HistoryUnavailable()
+    metadata = json.loads(row["model_config"])
+    native = SimpleNamespace(session_id=sid, model=row.get("model") or "",
+                             **{field: metadata[field] for field in ("provider", "base_url", "api_mode") if field in metadata})
+    return SimpleNamespace(session_id=sid, agent=native,
+                           cwd=cwd, model=row.get("model") or "", is_running=False, queued_prompts=[],
+                           history=db.get_messages_as_conversation(sid, repair_alternation=False))
+
+
 def prepare_history_load(manager, sid, cwd, expected, database_path):
     """Prove persisted input before native restore can construct an agent or repair history."""
     try:
-        path = Path(database_path)
-        if path.is_symlink() or not path.is_file() or path.stat().st_size < 1:
+        if expected.get("sessionId") != sid:
             raise HistoryUnavailable()
-        if getattr(manager, "_db_instance", None) is None:
-            manager._get_db()
-        db = getattr(manager, "_db_instance", None)
-        if db is None or expected.get("sessionId") != sid:
-            raise HistoryUnavailable()
-        row = db.get_session(sid)
-        if not isinstance(row, dict):
-            raise HistoryUnavailable()
-        metadata = json.loads(row["model_config"])
-        native = SimpleNamespace(session_id=sid, model=row.get("model") or "",
-                                 **{field: metadata[field] for field in ("provider", "base_url", "api_mode") if field in metadata})
-        state = SimpleNamespace(session_id=sid, agent=native,
-                                cwd=cwd, model=row.get("model") or "", is_running=False, queued_prompts=[],
-                                history=db.get_messages_as_conversation(sid, repair_alternation=False))
-        return verify_history_checkpoint(manager, state, expected)
+        return verify_history_checkpoint(manager, _sessiondb_state(manager, sid, cwd, database_path), expected)
+    except Exception:
+        raise HistoryUnavailable() from None
+
+
+def persist_history_checkpoint(manager, sid, cwd, store, database_path):
+    """Publish a SessionDB-backed checkpoint so reload can prove continuity after an unfinished turn.
+
+    Live ACP history is only available after prompt() returns. Long CoS turns
+    that die as plugin_eof never reach that save. SessionDB is updated earlier
+    and remains readable after the native child exits; checkpoint from that
+    row, not from the live agent.
+    """
+    if store is None:
+        raise HistoryUnavailable()
+    try:
+        checkpoint = history_checkpoint(manager, _sessiondb_state(manager, sid, cwd, database_path))
+        store.save(checkpoint)
+        return checkpoint
     except Exception:
         raise HistoryUnavailable() from None
 

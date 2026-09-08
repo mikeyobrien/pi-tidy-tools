@@ -141,11 +141,12 @@ class ApprovalGuard:
 
 
 def guarded_agent(base, guard, prompt_response, worker_type, fleet=None, history_proof=None, history_store=None,
-                  history_prepare=None, history_verify=None):
+                  history_prepare=None, history_verify=None, history_persist=None):
     class GuardedHermesACPAgent(base):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
             self._tidy_created_sessions = set()
+            self._tidy_session_cwds = {}
             self._tidy_active_prompt = False
             self._tidy_loading_session = None
             self._tidy_update_tickets = None
@@ -317,6 +318,23 @@ def guarded_agent(base, guard, prompt_response, worker_type, fleet=None, history
             result.field_meta = extra
             return result
 
+        def _tidy_persist_history(self, session_id):
+            if history_store is None or history_persist is None:
+                return
+            state = self._tidy_live_state(session_id)
+            if state is not None and isinstance(getattr(state, "cwd", None), str):
+                self._tidy_session_cwds[session_id] = state.cwd
+            cwd = self._tidy_session_cwds.get(session_id)
+            if not isinstance(cwd, str) or not cwd:
+                return
+            try:
+                # SessionDB may fill provider/base_url after session/new.
+                # Teardown must still publish even if the live map was evicted.
+                history_persist(self.session_manager, session_id, cwd, history_store,
+                                guard.profile / "state.db")
+            except Exception:
+                pass
+
         async def new_session(self, *args, **kwargs):
             try:
                 guard.check()
@@ -361,6 +379,7 @@ def guarded_agent(base, guard, prompt_response, worker_type, fleet=None, history
                     raise ApprovalPolicyUnavailable()
                 modes.available_modes = [mode for mode in modes.available_modes if mode.id == "default"]
             self._tidy_created_sessions.add(result.session_id)
+            self._tidy_persist_history(result.session_id)
             return result
 
         async def prompt(self, prompt, session_id, **kwargs):
@@ -436,6 +455,9 @@ def guarded_agent(base, guard, prompt_response, worker_type, fleet=None, history
                     history_store.invalidate(session_id)
                 except Exception:
                     return refuse("continuity_unavailable")
+                # Publish SessionDB's current row immediately so a mid-turn
+                # plugin_eof still has a loadable checkpoint.
+                self._tidy_persist_history(session_id)
             evidence = {"started": False, "settled": False, "failed": False,
                         "interrupted": False}
             had_override = "run_conversation" in vars(native)
@@ -463,6 +485,7 @@ def guarded_agent(base, guard, prompt_response, worker_type, fleet=None, history
                     raise
                 finally:
                     evidence["settled"] = True
+                    self._tidy_persist_history(session_id)
 
             self._tidy_active_prompt = True
             self._tidy_worker_session = session_id
@@ -600,6 +623,7 @@ def guarded_agent(base, guard, prompt_response, worker_type, fleet=None, history
                     proof["fleetTools"] = "native-mcp-v1"
                 result.field_meta = {**(result.field_meta or {}), "tidy": proof}
                 self._tidy_created_sessions.add(session_id)
+                self._tidy_persist_history(session_id)
                 return result
             finally:
                 self._tidy_loading_session = None
@@ -685,7 +709,7 @@ def main():
     spec.loader.exec_module(history)
     history_store = history.HistoryStore(directory(args.checkpoint_dir), args.binding_id) if args.checkpoint_dir else None
     agent = guarded_agent(HermesACPAgent, guard, PromptResponse, owned.NativeWorkers, fleet, history.history_checkpoint, history_store,
-                          history.prepare_history_load, history.verify_history_checkpoint)()
+                          history.prepare_history_load, history.verify_history_checkpoint, history.persist_history_checkpoint)()
     if fleet is not None:
         fleet_module.install_fleet_identity(mcp_tool, ClientSession, approval, agent._tidy_fleet_scope)
     from tools import process_registry
@@ -696,11 +720,15 @@ def main():
             await acp.run_agent(agent, use_unstable_protocol=True)
         finally:
             try:
-                if agent._tidy_workers is not None:
-                    await agent._tidy_workers.close()
+                for sid in list(agent._tidy_created_sessions):
+                    agent._tidy_persist_history(sid)
             finally:
-                if history_store is not None:
-                    history_store.close()
+                try:
+                    if agent._tidy_workers is not None:
+                        await agent._tidy_workers.close()
+                finally:
+                    if history_store is not None:
+                        history_store.close()
 
     asyncio.run(run())
 

@@ -35,6 +35,11 @@ _ACCOUNTING_ROW_FIELDS = frozenset((
 # a turn is result["messages"] without those keys. Treating them as
 # conversation identity left every first-turn checkpoint unavailable, so
 # reload failed as session_open:native_startup_history / continuity_unverified.
+#
+# Live build_assistant_message always stamps reasoning=None. SessionDB
+# _rows_to_conversation omits falsy optional fields, so the same turn
+# projected from state.db has no reasoning key. None vs omit is not
+# conversation identity.
 _PERSISTENCE_BOOKKEEPING_KEYS = frozenset((
     "_db_persisted", "_row_id", "_compressed_summary", "timestamp",
 ))
@@ -57,6 +62,7 @@ def _conversation_identity(messages):
             key: value for key, value in message.items()
             if key not in _PERSISTENCE_BOOKKEEPING_KEYS
             and not (isinstance(key, str) and key.startswith("_"))
+            and value is not None
         })
     return identity
 

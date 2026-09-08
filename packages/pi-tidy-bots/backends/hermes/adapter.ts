@@ -19,8 +19,8 @@ import {
   type HermesRuntime,
 } from "./runtime.ts";
 
-// Fresh guarded ACP sessions only. Native continuity, media and
-// non-pipe worker profiles require their remaining conformance work.
+// Guarded ACP sessions. Load continuity is SessionDB checkpoint-v1 after a
+// proven turn — not profile/sessions files, media, or non-pipe workers.
 export const HERMES_CAPABILITIES: CapabilityDescriptor = {
   input: {
     text: true,

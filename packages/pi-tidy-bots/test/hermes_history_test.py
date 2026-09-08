@@ -113,6 +113,27 @@ class HistoryTests(unittest.TestCase):
         self.assertNotIn("_db_persisted", json.dumps(checkpoint))
         self.assertEqual(history.verify_history_checkpoint(self.manager, self.state, checkpoint), checkpoint)
 
+    def test_live_none_reasoning_matches_omitted_db_projection(self):
+        live = [
+            {"role": "user", "content": "PRIVATE_HISTORY", "_db_persisted": True, "timestamp": 1.0},
+            {"role": "assistant", "content": "answer", "reasoning": None, "finish_reason": "stop",
+             "_db_persisted": True, "timestamp": 2.0},
+        ]
+        projected = [
+            {"role": "user", "content": "PRIVATE_HISTORY", "timestamp": 1.0},
+            {"role": "assistant", "content": "answer", "finish_reason": "stop", "timestamp": 2.0},
+        ]
+        self.state.history = live
+        self.db.messages = projected
+        checkpoint = history.history_checkpoint(self.manager, self.state)
+        self.assertEqual(checkpoint["messageCount"], 2)
+        self.assertEqual(history.verify_history_checkpoint(self.manager, self.state, checkpoint), checkpoint)
+        self.db.messages = [
+            {"role": "user", "content": "PRIVATE_HISTORY"},
+            {"role": "assistant", "content": "answer", "reasoning": "changed", "finish_reason": "stop"},
+        ]
+        self.unavailable()
+
     def test_accounting_flush_between_row_reads_preserves_exact_history(self):
         original = self.db.get_session
         count = 0

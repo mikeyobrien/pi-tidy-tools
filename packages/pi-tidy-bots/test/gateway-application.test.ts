@@ -24,6 +24,7 @@ import {
 import { loadFleetConfig } from "../src/config.ts";
 import { digestArtifact } from "../src/gateway/registry.ts";
 import { GatewayJournal } from "../src/gateway/journal.ts";
+import { acquireFleetLock } from "../src/lock.ts";
 
 type ObjectValue = Record<string, any>;
 async function waitFor<T>(
@@ -655,6 +656,12 @@ test("hard gateway crash recovers expired ownership without repeating native adm
     );
     journal.close();
     await assert.rejects(f.start(), { code: "writer_busy" });
+    const afterBusy = acquireFleetLock(f.dir);
+    assert.ok(
+      afterBusy.ok,
+      "writer_busy must release the fleet lock so expiry restart can proceed"
+    );
+    afterBusy.lock.release();
     // Lease expiry is necessary but not sufficient: startup also checks the old
     // controller and every recorded owned group. This uses the real TTL.
     await new Promise((resolve) =>

@@ -238,6 +238,46 @@ test("Codex open/submit/stream/close uses app-server not Chat Completions", asyn
   }
 });
 
+test("two Codex assistant items stay two finished messages", async () => {
+  const f = await setup();
+  try {
+    await f.host.request("session.open", f.open);
+    assert.equal(
+      (
+        (await f.host.request(
+          "operation.submit",
+          f.submit("[multi-item]")
+        )) as { disposition: string }
+      ).disposition,
+      "accepted"
+    );
+    await until(() =>
+      f.events.some((event) => event.type === "turn.terminal")
+    );
+    const finished = f.events.filter(
+      (event) => event.type === "message.finished"
+    );
+    assert.equal(finished.length, 2);
+    assert.equal(finished[0]!.messageId, "op1:message:0");
+    assert.equal(finished[1]!.messageId, "op1:message:1");
+    assert.notEqual(finished[0]!.messageId, finished[1]!.messageId);
+    assert.equal(finished[0]!.payload.blocks?.[0]?.text, "First");
+    assert.equal(finished[1]!.payload.blocks?.[0]?.text, "Second");
+    assert.equal(
+      f.events.find((event) => event.type === "turn.terminal")!.payload
+        .execution,
+      "ended"
+    );
+    assert.equal(
+      f.events.find((event) => event.type === "turn.terminal")!.payload
+        .observation,
+      "complete"
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
 test("stale Codex turn completion does not invent a terminal for the live turn", async () => {
   const f = await setup();
   try {

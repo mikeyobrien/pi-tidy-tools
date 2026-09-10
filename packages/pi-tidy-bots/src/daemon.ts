@@ -2271,6 +2271,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     code: number | null,
     signal: string | null
   ): void => {
+    const dyingTurnId = runtime.turnId;
     runtime.online = false;
     runtime.session = null;
     runtime.turnId = null;
@@ -2288,7 +2289,7 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
     }
     const droppedSources = runtime.pendingFrom;
     runtime.pendingFrom = [];
-    if (runtime.turnId) {
+    if (dyingTurnId) {
       appendTranscript(runtime, {
         id: randomUUID(),
         role: "system",
@@ -2296,7 +2297,12 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
         text: "Turn interrupted by a restart — resend if it was mid-flight.",
         ts: new Date().toISOString(),
       });
-      runtime.turnId = null;
+      emit({
+        type: "bubble",
+        bot: runtime.config.name,
+        turnId: dyingTurnId,
+        phase: "final",
+      });
     }
     // Issue 140: the daemon handled this exit (sources notified below)
     // — the marker's recovery job is done. A daemon death skips this,

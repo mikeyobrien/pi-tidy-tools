@@ -54,11 +54,48 @@ export function versionPayload(): {
   };
 }
 
+export const TextPartSchema = Type.Object({
+  type: Type.Literal("text"),
+  text: Type.String(),
+});
+
+export const ToolPartSchema = Type.Object({
+  type: Type.Literal("tool"),
+  toolCallId: Type.String(),
+  tool: Type.String(),
+  label: Type.Optional(Type.String()),
+  reason: Type.Optional(Type.String()),
+  status: Type.Union([
+    Type.Literal("running"),
+    Type.Literal("ok"),
+    Type.Literal("error"),
+  ]),
+  started: Type.Optional(Type.Number()),
+  duration: Type.Optional(Type.Number()),
+  output: Type.Optional(Type.String()),
+  error: Type.Optional(Type.String()),
+  receipt: Type.Optional(
+    Type.Object({
+      name: Type.String(),
+      avatar: Type.Optional(Type.String()),
+      title: Type.Optional(Type.String()),
+    })
+  ),
+});
+
+export const TurnPartSchema = Type.Union([TextPartSchema, ToolPartSchema]);
+
 // ── Transcript entries ─────────────────────────────────
 export const TranscriptStepSchema = Type.Object({
   name: Type.String(),
+  toolCallId: Type.Optional(Type.String()),
+  reason: Type.Optional(Type.String()),
   label: Type.Optional(Type.String()),
+  output: Type.Optional(Type.String()),
+  started: Type.Optional(Type.Number()),
   duration: Type.Optional(Type.Number()),
+  error: Type.Optional(Type.Boolean()),
+  running: Type.Optional(Type.Boolean()),
 });
 
 export const TranscriptEntrySchema = Type.Object({
@@ -112,6 +149,28 @@ export const TranscriptEntrySchema = Type.Object({
   delivering: Type.Optional(Type.Boolean()),
   deliveryError: Type.Optional(Type.String()),
   steps: Type.Optional(Type.Array(TranscriptStepSchema)),
+  // F-γ drift sync: question cards ride entries (daemon interface and the
+  // app both parse them); uiResolved records the resolution; source is the
+  // legacy provenance key still transmitted.
+  ui: Type.Optional(
+    Type.Object({
+      id: Type.String(),
+      method: Type.String(),
+      title: Type.String(),
+      options: Type.Optional(Type.Array(Type.String())),
+      message: Type.Optional(Type.String()),
+      placeholder: Type.Optional(Type.String()),
+    })
+  ),
+  uiResolved: Type.Optional(
+    Type.Object({
+      id: Type.String(),
+      value: Type.String(),
+      auto: Type.Boolean(),
+    })
+  ),
+  source: Type.Optional(Type.String()),
+  parts: Type.Optional(Type.Array(TurnPartSchema)),
 });
 
 // ── WS events (roster/append/bubble/hello/config) ──────
@@ -143,6 +202,9 @@ export const RosterBotSchema = Type.Object({
       lastAt: Type.Optional(Type.String()),
     })
   ),
+  // F-γ drift sync: the transcript preview is load-bearing (issue 69) —
+  // every roster emission (WS presence and REST /api/fleet) carries it.
+  latest: Type.String(),
 });
 
 export const RosterPayloadSchema = Type.Object({
@@ -164,28 +226,6 @@ export const AppendPayloadSchema = Type.Object({
   entry: TranscriptEntrySchema,
 });
 
-export const TextPartSchema = Type.Object({
-  type: Type.Literal("text"),
-  text: Type.String(),
-});
-
-export const ToolPartSchema = Type.Object({
-  type: Type.Literal("tool"),
-  toolCallId: Type.String(),
-  tool: Type.String(),
-  label: Type.Optional(Type.String()),
-  reason: Type.Optional(Type.String()),
-  status: Type.Union([
-    Type.Literal("running"),
-    Type.Literal("ok"),
-    Type.Literal("error"),
-  ]),
-  duration: Type.Optional(Type.Number()),
-  output: Type.Optional(Type.String()),
-});
-
-export const TurnPartSchema = Type.Union([TextPartSchema, ToolPartSchema]);
-
 export const BubblePayloadSchema = Type.Object({
   type: Type.Literal("bubble"),
   bot: Type.String(),
@@ -206,6 +246,7 @@ export const ConfigPayloadSchema = Type.Object({
   type: Type.Literal("config"),
   toolOutput: Type.Union([
     Type.Literal("off"),
+    Type.Literal("counts"),
     Type.Literal("reasons"),
     Type.Literal("full"),
   ]),

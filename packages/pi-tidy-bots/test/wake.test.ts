@@ -241,8 +241,9 @@ test(
         );
       });
 
-      // The seeded marker was one-shot.
-      assert.equal(existsSync(markerPath), false);
+      // The seeded marker was one-shot (and every re-drive/replay turn's
+      // marker clears at ITS settle — wait out the final turn).
+      await waitFor(() => !existsSync(markerPath), 15000);
     } finally {
       delete process.env.PTB_STUB_TRACE;
       await Promise.all(handles.map((h) => h.stop().catch(() => {})));

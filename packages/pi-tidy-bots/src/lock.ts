@@ -20,6 +20,12 @@ export interface FleetLockHolder {
 export interface AcquiredLock {
   holder: FleetLockHolder;
   release(): void;
+  /** Stop heartbeating but keep the lock file: the heartbeat freezes and the
+   * lock goes stale per the staleness protocol, exactly as if the holder
+   * process had died. A failed startup must never leave a live heartbeat
+   * timer behind in an embedding process — that would hold the fleet
+   * directory forever (issue: gateway crash recovery wedged writer_busy). */
+  quiesce(): void;
 }
 
 export interface LockOptions {
@@ -128,18 +134,20 @@ export function acquireFleetLock(
     writeHolder(fleetDir, holder);
   }, heartbeatMs);
   timer.unref?.();
+  const stopHeartbeat = (): void => clearInterval(timer);
 
   return {
     ok: true,
     lock: {
       holder,
       release(): void {
-        clearInterval(timer);
+        stopHeartbeat();
         const current = readHolder(fleetDir);
         if (current && current.birth === holder.birth) {
           rmSync(lockPath(fleetDir), { force: true });
         }
       },
+      quiesce: stopHeartbeat,
     },
   };
 }

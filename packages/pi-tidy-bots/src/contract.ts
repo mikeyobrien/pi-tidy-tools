@@ -77,6 +77,7 @@ export const ToolPartSchema = Type.Object({
   receipt: Type.Optional(
     Type.Object({
       name: Type.String(),
+      message: Type.Optional(Type.String()),
       avatar: Type.Optional(Type.String()),
       title: Type.Optional(Type.String()),
     })

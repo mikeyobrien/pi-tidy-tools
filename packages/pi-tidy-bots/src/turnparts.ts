@@ -21,8 +21,8 @@ export interface ToolPart {
   duration?: number;
   output?: string;
   /** Issue 128: structured dispatch receipt — the chip renders in-order
-   * at the tool call; single surface, no standalone entry. */
-  receipt?: { name: string; avatar?: string; title?: string };
+   * at the tool call; message is exact submitted text, not delivery evidence. */
+  receipt?: { name: string; message?: string; avatar?: string; title?: string };
 }
 
 export type TurnPart = TextPart | ToolPart;
@@ -61,7 +61,12 @@ export class TurnPartsAccumulator {
     label?: string;
     reason?: string;
     started?: number;
-    receipt?: { name: string; avatar?: string; title?: string };
+    receipt?: {
+      name: string;
+      message?: string;
+      avatar?: string;
+      title?: string;
+    };
   }): void {
     // Idempotent by toolCallId (issue 29-item-4 mirror): replayed/re-delivered
     // starts update the existing part instead of duplicating it.
@@ -70,6 +75,7 @@ export class TurnPartsAccumulator {
       existing.tool = part.tool;
       if (part.label !== undefined) existing.label = part.label;
       if (part.reason !== undefined) existing.reason = part.reason;
+      if (part.receipt !== undefined) existing.receipt = { ...part.receipt };
       return;
     }
     this.parts.push({ type: "tool", status: "running", ...part });

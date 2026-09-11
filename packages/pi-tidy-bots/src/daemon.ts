@@ -2040,6 +2040,9 @@ export function startFleet(options: StartFleetOptions): Promise<FleetHandle> {
                   );
                   return {
                     name: event.target,
+                    ...(event.message !== undefined
+                      ? { message: event.message }
+                      : {}),
                     ...(target?.avatar ? { avatar: target.avatar } : {}),
                     ...(target?.title ? { title: target.title } : {}),
                   };

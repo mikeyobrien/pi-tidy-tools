@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
+import { WebSocket } from "ws";
 import {
   mkdirSync,
   mkdtempSync,
@@ -279,11 +280,14 @@ test(
 );
 
 test(
-  "dispatch chip on the message_agent tool part: receipt + bounded reason (issue 128)",
+  "dispatch body and explicit purpose preserve recipient across live, durable and restarted replay",
   { timeout: 45000 },
   async () => {
     const fleetDir = mkdtempSync(join(tmpdir(), "ptb-dispatch-chip-"));
     const handles: Array<{ stop(): Promise<void> }> = [];
+    let socket: WebSocket | undefined;
+    const message =
+      "  # Widget review\n\n- Rebuild the widget\n- Report **hashes** back\n\nKeep this trailing newline.\n";
     try {
       for (const bot of ["aa", "bb"]) {
         mkdirSync(join(fleetDir, "bots", bot), { recursive: true });
@@ -320,6 +324,13 @@ test(
         ).bots.every((b) => b.online)
       );
 
+      const live: any[] = [];
+      socket = new WebSocket(`${base.replace("http", "ws")}/api/ws`);
+      socket.on("message", (data) => live.push(JSON.parse(data.toString())));
+      await new Promise<void>((resolve, reject) => {
+        socket!.once("open", resolve);
+        socket!.once("error", reject);
+      });
       await fetch(`${base}/api/bots/aa/message`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -359,20 +370,66 @@ test(
         part?.receipt,
         {
           name: "bb",
+          message,
           avatar: "B",
           title: "Worker",
         },
-        "structured receipt from bot config"
+        "recipient metadata and exact submitted body"
       );
-      assert.ok(
-        (part?.reason ?? "").length <= 60,
-        `reason bounded — got ${part?.reason?.length} chars`
+      assert.equal(part?.reason, "Ask the worker to verify the widget");
+      await waitFor(() =>
+        live.some(
+          (event) =>
+            event.bot === "aa" &&
+            event.type === "bubble" &&
+            event.parts?.some(
+              (p: any) =>
+                p.receipt?.name === "bb" && p.receipt.message === message
+            )
+        )
       );
-      assert.ok(
-        !(part?.reason ?? "").includes("report hashes"),
-        "reason is a gist, not the full brief"
-      );
+      const livePart = live
+        .flatMap((event) => (event.bot === "aa" ? (event.parts ?? []) : []))
+        .find((p: any) => p.receipt?.name === "bb");
+      assert.deepEqual(livePart.receipt, part?.receipt);
+      assert.equal(livePart.reason, part?.reason);
+      const durable = readFileSync(
+        join(fleetDir, ".fleet", "transcripts", "aa.jsonl"),
+        "utf8"
+      )
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      const saved = durable
+        .flatMap((entry) => entry.parts ?? [])
+        .find((p: any) => p.receipt?.name === "bb");
+      assert.deepEqual(saved.receipt, part?.receipt);
+      socket.close();
+      await handle.stop();
+      const restarted = await startFleet({
+        dir: fleetDir,
+        port: 0,
+        host: "127.0.0.1",
+        piBin: wrapper,
+        log: () => {},
+      });
+      handles.push(restarted);
+      await waitFor(async () => {
+        const roster = (await (
+          await fetch(`${restarted.url}/api/fleet`)
+        ).json()) as any;
+        return roster.bots.every((bot: any) => bot.online);
+      });
+      const replay = (await (
+        await fetch(`${restarted.url}/api/bots/aa/transcript`)
+      ).json()) as any;
+      const restored = replay.transcript
+        .flatMap((entry: any) => entry.parts ?? [])
+        .find((p: any) => p.receipt?.name === "bb");
+      assert.deepEqual(restored.receipt, part?.receipt);
+      assert.equal(restored.reason, part?.reason);
     } finally {
+      socket?.terminate();
       delete process.env.PTB_STUB_DISPATCH;
       await Promise.all(handles.map((h) => h.stop().catch(() => {})));
       rmSync(fleetDir, { recursive: true, force: true });

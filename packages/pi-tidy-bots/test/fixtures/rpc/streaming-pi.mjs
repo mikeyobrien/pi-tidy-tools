@@ -216,10 +216,9 @@ rl.on("line", (line) => {
           toolName: "message_agent",
           args: {
             target: "bb",
+            reason: "Ask the worker to verify the widget",
             message:
-              "Full dispatch brief that goes on for a while: rebuild the widget, verify gates, report hashes back. ".repeat(
-                3
-              ),
+              "  # Widget review\n\n- Rebuild the widget\n- Report **hashes** back\n\nKeep this trailing newline.\n",
           },
         });
         send({

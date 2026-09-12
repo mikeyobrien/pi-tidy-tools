@@ -9,12 +9,14 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { WebSocket } from "ws";
 import { startFleet, type FleetHandle } from "../src/daemon.ts";
+import { GatewayJournal } from "../src/gateway/journal.ts";
+import { processIdentity } from "../src/gateway/process-ownership.ts";
 import { digestArtifact } from "../src/gateway/registry.ts";
 import { DEFAULT_LIMITS } from "../src/gateway/protocol.ts";
 import { acquireFleetLock } from "../src/lock.ts";
@@ -208,6 +210,93 @@ test("failed initialization retains shared ownership when durable cleanup cannot
     );
     assert.equal(child.status, 0, `${child.stderr}\n${child.error ?? ""}`);
   } finally {
+    await f.cleanup();
+  }
+});
+
+test("unexpired writer lease preflight releases the lock without heartbeat resurrection", async () => {
+  const f = await fixture();
+  const seed = new GatewayJournal(join(f.dir, ".fleet", "gateway.sqlite"));
+  try {
+    seed.acquireWriterLease("gateway-previous", {
+      ownerProcess: await processIdentity(process.pid),
+    });
+  } finally {
+    seed.close();
+  }
+  try {
+    await assert.rejects(f.start(), { code: "writer_busy" });
+    const lockPath = join(f.dir, ".fleet", "lock.json");
+    assert.equal(existsSync(lockPath), false, "preflight never owned a plugin");
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
+    assert.equal(
+      existsSync(lockPath),
+      false,
+      "failed starter must not resurrect its lock"
+    );
+    const next = acquireFleetLock(f.dir);
+    assert.ok(next.ok, "preflight releases the shared guard immediately");
+    if (next.ok) next.lock.release();
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("failed startup ownership leaves a frozen heartbeat, not a live one", async () => {
+  // An expired lease with a still-live previous controller is genuinely
+  // unconfirmed recovery, unlike the safe unexpired-lease preflight above.
+  // Retain the file guard but stop the failed starter's heartbeat.
+  const f = await fixture();
+  const previousController = spawn(process.execPath, [
+    "-e",
+    "setInterval(()=>{},1<<30)",
+  ]);
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const seed = new GatewayJournal(join(f.dir, ".fleet", "gateway.sqlite"));
+    const lease = seed.acquireWriterLease("gateway-previous", {
+      ownerProcess: await processIdentity(previousController.pid!),
+      ttlMs: 1,
+    });
+    seed.close();
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.max(0, lease.expiresAt - Date.now()) + 10)
+    );
+    await assert.rejects(
+      f.start(),
+      { code: "ownership_unreconciled" },
+      "lease expiry must not authorize takeover of a live controller"
+    );
+    const lockPath = join(f.dir, ".fleet", "lock.json");
+    const frozen = JSON.parse(await readFile(lockPath, "utf8"));
+    assert.equal(
+      frozen.pid,
+      process.pid,
+      "the failed start owned the file lock in-process"
+    );
+    const competing = acquireFleetLock(f.dir);
+    if (competing.ok) competing.lock.release();
+    assert.equal(
+      competing.ok,
+      false,
+      "fresh retained guard still fences competitors"
+    );
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
+    const still = JSON.parse(await readFile(lockPath, "utf8"));
+    assert.equal(
+      still.heartbeatAt,
+      frozen.heartbeatAt,
+      "heartbeat must freeze after the failed start instead of beating forever"
+    );
+    const takeover = acquireFleetLock(f.dir, { staleMs: 1_000 });
+    assert.ok(
+      takeover.ok,
+      "frozen heartbeat must permit takeover after staleness"
+    );
+    if (takeover.ok) takeover.lock.release();
+  } finally {
+    previousController.kill("SIGKILL");
+    await new Promise((resolve) => previousController.once("exit", resolve));
     await f.cleanup();
   }
 });

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  classifyCompactFailure,
   classifyCompactRefusal,
   classifyFailure,
   isRetryable,
@@ -67,6 +68,29 @@ test("issue 79: Already compacted is a terminal compact no-op", () => {
   // loop if compact paths forget to consult classifyCompactRefusal first.
   assert.equal(classifyFailure("Already compacted"), "delivery_failed");
   assert.ok(!isRetryable("delivery_failed"));
+});
+
+test("abort mid-summarization is summarization_aborted, not delivery_failed", () => {
+  const live = "Turn prefix summarization failed: This operation was aborted";
+  const rpc = `rpc command failed: {"success":false,"error":"${live}"}`;
+  const end =
+    "Compaction failed: Turn prefix summarization failed: This operation was aborted";
+  assert.equal(classifyCompactFailure(live), "summarization_aborted");
+  assert.equal(classifyCompactFailure(rpc), "summarization_aborted");
+  assert.equal(classifyCompactFailure(end), "summarization_aborted");
+  assert.equal(
+    classifyCompactFailure("Already compacted"),
+    "already_compacted"
+  );
+  assert.equal(classifyCompactFailure("mystery"), undefined);
+  assert.equal(
+    classifyFailure(
+      "Cannot submit a prompt while compaction is in progress. Wait for compaction to finish and retry."
+    ),
+    "compaction_in_progress"
+  );
+  assert.ok(isRetryable("compaction_in_progress"));
+  assert.equal(classifyFailure(live), "delivery_failed");
 });
 
 test("issue 50: a busy child is turn_in_flight, never runtime_offline", () => {

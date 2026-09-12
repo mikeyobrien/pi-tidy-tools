@@ -128,7 +128,6 @@ export function stepLabel(toolName: string, args: unknown): string | undefined {
     }
     return undefined;
   };
-  const truncate = boundStepText;
   if (toolName === "message_agent") {
     const target = first("target");
     return target ? `→ ${target}` : undefined;
@@ -139,12 +138,9 @@ export function stepLabel(toolName: string, args: unknown): string | undefined {
     const base = path.split(/[\\/]/).pop();
     return base ? `✎ ${base}` : undefined;
   }
-  if (toolName === "bash") {
-    const command = first("command");
-    return command ? truncate(command.replace(/\s+/g, " "), 60) : undefined;
-  }
-  const stringified = JSON.stringify(record);
-  return stringified === undefined ? undefined : truncate(stringified, 40);
+  // Commands and arbitrary arguments may contain credentials or message
+  // bodies. Use the neutral tool name rather than an input-derived label.
+  return undefined;
 }
 
 export type RpcEvent =
@@ -162,6 +158,8 @@ export type RpcEvent =
       label?: string;
       /** Issue 128: message_agent dispatch target (receipt enrichment). */
       target?: string;
+      /** Exact submitted handoff body, never a purpose or delivery guarantee. */
+      message?: string;
     }
   | { kind: "tool_output"; toolCallId: string; text: string }
   | {
@@ -251,27 +249,11 @@ export function describeUiAnswer(method: string, answer: UiAnswer): string {
 export function stepReason(args: unknown, toolName?: string): string {
   if (args === null || typeof args !== "object") return "";
   const record = args as Record<string, unknown>;
-  // Issue 128: dispatch-class tools — the reason is a BOUNDED gist of the
-  // brief, never the full message (the label already carries the target).
-  if (toolName === "message_agent" && typeof record.message === "string") {
-    return boundStepText(record.message, 60);
-  }
-  const candidates = [
-    "reasoning",
-    "reason",
-    "command",
-    "path",
-    "file_path",
-    "url",
-    "query",
-    "pattern",
-  ];
+  // Purpose is explicit metadata, never inferred from tool input (including
+  // a handoff's message body). Retain the established reasoning precedence.
+  const candidates = ["reasoning", "reason"];
   for (const key of candidates) {
     const value = record[key];
-    if (typeof value === "string" && value.trim().length > 0)
-      return boundStepText(value, REASON_MAX_CHARS);
-  }
-  for (const value of Object.values(record)) {
     if (typeof value === "string" && value.trim().length > 0)
       return boundStepText(value, REASON_MAX_CHARS);
   }
@@ -741,6 +723,10 @@ export class RpcSession {
             "string"
             ? {
                 target: (parsed.args as { target: string }).target,
+                ...(typeof (parsed.args as { message?: unknown }).message ===
+                "string"
+                  ? { message: (parsed.args as { message: string }).message }
+                  : {}),
               }
             : {}),
         });

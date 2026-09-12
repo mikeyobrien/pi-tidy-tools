@@ -50,6 +50,7 @@ test("roster and ws event schemas validate the daemon's payloads", () => {
         active: false,
         lastActive: new Date().toISOString(),
         queued: 2,
+        latest: "preview text of the last entry",
       },
     ],
     counts: { total: 1, active: 0 },

@@ -6,6 +6,39 @@ import {
   TurnPartsAccumulator,
 } from "../src/turnparts.ts";
 
+test("receipt replay preserves exact submitted body without inventing historical content", () => {
+  const acc = new TurnPartsAccumulator();
+  acc.startTool({
+    toolCallId: "old",
+    tool: "message_agent",
+    label: "old label",
+    reason: "old purpose",
+    receipt: { name: "bb" },
+  });
+  const historical = acc.snapshot()[0];
+  assert.equal(historical.type, "tool");
+  if (historical.type === "tool")
+    assert.equal(historical.receipt?.message, undefined);
+  const message = "  first line\n\n**second line**\n";
+  acc.startTool({
+    toolCallId: "new",
+    tool: "message_agent",
+    receipt: { name: "bb", message },
+  });
+  acc.startTool({
+    toolCallId: "new",
+    tool: "message_agent",
+    receipt: { name: "cc", message: "different recipient" },
+  });
+  const replay = JSON.parse(JSON.stringify(acc.snapshot()));
+  assert.deepEqual(
+    replay[1].receipt,
+    { name: "cc", message: "different recipient" },
+    "duplicate starts update recipient and body together, never mix associations"
+  );
+  assert.equal(replay[0].receipt.message, undefined);
+});
+
 test("turn parts keep true chronological order across text/tool interleave", () => {
   const acc = new TurnPartsAccumulator();
   acc.appendText("Checking the fleet. ");
@@ -188,7 +221,8 @@ test("stepReason/stepLabel share the bounded wire contract (issue 158)", async (
     await import("../src/rpc.ts");
   // mcpScript-shaped body: 3.4k chars + newlines → first line, ~90 max.
   const body = `const x = {${"data: 'x', ".repeat(200)}};\nsecond line never rides`;
-  const reason = stepReason({ script: body });
+  assert.equal(stepReason({ script: body }), "", "script is not purpose");
+  const reason = stepReason({ reasoning: body });
   assert.ok(reason.length <= 90, `bounded — got ${reason.length}`);
   assert.ok(!reason.includes("\n"), "first line only");
   assert.ok(reason.endsWith("…"), "truncated with ellipsis");

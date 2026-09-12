@@ -96,7 +96,7 @@ export interface RpcEventContext {
   ) => void;
   maybeCompact: (
     runtime: BotRuntime,
-    opts?: { force?: boolean; idle?: boolean }
+    opts?: { force?: boolean; idle?: boolean; operator?: boolean }
   ) => Promise<unknown>;
 }
 

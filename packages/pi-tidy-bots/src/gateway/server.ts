@@ -574,8 +574,14 @@ export async function startGatewayFleet(
       } finally {
         http.closeAllConnections();
         await closed;
-        // Owned plugin shutdown is awaited before cross-mode ownership is released.
+        // Owned plugin shutdown is awaited before cross-mode ownership is
+        // released. When recovery is unconfirmed the lock must NOT be released
+        // (another daemon must not start against possibly-running prior
+        // plugins) — but the heartbeat must also not outlive this failed
+        // startup inside an embedding process. Quiesce: freeze the heartbeat
+        // and let staleness gate any takeover, as if the holder had died.
         if (shutdownConfirmed) ownership.lock.release();
+        else ownership.lock.quiesce();
       }
     })());
   try {

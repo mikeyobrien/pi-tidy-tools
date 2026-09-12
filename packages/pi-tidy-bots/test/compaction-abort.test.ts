@@ -90,12 +90,7 @@ test(
   async () => {
     const fleetDir = mkdtempSync(join(tmpdir(), "ptb-abort-"));
     const tracePath = join(fleetDir, "stub-trace.jsonl");
-    const keys = [
-      "PTB_STUB_USAGE",
-      "PTB_STUB_COMPACT_ABORT",
-      "PTB_STUB_COMPACT_ABORT_STICKY",
-      "PTB_STUB_TRACE",
-    ];
+    const keys = ["PTB_STUB_TRACE"];
     const prev = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
     try {
       mkdirSync(join(fleetDir, "bots", "aa"), { recursive: true });
@@ -104,9 +99,9 @@ test(
         join(fleetDir, "bots.toml"),
         `[[bot]]\nname = "aa"\ndir = "bots/aa"\n`
       );
-      process.env.PTB_STUB_USAGE = "90000";
-      process.env.PTB_STUB_COMPACT_ABORT = "1";
-      process.env.PTB_STUB_COMPACT_ABORT_STICKY = "1";
+      writeFileSync(join(fleetDir, "compact-abort"), "1");
+      writeFileSync(join(fleetDir, "compact-abort-sticky"), "1");
+      writeFileSync(join(fleetDir, "stub-usage"), "90000");
       process.env.PTB_STUB_TRACE = tracePath;
       const { handle, base } = await boot(fleetDir);
       try {
@@ -213,13 +208,7 @@ test(
   async () => {
     const fleetDir = mkdtempSync(join(tmpdir(), "ptb-abort-race-"));
     const tracePath = join(fleetDir, "stub-trace.jsonl");
-    const keys = [
-      "PTB_STUB_USAGE",
-      "PTB_STUB_WINDOW",
-      "PTB_STUB_COMPACT_ABORT",
-      "PTB_STUB_COMPACT_ABORT_MS",
-      "PTB_STUB_TRACE",
-    ];
+    const keys = ["PTB_STUB_WINDOW", "PTB_STUB_TRACE"];
     const prev = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
     try {
       mkdirSync(join(fleetDir, "bots", "aa"), { recursive: true });
@@ -228,10 +217,10 @@ test(
         join(fleetDir, "bots.toml"),
         `[[bot]]\nname = "aa"\ndir = "bots/aa"\n`
       );
-      process.env.PTB_STUB_USAGE = "5000";
+      writeFileSync(join(fleetDir, "compact-abort"), "1");
+      writeFileSync(join(fleetDir, "compact-abort-ms"), "400");
+      writeFileSync(join(fleetDir, "stub-usage"), "5000");
       process.env.PTB_STUB_WINDOW = "100000";
-      process.env.PTB_STUB_COMPACT_ABORT = "1";
-      process.env.PTB_STUB_COMPACT_ABORT_MS = "400";
       process.env.PTB_STUB_TRACE = tracePath;
       const { handle, base } = await boot(fleetDir);
       try {

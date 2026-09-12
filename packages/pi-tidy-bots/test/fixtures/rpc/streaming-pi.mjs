@@ -9,7 +9,7 @@
 // operator bubble must already read as delivering=false.
 import readline from "node:readline";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join, resolve } from "node:path";
 import { appendFileSync } from "node:fs";
 
 // Issue 58 test seam: record every inbound request so tests can prove a
@@ -32,8 +32,23 @@ const trace = (kind, text, images = 0) => {
 };
 
 const send = (frame) => process.stdout.write(JSON.stringify(frame) + "\n");
-const freshSession = () =>
-  existsSync(join(dirname(process.env.PTB_STUB_TRACE ?? "."), "fresh-session"));
+// Bot cwd is <fleet>/bots/<name>; flags stay per-fleet so concurrent
+// tests cannot leak compact-abort via process.env.PTB_STUB_TRACE.
+const fleetDir = () => resolve(process.cwd(), "..", "..");
+const fleetFile = (name) => join(fleetDir(), name);
+const fleetFlag = (name) => existsSync(fleetFile(name));
+const freshSession = () => fleetFlag("fresh-session");
+const stubUsage = () => {
+  try {
+    const n = Number(readFileSync(fleetFile("stub-usage"), "utf8").trim());
+    if (Number.isFinite(n)) return n;
+  } catch {}
+  if (process.env.PTB_STUB_USAGE !== undefined) {
+    const n = Number(process.env.PTB_STUB_USAGE);
+    if (Number.isFinite(n)) return n;
+  }
+  return 10;
+};
 // Live abort class: compact RPC returns but isCompacting stays true until
 // abort or process exit — the latch that blocked prompts as delivery_failed.
 let compacting = false;
@@ -137,7 +152,7 @@ rl.on("line", (line) => {
       });
       return;
     }
-    if (process.env.PTB_STUB_COMPACT_ABORT === "1") {
+    if (fleetFlag("compact-abort")) {
       compacting = true;
       send({ type: "compaction_start", reason: "manual" });
       const finish = () => {
@@ -155,10 +170,12 @@ rl.on("line", (line) => {
           success: false,
           error: "Turn prefix summarization failed: This operation was aborted",
         });
-        if (process.env.PTB_STUB_COMPACT_ABORT_STICKY !== "1")
-          compacting = false;
+        if (!fleetFlag("compact-abort-sticky")) compacting = false;
       };
-      const delay = Number(process.env.PTB_STUB_COMPACT_ABORT_MS ?? 0);
+      let delay = 0;
+      try {
+        delay = Number(readFileSync(fleetFile("compact-abort-ms"), "utf8"));
+      } catch {}
       if (delay > 0) setTimeout(finish, delay);
       else finish();
       return;
@@ -169,10 +186,7 @@ rl.on("line", (line) => {
       // fresh-session usage, not the oversized knob. File-based so the
       // marker survives the session-reset respawn.
       try {
-        writeFileSync(
-          join(dirname(process.env.PTB_STUB_TRACE ?? "."), "fresh-session"),
-          "1"
-        );
+        writeFileSync(fleetFile("fresh-session"), "1");
       } catch {}
       send({
         type: "response",
@@ -362,11 +376,7 @@ rl.on("line", (line) => {
             type: "turn_end",
             message: {
               usage: {
-                input: freshSession()
-                  ? 10
-                  : process.env.PTB_STUB_USAGE !== undefined
-                    ? Number(process.env.PTB_STUB_USAGE)
-                    : 10,
+                input: freshSession() ? 10 : stubUsage(),
               },
             },
           });

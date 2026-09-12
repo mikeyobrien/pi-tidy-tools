@@ -12,6 +12,7 @@ export type Reason =
   | "provider_rate_limit"
   | "provider_server_error"
   | "provider_auth_or_access"
+  | "compaction_in_progress"
   | "delivery_failed";
 
 const RULES: [Reason, string[]][] = [
@@ -29,6 +30,10 @@ const RULES: [Reason, string[]][] = [
     ["context", "too large", "overflow", "token limit", "maximum.*tokens"],
   ],
   ["runtime_offline", ["offline", "not running", "closed", "exited", "dead"]],
+  [
+    "compaction_in_progress",
+    ["cannot submit a prompt while compaction is in progress"],
+  ],
   ["turn_in_flight", ["already processing"]],
   // Issue 149: prompt-class timeout = UNKNOWN (accepted-and-running is
   // possible under the accept-ack contract) — never a plain failure.
@@ -41,6 +46,7 @@ export const RETRYABLE: Reason[] = [
   "provider_rate_limit",
   "provider_server_error",
   "context_overflow",
+  "compaction_in_progress",
 ];
 
 export function classifyFailure(message: string): Reason {
@@ -67,6 +73,30 @@ export function classifyCompactRefusal(
   const lowered = message.toLowerCase();
   if (lowered.includes("already compacted")) return "already_compacted";
   if (lowered.includes("nothing to compact")) return "nothing_to_compact";
+  return undefined;
+}
+
+/**
+ * Abort mid-summarization is a recoverable compact failure, not
+ * delivery_failed. Live pi: compact RPC success:false + compaction_end
+ * errorMessage "Turn prefix summarization failed: This operation was aborted"
+ * while idle/threshold compact kept re-arming every 15s and prompts died
+ * with compaction_in_progress.
+ */
+export type CompactFailure = CompactRefusal | "summarization_aborted";
+
+export function classifyCompactFailure(
+  message: string
+): CompactFailure | undefined {
+  const refusal = classifyCompactRefusal(message);
+  if (refusal) return refusal;
+  const lowered = message.toLowerCase();
+  if (
+    lowered.includes("turn prefix summarization failed") ||
+    lowered.includes("this operation was aborted") ||
+    (lowered.includes("compaction failed") && lowered.includes("aborted"))
+  )
+    return "summarization_aborted";
   return undefined;
 }
 

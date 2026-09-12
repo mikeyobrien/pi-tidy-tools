@@ -34,6 +34,9 @@ const trace = (kind, text, images = 0) => {
 const send = (frame) => process.stdout.write(JSON.stringify(frame) + "\n");
 const freshSession = () =>
   existsSync(join(dirname(process.env.PTB_STUB_TRACE ?? "."), "fresh-session"));
+// Live abort class: compact RPC returns but isCompacting stays true until
+// abort or process exit — the latch that blocked prompts as delivery_failed.
+let compacting = false;
 
 // Issue 43 amendment test knobs: window from a FILE (so a test can change it
 // between spawns) else env, else 128000 default.
@@ -72,6 +75,7 @@ rl.on("line", (line) => {
       data: {
         model: { contextWindow: stubWindow() },
         streaming: false,
+        isCompacting: compacting,
         // Issue 79 layer 2: the child's OWN usage numbers — ground truth
         // the daemon must prefer over its fill estimates.
         ...(process.env.PTB_STUB_STATE_USAGE_FILE !== undefined
@@ -133,6 +137,32 @@ rl.on("line", (line) => {
       });
       return;
     }
+    if (process.env.PTB_STUB_COMPACT_ABORT === "1") {
+      compacting = true;
+      send({ type: "compaction_start", reason: "manual" });
+      const finish = () => {
+        send({
+          type: "compaction_end",
+          reason: "manual",
+          aborted: false,
+          willRetry: false,
+          errorMessage:
+            "Compaction failed: Turn prefix summarization failed: This operation was aborted",
+        });
+        send({
+          type: "response",
+          id: request.id,
+          success: false,
+          error: "Turn prefix summarization failed: This operation was aborted",
+        });
+        if (process.env.PTB_STUB_COMPACT_ABORT_STICKY !== "1")
+          compacting = false;
+      };
+      const delay = Number(process.env.PTB_STUB_COMPACT_ABORT_MS ?? 0);
+      if (delay > 0) setTimeout(finish, delay);
+      else finish();
+      return;
+    }
     if (process.env.PTB_STUB_COMPACT_FAIL === "1") {
       // A failed compact models a hard reset in these tests: subsequent
       // turns (including in RESPAWNED stub processes) report a SMALL
@@ -164,7 +194,22 @@ rl.on("line", (line) => {
     });
     return;
   }
+  if (request.type === "abort") {
+    compacting = false;
+    respond(request.id);
+    return;
+  }
   if (request.type === "prompt" || request.type === "follow_up") {
+    if (compacting) {
+      send({
+        type: "response",
+        id: request.id,
+        success: false,
+        error:
+          "Cannot submit a prompt while compaction is in progress. Wait for compaction to finish and retry.",
+      });
+      return;
+    }
     trace(
       request.type,
       String(request.message ?? ""),

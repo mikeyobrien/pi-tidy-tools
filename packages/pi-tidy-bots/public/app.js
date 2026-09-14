@@ -1043,6 +1043,13 @@ document.getElementById("composer-target").addEventListener("click", () => {
 let pendingImage = null; // { mediaType, data } — base64, no dataURL prefix
 let pendingImageUrl = null; // object URL for the confirmation chip thumb
 
+// Clear the hidden file input so re-selecting the same file re-fires change
+// and no stale selection survives a Safari bfcache restore.
+function resetAttachmentInput() {
+  const input = document.getElementById("composer-image");
+  if (input) input.value = "";
+}
+
 function clearPendingImage() {
   if (pendingImageUrl) URL.revokeObjectURL(pendingImageUrl);
   pendingImageUrl = null;

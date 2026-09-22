@@ -1,6 +1,6 @@
 import { createWriteTool } from "@earendil-works/pi-coding-agent";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import type { TidyMode } from "./config.js";
 import { hostGenerateDiffString } from "./host-diff.js";
 import { REASONING_PROPERTY, declaredSchema } from "./params-schema.js";
@@ -85,9 +85,31 @@ export function composeSourceTool<T extends SourceToolDefinition>(
 	return composed;
 }
 
+const OPERATIONS_UNSUPPORTED = /operations is not supported/i;
+
+/** omp rejects `WriteToolOptions.operations` at construction. Pi accepts it. */
+function writeOperationsSupported(): boolean {
+	try {
+		createWriteTool(process.cwd(), {
+			operations: {
+				mkdir: async () => {},
+				writeFile: async () => {},
+			},
+		});
+		return true;
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		if (OPERATIONS_UNSUPPORTED.test(message)) return false;
+		throw error;
+	}
+}
+
+const useWriteOperations = writeOperationsSupported();
+
 /** Native write source with tidy's behavior-compatible per-call diff capture. */
 export function createDiffingWriteTool(cwd: string): SourceToolDefinition {
 	const source = createWriteTool(cwd) as SourceToolDefinition;
+	if (!useWriteOperations) return nativeDiffingWriteTool(cwd, source);
 	return {
 		...source,
 		async execute(_id: string, params: any, signal: any, onUpdate: any, context: any) {
@@ -117,6 +139,46 @@ export function createDiffingWriteTool(cwd: string): SourceToolDefinition {
 				context,
 			);
 			return { ...result, details: { ...(result.details ?? {}), diff } };
+		},
+	};
+}
+
+/**
+ * omp writes the filesystem itself and exposes no operations seam. Read the
+ * destination, let the native tool write once, then diff the bytes it wrote.
+ */
+function nativeDiffingWriteTool(cwd: string, source: SourceToolDefinition): SourceToolDefinition {
+	return {
+		...source,
+		async execute(_id: string, params: any, signal: any, onUpdate: any, context: any) {
+			const resolved = typeof params?.path === "string" ? resolve(cwd, params.path) : undefined;
+			let previous = "";
+			if (resolved !== undefined) {
+				try {
+					previous = await readFile(resolved, "utf8");
+				} catch (error: any) {
+					if (error?.code !== "ENOENT") previous = "";
+				}
+			}
+			const result = await (source.execute as (...args: any[]) => any).call(
+				source,
+				_id,
+				params,
+				signal,
+				onUpdate,
+				context,
+			);
+			let diff = "";
+			const succeeded = !(result as { isError?: boolean } | undefined)?.isError;
+			if (succeeded && resolved !== undefined && typeof params?.content === "string") {
+				try {
+					const written = await readFile(resolved, "utf8");
+					diff = hostGenerateDiffString(previous, written).diff;
+				} catch {
+					diff = "";
+				}
+			}
+			return { ...result, details: { ...(result?.details ?? {}), diff } };
 		},
 	};
 }

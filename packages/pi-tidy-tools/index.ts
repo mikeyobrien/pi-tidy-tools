@@ -58,6 +58,17 @@ import {
   saveTidyMode,
   type TidyMode,
 } from "./config.js";
+import { isOmpHost } from "./host-kind.js";
+import { installReadGroupBridge } from "./read-group-bridge.js";
+import { toRegistration } from "./registration.js";
+import {
+  callRenderInfo,
+  elapsedTimer,
+  findTheme,
+  resultRenderInfo,
+  withBackground,
+} from "./render-bridge.js";
+
 
 import {
   composeSourceTool,
@@ -78,6 +89,7 @@ import {
   WidthAwareLines,
   buildToolBlock,
   buildTurnDiffBlock,
+  fitToolLine,
   type TurnDiff,
 } from "./block-render.js";
 export {
@@ -316,66 +328,70 @@ export function createTidyExtension(
         reasoningGuideline: `Always pass a "reasoning" phrase to ${name}: state the GOAL/intent, not the file or command (those are shown already).`,
       });
       ownedTools.add(name);
-      return {
+      const decorated = {
         ...tool,
         name,
         renderShell: "self",
-        renderCall: (args: any, theme: any, context: any) => {
-          if (!context?.isPartial) return new Container();
-          const id = context.toolCallId as string;
-          if (!elapsedTimerByCallId.has(id)) {
-            const timer = setInterval(() => context.invalidate(), 1000);
-            timer.unref?.();
-            elapsedTimerByCallId.set(id, timer);
+        renderCall: (args: any, options: any, third: any) => {
+          const info = callRenderInfo(args, options, third);
+          if (!info.isPartial) return new Container();
+          const id = info.toolCallId ?? "";
+          if (info.invalidate && !elapsedTimerByCallId.has(id)) {
+            const timer = elapsedTimer(info.invalidate, () => {});
+            if (timer) elapsedTimerByCallId.set(id, timer);
           }
           let started = startedAtByCallId.get(id);
           if (started === undefined) {
             started = Date.now();
             startedAtByCallId.set(id, started);
           }
+          const theme = findTheme(options, third);
           return new WidthAwareLines(
             () =>
-              buildToolBlock(
-                name,
-                args ?? {},
-                {},
-                {
-                  isPartial: true,
-                  elapsedMs: Date.now() - started!,
-                  mode: tidyMode,
-                  icons: tidyIcons,
-                }
-              ),
-            (text) => theme.bg("toolPendingBg", text)
+              buildToolBlock(name, info.args, {}, {
+                isPartial: true,
+                elapsedMs: Date.now() - started!,
+                mode: tidyMode,
+                icons: tidyIcons,
+              }),
+            (text) => withBackground(theme, "toolPendingBg", text)
           );
         },
-        renderResult: (result: any, options: any, theme: any, context: any) => {
-          if (options?.isPartial) return new Container();
-          const isError = context?.isError ?? result?.isError ?? false;
-          const id = context?.toolCallId as string | undefined;
-          const started = startedAtByCallId.get(id ?? ""),
-            timer = elapsedTimerByCallId.get(id ?? "");
+        renderResult: (
+          result: any,
+          options: any,
+          third: any,
+          fourth: any
+        ) => {
+          const info = resultRenderInfo(result, options, fourth);
+          if (info.isPartial) return new Container();
+          const isError = info.isError ?? result?.isError ?? false;
+          const id = info.toolCallId ?? "";
+          const started = startedAtByCallId.get(id);
+          const timer = elapsedTimerByCallId.get(id);
           if (timer) clearInterval(timer);
-          elapsedTimerByCallId.delete(id ?? "");
-          startedAtByCallId.delete(id ?? "");
+          elapsedTimerByCallId.delete(id);
+          startedAtByCallId.delete(id);
           const persisted = Number(result?.details?.piTidyElapsedMs);
           const elapsedMs = Number.isFinite(persisted)
             ? persisted
             : started === undefined
               ? 0
               : Date.now() - started;
-          const lines = buildToolBlock(name, context?.args ?? {}, result, {
+          const theme = findTheme(options, third, fourth);
+          const lines = buildToolBlock(name, info.args, result, {
             isError,
-            expanded: options?.expanded ?? false,
+            expanded: info.expanded,
             elapsedMs,
             mode: tidyMode,
             icons: tidyIcons,
           });
           return new WidthAwareLines(lines, (text) =>
-            theme.bg(isError ? "toolErrorBg" : "toolSuccessBg", text)
+            withBackground(theme, isError ? "toolErrorBg" : "toolSuccessBg", text)
           );
         },
       } as SourceToolDefinition;
+      return (isOmpHost() ? toRegistration(decorated) : decorated) as SourceToolDefinition;
     };
 
     pi.on("tool_execution_start", async (e: any) => {
@@ -465,6 +481,38 @@ export function createTidyExtension(
     for (const [name, source] of Object.entries(sourceTools)) {
       if (startupPlan.skipTidyTools.has(name as "read" | "grep" | "find"))
         continue;
+      if (name === "read") {
+        installReadGroupBridge({
+          render: (snapshot, width) => {
+            const lines = [""];
+            for (const entry of snapshot.entries) {
+              const started = startedAtByCallId.get(entry.id);
+              const persisted = Number(
+                (
+                  entry.result as
+                    | { details?: { piTidyElapsedMs?: unknown } }
+                    | undefined
+                )?.details?.piTidyElapsedMs
+              );
+              const elapsedMs = Number.isFinite(persisted)
+                ? persisted
+                : started === undefined
+                  ? 0
+                  : Date.now() - started;
+              for (const line of buildToolBlock("read", entry.args, entry.result ?? {}, {
+                isError: entry.isError,
+                isPartial: !entry.settled,
+                expanded: snapshot.expanded,
+                elapsedMs,
+                mode: tidyMode,
+                icons: tidyIcons,
+              }))
+                lines.push(fitToolLine(line, width));
+            }
+            return lines;
+          },
+        });
+      }
       pi.registerTool(decorate(source) as any);
     }
     startupPlan.commit(decorate);

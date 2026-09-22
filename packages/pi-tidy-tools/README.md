@@ -191,11 +191,20 @@ Mirrors a clean, theme-agnostic palette + icon mapping:
 
 Raw ANSI is intentional for the foreground palette; tool backgrounds follow the active Pi theme.
 
+## Hosts
+
+The same package runs on Pi and on [omp](https://github.com/can1357/oh-my-pi).
+Pi keeps its renderer argument order, host diff, and write operations hook.
+omp does not export `generateDiffString`, rejects `WriteToolOptions.operations`,
+passes the theme in a different slot, and groups filesystem `read` calls before
+an extension renderer runs. Those differences are handled inside the package:
+Pi behavior is unchanged, and omp gets the same two-line cards, including `read`.
+
 ## Scope
 
-Only the seven built-in tools are restyled. MCP / third-party tools keep their
-default rendering — Pi does not expose a way to override a foreign tool's renderer
-without owning its execution.
+Only the seven built-in tools are restyled, plus the optional `generate_image`
+tool. MCP / third-party tools keep their default rendering — neither host
+exposes a way to override a foreign tool's renderer without owning its execution.
 
 ## Troubleshooting
 

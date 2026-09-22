@@ -1,3 +1,5 @@
+import { isOmpHost } from "./host-kind.js";
+
 /**
  * Tool parameter schemas for hosts that do not expose a raw schema.
  *
@@ -88,18 +90,29 @@ const REQUIRED: Record<string, readonly string[]> = {
  * Returns `undefined` for an unknown tool, so a caller keeps whatever the host
  * supplied rather than inventing arguments for a tool it does not understand.
  */
+const OMP_EDIT_FIELDS = {
+  input: {
+    type: "string" as const,
+    description:
+      'Line-anchored patch body. MUST begin with a "[PATH#TAG]" section header using the TAG from the latest read/search. Then one or more ops, e.g. "PUT 12.=12:\\n+new text".',
+  },
+};
+const OMP_EDIT_REQUIRED = ["input"] as const;
+
 export function declaredSchema(
   name: string,
   withReasoning: boolean
 ): Record<string, unknown> | undefined {
-  const fields = FIELDS[name];
+  const ompEdit = name === "edit" && isOmpHost();
+  const fields = ompEdit ? OMP_EDIT_FIELDS : FIELDS[name];
   if (!fields) return undefined;
   const properties: Record<string, unknown> = withReasoning
     ? { reasoning: REASONING_PROPERTY }
     : {};
   for (const [key, spec] of Object.entries(fields)) properties[key] = spec;
+  const requiredFields = ompEdit ? OMP_EDIT_REQUIRED : (REQUIRED[name] ?? []);
   const required = withReasoning
-    ? ["reasoning", ...(REQUIRED[name] ?? [])]
-    : [...(REQUIRED[name] ?? [])];
+    ? ["reasoning", ...requiredFields]
+    : [...requiredFields];
   return { type: "object", properties, required };
 }

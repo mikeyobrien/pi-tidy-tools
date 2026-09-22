@@ -272,12 +272,14 @@ test("the full RPC narrative records exact prompt, events, usage, tools, and cal
       { immediate: true, status: "running", events: 1, tools: 0, active: 0 },
       { immediate: false, status: "running", events: 4, tools: 0, active: 0 },
       { immediate: false, status: "running", events: 5, tools: 0, active: 0 },
-      { immediate: true, status: "running", events: 6, tools: 0, active: 0 },
-      { immediate: true, status: "running", events: 7, tools: 1, active: 1 },
-      { immediate: true, status: "running", events: 8, tools: 2, active: 2 },
-      { immediate: true, status: "running", events: 9, tools: 2, active: 1 },
-      { immediate: true, status: "running", events: 10, tools: 2, active: 0 },
-      { immediate: true, status: "running", events: 11, tools: 2, active: 0 },
+      // Tool churn coalesces (see the routine-churn regression test); only the
+      // spawn, first-activity, and terminal edges force an immediate flush.
+      { immediate: false, status: "running", events: 6, tools: 0, active: 0 },
+      { immediate: false, status: "running", events: 7, tools: 1, active: 1 },
+      { immediate: false, status: "running", events: 8, tools: 2, active: 2 },
+      { immediate: false, status: "running", events: 9, tools: 2, active: 1 },
+      { immediate: false, status: "running", events: 10, tools: 2, active: 0 },
+      { immediate: false, status: "running", events: 11, tools: 2, active: 0 },
       { immediate: true, status: "running", events: 12, tools: 2, active: 0 },
       { immediate: true, status: "completed", events: 12, tools: 2, active: 0 },
     ]);
@@ -884,4 +886,44 @@ test("native steering reports settlement races instead of claiming acceptance", 
     await assert.rejects(() => handle.steer("too late"), /before acknowledging control|settled before RPC steer/);
     const result = await pending;
     assert.equal(result.status, "warning");
+  }));
+
+test("routine tool churn is coalesced while lifecycle transitions stay immediate", async () =>
+  fixture(async (root, runtime) => {
+    // Regression: every tool_execution_start/end used to call changed(true),
+    // bypassing the 100ms coalescer. On a multi-child fan-out that is two full
+    // repaints per tool per child, which is what thrashed the TUI when expanded.
+    // Only lifecycle transitions may force an immediate emit.
+    await useInlineRpc(
+      root,
+      `${stateResponse}
+ if (command.type === "prompt") {
+  for (let i = 0; i < 40; i++) {
+   send({ type: "tool_execution_start", toolCallId: "t" + i, toolName: "read", args: { path: "f" + i + ".ts" } });
+   send({ type: "tool_execution_end", toolCallId: "t" + i, toolName: "read", result: { content: [{ type: "text", text: "x" }] } });
+  }
+  send({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "churned" }] } });
+  send({ type: "agent_settled" });
+ }
+ `
+    );
+    const child = makeChild(root, "churn", plan());
+    const immediates: boolean[] = [];
+    const result = await runChild(child, runtime, undefined, (immediate) =>
+      immediates.push(immediate === true)
+    );
+
+    assert.equal(result.status, "completed");
+    assert.equal(result.toolCount, 40);
+    assert.deepEqual(result.activeTools, []);
+
+    // 80 tool events must not produce 80 immediate flushes.
+    const immediateCount = immediates.filter(Boolean).length;
+    assert.ok(
+      immediateCount <= 6,
+      `80 tool events forced ${immediateCount} immediate flushes; expected lifecycle-only immediates`
+    );
+    // But the run must still surface updates, and end on an immediate settle.
+    assert.ok(immediates.length >= 2, `expected coalesced plus lifecycle updates, got ${immediates.length}`);
+    assert.equal(immediates.at(-1), true, "final settle must flush immediately");
   }));

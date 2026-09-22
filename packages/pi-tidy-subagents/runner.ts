@@ -132,17 +132,17 @@ export async function runChild(
    const id = String(raw.toolCallId); const name = String(raw.toolName ?? "tool"); const args = raw.args ?? {};
    toolArgs.set(id, args); toolStartedAt.set(id, Date.now()); child.toolCount++;
    appendActivities(...buildToolActivityBlock(name, args, "running"));
-   child.activeTools.push({ id, name, activityIndex: Math.max(0, child.activities.length - 2) }); changed(true);
+   child.activeTools.push({ id, name, activityIndex: Math.max(0, child.activities.length - 2) }); changed(false);
   } else if (raw.type === "tool_execution_end") {
    const id = String(raw.toolCallId); const active = child.activeTools.find((tool) => tool.id === id);
    const block = buildToolActivityBlock(raw.toolName ?? "tool", toolArgs.get(id) ?? {}, raw.isError ? "error" : "success", raw.result, Date.now() - (toolStartedAt.get(id) ?? Date.now()));
    if (active && active.activityIndex >= 0) child.activities.splice(active.activityIndex, 2, ...block);
    else appendActivities(...block);
    child.activeTools = child.activeTools.filter((tool) => tool.id !== id);
-   toolArgs.delete(id); toolStartedAt.delete(id); changed(true);
+   toolArgs.delete(id); toolStartedAt.delete(id); changed(false);
   } else if (raw.type === "queue_update") {
    child.pendingSteering = Array.isArray(raw.steering) ? raw.steering.length : child.pendingSteering;
-   changed(true);
+   changed(false);
   } else if (raw.type === "message_update" && raw.assistantMessageEvent?.type === "text_delta") {
    sawTextDelta = true;
    const combined = `${child.streamingLine ?? ""}${String(raw.assistantMessageEvent.delta ?? "")}`;
@@ -161,7 +161,7 @@ export async function runChild(
    child.input += usage.input; child.output += usage.output;
    child.cacheRead += usage.cacheRead; child.cacheWrite += usage.cacheWrite;
    child.providerTraffic += usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
-   child.tokens = child.providerTraffic; changed(true);
+   child.tokens = child.providerTraffic; changed(false);
   } else if (raw.type === "agent_settled") {
    settled = true; changed(true);
    proc.stdin.end(); proc.kill("SIGTERM"); setTimeout(() => proc.kill("SIGKILL"), 750).unref();

@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { buildToolActivityBlock } from "./vendor/pi-tidy-core/index.js";
 import { appendEvent } from "./store.js";
 import type { ChildRuntimePlan, ChildState, NormalizedEvent } from "./types.js";
@@ -16,9 +16,42 @@ export interface ChildControlHandle {
 export function launchRuntime(plan: Pick<ChildRuntimePlan, "model" | "thinking">, shared: SharedLaunchContext): Runtime {
  return { ...shared, model: plan.model, thinking: plan.thinking };
 }
+/**
+ * The flag that grants a child approval for tool calls differs by host: Pi
+ * accepts `--approve`, omp accepts `--auto-approve` and rejects `--approve` with
+ * `Error: unknown flag: --approve` (exit 2), which kills the child before it
+ * settles. Every other flag `buildChildArgs` emits is accepted by both hosts.
+ *
+ * Resolved by probing the resolved executable once per process rather than by
+ * sniffing a host name, so a future host is handled without another branch.
+ */
+let approvalFlag: string | undefined;
+function resolveApprovalFlag(): string {
+ if (approvalFlag !== undefined) return approvalFlag;
+ if (process.env.PI_TIDY_SUBAGENT_NO_PROBE === "1") return (approvalFlag = "--approve");
+ // Tests and fixtures point the executable at a fake RPC handler, which does not
+ // parse host flags; probing it would be meaningless and could stall. The flag
+ // only matters for a real host CLI, so keep `--approve` (Pi's spelling) there.
+ if (process.env.PI_TIDY_SUBAGENT_EXECUTABLE || process.env.PI_TIDY_SUBAGENT_ARGS) {
+  return (approvalFlag = "--approve");
+ }
+ try {
+  const exe = process.argv[1] ? process.execPath : "pi";
+  // Do NOT append `--help`: the host prints usage and exits 0 before validating
+  // the flag, which would report every host as supporting `--approve`. The
+  // unmassaged invocation exits non-zero with "unknown flag" where unsupported.
+  const result = spawnSync(exe, ["--mode", "rpc", "--no-session", "--approve"], { timeout: 10_000, stdio: ["ignore", "ignore", "pipe"], env: process.env });
+  const stderr = String(result.stderr ?? "");
+  approvalFlag = /unknown flag/i.test(stderr) ? "--auto-approve" : "--approve";
+ } catch {
+  approvalFlag = "--approve";
+ }
+ return approvalFlag;
+}
 export function buildChildArgs(runtime: Pick<Runtime, "model" | "thinking" | "tools"> & { approved?: boolean }): string[] {
  const toolArgs = runtime.tools.length > 0 ? ["--tools", runtime.tools.join(",")] : ["--no-tools"];
- return ["--mode", "rpc", "--no-session", ...(runtime.approved ? ["--approve"] : []), "--model", runtime.model, "--thinking", runtime.thinking, ...toolArgs];
+ const approvalArgs = runtime.approved ? [resolveApprovalFlag()] : [];
+ return ["--mode", "rpc", "--no-session", ...approvalArgs, "--model", runtime.model, "--thinking", runtime.thinking, ...toolArgs];
 }
 const messageText = (message: any): string => Array.isArray(message?.content)
  ? message.content.filter((part: any) => part?.type === "text").map((part: any) => String(part.text ?? "")).join("") : "";

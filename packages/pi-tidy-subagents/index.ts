@@ -53,9 +53,21 @@ export type { AuthModelRef, RoutingConfig, RoutingSelection, TaskClass } from ".
 export const MODEL_FIELD_DESCRIPTION =
  "Exact registered provider/model-id (split at first '/'). Omit inherits parent. No aliases, profiles, or fuzzy patterns. Prefer inherit; optional task→model map via /tidy-subagents-routing.";
 
-/** Short, stable thinking field guidance (closed levels; inheritance default; brief task shapes). */
+/**
+ * Short, stable thinking field guidance (closed levels; inheritance default).
+ *
+ * Deliberately does NOT recommend a level per task shape. Naming levels invites
+ * the model to send one explicitly, and an explicit level that the selected
+ * model does not support fails preflight outright. That is reachable in
+ * practice: newer Anthropic models dropped `minimal` (opus-5-5 supports only
+ * low|medium|high|xhigh|max), so the previous "minimal/low for bounded or
+ * mechanical work" advice failed every mechanical child on those models.
+ *
+ * Omission is the safe default: the parent level is inherited and canonically
+ * clamped to whatever the child model supports.
+ */
 export const THINKING_FIELD_DESCRIPTION =
- "Pi thinking level: off|minimal|low|medium|high|xhigh|max. Omit inherits parent. Primary per-child control: minimal/low for bounded or mechanical work; medium for ordinary review; high+ for architecture, concurrency, hard diagnosis. Explicit unsupported fails preflight; inherited clamps.";
+ "Pi thinking level: off|minimal|low|medium|high|xhigh|max. Omit inherits parent and clamps to the child model's levels \u2014 the primary per-child control for bounded, mechanical, architecture or concurrency work. Pass a level only if supported; explicit unsupported fails preflight rather than clamping.";
 
 function publicDetails(details: RunDetails): RunDetails {
  return { ...details, children: details.children.map(publicChild) };
@@ -122,7 +134,7 @@ function validateControlInput(params: { action: string; target?: string; message
 function basePromptGuidelines(routing: RoutingConfig | undefined): string[] {
  return [
   "Use subagent only for independent work. Concurrent children share the working tree; assign non-overlapping mutation scopes or read-only objectives.",
-  "Thinking is the primary per-child control. Prefer omit thinking to inherit parent; otherwise pick a closed Pi level for the task shape.",
+  "Thinking is the primary per-child control. Prefer omit thinking to inherit the parent level, which clamps to the child model's supported levels; only pass an explicit level when the selected model is known to support it, since an unsupported explicit level fails preflight rather than clamping.",
   "Prefer omit model (inherit parent). Pass an exact registered provider/model-id only when capability or cost warrants. No aliases, profiles, or fuzzy patterns.",
   // Documentary override hierarchy only — extension does not parse AGENTS.md or auto-inject routing.
   "Optional model/thinking precedence (most specific wins): (1) explicit per-child model/thinking request fields on the tool call; (2) user turn instructions; (3) AGENTS.md / project agent instructions; (4) optional structured agent-dir routing map from /tidy-subagents-routing; (5) extension short schema defaults / promptGuidelines; (6) parent inheritance when fields remain omitted. Extension does not parse AGENTS.md or auto-inject routing.",

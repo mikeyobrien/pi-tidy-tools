@@ -522,7 +522,7 @@ test("explicit thinking validates vocabulary, capability presence, and support",
       requestedModel: "other/plain",
       requestedThinking: "high",
       message:
-        'thinking "high" is not supported by "other/plain"; supported: off',
+        'thinking "high" is not supported by "other/plain"; supported: off. Omit thinking to inherit the parent level, or retry with one of the supported levels above.',
     },
   ]);
 
@@ -535,7 +535,7 @@ test("explicit thinking validates vocabulary, capability presence, and support",
   );
   assert.equal(
     inheritedUnsupported.diagnostics[0]!.message,
-    'thinking "high" is not supported by "other/plain"; supported: off'
+    'thinking "high" is not supported by "other/plain"; supported: off. Omit thinking to inherit the parent level, or retry with one of the supported levels above.'
   );
   assert.equal(
     inheritedUnsupported.diagnostics[0]!.requestedModel,
@@ -565,7 +565,7 @@ test("explicit thinking validates vocabulary, capability presence, and support",
   );
   assert.equal(
     emptyAlternatives.diagnostics[0]!.message,
-    'thinking "low" is not supported by "other/none"; supported: (none)'
+    'thinking "low" is not supported by "other/none"; supported: (none). Omit thinking to inherit the parent level, or retry with one of the supported levels above.'
   );
 });
 

@@ -185,8 +185,12 @@ function resolveThinking(
 
   const supported = supportedLevels(model);
   if (!supported.includes(requestedThinking)) {
+   // The schema advertises all seven levels because it is built at registration,
+   // before any model is known. A model can therefore reject a level the caller
+   // had no way to rule out — newer Anthropic models drop `minimal`, for
+   // instance. Name the remedy so a retry succeeds rather than repeating.
    diagnostics.push(diagnostic(index, label, { requestedModel: requestedModel ?? modelRef, requestedThinking },
-    `thinking ${JSON.stringify(requestedThinking)} is not supported by ${JSON.stringify(modelRef)}; supported: ${formatAlternatives(supported)}`));
+    `thinking ${JSON.stringify(requestedThinking)} is not supported by ${JSON.stringify(modelRef)}; supported: ${formatAlternatives(supported)}. Omit thinking to inherit the parent level, or retry with one of the supported levels above.`));
    return undefined;
   }
 

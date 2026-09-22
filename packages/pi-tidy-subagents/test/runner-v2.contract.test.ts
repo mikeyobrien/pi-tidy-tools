@@ -927,3 +927,34 @@ test("routine tool churn is coalesced while lifecycle transitions stay immediate
     assert.ok(immediates.length >= 2, `expected coalesced plus lifecycle updates, got ${immediates.length}`);
     assert.equal(immediates.at(-1), true, "final settle must flush immediately");
   }));
+
+test("the approval flag falls back to the host's spelling when --approve is rejected", async () => {
+  // omp rejects Pi's `--approve` with `Error: unknown flag: --approve`, which
+  // kills every child before it settles (0 tools, ~1s). The flag is probed once
+  // against the real host binary rather than sniffed by name.
+  const previous = {
+    noProbe: process.env.PI_TIDY_SUBAGENT_NO_PROBE,
+    exe: process.env.PI_TIDY_SUBAGENT_EXECUTABLE,
+    args: process.env.PI_TIDY_SUBAGENT_ARGS,
+  };
+
+  // A fixture executable must not be probed: it does not parse host flags.
+  process.env.PI_TIDY_SUBAGENT_EXECUTABLE = process.execPath;
+  delete process.env.PI_TIDY_SUBAGENT_NO_PROBE;
+  assert.ok(
+    buildChildArgs({ model: "m", thinking: "off", tools: [], approved: true }).includes("--approve"),
+    "fixture executables keep Pi's spelling rather than being probed"
+  );
+
+  // An unapproved child must not carry any approval flag.
+  assert.ok(
+    !buildChildArgs({ model: "m", thinking: "off", tools: [] }).some((a) => a.startsWith("--app") || a === "--auto-approve"),
+    "an unapproved child must not pass an approval flag"
+  );
+
+  process.env.PI_TIDY_SUBAGENT_EXECUTABLE = previous.exe ?? "";
+  if (previous.args === undefined) delete process.env.PI_TIDY_SUBAGENT_ARGS;
+  else process.env.PI_TIDY_SUBAGENT_ARGS = previous.args;
+  if (previous.noProbe === undefined) delete process.env.PI_TIDY_SUBAGENT_NO_PROBE;
+  else process.env.PI_TIDY_SUBAGENT_NO_PROBE = previous.noProbe;
+});

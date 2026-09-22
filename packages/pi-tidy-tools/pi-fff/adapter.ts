@@ -3,6 +3,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { VERSION, getAgentDir } from "@earendil-works/pi-coding-agent";
 import semver from "semver";
 import type { SourceToolCompositionOptions, SourceToolDefinition } from "../tool-composition.js";
+import { rawSchema } from "../schema-compat.js";
 import { composeSourceTool } from "../tool-composition.js";
 import { matchPiFffSource, PI_FFF_PACKAGE_PROFILES, type PiFffCapabilityProfile, type PiFffPackageIdentity, type PiFffPackageProfile } from "./profiles.js";
 import {
@@ -391,10 +392,13 @@ function plainPrimitiveSchema(schema: unknown, expected: "string" | "number"): b
 }
 
 function scopedSchemaFailure(tool: any, name: "grep" | "find"): string | undefined {
-	const schema = tool.parameters;
+	// A host may expose `parameters` as an opaque value rather than a schema;
+	// fail closed with a readable reason instead of dereferencing it.
+	const schema = rawSchema(tool.parameters);
+	if (!schema) return `${tool.name} exposes no raw parameters schema`;
 	const required = new Set(Array.isArray(schema.required) ? schema.required : []);
 	for (const [field, anchor] of Object.entries(SCOPED_BASELINE[name])) {
-		const property = schema.properties[field];
+		const property = (schema.properties as Record<string, unknown>)[field];
 		const compatible = plainPrimitiveSchema(property, anchor.type);
 		if (!compatible) return `${tool.name}.${field} must remain ${anchor.type}`;
 		if (required.has(field) !== anchor.required) return `${tool.name}.${field} requiredness changed`;
@@ -410,13 +414,17 @@ function scopedSchemaFailure(tool: any, name: "grep" | "find"): string | undefin
 function schemaFailure(tool: any, name: "read" | "grep"): string | undefined {
 	if (!tool || typeof tool !== "object" || tool.name !== name) return `${name} definition is malformed`;
 	if (typeof tool.execute !== "function") return `${name}.execute is not callable`;
-	const schema = tool.parameters;
+	// A host may expose `parameters` as an opaque value rather than a schema;
+	// fail closed with a readable reason instead of dereferencing it.
+	const schema = rawSchema(tool.parameters);
+	if (!schema) return `${name} exposes no raw parameters schema`;
 	const parameterFailure = objectParameterSchemaFailure(schema);
 	if (parameterFailure) return `${name}.${parameterFailure}`;
-	if (Object.hasOwn(schema.properties, "reasoning")) return `${name}.reasoning conflicts with tidy-owned reasoning`;
+	const schemaProperties = (schema.properties ?? {}) as Record<string, unknown>;
+	if (Object.hasOwn(schemaProperties, "reasoning")) return `${name}.reasoning conflicts with tidy-owned reasoning`;
 	const required = new Set(Array.isArray(schema.required) ? schema.required : []);
 	for (const [field, anchor] of Object.entries(BASELINE[name])) {
-		const property = schema.properties[field];
+		const property = schemaProperties[field];
 		if (!equivalentPrimitive(property, anchor.type)) return `${name}.${field} must remain ${anchor.type}`;
 		if (required.has(field) !== anchor.required) return `${name}.${field} requiredness changed`;
 	}
@@ -463,7 +471,8 @@ function validateTrace(trace: readonly RecordedRegistration[], profile: PiFffPac
 			if (profile.profile === "scoped" && (tool.name === "ffgrep" || tool.name === "fffind")) {
 				const publicName = tool.name === "ffgrep" ? "grep" : "find";
 				if (scopedCaptures[publicName]) throw new SurfaceFailure(`duplicate ${tool.name} capture`);
-				if (Object.hasOwn(tool.parameters.properties, "reasoning")) throw new SurfaceFailure(`${tool.name}.reasoning conflicts with tidy-owned reasoning`);
+				const scopedSchema = rawSchema(tool.parameters);
+				if (scopedSchema !== undefined && Object.hasOwn((scopedSchema.properties ?? {}) as Record<string, unknown>, "reasoning")) throw new SurfaceFailure(`${tool.name}.reasoning conflicts with tidy-owned reasoning`);
 				const failure = scopedSchemaFailure(tool, publicName); if (failure) throw new SurfaceFailure(failure);
 				if (conflictNames("tools").includes(publicName)) throw new SurfaceFailure(`tool conflict ${publicName}`);
 				scopedCaptures[publicName] = tool;

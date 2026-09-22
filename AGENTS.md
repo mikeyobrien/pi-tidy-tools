@@ -51,3 +51,115 @@ When done, report: what changed (files), the commit short-hash, and the test
 evidence (suite counts). If you could not finish, report exactly where you
 stopped and what blocks the rest — the triage lead verifies your work
 independently, so claims must match reality.
+
+---
+
+## Hosts: Pi vs omp
+
+These packages target [Pi](https://github.com/earendil-works/pi-mono). **omp**
+("Oh My Pi") is a separate host that loads Pi extensions through a compatibility
+layer. The layer rewrites the module graph and changes several tool contracts, so
+code that works on one host can fail on the other without a type error.
+
+Verify against **both** hosts when you touch tool composition, schemas, or
+rendering. They disagree in ways that are invisible at compile time:
+
+| | Pi 0.87.x | omp |
+| --- | --- | --- |
+| `tool.parameters` | raw JSON Schema object (`type`/`required`/`properties`) | opaque builder function |
+| `generateDiffString` | exported | **not** exported |
+| `edit` tool params | `path` + `edits[]` (exact text replacement) | `input` (line-anchored patch body, `[PATH#TAG]` header) |
+| `renderCall` args | `(args, theme, context)` | `(args, options, theme)` — theme moves from 2nd to 3rd |
+| `renderShell: "self"` | honored (consumed by Pi's tool-execution renderer) | ignored — the string is absent from the omp bundle; dispatch is by tool name |
+| Extension re-import | on change | cached on `?mtime=`; unchanged source is **not** re-imported |
+
+### Never index the theme by position
+
+The theme is not at a fixed argument position and differs per host:
+
+| Host | `renderCall` | `renderResult` |
+| --- | --- | --- |
+| Pi | `(args, theme, context)` | `(result, options, theme, context)` |
+| omp | `(args, options, theme)` | `(result, options, theme, args)` |
+
+Reading a fixed position gives you a render *context* on one host and a theme on
+the other. `theme.bg(...)` on a context throws, and renderer exceptions are
+**not contained**: Pi reports an `uncaughtException` and exits, killing the
+session. Locate the theme by shape (an object with a callable `bg`), and treat a
+missing or throwing theme as "render unstyled" rather than letting it propagate.
+See `docs/research/renderer-theme-argument-position.md`.
+
+### Never assume `parameters` is a schema object
+
+`tool.parameters` is a raw schema on Pi but a **function** on omp, and calling that
+function returns `{}` — it is not a schema factory. The upstream code reads it
+directly (`source.parameters.properties` in `tool-composition.ts`,
+`tool.parameters.properties` in `pi-fff/adapter.ts`), which is exactly the
+assumption that fails on omp. Read it through a guard that returns `undefined`
+for a non-schema, and handle that case.
+
+Guessing a builder's contract silently drops the tool's real arguments. If no raw
+schema is available and you must supply fields yourself, declare the host's actual
+argument set — not a plausible-looking one. Declaring `path`/`oldText`/`newText`
+for omp's `edit` makes every edit fail validation, because omp's `edit` takes a
+single `input` patch body.
+
+### Prefer the host's own exports
+
+Do not reimplement host behavior on all hosts to satisfy the one that lacks it.
+Import the host's implementation when it exists and fall back to a local shim only
+where it is genuinely absent. A local reimplementation of `generateDiffString`
+diverges from the host's on sequences of adjacent insert/delete edits, which
+silently changes rendered diffs on the host that never needed the shim.
+
+### `/tidy` config writes and `ctx.reload()`
+
+`ctx.reload()` does **not** re-import an extension whose source is unchanged. A
+config-only write (mode, icons, enabled) therefore leaves values captured at load
+stale for the whole process. Read config lazily at the point of use. Settings that
+are baked into a schema at registration time genuinely require a process restart —
+say so rather than reporting success.
+
+## Verifying rendered output
+
+Rendering is **not** covered by exit codes or headless runs.
+
+- Headless `-p` mode never renders, so it proves nothing about rendering.
+- omp's native tool cards are shaped closely enough to these packages' blocks that
+  a **failed extension load** goes unnoticed visually. A block you see is not
+  evidence your code drew it.
+- Before trusting any rendered output, confirm the extension actually loaded —
+  watch for a `Failed to load extension` or `Warning:` line above the prompt.
+- Renderer exceptions are not uniformly contained. A missing or throwing theme
+  surfaces as `uncaughtException` and **exits the process** on Pi, while other
+  renderer faults degrade to a native card. Do not assume a bad renderer merely
+  looks wrong.
+- `--mode json` and `tool_execution_end` payloads are produced by `execute`, not
+  by the renderer. They can confirm schemas, executors, and diff content while
+  proving nothing about whether a card can draw. Reach the renderer only through
+  an interactive session.
+
+## Vendored omp compatibility fork
+
+`packages/pi-tidy-tools` upstream targets Pi. The omp-compatible build lives
+outside this repo as a patched vendored copy (see its `OMP-COMPAT.md`), linked in
+as a plugin. When working there:
+
+- **Never run `omp plugin install` for this package.** It reinstalls unpatched
+  upstream and reintroduces the `write` regression. To update, apply the
+  compatibility patch to the new upstream release and re-vendor.
+- **No local `node_modules/@earendil-works/`.** A local copy shadows the host's
+  shim for `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui` and
+  silently changes what the extension imports. A plain `bun install` recreates it
+  (they are `devDependencies`); delete it if it reappears.
+- **`semver` must be installed locally** in the vendored directory, not only in
+  the plugins root. Bare specifiers resolve from the symlink's *realpath*, so the
+  plugins-root copy is invisible from there.
+
+## Reporting host bugs
+
+When a defect belongs in the host rather than here, do not paper over it with a
+plugin-side workaround that degrades behavior. Write up the exact branch, the
+observed behavior, and a concrete suggested patch, and record it next to the code
+it affects. Mark clearly what was **verified** versus **hypothesized** — refuted
+hypotheses must not be re-asserted later.

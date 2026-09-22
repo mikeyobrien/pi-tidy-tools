@@ -1,7 +1,10 @@
-import { createWriteTool, generateDiffString } from "@earendil-works/pi-coding-agent";
+import { createWriteTool } from "@earendil-works/pi-coding-agent";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { TidyMode } from "./config.js";
+import { hostGenerateDiffString } from "./host-diff.js";
+import { REASONING_PROPERTY, declaredSchema } from "./params-schema.js";
+import { rawSchema } from "./schema-compat.js";
 
 export interface SourceToolDefinition {
 	name: string;
@@ -22,16 +25,29 @@ export type ComposedSourceTool<T extends SourceToolDefinition> = Omit<T, "execut
 	execute: (id: string, params: any, signal: any, onUpdate: any, context: any) => any;
 };
 
-/** Clone a JSON-schema params object and inject a required, first reasoning prop. */
-export function withReasoning(parameters: any): any {
-	const reasoning = {
-		type: "string",
-		description:
-			"Short phrase (≤12 words) stating the GOAL behind this call — the why-in-context, not the what. Do NOT restate the file, path, or command (those are already shown next to it); instead give the intent or what you expect to find/confirm. Present-tense, no period. E.g. \"confirm executionStarted is a timestamp\", \"fix the map leak from review\", \"retry match after previous miss\".",
-	};
-	const properties = { reasoning, ...(parameters?.properties ?? {}) };
-	const required = Array.from(new Set(["reasoning", ...(parameters?.required ?? [])]));
-	return { ...parameters, properties, required };
+/**
+ * Clone a JSON-schema params object and inject a required, first reasoning prop.
+ *
+ * Uses the host's real schema when it exposes a readable one. Where the host
+ * exposes no readable schema — an opaque `parameters` value — tidy declares the
+ * tool's argument set itself, because without a declared `reasoning` field the
+ * model is never asked for one and the goal headline is silently absent.
+ *
+ * A tool tidy does not know gets a reasoning-only schema: the field is still
+ * requested, and no argument names are invented that could conflict with the
+ * host's real ones.
+ */
+export function withReasoning(parameters: any, name = "tool"): any {
+	const schema = rawSchema(parameters);
+	if (schema !== undefined) {
+		const properties = { reasoning: REASONING_PROPERTY, ...((schema.properties as Record<string, unknown> | undefined) ?? {}) };
+		const required = Array.from(new Set(["reasoning", ...((schema.required as string[] | undefined) ?? [])]));
+		return { ...schema, properties, required };
+	}
+	const declared = declaredSchema(name, true);
+	if (declared !== undefined) return declared;
+	// Unknown tool: request reasoning without guessing at its arguments.
+	return { properties: { reasoning: REASONING_PROPERTY }, required: ["reasoning"] };
 }
 
 /** Remove only tidy's injected field, retaining all other argument identities. */
@@ -50,15 +66,16 @@ export function composeSourceTool<T extends SourceToolDefinition>(
 	options: SourceToolCompositionOptions,
 ): ComposedSourceTool<T> {
 	const resultMode = options.mode === "result";
-	const sourceHasReasoning = !!source.parameters?.properties
-		&& Object.hasOwn(source.parameters.properties, "reasoning");
+	const sourceSchema = rawSchema(source.parameters);
+	const sourceHasReasoning = sourceSchema !== undefined
+		&& Object.hasOwn((sourceSchema.properties as Record<string, unknown> | undefined) ?? {}, "reasoning");
 	if (!resultMode && sourceHasReasoning) {
 		throw new Error(`${source.name} source schema reserves tidy-owned reasoning`);
 	}
 	const injectReasoning = !resultMode;
 	const composed = {
 		...source,
-		parameters: injectReasoning ? withReasoning(source.parameters) : source.parameters,
+		parameters: injectReasoning ? withReasoning(source.parameters, source.name) : source.parameters,
 		execute(this: SourceToolDefinition, id: string, params: any, signal: any, onUpdate: any, context: any) {
 			const delegatedParams = injectReasoning ? stripReasoning(params).rest : params;
 			return source.execute.call(source, id, delegatedParams, signal, onUpdate, context);
@@ -87,7 +104,7 @@ export function createDiffingWriteTool(cwd: string): SourceToolDefinition {
 						}
 						await mkdir(dirname(path), { recursive: true });
 						await writeFile(path, content, "utf8");
-						diff = generateDiffString(previous, content).diff;
+						diff = hostGenerateDiffString(previous, content).diff;
 					},
 				},
 			});

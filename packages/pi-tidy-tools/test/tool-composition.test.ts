@@ -124,3 +124,46 @@ test("composed execution propagates source errors unchanged", () => {
 
 	assert.throws(() => composed.execute("call-2", {}, undefined, undefined, undefined), (error) => error === failure);
 });
+
+test("an opaque host parameters value still yields a schema that requests reasoning", () => {
+	// Some hosts expose `parameters` as a builder rather than a schema object.
+	// Spreading it would drop every real argument and never declare `reasoning`,
+	// so the goal headline would silently vanish.
+	const opaque = (() => ({})) as unknown;
+	const composed = composeSourceTool(
+		{ name: "read", parameters: opaque, execute() {} },
+		{ mode: "default", reasoningGuideline: guideline },
+	);
+
+	const schema = composed.parameters as { properties: Record<string, unknown>; required: string[] };
+	assert.equal(schema.properties.reasoning !== undefined, true);
+	assert.equal(schema.required.includes("reasoning"), true);
+	assert.equal(schema.properties.path !== undefined, true);
+});
+
+test("an unknown tool on an opaque host gets reasoning without invented arguments", () => {
+	const opaque = (() => ({})) as unknown;
+	const composed = composeSourceTool(
+		{ name: "custom_thing", parameters: opaque, execute() {} },
+		{ mode: "default", reasoningGuideline: guideline },
+	);
+
+	const schema = composed.parameters as { properties: Record<string, unknown>; required: string[] };
+	assert.deepEqual(Object.keys(schema.properties), ["reasoning"]);
+	assert.deepEqual(schema.required, ["reasoning"]);
+});
+
+test("a readable host schema is augmented without losing its own fields", () => {
+	const composed = composeSourceTool(
+		{
+			name: "read",
+			parameters: { type: "object", properties: { path: { type: "string" }, limit: { type: "number" } }, required: ["path"] },
+			execute() {},
+		},
+		{ mode: "default", reasoningGuideline: guideline },
+	);
+
+	const schema = composed.parameters as { properties: Record<string, unknown>; required: string[] };
+	assert.deepEqual(Object.keys(schema.properties), ["reasoning", "path", "limit"]);
+	assert.deepEqual(schema.required, ["reasoning", "path"]);
+});

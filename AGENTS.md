@@ -112,6 +112,31 @@ where it is genuinely absent. A local reimplementation of `generateDiffString`
 diverges from the host's on sequences of adjacent insert/delete edits, which
 silently changes rendered diffs on the host that never needed the shim.
 
+### One renderer owns each phase
+
+The host calls **both** `renderCall` and `renderResult` for the same tool. If both
+draw, the card prints twice — with two different elapsed values, because
+`renderCall` times from its own start stamp while `renderResult` reads the
+persisted duration:
+
+```
+ bash confirm the installed CLI resolves and starts
+   command -v claude && claude --version → done in 16s
+ bash confirm the installed CLI resolves and starts
+   command -v claude && claude --version → done in <1s
+```
+
+| phase | `renderCall` | `renderResult` |
+| --- | --- | --- |
+| streaming | draws | returns an empty component |
+| settled | returns an empty component | draws |
+
+Returning an empty component from the non-owning renderer is correct. Do **not**
+"fix" a missing block by making both renderers draw — that produces the
+duplication above. Guarded by "each tool phase is drawn by exactly one renderer"
+in `packages/pi-tidy-tools/test/extension.test.ts`; the assertion message names
+the failure mode.
+
 ### `/tidy` config writes and `ctx.reload()`
 
 `ctx.reload()` does **not** re-import an extension whose source is unchanged. A

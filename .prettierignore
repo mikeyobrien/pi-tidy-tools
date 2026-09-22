@@ -2,3 +2,14 @@
 # packages/pi-tidy-core/index.ts, so keep prettier away from them.
 vendor/
 packages/pi-tidy-bots/public/app/
+
+# pi-tidy-tools is tab-indented while .prettierrc declares `useTabs: false`, so
+# `prettier --write` rewrites these files end to end. Because lint-staged runs
+# that on every staged file, a one-line change to any of them lands as a
+# thousand-line diff and the real edit is unreviewable. Measured: 16 files,
+# 12,370 lines rewritten from zero-content changes.
+#
+# Nothing here is copied verbatim by scripts/bundle-core.mjs (it only bundles
+# pi-tidy-core/index.ts), so ignoring these paths has no build impact.
+# Preferring the committed style over a mass reformat; see #84.
+packages/pi-tidy-tools/**/*.ts

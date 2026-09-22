@@ -1765,3 +1765,55 @@ test("registered APIs expose exact completions and reason-first tool metadata", 
     assert.equal(tool.parameters.required[0], "reasoning");
   }
 });
+
+test("each tool phase is drawn by exactly one renderer", async () => {
+  // The host calls renderCall and renderResult for the same tool. If both draw
+  // while streaming, or both draw once settled, the card is printed twice — with
+  // two different elapsed values, because renderCall times from its own start
+  // stamp while renderResult reads the persisted duration. Position the guards
+  // wrong and no single-renderer assertion notices.
+  const harness = await registerEnabledExtension();
+  const theme = { bg: (_name: string, text: string) => text };
+  const callArgs = { command: "echo hi", reasoning: "verify phase ownership" };
+  const result = {
+    details: { diff: "" },
+    content: [{ type: "text", text: "hi" }],
+  };
+
+  for (const name of ["bash", "read", "write", "edit", "grep", "find", "ls"]) {
+    const tool = harness.tools.get(name);
+    assert.ok(tool, `${name} must be registered`);
+
+    const streaming = renderedLines(
+      tool.renderCall(callArgs, theme, { isPartial: true, toolCallId: `${name}-live` })
+    );
+    const streamingResult = renderedLines(
+      tool.renderResult(result, { isPartial: true }, theme, { args: callArgs })
+    );
+    assert.ok(
+      streaming.length > 0,
+      `${name}: renderCall must draw while streaming`
+    );
+    assert.deepEqual(
+      streamingResult,
+      [],
+      `${name}: renderResult must stay empty while streaming, or the card doubles`
+    );
+
+    const settledCall = renderedLines(
+      tool.renderCall(callArgs, theme, { isPartial: false, toolCallId: `${name}-done` })
+    );
+    const settledResult = renderedLines(
+      tool.renderResult(result, { isPartial: false }, theme, { args: callArgs })
+    );
+    assert.deepEqual(
+      settledCall,
+      [],
+      `${name}: renderCall must be empty once settled, or the card doubles`
+    );
+    assert.ok(
+      settledResult.length > 0,
+      `${name}: renderResult must draw once settled`
+    );
+  }
+});

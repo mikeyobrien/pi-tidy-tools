@@ -306,8 +306,9 @@ test("opted-in outputReasoning lands in details and in the call's usage", async 
   assert.equal(lines[0], "codemode count the test files");
   assert.equal(lines[1], '  ✓ bash <1s {"command":"ls"}');
   assert.equal(lines[2], '  ✗ read {"path":"a"}');
-  assert.match(lines[3], /^ {2}↳ Counted three test files\. → done \(2 calls\) in /);
-  assert.equal(lines.length, 4);
+  assert.equal(lines[3], '  {"files":3}');
+  assert.match(lines[4], /^ {2}↳ Counted three test files\. → done \(2 calls\) in /);
+  assert.equal(lines.length, 5);
 });
 
 test("an unavailable summary model is reported on the card, not thrown", async () => {
@@ -361,6 +362,7 @@ test("codemode blocks draw the script goal, falling back to the first code line"
     "codemode const x = 1;",
     '  ✓ bash <1s {"command":"ls"}',
     '  ✗ read {"path":"a"}',
+    '  {"files":3}',
     "  const x = 1; → done (2 calls) in 1s",
   ]);
 
@@ -393,23 +395,23 @@ test("codemode blocks draw the script goal, falling back to the first code line"
     "codemode count the test files → done (2 calls) in <1s",
     '  ✓ bash <1s {"command":"ls"}',
     '  ✗ read {"path":"a"}',
+    '  {"files":3}',
     "  ↳ Counted.",
   ]);
 });
 
-test("expanded codemode blocks add failure details, the script, and the output", () => {
+test("expanded codemode blocks add failure details and the script, not a short output again", () => {
   const lines = buildToolBlock(
     "codemode",
     { code: SCRIPT },
     { ...scriptResult, details: { ...scriptResult.details, outputReasoningError: "outputReasoning model x not found" } },
     { expanded: true, icons: false }
   ).map(withoutAnsi);
-  assert.deepEqual(lines.slice(4), [
+  assert.deepEqual(lines.slice(5), [
     "  outputReasoning model x not found",
     "  ✗ read: ENOENT",
     "  // @reasoning: count the test files",
     "  return (await tools.bash({ command: 'ls' }));",
-    '  {"files":3}',
   ]);
 });
 
@@ -483,4 +485,52 @@ test("every nested call gets a line, MCP calls with whole-second durations", () 
     '  ⊘ bash <1s {"command":"true"}',
     "  ↳ Found 4 open bugs and waited for the green build. → done (3 calls) in 5m 38s",
   ]);
+});
+
+const HEADER = "Script completed\nWall time 0.3 seconds\nOutput:\n";
+const outputResult = (lines: string[]) => ({
+  content: [{ type: "text", text: HEADER }, ...lines.map((text) => ({ type: "text", text }))],
+  details: { calls: [] },
+});
+
+test("short codemode output shows whole on the card, one console.log per line", () => {
+  const five = ["open: 4", "closed: 12", "", "oldest:\tPI-7", "newest: PI-42"];
+  const lines = buildToolBlock("codemode", { code: SCRIPT }, outputResult(five), { icons: false }).map(withoutAnsi);
+  assert.deepEqual(lines, [
+    "codemode count the test files",
+    "  open: 4",
+    "  closed: 12",
+    "  ",
+    "  oldest: PI-7",
+    "  newest: PI-42",
+    "  return (await tools.bash({ command: 'ls' })); → done (0 calls) in <1s",
+  ]);
+  // A single block holding several lines is split the same way.
+  const joined = buildToolBlock("codemode", { code: SCRIPT }, outputResult(["a\nb"]), { icons: false }).map(withoutAnsi);
+  assert.deepEqual(joined.slice(1, 3), ["  a", "  b"]);
+});
+
+test("longer codemode output stays behind ctrl+o", () => {
+  const six = ["1", "2", "3", "4", "5", "6"];
+  const collapsed = buildToolBlock("codemode", { code: SCRIPT }, outputResult(six), { icons: false }).map(withoutAnsi);
+  assert.equal(collapsed.length, 2);
+  const expanded = buildToolBlock("codemode", { code: SCRIPT }, outputResult(six), {
+    icons: false,
+    expanded: true,
+  }).map(withoutAnsi);
+  assert.deepEqual(expanded.slice(-6), six.map((line) => `  ${line}`));
+});
+
+test("a failed script shows its short error output on the card", () => {
+  const failed = {
+    content: [
+      { type: "text", text: "Script failed\nWall time 0.1 seconds\nOutput:\n" },
+      { type: "text", text: "Script error:\nTypeError: not a function" },
+    ],
+    details: { calls: [] },
+    isError: true,
+  };
+  const lines = buildToolBlock("codemode", { code: SCRIPT }, failed, { isError: true, icons: false }).map(withoutAnsi);
+  assert.deepEqual(lines.slice(1, 3), ["  Script error:", "  TypeError: not a function"]);
+  assert.match(lines[3], /→ failed \(0 calls\)/);
 });

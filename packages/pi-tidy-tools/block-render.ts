@@ -387,18 +387,40 @@ function codemodeExpandedLines(
   if (typeof args.code === "string")
     for (const line of args.code.replace(/\s+$/, "").split("\n"))
       out.push(`${INDENT}${CYAN}${expandTabs(line)}${RESET}`);
-  // Codemode's header is its own content block; the output follows it.
-  const blocks = Array.isArray(result?.content) ? result.content : [];
-  const text = blocks
-    .filter((block: any) => block?.type === "text" && typeof block.text === "string")
-    .map((block: any) => block.text)
-    .join("")
-    .replace(SCRIPT_HEADER, "")
-    .replace(/\s+$/, "");
-  if (text)
-    for (const raw of text.split("\n"))
+  // Short output is already on the collapsed card; do not repeat it.
+  if (codemodeShortOutput(result).length === 0)
+    for (const raw of codemodeOutputLines(result))
       out.push(`${INDENT}${DIM}${expandTabs(raw)}${RESET}`);
   return out;
+}
+
+/** The script's own output: every text block after the "Script …" header. */
+function codemodeOutputLines(result: any): string[] {
+  // Codemode's header is its own content block, and every text()/console.*
+  // call is a further block without a trailing newline: one block per line.
+  const texts = (Array.isArray(result?.content) ? result.content : [])
+    .filter((block: any) => block?.type === "text" && typeof block.text === "string")
+    .map((block: any) => block.text as string);
+  if (texts.length > 0 && SCRIPT_HEADER.test(texts[0])) {
+    texts[0] = texts[0].replace(SCRIPT_HEADER, "");
+    if (texts[0] === "") texts.shift();
+  }
+  const text = texts.join("\n").replace(/\s+$/, "");
+  return text ? text.split("\n") : [];
+}
+
+/** Output up to this many lines is shown whole on the collapsed card. */
+export const SHORT_OUTPUT_LINES = 5;
+
+/**
+ * The output lines the collapsed card shows: all of a short output, none of
+ * a longer one (ctrl+o shows it). A call rejected before its script ran has
+ * no output of its own; its reason is already the card's detail.
+ */
+function codemodeShortOutput(result: any): string[] {
+  if (codemodeRejection(result) && result?.isError) return [];
+  const lines = codemodeOutputLines(result);
+  return lines.length <= SHORT_OUTPUT_LINES ? lines : [];
 }
 
 /**
@@ -466,9 +488,17 @@ export function buildToolBlock(
     : !detail
       ? `${INDENT}${DIM}→${RESET} ${summary}`
       : `${INDENT}${detailColor}${detail}${RESET} ${DIM}→${RESET} ${summary}`;
-  // Codemode lists every nested call between its goal and its summary.
+  // Codemode lists every nested call, then a short output, between its goal
+  // and its summary.
   const callLines =
-    name === CODEMODE_TOOL && !isPartial ? codemodeCallLines(result) : [];
+    name === CODEMODE_TOOL && !isPartial
+      ? [
+          ...codemodeCallLines(result),
+          ...codemodeShortOutput(result).map(
+            (line) => `${INDENT}${expandTabs(line)}`
+          ),
+        ]
+      : [];
   let lines: string[];
   if (mode === "reasoning") {
     lines = [

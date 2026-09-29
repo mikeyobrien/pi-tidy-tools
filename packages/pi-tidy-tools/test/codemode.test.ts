@@ -304,8 +304,10 @@ test("opted-in outputReasoning lands in details and in the call's usage", async 
   );
   const lines = card.render(160).map((line: string) => withoutAnsi(line).trimEnd());
   assert.equal(lines[0], "codemode count the test files");
-  assert.match(lines[1], /^ {2}↳ Counted three test files\. → done \(2 calls\) in /);
-  assert.equal(lines.length, 2);
+  assert.equal(lines[1], '  ✓ bash <1s {"command":"ls"}');
+  assert.equal(lines[2], '  ✗ read {"path":"a"}');
+  assert.match(lines[3], /^ {2}↳ Counted three test files\. → done \(2 calls\) in /);
+  assert.equal(lines.length, 4);
 });
 
 test("an unavailable summary model is reported on the card, not thrown", async () => {
@@ -355,13 +357,18 @@ test("codemode blocks draw the script goal, falling back to the first code line"
     elapsedMs: 1200,
     icons: false,
   }).map(withoutAnsi);
-  assert.deepEqual(plain, ["codemode const x = 1;", "  const x = 1; → done (2 calls) in 1s"]);
+  assert.deepEqual(plain, [
+    "codemode const x = 1;",
+    '  ✓ bash <1s {"command":"ls"}',
+    '  ✗ read {"path":"a"}',
+    "  const x = 1; → done (2 calls) in 1s",
+  ]);
 
   const failed = buildToolBlock("codemode", { code: SCRIPT }, { ...scriptResult, isError: true }, {
     isError: true,
     icons: false,
   }).map(withoutAnsi);
-  assert.match(failed[1], /→ failed \(2 calls\) in <1s$/, "a script failure keeps its header out");
+  assert.match(failed.at(-1)!, /→ failed \(2 calls\) in <1s$/, "a script failure keeps its header out");
   const rejected = buildToolBlock(
     "codemode",
     { code: "return 1;" },
@@ -382,23 +389,26 @@ test("codemode blocks draw the script goal, falling back to the first code line"
     { ...scriptResult, details: { ...scriptResult.details, outputReasoning: "Counted." } },
     { mode: "reasoning", icons: false }
   ).map(withoutAnsi);
-  assert.deepEqual(oneLine, ["codemode count the test files → done (2 calls) in <1s", "  ↳ Counted."]);
+  assert.deepEqual(oneLine, [
+    "codemode count the test files → done (2 calls) in <1s",
+    '  ✓ bash <1s {"command":"ls"}',
+    '  ✗ read {"path":"a"}',
+    "  ↳ Counted.",
+  ]);
 });
 
-test("expanded codemode blocks list the script, each nested call, and the output", () => {
+test("expanded codemode blocks add failure details, the script, and the output", () => {
   const lines = buildToolBlock(
     "codemode",
     { code: SCRIPT },
     { ...scriptResult, details: { ...scriptResult.details, outputReasoningError: "outputReasoning model x not found" } },
     { expanded: true, icons: false }
   ).map(withoutAnsi);
-  assert.deepEqual(lines.slice(2), [
+  assert.deepEqual(lines.slice(4), [
     "  outputReasoning model x not found",
+    "  ✗ read: ENOENT",
     "  // @reasoning: count the test files",
     "  return (await tools.bash({ command: 'ls' }));",
-    '  ✓ bash {"command":"ls"} <1s',
-    '  ✗ read {"path":"a"}',
-    "    ENOENT",
     '  {"files":3}',
   ]);
 });
@@ -448,4 +458,29 @@ test("/tidy output-reasoning writes the opt-out and model without a reload", asy
     else process.env.PI_TIDY_TOOLS_CONFIG = previousConfig;
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("every nested call gets a line, MCP calls with whole-second durations", () => {
+  const result = {
+    content: [{ type: "text", text: "Script completed\nWall time 338.2 seconds\nOutput:\n" }],
+    details: {
+      calls: [
+        { name: "mcp__jira__search", args: '{"q":"open bugs"}', status: "ok", durationMs: 13_200 },
+        { name: "mcp__ci__wait_for_build", args: "", status: "ok", durationMs: 325_000 },
+        { name: "bash", args: '{"command":"true"}', status: "cancelled", durationMs: 400 },
+      ],
+      outputReasoning: "Found 4 open bugs and waited for the green build.",
+    },
+  };
+  const lines = buildToolBlock("codemode", { code: "// @reasoning: triage open bugs\nx()" }, result, {
+    elapsedMs: 338_200,
+    icons: false,
+  }).map(withoutAnsi);
+  assert.deepEqual(lines, [
+    "codemode triage open bugs",
+    '  ✓ mcp__jira__search 13s {"q":"open bugs"}',
+    "  ✓ mcp__ci__wait_for_build 325s",
+    '  ⊘ bash <1s {"command":"true"}',
+    "  ↳ Found 4 open bugs and waited for the green build. → done (3 calls) in 5m 38s",
+  ]);
 });

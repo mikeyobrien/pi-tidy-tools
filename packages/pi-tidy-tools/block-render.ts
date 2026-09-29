@@ -345,7 +345,34 @@ const CALL_MARK: Record<string, string> = {
 };
 const SCRIPT_HEADER = /^Script (completed|failed)\nWall time [\d.]+ seconds\nOutput:\n/;
 
-/** Expanded codemode card: the script, each nested call, then the output. */
+/** A nested call's duration in whole seconds: "13s", "325s". */
+export function formatCallSeconds(milliseconds: number): string {
+  return milliseconds < 1000 ? "<1s" : `${Math.round(milliseconds / 1000)}s`;
+}
+
+function nestedCalls(result: any): any[] {
+  return Array.isArray(result?.details?.calls) ? result.details.calls : [];
+}
+
+/**
+ * One line per nested call, MCP calls included, in the order the script made
+ * them: status mark, tool name, duration, then the arguments. The duration
+ * sits before the arguments so width fitting trims arguments, never times.
+ */
+function codemodeCallLines(result: any): string[] {
+  return nestedCalls(result).map((call) => {
+    const mark = CALL_MARK[call?.status] ?? CALL_MARK.running;
+    const failed = call?.status === "error";
+    const duration =
+      typeof call?.durationMs === "number"
+        ? ` ${DIM}${formatCallSeconds(call.durationMs)}${RESET}`
+        : "";
+    const callArgs = oneLine(String(call?.args ?? ""));
+    return `${INDENT}${mark} ${failed ? RED : BOLD}${call?.name ?? "?"}${RESET}${duration}${callArgs ? ` ${DIM}${callArgs}${RESET}` : ""}`;
+  });
+}
+
+/** Expanded codemode card: failure details, the script, then the output. */
 function codemodeExpandedLines(
   args: Record<string, unknown>,
   result: any
@@ -354,22 +381,12 @@ function codemodeExpandedLines(
   const reasoningError = result?.details?.outputReasoningError;
   if (typeof reasoningError === "string")
     out.push(`${INDENT}${DIM}${oneLine(reasoningError)}${RESET}`);
+  for (const call of nestedCalls(result))
+    if (typeof call?.error === "string")
+      out.push(`${INDENT}${RED}✗ ${call?.name ?? "?"}: ${oneLine(call.error)}${RESET}`);
   if (typeof args.code === "string")
     for (const line of args.code.replace(/\s+$/, "").split("\n"))
       out.push(`${INDENT}${CYAN}${expandTabs(line)}${RESET}`);
-  const calls = Array.isArray(result?.details?.calls) ? result.details.calls : [];
-  for (const call of calls) {
-    const mark = CALL_MARK[call?.status] ?? CALL_MARK.running;
-    const duration =
-      typeof call?.durationMs === "number"
-        ? ` ${DIM}${formatElapsed(call.durationMs)}${RESET}`
-        : "";
-    out.push(
-      `${INDENT}${mark} ${BOLD}${call?.name ?? "?"}${RESET} ${DIM}${oneLine(String(call?.args ?? ""))}${RESET}${duration}`
-    );
-    if (typeof call?.error === "string")
-      out.push(`${INDENT}  ${RED}${oneLine(call.error)}${RESET}`);
-  }
   // Codemode's header is its own content block; the output follows it.
   const blocks = Array.isArray(result?.content) ? result.content : [];
   const text = blocks
@@ -449,18 +466,23 @@ export function buildToolBlock(
     : !detail
       ? `${INDENT}${DIM}→${RESET} ${summary}`
       : `${INDENT}${detailColor}${detail}${RESET} ${DIM}→${RESET} ${summary}`;
+  // Codemode lists every nested call between its goal and its summary.
+  const callLines =
+    name === CODEMODE_TOOL && !isPartial ? codemodeCallLines(result) : [];
   let lines: string[];
   if (mode === "reasoning") {
     lines = [
       `${runningPrefix}${toolLabel} ${headline} ${DIM}→${RESET} ${summary}`,
+      ...callLines,
     ];
   } else if (mode === "result") {
     const resultDetail = !detail ? "" : ` ${detailColor}${detail}${RESET}`;
     lines = [
       `${runningPrefix}${toolLabel}${resultDetail} ${DIM}→${RESET} ${summary}`,
+      ...callLines,
     ];
   } else {
-    lines = [`${runningPrefix}${toolLabel} ${headline}`, line2];
+    lines = [`${runningPrefix}${toolLabel} ${headline}`, ...callLines, line2];
   }
   if (summaryLine && mode !== "default") lines.push(summaryLine);
   if (expanded && !isPartial) lines.push(...expandedLines(name, rest, result));

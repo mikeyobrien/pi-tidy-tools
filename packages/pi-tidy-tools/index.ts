@@ -462,7 +462,7 @@ export function createTidyExtension(
     /**
      * Pi's own codemode definition with tidy's card. The schema object,
      * grammar, and loadout hook are the host's, untouched; tidy requires the
-     * script's `// @reasoning:` line and, when opted in, attaches the
+     * script's `// @reasoning:` line and, unless disabled, attaches the
      * outputReasoning summary to `details`.
      */
     const decorateCodemode = (
@@ -645,15 +645,26 @@ export function createTidyExtension(
     startupPlan.commit(decorate);
 
     // omp has no codemode; on Pi < 0.99 the export is absent.
-    const codemodeSource = isOmpHost()
+    const createCodemodeExtension = isOmpHost()
       ? undefined
-      : captureCodemodeDefinition(
-          pi,
-          "createCodemodeExtension" in dependencies
-            ? dependencies.createCodemodeExtension
-            : (host as Record<string, unknown>).createCodemodeExtension
-        );
-    if (codemodeSource) pi.registerTool(decorateCodemode(codemodeSource) as any);
+      : "createCodemodeExtension" in dependencies
+        ? dependencies.createCodemodeExtension
+        : (host as Record<string, unknown>).createCodemodeExtension;
+    // Registered after load, like any late tool. Pi drops a replaceable
+    // built-in extension (and warns) when another extension registers one of
+    // its tool names DURING load; a later registration never triggers that.
+    // Built-ins load after user and package extensions, and the first
+    // extension to register a name owns it, so this definition takes over the
+    // built-in's codemode just as tidy's read/bash replace the core tools.
+    let codemodeRegistered = false;
+    if (typeof createCodemodeExtension === "function")
+      pi.on("session_start", async () => {
+        if (codemodeRegistered) return;
+        const source = captureCodemodeDefinition(pi, createCodemodeExtension);
+        if (!source) return;
+        codemodeRegistered = true;
+        pi.registerTool(decorateCodemode(source) as any);
+      });
 
     // Issue 132: provider-abstracted image generation. Default provider
     // registrations (grok-build) load at import; further providers

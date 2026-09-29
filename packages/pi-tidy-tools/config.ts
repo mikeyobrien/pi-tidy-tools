@@ -91,7 +91,7 @@ export function loadTidyMode(configPath = defaultConfigPath()): TidyMode {
 }
 
 /**
- * Opt-in codemode `outputReasoning` summary. Off unless explicitly enabled.
+ * Codemode `outputReasoning` summary. On unless explicitly disabled.
  * `model` is a "provider/id" override; unset inherits the session's model.
  * Read at the point of use: a config write takes effect without a reload.
  */
@@ -111,12 +111,12 @@ export function loadTidyOutputReasoning(
         parsed.outputReasoningModel.trim() !== ""
           ? parsed.outputReasoningModel.trim()
           : undefined;
-      return { enabled: parsed.outputReasoning === true, model };
+      return { enabled: parsed.outputReasoning !== false, model };
     }
   } catch {
-    // Missing and malformed config keep the summary off.
+    // Missing and malformed config keep the summary on.
   }
-  return { enabled: false };
+  return { enabled: true };
 }
 
 async function updateConfig(

@@ -154,11 +154,13 @@ test("outputReasoning failures come back as errors, never throws", async () => {
   assert.match((await generateOutputReasoning(oldHost, "", scriptResult, {})).error!, /Pi >= 0\.99/);
 });
 
-test("output reasoning is off unless enabled and keeps its model override", async () => {
+test("output reasoning is on unless disabled and keeps its model override", async () => {
   const dir = await mkdtemp(join(tmpdir(), "tidy-output-reasoning-"));
   const path = join(dir, "config.json");
   try {
-    assert.deepEqual(loadTidyOutputReasoning(path), { enabled: false });
+    assert.deepEqual(loadTidyOutputReasoning(path), { enabled: true });
+    await saveTidyOutputReasoning(false, path);
+    assert.deepEqual(loadTidyOutputReasoning(path), { enabled: false, model: undefined });
     await saveTidyOutputReasoning(true, path);
     assert.deepEqual(loadTidyOutputReasoning(path), { enabled: true, model: undefined });
     await saveTidyOutputReasoningModel("cerebras/gpt-oss-120b", path);
@@ -182,6 +184,8 @@ async function loadCodemode(
   options: { mode?: TidyMode; outputReasoning?: { enabled: boolean; model?: string } } = {}
 ): Promise<CodemodeHarness> {
   const tools = new Map<string, any>();
+  const sessionStart: Array<() => unknown> = [];
+  let registrations = 0;
   const executed: unknown[][] = [];
   const hostDefinition = {
     name: "codemode",
@@ -215,16 +219,27 @@ async function loadCodemode(
       loadOutputReasoning: () => options.outputReasoning ?? { enabled: false },
       createCodemodeExtension: () => (pi: any) => pi.registerTool(hostDefinition),
     })({
-      on() {},
+      on: (event: string, handler: () => unknown) => {
+        if (event === "session_start") sessionStart.push(handler);
+      },
       registerCommand() {},
       registerShortcut() {},
       registerMessageRenderer() {},
-      registerTool: (tool: any) => tools.set(tool.name, tool),
+      registerTool: (tool: any) => {
+        if (tool.name === "codemode") registrations++;
+        tools.set(tool.name, tool);
+      },
     } as any);
   } finally {
     if (previous === undefined) delete process.env.PI_TIDY_TOOLS;
     else process.env.PI_TIDY_TOOLS = previous;
   }
+  // Registering codemode during load would make Pi drop its built-in
+  // codemode extension with a startup warning; it must wait for the session.
+  assert.equal(tools.has("codemode"), false, "codemode is not registered during load");
+  for (const handler of sessionStart) await handler();
+  for (const handler of sessionStart) await handler();
+  assert.equal(registrations, 1, "registered once, on the first session_start");
   const tool = tools.get("codemode");
   assert.ok(tool, "codemode registered");
   assert.equal(tool.parameters, codemodeSchema, "schema identity is the host's");
@@ -247,7 +262,7 @@ test("codemode requires the script's reasoning line and delegates to the host", 
   assert.equal(executed.length, 0);
   const ctx = { model: {} };
   const result = await tool.execute("c2", { code: SCRIPT }, undefined, undefined, ctx);
-  assert.deepEqual(result, scriptResult, "no summary unless opted in");
+  assert.deepEqual(result, scriptResult, "no summary when disabled");
   assert.deepEqual(executed[0].slice(0, 2), ["c2", { code: SCRIPT }]);
   assert.equal(executed[0][4], ctx);
 });
@@ -303,6 +318,7 @@ test("an unavailable summary model is reported on the card, not thrown", async (
 
 test("hosts without a codemode export register no codemode tool", async () => {
   const tools = new Map<string, any>();
+  const handlers: Array<() => unknown> = [];
   const previous = process.env.PI_TIDY_TOOLS;
   process.env.PI_TIDY_TOOLS = "on";
   try {
@@ -317,7 +333,9 @@ test("hosts without a codemode export register no codemode tool", async () => {
       })) as any,
       createCodemodeExtension: undefined,
     })({
-      on() {},
+      on: (event: string, handler: () => unknown) => {
+        if (event === "session_start") handlers.push(handler);
+      },
       registerCommand() {},
       registerShortcut() {},
       registerMessageRenderer() {},
@@ -327,6 +345,7 @@ test("hosts without a codemode export register no codemode tool", async () => {
     if (previous === undefined) delete process.env.PI_TIDY_TOOLS;
     else process.env.PI_TIDY_TOOLS = previous;
   }
+  for (const handler of handlers) await handler();
   assert.equal(tools.has("codemode"), false);
   assert.equal(tools.has("bash"), true);
 });
@@ -384,7 +403,7 @@ test("expanded codemode blocks list the script, each nested call, and the output
   ]);
 });
 
-test("/tidy output-reasoning writes the opt-in and model without a reload", async () => {
+test("/tidy output-reasoning writes the opt-out and model without a reload", async () => {
   const dir = await mkdtemp(join(tmpdir(), "tidy-output-reasoning-cmd-"));
   const path = join(dir, "config.json");
   const previousConfig = process.env.PI_TIDY_TOOLS_CONFIG;

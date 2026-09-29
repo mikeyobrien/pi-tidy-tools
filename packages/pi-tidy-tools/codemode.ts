@@ -12,8 +12,9 @@
  * optional `// @options:` line, which the host requires to be first). The
  * comment is plain JavaScript, so the sandbox ignores it.
  *
- * `outputReasoning` is an opt-in one-sentence summary of what a finished
- * script did, written by a nested model call. It is kept in `details` for the
+ * `outputReasoning` is a one-sentence summary of what a finished script did,
+ * written by a nested model call; on by default, `/tidy output-reasoning off`
+ * disables it. It is kept in `details` for the
  * card only; the main model never sees it.
  */
 

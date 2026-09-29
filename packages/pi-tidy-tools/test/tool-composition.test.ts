@@ -167,3 +167,77 @@ test("a readable host schema is augmented without losing its own fields", () => 
 	assert.deepEqual(Object.keys(schema.properties), ["reasoning", "path", "limit"]);
 	assert.deepEqual(schema.required, ["reasoning", "path"]);
 });
+
+test("codemode tolerance fills an omitted reasoning after the source's own argument shim", () => {
+	let receiver: unknown;
+	const source = {
+		name: "edit",
+		parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+		prepareArguments(this: unknown, args: any) {
+			receiver = this;
+			return { ...args, shimmed: true };
+		},
+		execute() {},
+	};
+	let active = true;
+	const composed = composeSourceTool(source, {
+		mode: "default",
+		reasoningGuideline: guideline,
+		tolerateMissingReasoning: () => active,
+	});
+
+	const filled = composed.prepareArguments({ path: "a.ts" });
+	assert.equal(receiver, source);
+	assert.deepEqual(filled, { path: "a.ts", shimmed: true, reasoning: "" });
+	for (const field of composed.parameters.required as string[]) assert.equal(Object.hasOwn(filled, field), true);
+
+	assert.deepEqual(composed.prepareArguments({ path: "a.ts", reasoning: "keep the goal" }), {
+		path: "a.ts",
+		reasoning: "keep the goal",
+		shimmed: true,
+	});
+
+	active = false;
+	assert.deepEqual(composed.prepareArguments({ path: "a.ts" }), { path: "a.ts", shimmed: true });
+});
+
+test("codemode tolerance leaves result mode and untolerant composition untouched", () => {
+	const prepareArguments = (args: unknown) => args;
+	const source = {
+		name: "read",
+		parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+		prepareArguments,
+		execute() {},
+	};
+	const resultMode = composeSourceTool(source, {
+		mode: "result",
+		reasoningGuideline: guideline,
+		tolerateMissingReasoning: () => true,
+	});
+	assert.equal(resultMode.prepareArguments, prepareArguments);
+	const strict = composeSourceTool(source, { mode: "default", reasoningGuideline: guideline });
+	assert.equal(strict.prepareArguments, prepareArguments);
+});
+
+test("composition carries the metadata codemode reads from a tool", () => {
+	const outputSchema = { type: "object", properties: { output: { type: "string" } } };
+	const annotations = { readOnlyHint: false };
+	const namespace = { name: "shell" };
+	const structured = { content: [{ type: "text", text: "ok" }], structuredContent: { output: "ok" } };
+	const source = {
+		name: "bash",
+		parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+		outputSchema,
+		exposure: "direct",
+		annotations,
+		namespace,
+		execute: () => structured,
+	};
+	const composed = composeSourceTool(source, { mode: "default", reasoningGuideline: guideline });
+
+	assert.equal(composed.outputSchema, outputSchema);
+	assert.equal(composed.exposure, "direct");
+	assert.equal(composed.annotations, annotations);
+	assert.equal(composed.namespace, namespace);
+	assert.equal(composed.execute("c", { command: "true" }, undefined, undefined, undefined), structured);
+});

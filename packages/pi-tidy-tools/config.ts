@@ -90,6 +90,35 @@ export function loadTidyMode(configPath = defaultConfigPath()): TidyMode {
   return "default";
 }
 
+/**
+ * Opt-in codemode `outputReasoning` summary. Off unless explicitly enabled.
+ * `model` is a "provider/id" override; unset inherits the session's model.
+ * Read at the point of use: a config write takes effect without a reload.
+ */
+export interface TidyOutputReasoning {
+  enabled: boolean;
+  model?: string;
+}
+
+export function loadTidyOutputReasoning(
+  configPath = defaultConfigPath()
+): TidyOutputReasoning {
+  try {
+    const parsed = JSON.parse(readFileSync(configPath, "utf8"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const model =
+        typeof parsed.outputReasoningModel === "string" &&
+        parsed.outputReasoningModel.trim() !== ""
+          ? parsed.outputReasoningModel.trim()
+          : undefined;
+      return { enabled: parsed.outputReasoning === true, model };
+    }
+  } catch {
+    // Missing and malformed config keep the summary off.
+  }
+  return { enabled: false };
+}
+
 async function updateConfig(
   update: Record<string, unknown>,
   configPath: string
@@ -138,4 +167,19 @@ export async function saveTidyIcons(
   configPath = defaultConfigPath()
 ): Promise<void> {
   await updateConfig({ icons }, configPath);
+}
+
+export async function saveTidyOutputReasoning(
+  enabled: boolean,
+  configPath = defaultConfigPath()
+): Promise<void> {
+  await updateConfig({ outputReasoning: enabled }, configPath);
+}
+
+/** Persist a "provider/id" override; undefined returns to the session model. */
+export async function saveTidyOutputReasoningModel(
+  model: string | undefined,
+  configPath = defaultConfigPath()
+): Promise<void> {
+  await updateConfig({ outputReasoningModel: model ?? null }, configPath);
 }

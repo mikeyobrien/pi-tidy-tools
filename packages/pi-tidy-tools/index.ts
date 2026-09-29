@@ -39,6 +39,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import * as host from "@earendil-works/pi-coding-agent";
 import {
   createBashTool,
   createEditTool,
@@ -52,12 +53,24 @@ import {
   CONFIG_PATH,
   loadTidyIcons,
   loadTidyMode,
+  loadTidyOutputReasoning,
   loadTidyState,
   saveTidyEnabled,
   saveTidyIcons,
   saveTidyMode,
+  saveTidyOutputReasoning,
+  saveTidyOutputReasoningModel,
   type TidyMode,
 } from "./config.js";
+import {
+  CODEMODE_REASONING_GUIDELINE,
+  CODEMODE_TOOL,
+  MISSING_REASONING_ERROR,
+  addUsage,
+  captureCodemodeDefinition,
+  generateOutputReasoning,
+  scriptReasoning,
+} from "./codemode.js";
 import { isOmpHost } from "./host-kind.js";
 import { installReadGroupBridge } from "./read-group-bridge.js";
 import { toRegistration } from "./registration.js";
@@ -111,6 +124,10 @@ const TIDY_COMPLETIONS = [
   "icons on",
   "icons off",
   "icons status",
+  "output-reasoning on",
+  "output-reasoning off",
+  "output-reasoning status",
+  "output-reasoning model inherit",
   "pi-fff setup",
   "pi-fff status",
   "pi-fff teardown",
@@ -122,6 +139,9 @@ export interface TidyExtensionDependencies {
   loadMode?: typeof loadTidyMode;
   loadIcons?: typeof loadTidyIcons;
   saveIcons?: typeof saveTidyIcons;
+  loadOutputReasoning?: typeof loadTidyOutputReasoning;
+  /** The host's codemode extension factory; defaults to Pi's export. */
+  createCodemodeExtension?: unknown;
   createIntegration?: (
     pi: ExtensionAPI,
     cwd: string
@@ -146,6 +166,8 @@ export function createTidyExtension(
     const tidyMode = (dependencies.loadMode ?? loadTidyMode)();
     const tidyIcons = (dependencies.loadIcons ?? loadTidyIcons)();
     const persistIcons = dependencies.saveIcons ?? saveTidyIcons;
+    const loadOutputReasoning =
+      dependencies.loadOutputReasoning ?? loadTidyOutputReasoning;
     const integration =
       dependencies.createIntegration?.(pi, cwd) ??
       createPiFffIntegrationController({ pi: pi as any, cwd });
@@ -201,6 +223,32 @@ export function createTidyExtension(
           ).status;
           ctx.ui.notify(
             `pi-tidy-tools is ${tidyState.enabled ? "on" : "off"}, mode ${tidyMode}, icons ${tidyIcons ? "on" : "off"} (${detail}).\n${concisePiFffStatus(status)}.`,
+            "info"
+          );
+          return;
+        }
+        const outputReasoning = args
+          .trim()
+          .match(/^output-reasoning (on|off|status|model\s+(\S+))$/i);
+        if (outputReasoning) {
+          const [, verb, model] = outputReasoning;
+          try {
+            if (/^(on|off)$/i.test(verb))
+              await saveTidyOutputReasoning(verb.toLowerCase() === "on");
+            else if (model)
+              await saveTidyOutputReasoningModel(
+                model.toLowerCase() === "inherit" ? undefined : model
+              );
+          } catch (error) {
+            ctx.ui.notify(
+              `Could not save ${CONFIG_PATH}: ${error instanceof Error ? error.message : String(error)}`,
+              "error"
+            );
+            return;
+          }
+          const current = loadOutputReasoning();
+          ctx.ui.notify(
+            `codemode outputReasoning is ${current.enabled ? "on" : "off"}, model ${current.model ?? "inherited from the session"}.`,
             "info"
           );
           return;
@@ -263,7 +311,7 @@ export function createTidyExtension(
         }
         if (action !== "on" && action !== "off" && action !== "toggle") {
           ctx.ui.notify(
-            "Usage: /tidy on|off|toggle|status|mode default|reasoning|result|status|icons on|off|status|pi-fff setup|status|teardown",
+            "Usage: /tidy on|off|toggle|status|mode default|reasoning|result|status|icons on|off|status|output-reasoning on|off|status|model <provider/id>|inherit|pi-fff setup|status|teardown",
             "warning"
           );
           return;
@@ -320,78 +368,157 @@ export function createTidyExtension(
       ReturnType<typeof setInterval>
     >();
     const ownedTools = new Set<string>();
+    const codemodeActive = (): boolean => {
+      try {
+        return pi.getActiveTools().includes(CODEMODE_TOOL);
+      } catch {
+        return false;
+      }
+    };
+
+    /**
+     * Tidy's renderer pair for one tool. `renderCall` draws only while the
+     * call streams and `renderResult` only once it settles: each phase has
+     * exactly one owner, or the card prints twice.
+     */
+    const renderers = (name: string) => ({
+      renderShell: "self",
+      renderCall: (args: any, options: any, third: any) => {
+        const info = callRenderInfo(args, options, third);
+        if (!info.isPartial) return new Container();
+        const id = info.toolCallId ?? "";
+        if (info.invalidate && !elapsedTimerByCallId.has(id)) {
+          const timer = elapsedTimer(info.invalidate, () => {});
+          if (timer) elapsedTimerByCallId.set(id, timer);
+        }
+        let started = startedAtByCallId.get(id);
+        if (started === undefined) {
+          started = Date.now();
+          startedAtByCallId.set(id, started);
+        }
+        const theme = findTheme(options, third);
+        return new WidthAwareLines(
+          () =>
+            buildToolBlock(name, info.args, {}, {
+              isPartial: true,
+              elapsedMs: Date.now() - started!,
+              mode: tidyMode,
+              icons: tidyIcons,
+            }),
+          (text) => withBackground(theme, "toolPendingBg", text)
+        );
+      },
+      renderResult: (
+        result: any,
+        options: any,
+        third: any,
+        fourth: any
+      ) => {
+        const info = resultRenderInfo(result, options, fourth);
+        if (info.isPartial) return new Container();
+        const isError = info.isError ?? result?.isError ?? false;
+        const id = info.toolCallId ?? "";
+        const started = startedAtByCallId.get(id);
+        const timer = elapsedTimerByCallId.get(id);
+        if (timer) clearInterval(timer);
+        elapsedTimerByCallId.delete(id);
+        startedAtByCallId.delete(id);
+        const persisted = Number(result?.details?.piTidyElapsedMs);
+        const elapsedMs = Number.isFinite(persisted)
+          ? persisted
+          : started === undefined
+            ? 0
+            : Date.now() - started;
+        const theme = findTheme(options, third, fourth);
+        const lines = buildToolBlock(name, info.args, result, {
+          isError,
+          expanded: info.expanded,
+          elapsedMs,
+          mode: tidyMode,
+          icons: tidyIcons,
+        });
+        return new WidthAwareLines(lines, (text) =>
+          withBackground(theme, isError ? "toolErrorBg" : "toolSuccessBg", text)
+        );
+      },
+    });
 
     const decorate = (source: SourceToolDefinition): SourceToolDefinition => {
       const name = source.name;
       const tool = composeSourceTool(source, {
         mode: tidyMode,
         reasoningGuideline: `Always pass a "reasoning" phrase to ${name}: state the GOAL/intent, not the file or command (those are shown already).`,
+        tolerateMissingReasoning: codemodeActive,
       });
       ownedTools.add(name);
       const decorated = {
         ...tool,
         name,
-        renderShell: "self",
-        renderCall: (args: any, options: any, third: any) => {
-          const info = callRenderInfo(args, options, third);
-          if (!info.isPartial) return new Container();
-          const id = info.toolCallId ?? "";
-          if (info.invalidate && !elapsedTimerByCallId.has(id)) {
-            const timer = elapsedTimer(info.invalidate, () => {});
-            if (timer) elapsedTimerByCallId.set(id, timer);
-          }
-          let started = startedAtByCallId.get(id);
-          if (started === undefined) {
-            started = Date.now();
-            startedAtByCallId.set(id, started);
-          }
-          const theme = findTheme(options, third);
-          return new WidthAwareLines(
-            () =>
-              buildToolBlock(name, info.args, {}, {
-                isPartial: true,
-                elapsedMs: Date.now() - started!,
-                mode: tidyMode,
-                icons: tidyIcons,
-              }),
-            (text) => withBackground(theme, "toolPendingBg", text)
-          );
-        },
-        renderResult: (
-          result: any,
-          options: any,
-          third: any,
-          fourth: any
-        ) => {
-          const info = resultRenderInfo(result, options, fourth);
-          if (info.isPartial) return new Container();
-          const isError = info.isError ?? result?.isError ?? false;
-          const id = info.toolCallId ?? "";
-          const started = startedAtByCallId.get(id);
-          const timer = elapsedTimerByCallId.get(id);
-          if (timer) clearInterval(timer);
-          elapsedTimerByCallId.delete(id);
-          startedAtByCallId.delete(id);
-          const persisted = Number(result?.details?.piTidyElapsedMs);
-          const elapsedMs = Number.isFinite(persisted)
-            ? persisted
-            : started === undefined
-              ? 0
-              : Date.now() - started;
-          const theme = findTheme(options, third, fourth);
-          const lines = buildToolBlock(name, info.args, result, {
-            isError,
-            expanded: info.expanded,
-            elapsedMs,
-            mode: tidyMode,
-            icons: tidyIcons,
-          });
-          return new WidthAwareLines(lines, (text) =>
-            withBackground(theme, isError ? "toolErrorBg" : "toolSuccessBg", text)
-          );
-        },
+        ...renderers(name),
       } as SourceToolDefinition;
       return (isOmpHost() ? toRegistration(decorated) : decorated) as SourceToolDefinition;
+    };
+
+    /**
+     * Pi's own codemode definition with tidy's card. The schema object,
+     * grammar, and loadout hook are the host's, untouched; tidy requires the
+     * script's `// @reasoning:` line and, when opted in, attaches the
+     * outputReasoning summary to `details`.
+     */
+    const decorateCodemode = (
+      source: SourceToolDefinition
+    ): SourceToolDefinition => {
+      const requireReasoning = tidyMode !== "result";
+      ownedTools.add(CODEMODE_TOOL);
+      return {
+        ...source,
+        ...(requireReasoning
+          ? {
+              promptGuidelines: [
+                ...(source.promptGuidelines ?? []),
+                CODEMODE_REASONING_GUIDELINE,
+              ],
+            }
+          : {}),
+        async execute(
+          id: string,
+          params: any,
+          signal: any,
+          onUpdate: any,
+          context: any
+        ) {
+          if (requireReasoning && !scriptReasoning(params?.code))
+            throw new Error(MISSING_REASONING_ERROR);
+          const result = await source.execute.call(
+            source,
+            id,
+            params,
+            signal,
+            onUpdate,
+            context
+          );
+          const settings = loadOutputReasoning();
+          if (!settings.enabled || signal?.aborted) return result;
+          const summary = await generateOutputReasoning(
+            context,
+            String(params?.code ?? ""),
+            result,
+            { model: settings.model, signal }
+          );
+          const usage = addUsage(result?.usage, summary.usage);
+          return {
+            ...result,
+            ...(usage === undefined ? {} : { usage }),
+            details: {
+              ...(result?.details ?? {}),
+              ...(summary.text
+                ? { outputReasoning: summary.text }
+                : { outputReasoningError: summary.error }),
+            },
+          };
+        },
+        ...renderers(CODEMODE_TOOL),
+      } as SourceToolDefinition;
     };
 
     pi.on("tool_execution_start", async (e: any) => {
@@ -516,6 +643,17 @@ export function createTidyExtension(
       pi.registerTool(decorate(source) as any);
     }
     startupPlan.commit(decorate);
+
+    // omp has no codemode; on Pi < 0.99 the export is absent.
+    const codemodeSource = isOmpHost()
+      ? undefined
+      : captureCodemodeDefinition(
+          pi,
+          "createCodemodeExtension" in dependencies
+            ? dependencies.createCodemodeExtension
+            : (host as Record<string, unknown>).createCodemodeExtension
+        );
+    if (codemodeSource) pi.registerTool(decorateCodemode(codemodeSource) as any);
 
     // Issue 132: provider-abstracted image generation. Default provider
     // registrations (grok-build) load at import; further providers

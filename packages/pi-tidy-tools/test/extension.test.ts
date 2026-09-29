@@ -1733,6 +1733,13 @@ test("registered APIs expose exact completions and reason-first tool metadata", 
     { value: "icons on", label: "icons on" },
     { value: "icons off", label: "icons off" },
     { value: "icons status", label: "icons status" },
+    { value: "output-reasoning on", label: "output-reasoning on" },
+    { value: "output-reasoning off", label: "output-reasoning off" },
+    { value: "output-reasoning status", label: "output-reasoning status" },
+    {
+      value: "output-reasoning model inherit",
+      label: "output-reasoning model inherit",
+    },
     { value: "pi-fff setup", label: "pi-fff setup" },
     { value: "pi-fff status", label: "pi-fff status" },
     { value: "pi-fff teardown", label: "pi-fff teardown" },
@@ -1816,4 +1823,93 @@ test("each tool phase is drawn by exactly one renderer", async () => {
       `${name}: renderResult must draw once settled`
     );
   }
+});
+
+test("codemode scripts may omit reasoning only while codemode is active", async () => {
+  const tools = new Map<string, any>();
+  const events = new Map<string, any>();
+  const commands = new Map<string, any>();
+  const messages: any[] = [];
+  let active = ["read", "bash", "edit", "write", "codemode"];
+  const previous = process.env.PI_TIDY_TOOLS;
+  process.env.PI_TIDY_TOOLS = "on";
+  try {
+    await createTidyExtension({
+      createIntegration: absentIntegration,
+      loadMode: () => "default",
+    })({
+      on: (name: string, handler: any) => events.set(name, handler),
+      registerCommand: (name: string, options: any) =>
+        commands.set(name, options),
+      registerShortcut() {},
+      registerMessageRenderer() {},
+      registerTool: (tool: any) => tools.set(tool.name, tool),
+      sendMessage: (message: any) => messages.push(message),
+      getActiveTools: () => active,
+    } as any);
+  } finally {
+    if (previous === undefined) delete process.env.PI_TIDY_TOOLS;
+    else process.env.PI_TIDY_TOOLS = previous;
+  }
+
+  for (const name of ["read", "bash", "edit", "write", "grep", "find", "ls"]) {
+    const tool = tools.get(name);
+    assert.ok(tool.parameters.required.includes("reasoning"), name);
+    const prepared = tool.prepareArguments({ path: "a.ts" });
+    assert.equal(prepared.reasoning, "", `${name} accepts a script call without reasoning`);
+  }
+  assert.deepEqual(
+    tools.get("bash").prepareArguments({ command: "true", reasoning: "keep" }),
+    { command: "true", reasoning: "keep" }
+  );
+
+  active = ["read", "bash", "edit", "write"];
+  assert.equal(
+    Object.hasOwn(tools.get("bash").prepareArguments({ command: "true" }), "reasoning"),
+    false,
+    "direct calls stay strict without codemode"
+  );
+
+  // A script's nested edit reaches tidy's lifecycle events with a parent id
+  // and still lands in the turn diff.
+  await events.get("tool_execution_start")!({
+    toolName: "edit",
+    toolCallId: "script-1/1",
+    parentToolCallId: "script-1",
+    args: { path: "nested.ts" },
+  });
+  await events.get("tool_execution_end")!({
+    toolName: "edit",
+    toolCallId: "script-1/1",
+    parentToolCallId: "script-1",
+    isError: false,
+    result: { details: { diff: "+nested" } },
+  });
+  await events.get("turn_end")!();
+  await commands.get("diff").handler("", { ui: { notify() {} } });
+  assert.equal(messages.length, 1);
+  assert.match(messages[0].content, /nested\.ts/);
+});
+
+test("codemode detection treats a host without getActiveTools as inactive", async () => {
+  const tools = new Map<string, any>();
+  const previous = process.env.PI_TIDY_TOOLS;
+  process.env.PI_TIDY_TOOLS = "on";
+  try {
+    await createTidyExtension({
+      createIntegration: absentIntegration,
+      loadMode: () => "default",
+    })({
+      on() {},
+      registerCommand() {},
+      registerShortcut() {},
+      registerMessageRenderer() {},
+      registerTool: (tool: any) => tools.set(tool.name, tool),
+    } as any);
+  } finally {
+    if (previous === undefined) delete process.env.PI_TIDY_TOOLS;
+    else process.env.PI_TIDY_TOOLS = previous;
+  }
+  const prepared = tools.get("bash").prepareArguments({ command: "true" });
+  assert.equal(Object.hasOwn(prepared, "reasoning"), false);
 });

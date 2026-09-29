@@ -17,11 +17,20 @@ export interface SourceToolDefinition {
 export interface SourceToolCompositionOptions {
 	mode: TidyMode;
 	reasoningGuideline: string;
+	/**
+	 * Whether a call that omits the injected `reasoning` may still run. Read per
+	 * call. Pi's `codemode` scripts call tools through the same validation as
+	 * model-issued calls, and their nested calls are never drawn as tool blocks,
+	 * so a headline there has no reader: a script that leaves it out must not
+	 * fail validation.
+	 */
+	tolerateMissingReasoning?: () => boolean;
 }
 
 export type ComposedSourceTool<T extends SourceToolDefinition> = Omit<T, "execute" | "parameters"> & {
 	parameters: any;
 	promptGuidelines?: string[];
+	prepareArguments?: (args: unknown) => unknown;
 	execute: (id: string, params: any, signal: any, onUpdate: any, context: any) => any;
 };
 
@@ -58,6 +67,15 @@ export function stripReasoning(params: any): { reasoning?: string; rest: any } {
 }
 
 /**
+ * Satisfy the required `reasoning` with an empty headline when the caller
+ * omitted it. An empty headline renders the argument-detail fallback.
+ */
+export function fillMissingReasoning(args: any): any {
+	if (!args || typeof args !== "object" || Array.isArray(args) || Object.hasOwn(args, "reasoning")) return args;
+	return { ...args, reasoning: "" };
+}
+
+/**
  * Compose tidy's mode-specific schema and executor around a behavior-bearing
  * source definition. Unknown metadata is deliberately carried through.
  */
@@ -82,6 +100,14 @@ export function composeSourceTool<T extends SourceToolDefinition>(
 		},
 	} as ComposedSourceTool<T>;
 	if (!resultMode) composed.promptGuidelines = [...(source.promptGuidelines ?? []), options.reasoningGuideline];
+	const tolerate = options.tolerateMissingReasoning;
+	if (injectReasoning && tolerate) {
+		const sourcePrepare = source.prepareArguments;
+		composed.prepareArguments = (args: unknown) => {
+			const prepared = typeof sourcePrepare === "function" ? sourcePrepare.call(source, args) : args;
+			return tolerate() ? fillMissingReasoning(prepared) : prepared;
+		};
+	}
 	return composed;
 }
 

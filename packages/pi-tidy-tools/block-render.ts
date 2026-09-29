@@ -21,6 +21,7 @@ import {
   style,
 } from "./render.js";
 import { stripReasoning } from "./tool-composition.js";
+import { CODEMODE_TOOL, firstCodeLine, scriptReasoning } from "./codemode.js";
 import type { TidyMode } from "./config.js";
 
 /** Hanging indent for detail and expanded continuation lines. */
@@ -92,6 +93,7 @@ export class WidthAwareLines {
 
 /** Dim line-2 detail when the model gave no `reasoning`. Always ONE line. */
 function argDetail(name: string, args: Record<string, unknown>): string {
+  if (name === CODEMODE_TOOL) return oneLine(firstCodeLine(args.code));
   if (name === "bash" && typeof args.command === "string")
     return oneLine(args.command);
   if (
@@ -131,6 +133,13 @@ function summarize(
   elapsedMs = 0
 ): string {
   const text = textFromResult(result);
+  if (name === CODEMODE_TOOL) {
+    const calls = Array.isArray(result?.details?.calls)
+      ? result.details.calls.length
+      : 0;
+    const status = isError ? `${RED}failed` : `${GREEN}done`;
+    return `${status}${RESET} ${DIM}(${calls} ${calls === 1 ? "call" : "calls"}) in ${formatElapsed(elapsedMs)}${RESET}`;
+  }
   if (isError) {
     if (name === "bash")
       return `${RED}error${RESET} ${DIM}in ${formatElapsed(elapsedMs)}${RESET}`;
@@ -278,6 +287,8 @@ function expandedLines(
 ): string[] {
   const out: string[] = [];
 
+  if (name === CODEMODE_TOOL) return codemodeExpandedLines(args, result);
+
   // bash: show the full command (collapsed line 2 is truncated to one line).
   if (name === "bash" && typeof args.command === "string") {
     const cmdLines = args.command.replace(/\s+$/, "").split("\n");
@@ -320,6 +331,98 @@ function expandedLines(
   return out;
 }
 
+/** First line of an error that is not a script result, or "". */
+function codemodeRejection(result: any): string {
+  const text = textFromResult(result);
+  return /^Script (completed|failed)\n/.test(text) ? "" : oneLine(text.split("\n")[0]);
+}
+
+const CALL_MARK: Record<string, string> = {
+  ok: `${GREEN}✓${RESET}`,
+  error: `${RED}✗${RESET}`,
+  cancelled: `${DIM}⊘${RESET}`,
+  running: `${DIM}…${RESET}`,
+};
+const SCRIPT_HEADER = /^Script (completed|failed)\nWall time [\d.]+ seconds\nOutput:\n/;
+
+/** A nested call's duration in whole seconds: "13s", "325s". */
+export function formatCallSeconds(milliseconds: number): string {
+  return milliseconds < 1000 ? "<1s" : `${Math.round(milliseconds / 1000)}s`;
+}
+
+function nestedCalls(result: any): any[] {
+  return Array.isArray(result?.details?.calls) ? result.details.calls : [];
+}
+
+/**
+ * One line per nested call, MCP calls included, in the order the script made
+ * them: status mark, tool name, duration, then the arguments. The duration
+ * sits before the arguments so width fitting trims arguments, never times.
+ */
+function codemodeCallLines(result: any): string[] {
+  return nestedCalls(result).map((call) => {
+    const mark = CALL_MARK[call?.status] ?? CALL_MARK.running;
+    const failed = call?.status === "error";
+    const duration =
+      typeof call?.durationMs === "number"
+        ? ` ${DIM}${formatCallSeconds(call.durationMs)}${RESET}`
+        : "";
+    const callArgs = oneLine(String(call?.args ?? ""));
+    return `${INDENT}${mark} ${failed ? RED : BOLD}${call?.name ?? "?"}${RESET}${duration}${callArgs ? ` ${DIM}${callArgs}${RESET}` : ""}`;
+  });
+}
+
+/** Expanded codemode card: failure details, the script, then the output. */
+function codemodeExpandedLines(
+  args: Record<string, unknown>,
+  result: any
+): string[] {
+  const out: string[] = [];
+  const reasoningError = result?.details?.outputReasoningError;
+  if (typeof reasoningError === "string")
+    out.push(`${INDENT}${DIM}${oneLine(reasoningError)}${RESET}`);
+  for (const call of nestedCalls(result))
+    if (typeof call?.error === "string")
+      out.push(`${INDENT}${RED}✗ ${call?.name ?? "?"}: ${oneLine(call.error)}${RESET}`);
+  if (typeof args.code === "string")
+    for (const line of args.code.replace(/\s+$/, "").split("\n"))
+      out.push(`${INDENT}${CYAN}${expandTabs(line)}${RESET}`);
+  // Short output is already on the collapsed card; do not repeat it.
+  if (codemodeShortOutput(result).length === 0)
+    for (const raw of codemodeOutputLines(result))
+      out.push(`${INDENT}${DIM}${expandTabs(raw)}${RESET}`);
+  return out;
+}
+
+/** The script's own output: every text block after the "Script …" header. */
+function codemodeOutputLines(result: any): string[] {
+  // Codemode's header is its own content block, and every text()/console.*
+  // call is a further block without a trailing newline: one block per line.
+  const texts = (Array.isArray(result?.content) ? result.content : [])
+    .filter((block: any) => block?.type === "text" && typeof block.text === "string")
+    .map((block: any) => block.text as string);
+  if (texts.length > 0 && SCRIPT_HEADER.test(texts[0])) {
+    texts[0] = texts[0].replace(SCRIPT_HEADER, "");
+    if (texts[0] === "") texts.shift();
+  }
+  const text = texts.join("\n").replace(/\s+$/, "");
+  return text ? text.split("\n") : [];
+}
+
+/** Output up to this many lines is shown whole on the collapsed card. */
+export const SHORT_OUTPUT_LINES = 5;
+
+/**
+ * The output lines the collapsed card shows: all of a short output, none of
+ * a longer one (ctrl+o shows it). A call rejected before its script ran has
+ * no output of its own; its reason is already the card's detail.
+ */
+function codemodeShortOutput(result: any): string[] {
+  if (codemodeRejection(result) && result?.isError) return [];
+  const lines = codemodeOutputLines(result);
+  return lines.length <= SHORT_OUTPUT_LINES ? lines : [];
+}
+
 /**
  * Build the rendered lines for one settled tool call. Shared by the live
  * renderResult and the demo generator so the demo shows REAL output, never
@@ -346,7 +449,15 @@ export function buildToolBlock(
     mode = "default",
     icons = true,
   } = opts;
-  const { reasoning, rest } = stripReasoning(args ?? {});
+  const stripped = stripReasoning(args ?? {});
+  const rest = stripped.rest ?? {};
+  // A codemode script carries its goal in a leading comment, not an argument.
+  const reasoning =
+    name === CODEMODE_TOOL ? scriptReasoning(rest.code) : stripped.reasoning;
+  const outputReasoning =
+    name === CODEMODE_TOOL && !isPartial
+      ? result?.details?.outputReasoning
+      : undefined;
 
   // Settled success/error is already encoded by Pi's native row background.
   // Only running calls need an inline state mark.
@@ -358,25 +469,52 @@ export function buildToolBlock(
   const { icon, color } = style(name);
   const toolLabel = `${color}${icons ? `${icon} ` : ""}${BOLD}${name}${RESET}`;
   const headline = oneLine(reasoning || argDetail(name, rest));
-  const detail = argDetail(name, rest);
+  // A codemode call rejected before its script ran has no script header:
+  // its reason replaces the code detail, keeping the status as the fitted tail.
+  const rejection =
+    name === CODEMODE_TOOL && isError && !isPartial
+      ? codemodeRejection(result)
+      : "";
+  const detail = rejection || argDetail(name, rest);
+  const detailColor = rejection ? RED : DIM;
+  const summaryLine =
+    typeof outputReasoning === "string" && outputReasoning
+      ? `${INDENT}${MAGENTA}↳ ${oneLine(outputReasoning)}${RESET}`
+      : undefined;
   // Keep the target on failures too; width fitting preserves the useful error
   // tail while the command/path answers what actually failed.
-  const line2 = !detail
-    ? `${INDENT}${DIM}→${RESET} ${summary}`
-    : `${INDENT}${DIM}${detail}${RESET} ${DIM}→${RESET} ${summary}`;
+  const line2 = summaryLine
+    ? `${summaryLine} ${DIM}→${RESET} ${summary}`
+    : !detail
+      ? `${INDENT}${DIM}→${RESET} ${summary}`
+      : `${INDENT}${detailColor}${detail}${RESET} ${DIM}→${RESET} ${summary}`;
+  // Codemode lists every nested call, then a short output, between its goal
+  // and its summary.
+  const callLines =
+    name === CODEMODE_TOOL && !isPartial
+      ? [
+          ...codemodeCallLines(result),
+          ...codemodeShortOutput(result).map(
+            (line) => `${INDENT}${expandTabs(line)}`
+          ),
+        ]
+      : [];
   let lines: string[];
   if (mode === "reasoning") {
     lines = [
       `${runningPrefix}${toolLabel} ${headline} ${DIM}→${RESET} ${summary}`,
+      ...callLines,
     ];
   } else if (mode === "result") {
-    const resultDetail = !detail ? "" : ` ${DIM}${detail}${RESET}`;
+    const resultDetail = !detail ? "" : ` ${detailColor}${detail}${RESET}`;
     lines = [
       `${runningPrefix}${toolLabel}${resultDetail} ${DIM}→${RESET} ${summary}`,
+      ...callLines,
     ];
   } else {
-    lines = [`${runningPrefix}${toolLabel} ${headline}`, line2];
+    lines = [`${runningPrefix}${toolLabel} ${headline}`, ...callLines, line2];
   }
+  if (summaryLine && mode !== "default") lines.push(summaryLine);
   if (expanded && !isPartial) lines.push(...expandedLines(name, rest, result));
   return lines;
 }

@@ -32,6 +32,7 @@
     "registration.ts",
     "read-group-bridge.ts",
     "tool-composition.ts",
+    "codemode.ts",
     "pi-fff/**/*.ts",
     "vendor/**/*.ts",
     "README.md",

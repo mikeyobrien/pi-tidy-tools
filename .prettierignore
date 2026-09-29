@@ -13,3 +13,8 @@ packages/pi-tidy-bots/public/app/
 # pi-tidy-core/index.ts), so ignoring these paths has no build impact.
 # Preferring the committed style over a mass reformat; see #84.
 packages/pi-tidy-tools/**/*.ts
+
+# pstack skills are vendored verbatim from backnotprop/pstack (MIT, see
+# .claude/skills/PSTACK-LICENSE). Keep prettier off them so upstream syncs
+# stay a plain copy.
+.claude/skills/

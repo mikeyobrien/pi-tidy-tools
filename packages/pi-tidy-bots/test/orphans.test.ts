@@ -97,15 +97,19 @@ test(
         stdio: "ignore",
       });
       orphan.unref();
-      const orphanPid = (() => {
+      // The title only shows once the child has run its first line; `ps`
+      // right after spawn() races that, so poll until the row appears.
+      let orphanPid: number | undefined;
+      await waitFor(() => {
         const ps = spawnSync("ps", ["ax", "-o", "pid,command"], {
           encoding: "utf8",
         });
         const row = ps.stdout
           .split("\n")
           .find((line) => line.includes("stub-pi-orphan"));
-        return row ? Number(row.trim().split(/\s+/)[0]) : undefined;
-      })();
+        orphanPid = row ? Number(row.trim().split(/\s+/)[0]) : undefined;
+        return orphanPid !== undefined;
+      }, 10000);
       assert.ok(orphanPid, "orphan spawned");
       // Hand-forge the ledger the way the dead daemon left it: the orphan's
       // OWN identity (pid + start time + command) — the shape a real orphan

@@ -340,6 +340,7 @@ export function buildToolBlock(
   opts: {
     isError?: boolean;
     isPartial?: boolean;
+    argsStreaming?: boolean;
     expanded?: boolean;
     elapsedMs?: number;
     mode?: TidyMode;
@@ -349,6 +350,7 @@ export function buildToolBlock(
   const {
     isError = false,
     isPartial = false,
+    argsStreaming = false,
     expanded = false,
     elapsedMs = 0,
     mode = "default",
@@ -365,8 +367,12 @@ export function buildToolBlock(
 
   const { icon, color } = style(name);
   const toolLabel = `${color}${icons ? `${icon} ` : ""}${BOLD}${name}${RESET}`;
-  const headline = oneLine(reasoning || argDetail(name, rest));
   const detail = argDetail(name, rest);
+  // Line 1 falls back to the arg detail only once the arguments are complete.
+  // While they stream, a missing reasoning may simply not have arrived yet:
+  // the fallback would paint the command or path there, then overwrite it
+  // the moment the reasoning lands.
+  const headline = oneLine(reasoning ?? "") || (argsStreaming ? "" : detail);
   // Keep the target on failures too; width fitting preserves the useful error
   // tail while the command/path answers what actually failed.
   const line2 = !detail
@@ -375,7 +381,7 @@ export function buildToolBlock(
   let lines: string[];
   if (mode === "reasoning") {
     lines = [
-      `${runningPrefix}${toolLabel} ${headline} ${RESULT_SEPARATOR} ${summary}`,
+      `${runningPrefix}${toolLabel}${headline ? ` ${headline}` : ""} ${RESULT_SEPARATOR} ${summary}`,
     ];
   } else if (mode === "result") {
     const resultDetail = !detail ? "" : ` ${DIM}${detail}${RESET}`;

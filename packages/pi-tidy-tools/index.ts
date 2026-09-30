@@ -350,6 +350,7 @@ export function createTidyExtension(
             () =>
               buildToolBlock(name, info.args, {}, {
                 isPartial: true,
+                argsStreaming: info.argsStreaming,
                 elapsedMs: Date.now() - started!,
                 mode: tidyMode,
                 icons: tidyIcons,

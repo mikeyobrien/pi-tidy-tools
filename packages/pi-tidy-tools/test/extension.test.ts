@@ -1875,3 +1875,45 @@ test("each tool phase is drawn by exactly one renderer", async () => {
     );
   }
 });
+
+test("a streaming headline never paints arg detail the reasoning will overwrite", async () => {
+  // Models may stream `command` before `reasoning`. Falling back to the detail
+  // while arguments stream printed the command on line 1 (duplicating line 2),
+  // then wiped it and retyped the reasoning over it when that arrived.
+  const harness = await registerEnabledExtension();
+  const theme = { bg: (_name: string, text: string) => text };
+  const bash = harness.tools.get("bash");
+  const streaming = { isPartial: true, toolCallId: "s1", argsComplete: false, executionStarted: false };
+  const frame = (args: Record<string, unknown>, context: Record<string, unknown>) =>
+    renderedLines(bash.renderCall(args, theme, context))[0];
+
+  assert.equal(frame({ command: "npm run check" }, streaming), "· ⚡ bash");
+  assert.equal(
+    frame({ command: "npm run check", reasoning: "confirm" }, streaming),
+    "· ⚡ bash confirm"
+  );
+  // Arguments complete without a reasoning: the detail fills the headline once.
+  assert.equal(
+    frame({ command: "npm run check" }, { ...streaming, argsComplete: true }),
+    "· ⚡ bash npm run check"
+  );
+  assert.equal(
+    frame({ command: "npm run check" }, { ...streaming, executionStarted: true }),
+    "· ⚡ bash npm run check"
+  );
+  // A host that reports no completion signal keeps the fallback.
+  assert.equal(
+    renderedLines(bash.renderCall({ command: "npm run check" }, { isPartial: true }, theme))[0],
+    "· ⚡ bash npm run check"
+  );
+});
+
+test("an empty streaming headline leaves one space before the result arrow", () => {
+  const [line] = buildToolBlock(
+    "bash",
+    { command: "npm run check" },
+    {},
+    { isPartial: true, argsStreaming: true, mode: "reasoning" }
+  );
+  assert.equal(withoutAnsi(line), "· ⚡ bash → <1s");
+});

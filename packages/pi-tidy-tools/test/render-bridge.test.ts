@@ -25,6 +25,16 @@ test("Pi renderCall keeps the theme in the second slot and context in the third"
   assert.equal(findTheme(theme, { isPartial: true }), theme);
 });
 
+test("Pi renderCall reports arguments streaming until message end or execution start", () => {
+  const call = (context: Record<string, unknown>) =>
+    callRenderInfo({ path: "a.ts" }, theme, { isPartial: true, toolCallId: "c1", ...context });
+  assert.equal(call({ argsComplete: false, executionStarted: false }).argsStreaming, true);
+  assert.equal(call({ argsComplete: true, executionStarted: false }).argsStreaming, false);
+  assert.equal(call({ argsComplete: false, executionStarted: true }).argsStreaming, false);
+  assert.equal(call({}).argsStreaming, false);
+  assert.equal(callRenderInfo({ path: "a.ts" }, { isPartial: true }, theme).argsStreaming, false);
+});
+
 test("omp renderCall finds the theme in the third slot", () => {
   const info = callRenderInfo(
     { path: "a.ts" },

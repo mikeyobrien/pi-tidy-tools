@@ -19,6 +19,8 @@ export interface RenderContext {
   isError?: boolean;
   isPartial?: boolean;
   expanded?: boolean;
+  argsComplete?: boolean;
+  executionStarted?: boolean;
   args?: Record<string, unknown>;
   invalidate?: () => void;
 }
@@ -26,6 +28,8 @@ export interface RenderContext {
 export interface CallRenderInfo {
   args: Record<string, unknown>;
   isPartial: boolean;
+  /** The host reports that the call's arguments are still streaming. */
+  argsStreaming: boolean;
   toolCallId?: string;
   invalidate?: () => void;
 }
@@ -74,6 +78,11 @@ export function callRenderInfo(
     args: asArgs(args) ?? {},
     isPartial:
       context?.isPartial ?? (opts?.isPartial as boolean | undefined) ?? false,
+    // Pi marks arguments complete at message end or execution start. Without
+    // a render context (omp's third argument is the theme) nothing says the
+    // arguments are still streaming, so they are treated as complete.
+    argsStreaming:
+      context?.argsComplete === false && context?.executionStarted !== true,
     toolCallId: context?.toolCallId,
     invalidate: context?.invalidate,
   };

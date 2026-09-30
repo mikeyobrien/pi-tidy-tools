@@ -249,6 +249,14 @@ try {
         if (manifest.peerDependencies?.[peer] !== ">=0.80.6")
           throw new Error(`${name} peer ${peer} must have no upper bound`);
       }
+      // Pi supplies typebox to extensions; a regular dependency triggers its
+      // host-provided package warning and can duplicate runtime modules.
+      if (manifest.dependencies?.typebox)
+        throw new Error(
+          `${name} must not list host-provided typebox in dependencies`
+        );
+      if (manifest.peerDependencies?.typebox !== "*")
+        throw new Error(`${name} must peer host-provided typebox with "*"`);
     }
 
     const installDir = join(temp, name.split("/").at(-1));

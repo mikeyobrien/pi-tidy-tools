@@ -7,11 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-09-30
+
+### Changed
+
+- First npm publication of the 0.5 series, including the 0.5.0 features and the complete runtime-module packaging fix from 0.5.1.
+
 ## [0.5.1] - 2026-09-30
+
+This version was tagged on GitHub but not published to npm.
 
 ### Fixed
 
-- The installed extension includes all rendering and tool-schema modules required to load. This is the first npm publication of the 0.5 series; it includes the additions and changes listed under 0.5.0.
+- The installed extension includes all rendering and tool-schema modules required to load.
 
 ## [0.5.0] - 2026-09-30
 
@@ -86,7 +94,8 @@ This version was tagged on GitHub but not published to npm.
 - Elapsed time now advances while large tool arguments are still streaming.
 - Reasoning headlines now appear before large paths, commands, or file contents finish streaming.
 
-[Unreleased]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.5.1...HEAD
+[Unreleased]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.5.2...HEAD
+[0.5.2]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.5.1...pi-tidy-tools-v0.5.2
 [0.5.1]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.5.0...pi-tidy-tools-v0.5.1
 [0.5.0]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.4.2...pi-tidy-tools-v0.5.0
 [0.4.1]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.4.0...pi-tidy-tools-v0.4.1

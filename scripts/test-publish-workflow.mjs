@@ -17,6 +17,12 @@ test("npm publish workflow uses a hardened tokenless OIDC boundary", async () =>
   assert.match(source, /permissions:\s+contents: read\s+id-token: write/s);
   assert.match(source, /environment: npm/);
   assert.doesNotMatch(source, /workflow_dispatch:/);
+  assert.match(
+    source,
+    /^on:\n  push:\n    tags:\n      - "pi-tidy-\*-v\*"\n\n/m
+  );
+  assert.doesNotMatch(source, /^\s+(release|pull_request\w*|branches):/m);
+  assert.match(source, /group: npm-publish-\$\{\{ github\.ref_name \}\}/);
   assert.match(source, /^          persist-credentials: false$/m);
   assert.match(source, /^          package-manager-cache: false$/m);
   assert.match(source, /npm 11\.5\.1 or newer is required/);

@@ -6,7 +6,7 @@ compatibility: Requires Node.js 22.19+, npm, git, GitHub CLI authentication, and
 
 # npm Release
 
-Release one workspace through `.github/workflows/publish.yml`. Every package owns its manifest, version, changelog, and package-qualified tag. GitHub Releases trigger tokenless npm Trusted Publishing with provenance.
+Release one workspace through `.github/workflows/publish.yml`. Every package owns its manifest, version, changelog, and package-qualified tag. Pushing the package-qualified tag triggers tokenless npm Trusted Publishing with provenance; the GitHub Release is the human-readable record.
 
 ## Inputs
 
@@ -28,7 +28,7 @@ Normalize `v0.2.0` to `0.2.0`. The release tag is `$SLUG-v<TARGET>`.
 ## Safety
 
 - Run from the repository root with a clean `main` synchronized to `origin/main`.
-- Publish functional releases only through a GitHub Release and `.github/workflows/publish.yml`. The sole exception is the explicitly approved `0.0.0` first-package bootstrap below; never publish functional package code locally.
+- Publish functional releases only through a pushed release tag and `.github/workflows/publish.yml`. The sole exception is the explicitly approved `0.0.0` first-package bootstrap below; never publish functional package code locally.
 - Use GitHub OIDC. Keep npm tokens absent from prompts, files, output, and workflow configuration.
 - Preserve independent package versions. Update only the selected manifest, its changelog, and the root lockfile.
 - Stop on ambiguous input, failed validation, an existing npm version/tag/changelog heading, or a package with no user-visible changes.
@@ -81,7 +81,7 @@ npm view "$PACKAGE" version --json
 
 Require `$DIR/package.json`, package name exactly `$PACKAGE`, an empty working tree, branch `main`, no ahead/behind count, and valid GitHub authentication. Treat npm `E404` for the unversioned package lookup as a first-publication signal, not proof that OIDC is ready: npm cannot attach a trusted publisher until the package record exists.
 
-Confirm `.github/workflows/publish.yml` has `id-token: write`, uses environment `npm`, has no alternate functional trigger such as `workflow_dispatch`, pins third-party actions to full commit hashes, disables persisted checkout credentials and `setup-node` package-manager caching, installs the lockfile with `npm ci --ignore-scripts`, resolves release tags to an allowlisted public workspace path, publishes with `--workspace`, and contains no `NODE_AUTH_TOKEN` or `NPM_TOKEN` reference.
+Confirm `.github/workflows/publish.yml` has `id-token: write`, uses environment `npm`, triggers only on `pi-tidy-*-v*` tag pushes with no alternate functional trigger such as `workflow_dispatch`, pins third-party actions to full commit hashes, disables persisted checkout credentials and `setup-node` package-manager caching, installs the lockfile with `npm ci --ignore-scripts`, resolves release tags to an allowlisted public workspace path, publishes with `--workspace`, and contains no `NODE_AUTH_TOKEN` or `NPM_TOKEN` reference.
 
 ### 1a. Bootstrap a new npm package record when required
 
@@ -188,9 +188,9 @@ git tag -a "$TAG" -m "$PACKAGE v$TARGET"
 git push origin main --follow-tags
 ```
 
-Verify the annotated tag points to the release commit.
+Verify the annotated tag points to the release commit. The tag push starts the publish workflow.
 
-### 7. Create and monitor the GitHub Release
+### 7. Monitor the publish run and create the GitHub Release
 
 ```bash
 gh release create "$TAG" \
@@ -200,10 +200,10 @@ gh release create "$TAG" \
 rm "/tmp/$SLUG-release-v$TARGET.md"
 ```
 
-Locate the release-triggered workflow run whose `headBranch` is `$TAG`, then block until completion:
+Locate the tag-triggered workflow run whose `headBranch` is `$TAG`, then block until completion:
 
 ```bash
-gh run list --workflow publish.yml --event release --limit 10 \
+gh run list --workflow publish.yml --event push --limit 10 \
   --json databaseId,headBranch,status,conclusion,url
 gh run watch <RUN_ID> --exit-status
 ```

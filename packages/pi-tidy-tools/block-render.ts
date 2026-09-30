@@ -26,6 +26,13 @@ import type { TidyMode } from "./config.js";
 /** Hanging indent for detail and expanded continuation lines. */
 const INDENT = "  ";
 
+/**
+ * The styled arrow that opens a block's result tail. Model text — a reasoning
+ * headline, a grep pattern, a command, a diff line — may carry a bare "→", so
+ * width fitting anchors on this exact sequence, never on the glyph alone.
+ */
+const RESULT_SEPARATOR = `${DIM}→${RESET}`;
+
 /** Collapse whitespace/newlines to one line (width-based truncation happens at render). */
 function oneLine(s: string): string {
   return s.replace(/\s+/g, " ").trim();
@@ -35,7 +42,8 @@ function oneLine(s: string): string {
 export function fitToolLine(line: string, width: number): string {
   const max = Math.max(1, width);
   if (visibleWidth(line) <= max) return line;
-  const arrowIndex = line.indexOf("→");
+  // Last occurrence: every model-supplied field precedes the separator.
+  const arrowIndex = line.lastIndexOf(RESULT_SEPARATOR);
   if (arrowIndex < 0) return truncateToWidth(line, max, "…");
 
   const tail = line.slice(arrowIndex);
@@ -362,17 +370,17 @@ export function buildToolBlock(
   // Keep the target on failures too; width fitting preserves the useful error
   // tail while the command/path answers what actually failed.
   const line2 = !detail
-    ? `${INDENT}${DIM}→${RESET} ${summary}`
-    : `${INDENT}${DIM}${detail}${RESET} ${DIM}→${RESET} ${summary}`;
+    ? `${INDENT}${RESULT_SEPARATOR} ${summary}`
+    : `${INDENT}${DIM}${detail}${RESET} ${RESULT_SEPARATOR} ${summary}`;
   let lines: string[];
   if (mode === "reasoning") {
     lines = [
-      `${runningPrefix}${toolLabel} ${headline} ${DIM}→${RESET} ${summary}`,
+      `${runningPrefix}${toolLabel} ${headline} ${RESULT_SEPARATOR} ${summary}`,
     ];
   } else if (mode === "result") {
     const resultDetail = !detail ? "" : ` ${DIM}${detail}${RESET}`;
     lines = [
-      `${runningPrefix}${toolLabel}${resultDetail} ${DIM}→${RESET} ${summary}`,
+      `${runningPrefix}${toolLabel}${resultDetail} ${RESULT_SEPARATOR} ${summary}`,
     ];
   } else {
     lines = [`${runningPrefix}${toolLabel} ${headline}`, line2];

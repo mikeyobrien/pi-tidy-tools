@@ -673,6 +673,60 @@ test("narrow grep lines always preserve the match and file summary", () => {
   assert.match(fitted, /3 matches in 2 files$/);
 });
 
+test("a bare arrow in model text never becomes the fitted result tail", () => {
+  // Reasoning, patterns, and commands are model text and may contain "→".
+  // Taking that arrow as the tail boundary kept everything after it and
+  // truncated the tool label away: as a long reasoning streamed in, line 1
+  // eroded frame by frame from "✏️ edit rename g…" down to "… → getBar …".
+  const [line1] = buildToolBlock(
+    "edit",
+    {
+      path: "src/module.ts",
+      reasoning: "rename getFoo → getBar in every caller of the module",
+    },
+    { details: { diff: "+1 a\n-1 b" } }
+  );
+  assert.equal(
+    withoutAnsi(fitToolLine(line1, 30)),
+    "✏️ edit rename getFoo → getBa…"
+  );
+
+  const [, grepLine2] = buildToolBlock(
+    "grep",
+    { pattern: "→", path: "packages/pi-tidy-tools/block-render.ts", reasoning: "find arrows" },
+    { content: [{ type: "text", text: "a.ts:1: x\na.ts:2: y" }] }
+  );
+  assert.equal(
+    withoutAnsi(fitToolLine(grepLine2, 40)),
+    "  → in packages/p… → 2 matches in 1 file"
+  );
+
+  const [reasoningLine] = buildToolBlock(
+    "bash",
+    { command: "npm test", reasoning: "map old → new across the whole suite" },
+    {},
+    { isPartial: true, elapsedMs: 3_000, mode: "reasoning" }
+  );
+  assert.equal(
+    withoutAnsi(fitToolLine(reasoningLine, 32)),
+    "· ⚡ bash map old → new ac… → 3s"
+  );
+});
+
+test("the result arrow keeps its dim style once the head truncates", () => {
+  // Slicing at the bare glyph left the DIM that opens the separator on the
+  // head, where truncation dropped it: the arrow brightened the moment a
+  // growing reasoning or command outgrew the width.
+  const [, line2] = buildToolBlock(
+    "bash",
+    { command: "npm run check --workspaces --if-present", reasoning: "gate" },
+    { content: [{ type: "text", text: "" }] },
+    { elapsedMs: 3_000 }
+  );
+  assert.ok(fitToolLine(line2, 200).includes("\x1b[2m→\x1b[0m"));
+  assert.ok(fitToolLine(line2, 30).includes("\x1b[2m→\x1b[0m"));
+});
+
 test("disabled startup keeps only the tidy management command", async () => {
   const registrations = await loadWith("off");
   assert.deepEqual([...registrations.commands.keys()], ["tidy"]);
@@ -1373,16 +1427,18 @@ test("registered message renderer fits stored and restored recap rows", async ()
   const renderer = (await registerEnabledExtension()).renderers.get(
     "minimal-turn-diff"
   )!;
+  // Recap rows are diff lines: a bare "→" in changed code is content, so the
+  // row truncates from the end and keeps its +/- marker and line number.
   const stored = renderer({
     details: {
-      rows: ["a very long line without a summary", "long target → result"],
+      rows: ["a very long line without a summary", "+12 map a → b in place"],
     },
   });
   stored.invalidate();
   const storedLines = renderedLines(stored, 12);
-  assert.deepEqual(storedLines, ["a very long…", "lo… → result"]);
+  assert.deepEqual(storedLines, ["a very long…", "+12 map a →…"]);
   const tiny = renderedLines(stored, 3);
-  assert.equal(tiny[1], "→ …");
+  assert.equal(tiny[1], "+1…");
   const restored = renderer({ content: "first\nsecond" });
   assert.deepEqual(renderedLines(restored, 80), ["first", "second"]);
   assert.deepEqual(renderedLines(restored, 0), ["…", "…"]);
@@ -1485,15 +1541,17 @@ test("environment overrides reject persistent state changes", async () => {
 });
 
 test("fitToolLine preserves exact content or the useful result tail", () => {
+  // The result tail opens at the dim arrow the block builder emits.
+  const sep = "\x1b[2m→\x1b[0m";
   assert.deepEqual(
     [
       fitToolLine("abcdef", 99),
       fitToolLine("abcdef", 4),
-      fitToolLine("  long target   → result", 15),
-      fitToolLine("head → verylongtail", 5),
-      fitToolLine("head → result", 12),
-      fitToolLine("→ result", 8),
-      fitToolLine("head → result", 3),
+      fitToolLine(`  long target   ${sep} result`, 15),
+      fitToolLine(`head ${sep} verylongtail`, 5),
+      fitToolLine(`head ${sep} result`, 12),
+      fitToolLine(`${sep} result`, 8),
+      fitToolLine(`head ${sep} result`, 3),
     ].map(withoutAnsi),
     [
       "abcdef",

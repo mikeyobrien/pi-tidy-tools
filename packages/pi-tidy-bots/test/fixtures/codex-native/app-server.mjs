@@ -1,11 +1,6 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 if (process.argv[2] !== "app-server") process.exit(2);
@@ -42,8 +37,11 @@ const completeTurn = (
   request,
   text,
   status = "completed",
-  existingTurnId
+  existingTurnId,
+  coalesced = false
 ) => {
+  const frames = [];
+  const sendFrame = coalesced ? (frame) => frames.push(frame) : send;
   const nativeTurnId = existingTurnId ?? `turn-${++counter}`;
   const item = {
     id: `item-${counter}`,
@@ -51,20 +49,20 @@ const completeTurn = (
     text,
   };
   if (!existingTurnId)
-    send({
+    sendFrame({
       id,
       result: {
         turn: { id: nativeTurnId, items: [], status: "inProgress" },
       },
     });
-  send({
+  sendFrame({
     method: "turn/started",
     params: {
       threadId: request.threadId,
       turn: { id: nativeTurnId, items: [], status: "inProgress" },
     },
   });
-  send({
+  sendFrame({
     method: "item/started",
     params: {
       threadId: request.threadId,
@@ -73,7 +71,7 @@ const completeTurn = (
       item,
     },
   });
-  send({
+  sendFrame({
     method: "item/agentMessage/delta",
     params: {
       threadId: request.threadId,
@@ -82,7 +80,7 @@ const completeTurn = (
       delta: text,
     },
   });
-  send({
+  sendFrame({
     method: "item/completed",
     params: {
       threadId: request.threadId,
@@ -90,7 +88,7 @@ const completeTurn = (
       item,
     },
   });
-  send({
+  sendFrame({
     method: "turn/completed",
     params: {
       threadId: request.threadId,
@@ -100,6 +98,10 @@ const completeTurn = (
           : { id: nativeTurnId, items: [item], status },
     },
   });
+  if (coalesced)
+    process.stdout.write(
+      frames.map((frame) => JSON.stringify(frame) + "\n").join("")
+    );
 };
 
 const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
@@ -172,7 +174,10 @@ rl.on("line", (line) => {
     const text = Array.isArray(params.input)
       ? params.input.map((part) => part.text ?? "").join("")
       : "";
-    if (text.includes("[cancel-hold]") || text.includes("[cancel-then-completed]")) {
+    if (
+      text.includes("[cancel-hold]") ||
+      text.includes("[cancel-then-completed]")
+    ) {
       const nativeTurnId = `turn-${++counter}`;
       pending.set(nativeTurnId, { id, threadId: params.threadId, text });
       send({
@@ -279,11 +284,11 @@ rl.on("line", (line) => {
       return;
     }
     if (text.includes("[unknown-status]")) {
-      completeTurn(id, params, `codex:${text}`, "invented");
+      completeTurn(id, params, `codex:${text}`, "invented", undefined, true);
       return;
     }
     if (text.includes("[missing-status]")) {
-      completeTurn(id, params, `codex:${text}`, "");
+      completeTurn(id, params, `codex:${text}`, "", undefined, true);
       return;
     }
     completeTurn(id, params, `codex:${text}`);

@@ -156,7 +156,9 @@ export function startCodexAdapter(): PluginRuntime {
                     payload: { code: "native_observation_gap" },
                   });
               } finally {
-                void runtime.close("native_observation_gap");
+                // Preserve replies for already-entered native calls before
+                // closing the pipe; the observation gap still prevents success.
+                void runtime.close("native_observation_gap", undefined, true);
               }
             },
           }

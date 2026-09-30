@@ -9,6 +9,10 @@ import {
 import { tmpdir } from "node:os";
 import { join, normalize, relative } from "node:path";
 import { pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const ts = require("typescript");
 
 const root = new URL("..", import.meta.url).pathname;
 const temp = mkdtempSync(join(tmpdir(), "pi-tidy-pack-"));
@@ -164,6 +168,69 @@ try {
         encoding: "utf8",
       })
     );
+    if (name === "@mobrienv/pi-tidy-tools") {
+      const declared = new Set([
+        ...Object.keys(manifest.dependencies ?? {}),
+        ...Object.keys(manifest.peerDependencies ?? {}),
+      ]);
+      for (const file of packed[0].files.filter((file) =>
+        file.path.endsWith(".ts")
+      )) {
+        const source = execFileSync(
+          "tar",
+          ["-xOzf", tarball, `package/${file.path}`],
+          { encoding: "utf8" }
+        );
+        const tree = ts.createSourceFile(
+          file.path,
+          source,
+          ts.ScriptTarget.Latest,
+          true
+        );
+        const checkImport = (specifier) => {
+          if (
+            !specifier ||
+            specifier.startsWith(".") ||
+            specifier.startsWith("node:")
+          )
+            return;
+          const packageName = specifier.startsWith("@")
+            ? specifier.split("/").slice(0, 2).join("/")
+            : specifier.split("/")[0];
+          if (!declared.has(packageName))
+            throw new Error(
+              `${name} runtime import ${packageName} in ${file.path} is not declared`
+            );
+        };
+        const visit = (node) => {
+          if (ts.isImportDeclaration(node) && !node.importClause?.isTypeOnly) {
+            const clause = node.importClause;
+            const bindings = clause?.namedBindings;
+            const onlyTypes =
+              !clause?.name &&
+              bindings &&
+              ts.isNamedImports(bindings) &&
+              bindings.elements.length > 0 &&
+              bindings.elements.every((element) => element.isTypeOnly);
+            if (!onlyTypes) checkImport(node.moduleSpecifier.text);
+          } else if (
+            ts.isExportDeclaration(node) &&
+            !node.isTypeOnly &&
+            node.moduleSpecifier
+          ) {
+            checkImport(node.moduleSpecifier.text);
+          } else if (
+            ts.isCallExpression(node) &&
+            node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+            ts.isStringLiteral(node.arguments[0])
+          ) {
+            checkImport(node.arguments[0].text);
+          }
+          ts.forEachChild(node, visit);
+        };
+        visit(tree);
+      }
+    }
     if (manifest.dependencies?.["@mobrienv/pi-tidy-core"])
       throw new Error(`${name} leaked a private workspace dependency`);
     if (name === "@mobrienv/pi-tidy-tools") {
@@ -193,7 +260,11 @@ try {
         "install",
         tarball,
         "--ignore-scripts",
-        ...(name === "@mobrienv/pi-tidy-memory" ? [] : ["--omit=peer"]),
+        ...(["@mobrienv/pi-tidy-memory", "@mobrienv/pi-tidy-tools"].includes(
+          name
+        )
+          ? []
+          : ["--omit=peer"]),
         "--package-lock=false",
         "--no-audit",
         "--no-fund",
@@ -210,6 +281,74 @@ try {
     );
     if (!readFileSync(installedCore, "utf8").includes("summarizeToolActivity"))
       throw new Error(`${name} installed without a usable tidy core`);
+    if (name === "@mobrienv/pi-tidy-tools") {
+      const loaded = execFileSync(
+        process.execPath,
+        [
+          "--import",
+          require.resolve("tsx"),
+          "--input-type=module",
+          "--eval",
+          `const m=await import(${JSON.stringify(pathToFileURL(join(installDir, "node_modules", ...name.split("/"), "index.ts")).href)});if(typeof m.default!=="function")throw new Error("Missing extension registration function");console.log("isolated extension module loaded");`,
+        ],
+        {
+          cwd: installDir,
+          env: { PATH: process.env.PATH ?? "" },
+          encoding: "utf8",
+        }
+      );
+      if (!loaded.includes("isolated extension module loaded"))
+        throw new Error(`${name} failed isolated extension load`);
+      const rpc = spawnSync(
+        join(installDir, "node_modules", ".bin", "pi"),
+        [
+          "--mode",
+          "rpc",
+          "--offline",
+          "--no-session",
+          "--no-extensions",
+          "--no-skills",
+          "--no-prompt-templates",
+          "--no-context-files",
+          "-e",
+          join(installDir, "node_modules", ...name.split("/"), "index.ts"),
+        ],
+        {
+          cwd: installDir,
+          env: {
+            PATH: process.env.PATH ?? "",
+            HOME: join(installDir, "home"),
+            PI_CODING_AGENT_DIR: join(installDir, "pi-agent"),
+            PI_OFFLINE: "1",
+          },
+          input:
+            JSON.stringify({ id: "commands", type: "get_commands" }) + "\n",
+          encoding: "utf8",
+          timeout: 30000,
+        }
+      );
+      if (rpc.error) throw rpc.error;
+      if (rpc.status !== 0 || /Failed to load extension/.test(rpc.stderr))
+        throw new Error(
+          `${name} failed isolated Pi extension load: ${rpc.stderr}`
+        );
+      const commands = rpc.stdout
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line))
+        .find(
+          (message) => message.id === "commands" && message.success === true
+        )?.data?.commands;
+      if (
+        !Array.isArray(commands) ||
+        !commands.some(
+          (command) => command.name === "tidy" && command.source === "extension"
+        )
+      )
+        throw new Error(`${name} isolated Pi load omitted /tidy`);
+      console.log(`${name}: isolated module and Pi registration passed`);
+    }
     if (name === "@mobrienv/pi-tidy-bots") {
       execFileSync(
         process.execPath,

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-09-30
+
+### Fixed
+
+- Fresh installations include the `typebox` runtime dependency needed by image generation, so the extension loads without dependencies supplied by another package.
+
 ## [0.5.2] - 2026-09-30
 
 ### Changed
@@ -94,7 +100,8 @@ This version was tagged on GitHub but not published to npm.
 - Elapsed time now advances while large tool arguments are still streaming.
 - Reasoning headlines now appear before large paths, commands, or file contents finish streaming.
 
-[Unreleased]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.5.2...HEAD
+[Unreleased]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.5.3...HEAD
+[0.5.3]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.5.2...pi-tidy-tools-v0.5.3
 [0.5.2]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.5.1...pi-tidy-tools-v0.5.2
 [0.5.1]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.5.0...pi-tidy-tools-v0.5.1
 [0.5.0]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.4.2...pi-tidy-tools-v0.5.0

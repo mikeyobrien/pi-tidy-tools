@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -38,11 +38,12 @@ test(
   async () => {
     const fleetDir = mkdtempSync(join(tmpdir(), "ptb-orphan-"));
     const handles: Array<{ stop(): Promise<void> }> = [];
+    let orphan: ChildProcess | undefined;
     // An orphan candidate: a long-lived process matching the child shape.
     const orphanScript = join(fleetDir, "orphan-pi.mjs");
     writeFileSync(
       orphanScript,
-      `process.title = "stub-pi-orphan";\nsetInterval(() => {}, 1 << 30);\n`
+      `setTimeout(() => { process.title = "stub-pi-orphan"; }, 250);\nsetInterval(() => {}, 1 << 30);\n`
     );
     try {
       mkdirSync(join(fleetDir, "bots", "aa"), { recursive: true });
@@ -92,21 +93,23 @@ test(
       // (the daemon itself stops its own children; the orphan case is a
       // DIFFERENT process the old daemon never reaped).
       // spawn (not spawnSync — the orphan must outlive the call).
-      const orphan = spawn(process.execPath, [orphanScript], {
+      orphan = spawn(process.execPath, [orphanScript], {
         detached: true,
         stdio: "ignore",
       });
       orphan.unref();
-      const orphanPid = (() => {
-        const ps = spawnSync("ps", ["ax", "-o", "pid,command"], {
-          encoding: "utf8",
-        });
-        const row = ps.stdout
-          .split("\n")
-          .find((line) => line.includes("stub-pi-orphan"));
-        return row ? Number(row.trim().split(/\s+/)[0]) : undefined;
-      })();
+      const orphanPid = orphan.pid;
       assert.ok(orphanPid, "orphan spawned");
+      await waitFor(() => {
+        const ps = spawnSync(
+          "ps",
+          ["-p", String(orphanPid), "-o", "command="],
+          {
+            encoding: "utf8",
+          }
+        );
+        return ps.status === 0 && ps.stdout.includes("stub-pi-orphan");
+      });
       // Hand-forge the ledger the way the dead daemon left it: the orphan's
       // OWN identity (pid + start time + command) — the shape a real orphan
       // carries. Anything less is unverifiable and must never be signaled.
@@ -157,6 +160,8 @@ test(
       };
       assert.notEqual(newIdentity.pid, orphanPid, "ledger refreshed");
     } finally {
+      if (orphan?.exitCode === null && orphan.signalCode === null)
+        orphan.kill();
       await Promise.all(handles.map((h) => h.stop().catch(() => {})));
       rmSync(fleetDir, { recursive: true, force: true });
     }

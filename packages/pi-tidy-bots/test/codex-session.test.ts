@@ -36,7 +36,9 @@ test("stale turn completion does not settle the current operation", async (t) =>
     false
   );
   assert.equal(
-    f.events.some((event) => String(event.payload?.text ?? "").includes("stale")),
+    f.events.some((event) =>
+      String(event.payload?.text ?? "").includes("stale")
+    ),
     false
   );
   f.notify("item/completed", {
@@ -85,9 +87,10 @@ for (const status of [undefined, "invented", "inProgress"]) {
       false
     );
     assert.deepEqual(f.failures, ["native_observation_gap"]);
-    assert.deepEqual(await f.session.submit("op2", "turn2", [
-      { type: "text", text: "next" },
-    ]), { disposition: "unknown" });
+    assert.deepEqual(
+      await f.session.submit("op2", "turn2", [{ type: "text", text: "next" }]),
+      { disposition: "unknown" }
+    );
   });
 }
 
@@ -158,7 +161,9 @@ test("two native assistant items become two authoritative messages", async (t) =
   });
   assert.deepEqual(await completion, { disposition: "accepted" });
   const started = f.events.filter((event) => event.type === "message.started");
-  const finished = f.events.filter((event) => event.type === "message.finished");
+  const finished = f.events.filter(
+    (event) => event.type === "message.finished"
+  );
   assert.deepEqual(
     started.map((event) => [event.messageId, event.payload.order]),
     [
@@ -176,7 +181,9 @@ test("two native assistant items become two authoritative messages", async (t) =
       f.events.findIndex((event) => event.type === "turn.terminal")
   );
   assert.equal(
-    f.events.some((event) => String(event.payload?.text ?? "").includes("Third")),
+    f.events.some((event) =>
+      String(event.payload?.text ?? "").includes("Third")
+    ),
     false
   );
   assert.equal(
@@ -208,7 +215,29 @@ test("native interrupted after cancel still reports cancelled", async (t) => {
   );
 });
 
-function fixture(t: TestContext) {
+for (const position of ["before", "after"] as const) {
+  test(`turn/start response correlates notifications coalesced ${position} it`, async (t) => {
+    const f = fixture(t, position);
+    await f.session.open("/tmp");
+    assert.deepEqual(
+      await f.session.submit("op1", "turn1", [{ type: "text", text: "live" }]),
+      { disposition: "accepted" }
+    );
+    assert.deepEqual(
+      f.events
+        .filter((event) => event.type === "text.snapshot")
+        .map((event) => event.payload.text),
+      ["live-final"]
+    );
+    assert.equal(
+      f.events.filter((event) => event.type === "turn.terminal").length,
+      1
+    );
+    assert.deepEqual(f.failures, []);
+  });
+}
+
+function fixture(t: TestContext, earlyFrames?: "before" | "after") {
   const input = new PassThrough(),
     output = new PassThrough();
   const events: any[] = [],
@@ -244,10 +273,69 @@ function fixture(t: TestContext) {
     }
     if (request.method === "turn/start") {
       nativeTurnId = `turn-${++turns}`;
-      send({
+      const response = {
         id: request.id,
         result: { turn: { id: nativeTurnId, items: [], status: "inProgress" } },
-      });
+      };
+      if (earlyFrames) {
+        const frames = [
+          {
+            method: "turn/started",
+            params: { threadId, turn: { id: "stale", status: "inProgress" } },
+          },
+          {
+            method: "item/completed",
+            params: {
+              threadId,
+              turnId: "stale",
+              item: {
+                id: "stale-item",
+                type: "agentMessage",
+                text: "stale-invented",
+              },
+            },
+          },
+          {
+            method: "turn/completed",
+            params: { threadId, turn: { id: "stale", status: "completed" } },
+          },
+          {
+            method: "turn/started",
+            params: {
+              threadId,
+              turn: { id: nativeTurnId, status: "inProgress" },
+            },
+          },
+          {
+            method: "item/completed",
+            params: {
+              threadId,
+              turnId: nativeTurnId,
+              item: {
+                id: "live-item",
+                type: "agentMessage",
+                text: "live-final",
+              },
+            },
+          },
+          {
+            method: "turn/completed",
+            params: {
+              threadId,
+              turn: { id: nativeTurnId, status: "completed" },
+            },
+          },
+        ];
+        output.write(
+          [
+            ...(earlyFrames === "before"
+              ? [...frames, response]
+              : [response, ...frames]),
+          ]
+            .map((frame) => JSON.stringify(frame) + "\n")
+            .join("")
+        );
+      } else send(response);
       return;
     }
     if (request.method === "turn/interrupt") {

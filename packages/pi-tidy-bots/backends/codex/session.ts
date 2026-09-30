@@ -25,6 +25,8 @@ interface Turn {
   operationId: string;
   turnId: string;
   nativeTurnId?: string;
+  earlyNotifications: { method: string; params: JsonObject }[];
+  earlyNotificationBytes: number;
   started: boolean;
   cancelRequested?: boolean;
   onAccepted?: () => void;
@@ -197,6 +199,8 @@ export class CodexSession {
       operationId,
       turnId,
       started: false,
+      earlyNotifications: [],
+      earlyNotificationBytes: 0,
       order: 0,
       items: new Map(),
       onAccepted,
@@ -222,6 +226,16 @@ export class CodexSession {
         throw new Error();
       turn.nativeTurnId = String(started.turn.id);
       this.started(turn);
+      // A response and notifications can share one stdout chunk. Promise
+      // continuation runs after transport dispatch, so correlate queued frames
+      // only after the response supplies the authoritative native turn ID.
+      const early = turn.earlyNotifications;
+      turn.earlyNotifications = [];
+      turn.earlyNotificationBytes = 0;
+      for (const frame of early) {
+        if (this.lost) break;
+        this.notification(frame.method, frame.params);
+      }
       const rpcStatus = started.turn.status;
       if (rpcStatus !== undefined && !LIVE_STATUS.has(String(rpcStatus))) {
         const execution = terminalExecution(rpcStatus, !!turn.cancelRequested);
@@ -315,6 +329,23 @@ export class CodexSession {
   private observe(method: string, params: JsonObject): void {
     const turn = this.active;
     if (!turn || !this.threadId || params.threadId !== this.threadId) return;
+    if (this.lost) return;
+    if (!turn.nativeTurnId) {
+      const bytes = Buffer.byteLength(JSON.stringify({ method, params }));
+      if (
+        turn.earlyNotifications.length >= 1024 ||
+        turn.earlyNotificationBytes + bytes >
+          (this.options.maxFrameBytes ?? 1048576)
+      ) {
+        throw new ProtocolError(
+          "native_observation_gap",
+          "Codex pre-response notifications exceed the observation budget"
+        );
+      }
+      turn.earlyNotifications.push({ method, params });
+      turn.earlyNotificationBytes += bytes;
+      return;
+    }
     const notificationTurnId = nativeTurnIdOf(params);
     if (method === "turn/started" && object(params.turn)) {
       if (!nonempty(params.turn.id)) return;

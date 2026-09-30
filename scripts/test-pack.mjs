@@ -85,6 +85,9 @@ try {
     if (name === "@mobrienv/pi-tidy-tools") {
       for (const file of [
         "package/tool-composition.ts",
+        "package/block-render.ts",
+        "package/params-schema.ts",
+        "package/schema-compat.ts",
         "package/pi-fff/adapter.ts",
         "package/pi-fff/controller.ts",
         "package/pi-fff/integration.ts",

@@ -6,9 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [0.5.0] - 2026-09-30
+
 ### Added
 
-- omp support. Renderer arguments are detected by shape, so Pi's `renderCall(args, theme, context)` path is unchanged. On omp, opaque tool schemas still declare `reasoning`, `edit` uses the hashline `input` field, writes diff around the native tool, and filesystem `read` cards are painted by owning `ReadToolGroupComponent` because omp groups those calls before an extension renderer runs.
+- omp support with reasoning headlines, native edit arguments, write diffs, and grouped read cards.
+- Pi 0.99+ codemode support with script goal headlines, per-call tool lines, and optional output summaries controlled through `/tidy output-reasoning`.
+- Optional `generate_image` tool with grok-build as the initial provider, returning generated image file paths.
+
+### Changed
+
+- Settled tool cards reuse rendered lines at the same width, reducing repeated rendering work.
+- `PI_TIDY_TOOLS_CONFIG` can select a custom configuration file.
 
 ## [0.4.1] - 2026-07-19
 
@@ -68,7 +78,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Elapsed time now advances while large tool arguments are still streaming.
 - Reasoning headlines now appear before large paths, commands, or file contents finish streaming.
 
-[Unreleased]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.4.1...HEAD
+[Unreleased]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.5.0...HEAD
+[0.5.0]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.4.2...pi-tidy-tools-v0.5.0
 [0.4.1]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.4.0...pi-tidy-tools-v0.4.1
 [0.4.0]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.3.1...pi-tidy-tools-v0.4.0
 [0.3.1]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.3.0...pi-tidy-tools-v0.3.1

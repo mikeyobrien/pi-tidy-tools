@@ -359,8 +359,13 @@ export function buildToolBlock(
   const { reasoning, rest } = stripReasoning(args ?? {});
 
   // Settled success/error is already encoded by Pi's native row background.
-  // Only running calls need an inline state mark.
-  const runningPrefix = isPartial ? `${DIM}·${RESET} ` : "";
+  // Only running calls need an inline state mark. The two-line layout puts it
+  // in line 2's hanging indent, so nothing moves when it goes away at settle;
+  // prefixing line 1 shifted the whole headline two columns left instead.
+  // Single-line layouts have no free slot and keep it as a prefix.
+  const runningMark = `${DIM}·${RESET} `;
+  const runningPrefix = isPartial ? runningMark : "";
+  const line2Lead = isPartial ? runningMark : INDENT;
   const summary = isPartial
     ? `${DIM}${formatElapsed(elapsedMs)}${RESET}`
     : summarize(name, result, isError, rest, elapsedMs);
@@ -376,8 +381,8 @@ export function buildToolBlock(
   // Keep the target on failures too; width fitting preserves the useful error
   // tail while the command/path answers what actually failed.
   const line2 = !detail
-    ? `${INDENT}${RESULT_SEPARATOR} ${summary}`
-    : `${INDENT}${DIM}${detail}${RESET} ${RESULT_SEPARATOR} ${summary}`;
+    ? `${line2Lead}${RESULT_SEPARATOR} ${summary}`
+    : `${line2Lead}${DIM}${detail}${RESET} ${RESULT_SEPARATOR} ${summary}`;
   let lines: string[];
   if (mode === "reasoning") {
     lines = [
@@ -389,7 +394,7 @@ export function buildToolBlock(
       `${runningPrefix}${toolLabel}${resultDetail} ${RESULT_SEPARATOR} ${summary}`,
     ];
   } else {
-    lines = [`${runningPrefix}${toolLabel} ${headline}`, line2];
+    lines = [`${toolLabel} ${headline}`, line2];
   }
   if (expanded && !isPartial) lines.push(...expandedLines(name, rest, result));
   return lines;

@@ -431,8 +431,15 @@ test("icons-off blocks omit only decorative category icons in every layout and s
           icons: false,
         }).map(withoutAnsi);
         assert.doesNotMatch(lines.join("\n"), /[📖✏️⚡]/);
-        if (state.isPartial) assert.match(lines[0], /^· (read|edit|bash)/);
-        else assert.match(lines[0], /^(read|edit|bash)/);
+        // Two-line layouts mark a running call in line 2's indent; single-line
+        // layouts have no free slot and prefix line 1.
+        const prefixed = state.isPartial && mode !== "default";
+        assert.match(
+          lines[0],
+          prefixed ? /^· (read|edit|bash)/ : /^(read|edit|bash)/
+        );
+        if (state.isPartial && mode === "default")
+          assert.match(lines[1], /^· /);
         assert.doesNotMatch(lines[0], / {2,}(read|edit|bash)/);
         for (const line of lines) assert.ok(fitToolLine(line, 28).length > 0);
       }
@@ -1195,7 +1202,8 @@ test("iconless registered renderers retain state, colors, backgrounds, and compa
       toolCallId: "live",
       invalidate() {},
     });
-  assert.match(renderedLines(live, 28)[0], /^· bash/);
+  assert.match(renderedLines(live, 28)[0], /^bash/);
+  assert.match(renderedLines(live, 28)[1], /^· /);
   assert.doesNotMatch(renderedLines(live, 28).join("\n"), /[📖✏️⚡]/);
   await events.get("tool_execution_start")!({
     toolName: "edit",
@@ -1319,8 +1327,8 @@ test("registered call and event lifecycle owns timers and turn-local diffs", asy
     );
     assert.equal(timers.length, 1);
     assert.deepEqual(renderedLines(live), [
-      "· ⚡ bash wait briefly",
-      "  sleep 1 → <1s",
+      "⚡ bash wait briefly",
+      "· sleep 1 → <1s",
     ]);
     bash.renderCall(
       { command: "sleep 1", reasoning: "wait briefly" },
@@ -1732,7 +1740,7 @@ test("buildToolBlock renders exact layout and expansion boundaries", () => {
         isPartial: true,
       }
     ).map(withoutAnsi),
-    ["· ✏️ write clear file", "  empty → <1s"]
+    ["✏️ write clear file", "· empty → <1s"]
   );
 });
 
@@ -1887,24 +1895,24 @@ test("a streaming headline never paints arg detail the reasoning will overwrite"
   const frame = (args: Record<string, unknown>, context: Record<string, unknown>) =>
     renderedLines(bash.renderCall(args, theme, context))[0];
 
-  assert.equal(frame({ command: "npm run check" }, streaming), "· ⚡ bash");
+  assert.equal(frame({ command: "npm run check" }, streaming), "⚡ bash");
   assert.equal(
     frame({ command: "npm run check", reasoning: "confirm" }, streaming),
-    "· ⚡ bash confirm"
+    "⚡ bash confirm"
   );
   // Arguments complete without a reasoning: the detail fills the headline once.
   assert.equal(
     frame({ command: "npm run check" }, { ...streaming, argsComplete: true }),
-    "· ⚡ bash npm run check"
+    "⚡ bash npm run check"
   );
   assert.equal(
     frame({ command: "npm run check" }, { ...streaming, executionStarted: true }),
-    "· ⚡ bash npm run check"
+    "⚡ bash npm run check"
   );
   // A host that reports no completion signal keeps the fallback.
   assert.equal(
     renderedLines(bash.renderCall({ command: "npm run check" }, { isPartial: true }, theme))[0],
-    "· ⚡ bash npm run check"
+    "⚡ bash npm run check"
   );
 });
 
@@ -1916,4 +1924,33 @@ test("an empty streaming headline leaves one space before the result arrow", () 
     { isPartial: true, argsStreaming: true, mode: "reasoning" }
   );
   assert.equal(withoutAnsi(line), "· ⚡ bash → <1s");
+});
+
+test("settling a call moves nothing on line 1", () => {
+  // The running dot used to prefix line 1 and vanish at settle, so every
+  // card's icon, name, and reasoning jumped two columns left as it finished.
+  // It now occupies line 2's hanging indent: line 1 is identical in both
+  // phases and line 2's detail stays in the same column.
+  const args = { command: "npm run check", reasoning: "confirm it compiles" };
+  const running = buildToolBlock("bash", args, {}, {
+    isPartial: true,
+    elapsedMs: 12_000,
+  }).map(withoutAnsi);
+  const settled = buildToolBlock(
+    "bash",
+    args,
+    { content: [{ type: "text", text: "" }] },
+    { elapsedMs: 12_000 }
+  ).map(withoutAnsi);
+  assert.deepEqual(running, ["⚡ bash confirm it compiles", "· npm run check → 12s"]);
+  assert.deepEqual(settled, [
+    "⚡ bash confirm it compiles",
+    "  npm run check → done in 12s",
+  ]);
+  assert.equal(running[0], settled[0], "line 1 shifted at settle");
+  assert.equal(
+    running[1].indexOf("npm"),
+    settled[1].indexOf("npm"),
+    "line 2 detail shifted at settle"
+  );
 });

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Pi no longer warns at launch that host-provided extension packages must be peer dependencies: `typebox` is now a `"*"` peer dependency supplied by Pi instead of a regular dependency.
+
 ## [0.5.3] - 2026-09-30
 
 ### Fixed

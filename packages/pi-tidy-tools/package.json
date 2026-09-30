@@ -62,17 +62,18 @@
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.80.6",
-    "@earendil-works/pi-tui": ">=0.80.6"
+    "@earendil-works/pi-tui": ">=0.80.6",
+    "typebox": "*"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.80.6",
     "@earendil-works/pi-tui": "0.80.6",
     "@types/node": "22.10.2",
     "@types/semver": "^7.7.1",
+    "typebox": "1.1.38",
     "typescript": "5.6.3"
   },
   "dependencies": {
-    "semver": "^7.8.5",
-    "typebox": "1.1.38"
+    "semver": "^7.8.5"
   }
 }

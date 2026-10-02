@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-10-02
+
+### Fixed
+
+- Children launch on hosts that spell the approval flag differently: the flag is resolved once per process by probing the host executable, instead of always passing Pi's `--approve`.
+- The unsupported-thinking-level error names how to fix the call, not only the levels the model supports.
+- Routine tool and queue events in a live fan-out are coalesced to the 10 Hz repaint budget instead of each forcing an immediate repaint, so expanding a busy fan-out no longer thrashes the TUI.
+- Pi no longer warns at launch that host-provided extension packages must be peer dependencies: `typebox` and `@earendil-works/pi-ai` are now `"*"` peer dependencies supplied by Pi.
+
 ## [0.3.1] - 2026-07-19
 
 ### Changed
@@ -67,7 +76,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Compact adaptive rendering with live child activity, progressive disclosure, directional provider usage, and elapsed duration.
 - Bounded ordered parent results plus persistent versioned manifests, responses, normalized events, and exact provider usage for every child.
 
-[Unreleased]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-subagents-v0.3.1...HEAD
+[Unreleased]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-subagents-v0.3.2...HEAD
+[0.3.2]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-subagents-v0.3.1...pi-tidy-subagents-v0.3.2
 [0.3.1]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-subagents-v0.3.0...pi-tidy-subagents-v0.3.1
 [0.3.0]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-subagents-v0.2.0...pi-tidy-subagents-v0.3.0
 [0.2.0]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-subagents-v0.1.0...pi-tidy-subagents-v0.2.0

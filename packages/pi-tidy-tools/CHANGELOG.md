@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-10-01
+
 ### Fixed
 
 - Pi no longer warns at launch that host-provided extension packages must be peer dependencies: `typebox` is now a `"*"` peer dependency supplied by Pi instead of a regular dependency.
@@ -104,7 +106,8 @@ This version was tagged on GitHub but not published to npm.
 - Elapsed time now advances while large tool arguments are still streaming.
 - Reasoning headlines now appear before large paths, commands, or file contents finish streaming.
 
-[Unreleased]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.5.3...HEAD
+[Unreleased]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.5.4...HEAD
+[0.5.4]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.5.3...pi-tidy-tools-v0.5.4
 [0.5.3]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.5.2...pi-tidy-tools-v0.5.3
 [0.5.2]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.5.1...pi-tidy-tools-v0.5.2
 [0.5.1]: https://github.com/mikeyobrien/pi-tidy-tools/compare/pi-tidy-tools-v0.5.0...pi-tidy-tools-v0.5.1

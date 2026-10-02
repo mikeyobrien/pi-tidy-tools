@@ -66,18 +66,17 @@
     "test:coverage": "node ../../scripts/bundle-core.mjs . && npm run revision:embed && c8 node --import tsx --test test/*.test.ts",
     "test:mutation": "stryker run"
   },
-  "dependencies": {
-    "typebox": "1.1.38"
-  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.80.6 <0.81.0",
-    "@earendil-works/pi-tui": ">=0.80.6 <0.81.0"
+    "@earendil-works/pi-tui": ">=0.80.6 <0.81.0",
+    "typebox": "*"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.80.6",
     "@earendil-works/pi-tui": "0.80.6",
     "@types/node": "22.10.2",
     "tsx": "^4.20.0",
+    "typebox": "1.1.38",
     "typescript": "5.6.3"
   }
 }

@@ -155,6 +155,28 @@ The `honcho` backend talks to a self-hosted or hosted [Honcho](https://honcho.de
 }
 ```
 
+For a standalone setup, this complete config uses an environment variable for authentication and keeps automatic ingestion off:
+
+```json
+{
+  "version": 1,
+  "enabled": true,
+  "backend": {
+    "type": "honcho",
+    "baseUrl": "https://api.honcho.dev",
+    "workspace": "pi-memory",
+    "userPeer": "user",
+    "aiPeer": "pi",
+    "apiKeyEnv": "HONCHO_API_KEY",
+    "staticSessionId": "pi-notes",
+    "reasoningLevel": "medium"
+  },
+  "lifecycle": { "autoRecall": false, "autoRetain": false }
+}
+```
+
+Omit `staticSessionId` to use `<aiPeer>-default`. Set `dynamicBankId` to derive a session from agent and project scope; an explicit `bankId` takes precedence over `staticSessionId`.
+
 ### Fields
 
 - `configFile` — path to a Honcho client config (the same JSON the Hermes agent writes: `baseUrl`, `apiKey`, `workspace`, `peerName`, `aiPeer`). Values there act as defaults; explicit keys in the backend config override them.
@@ -162,7 +184,7 @@ The `honcho` backend talks to a self-hosted or hosted [Honcho](https://honcho.de
 - `apiKeyEnv` / `envFile` — optional credential override; when set, they take precedence over the `configFile` `apiKey`.
 - `staticSessionId` — session id when dynamic bank resolution is off (default `"<aiPeer>-default"`).
 - `recallMode` — `hybrid` (default; dialectic synthesis plus raw search, degrading to whichever leg succeeds), `dialectic`, or `search`.
-- `reasoningLevel` — Honcho dialectic reasoning level, default `low`.
+- `reasoningLevel` — `minimal`, `low` (default), `medium`, `high`, or `max`. The earlier `mid` spelling is accepted and sent as `medium`.
 - Dynamic bank fields (`dynamicBankId`, `dynamicBankGranularity`, `bankIdPrefix`, `agentName`, `resolveWorktrees`, `directoryBankMap`) mirror the Hindsight semantics: the resolved bank id becomes the Honcho session id after mapping runs of characters outside `[a-zA-Z0-9_-]` to a single dash (Honcho session ids reject dots and colons).
 
 ### API mapping

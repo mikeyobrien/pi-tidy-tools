@@ -1058,3 +1058,71 @@ test("dynamic status reports an unresolved bank instead of the static fallback",
     ],
   ]);
 });
+
+for (const [label, overrides, expectedSession] of [
+  ["default", {}, "pi-default"],
+  ["static", { staticSessionId: "notes" }, "notes"],
+  ["bank", { bankId: "pi::notes" }, "pi-notes"],
+  ["dynamic", { dynamicBankId: true }, "pi-project"],
+] as const) {
+  test(`Honcho ${label} configuration reaches the built-in adapter through Pi`, async () => {
+    const requests: Array<{ url: string; body: any }> = [];
+    const tools = new Map<string, any>();
+    createMemoryExtension({
+      configResult: {
+        config: {
+          ...config,
+          backend: {
+            type: "honcho",
+            baseUrl: "https://honcho.example.test",
+            workspace: "synthetic",
+            ...overrides,
+          },
+        },
+        path: "/agent/pi-tidy-memory/config.json",
+      },
+      cwd: "/work/project",
+      git: () => undefined,
+      env: {},
+      fetch: (async (input, init) => {
+        const url = String(input);
+        const body = JSON.parse(String(init?.body ?? "{}"));
+        requests.push({ url, body });
+        if (url.endsWith("/sessions"))
+          return new Response(JSON.stringify({ id: body.id }));
+        if (url.endsWith("/messages"))
+          return new Response(JSON.stringify([{ id: "m1" }]));
+        if (url.endsWith("/chat"))
+          return new Response(JSON.stringify({ content: "synthetic insight" }));
+        if (url.endsWith("/search")) return new Response("[]");
+        throw new Error(`Unexpected route ${url}`);
+      }) as typeof globalThis.fetch,
+      revision,
+    })({
+      registerTool(tool: any) {
+        tools.set(tool.name, tool);
+      },
+      registerCommand() {},
+      on() {},
+    } as any);
+    for (const [name, args] of [
+      ["retain", { content: "synthetic note" }],
+      ["recall", { query: "synthetic query" }],
+      ["reflect", { query: "synthetic query" }],
+    ] as const) {
+      const result = await tools
+        .get(name)
+        .execute(name, args, undefined, undefined, context);
+      assert.notEqual(result.isError, true, JSON.stringify(result));
+    }
+    assert.equal(
+      requests.find((request) => request.url.endsWith("/sessions"))?.body.id,
+      expectedSession
+    );
+    assert.ok(
+      requests.some((request) =>
+        request.url.endsWith(`/sessions/${expectedSession}/messages`)
+      )
+    );
+  });
+}

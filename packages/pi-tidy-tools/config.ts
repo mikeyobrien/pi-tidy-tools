@@ -9,9 +9,14 @@ export const CONFIG_PATH = join(
   "pi-tidy-tools.json"
 );
 
-/** Config path redirect for hermetic tests and sandboxed runs; unset means the user path. */
+/** Prefer an explicit config file, then the host agent directory, then ordinary Pi. */
 export function defaultConfigPath(): string {
-  return process.env.PI_TIDY_TOOLS_CONFIG ?? CONFIG_PATH;
+  return (
+    process.env.PI_TIDY_TOOLS_CONFIG ??
+    (process.env.PI_CODING_AGENT_DIR
+      ? join(process.env.PI_CODING_AGENT_DIR, "pi-tidy-tools.json")
+      : CONFIG_PATH)
+  );
 }
 
 export type TidyStateSource = "environment" | "file" | "default";

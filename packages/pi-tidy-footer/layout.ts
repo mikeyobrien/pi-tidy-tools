@@ -86,7 +86,7 @@ function quotaWindowLabel(
   return `${label} ${Math.round(window.usedPercent)}%`;
 }
 
-interface StatusItem {
+export interface StatusItem {
   text: string;
   severity: 0 | 1 | 2;
 }
@@ -128,6 +128,46 @@ function statusItems(
     .sort((a, b) => a.severity - b.severity || a.key.localeCompare(b.key));
 }
 
+export function formatGiB(bytes: number): string {
+  const gib = bytes / 2 ** 30;
+  return Math.round(gib * 10) < 100 ? gib.toFixed(1) : `${Math.round(gib)}`;
+}
+
+/**
+ * Compact CPU, memory, and disk readouts. A disk shows whichever of block and
+ * inode use is higher; an `i` suffix marks inode exhaustion, which `df -h`
+ * hides when space is still free.
+ */
+export function resourceItems(snapshot: FooterSnapshot): StatusItem[] {
+  const resources = snapshot.resources;
+  if (!resources) return [];
+  const item = (label: string, percent: number): StatusItem =>
+    percent >= resources.warnPercent
+      ? { text: `! ${label}`, severity: 1 }
+      : { text: label, severity: 2 };
+  const items: StatusItem[] = [];
+  if (resources.cpu) {
+    const percent = (resources.cpu.load1 / resources.cpu.cores) * 100;
+    items.push(item(`cpu ${Math.round(percent)}%`, percent));
+  }
+  if (resources.memory && resources.memory.total > 0) {
+    const { used, total } = resources.memory;
+    items.push(
+      item(`mem ${formatGiB(used)}/${formatGiB(total)}G`, (used / total) * 100)
+    );
+  }
+  for (const disk of resources.disks) {
+    const block = disk.blockPercent ?? -1;
+    const inode = disk.inodePercent ?? -1;
+    const percent = Math.max(block, inode);
+    if (percent < 0) continue;
+    const mount = sanitizeStatus(disk.mount) || "?";
+    const suffix = inode > block ? "i" : "";
+    items.push(item(`${mount} ${Math.round(percent)}%${suffix}`, percent));
+  }
+  return items;
+}
+
 function usageItems(snapshot: FooterSnapshot): string[] {
   if (!snapshot.usage) return [];
   const { input, output } = snapshot.usage;
@@ -156,11 +196,12 @@ function capacityLeft(
   const parts: string[] = [];
   const statuses = statusItems(snapshot.statuses);
   const quotas = quotaItems(snapshot);
+  const resources = resourceItems(snapshot);
   let severity: 0 | 1 | 2 = 2;
 
   // Critical statuses and quotas displace routine accounting fields. Preserve
   // the first urgent item instead of hiding it when its prose is too long.
-  for (const item of [...statuses, ...quotas]
+  for (const item of [...statuses, ...quotas, ...resources]
     .filter(({ severity }) => severity < 2)
     .sort((a, b) => a.severity - b.severity)) {
     const next = [...parts, item.text].join(SEPARATOR);
@@ -176,6 +217,11 @@ function capacityLeft(
   appendWhileFits(
     parts,
     quotas.filter(({ severity }) => severity === 2).map(({ text }) => text),
+    maxWidth
+  );
+  appendWhileFits(
+    parts,
+    resources.filter(({ severity }) => severity === 2).map(({ text }) => text),
     maxWidth
   );
   appendWhileFits(
@@ -237,9 +283,12 @@ export function renderFooter(
 
   const context = contextText(snapshot, width);
   if (width < 32) {
-    const urgent = statusItems(snapshot.statuses).find(
-      ({ severity }) => severity < 2
-    );
+    const urgent = [
+      ...statusItems(snapshot.statuses),
+      ...resourceItems(snapshot),
+    ]
+      .filter(({ severity }) => severity < 2)
+      .sort((a, b) => a.severity - b.severity)[0];
     const contextSeverity: StatusItem["severity"] =
       typeof snapshot.contextPercent === "number" &&
       snapshot.contextPercent > 90

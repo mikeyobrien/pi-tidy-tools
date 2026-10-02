@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { CodexBarPoller } from "../codexbar.js";
 import { createFooterExtension } from "../index.js";
+import { ResourceMonitor } from "../resources.js";
+
+// Keep the suite hermetic: never read the developer's real footer config.
+process.env.PI_TIDY_FOOTER_CONFIG = "/nonexistent/pi-tidy-footer.json";
 
 const quotaJson = JSON.stringify({
   provider: "codex",
@@ -134,7 +141,7 @@ test("extension installs a responsive footer and exposes controls", async () => 
 
   await commands.get("tidy-footer").handler("status", ctx);
   assert.deepEqual(notifications.at(-1), [
-    "Responsive footer on; 5h 3%, 7d 20%",
+    "Responsive footer on; 5h 3%, 7d 20%; resources off",
     "info",
   ]);
   await commands.get("tidy-footer").handler("refresh", ctx);
@@ -152,7 +159,7 @@ test("extension installs a responsive footer and exposes controls", async () => 
   ]);
   await commands.get("tidy-footer").handler("status", ctx);
   assert.deepEqual(notifications.at(-1), [
-    "Responsive footer off; 5h 3%, 7d 20%",
+    "Responsive footer off; 5h 3%, 7d 20%; resources off",
     "info",
   ]);
   const pollsWhileEnabled = polls;
@@ -249,7 +256,7 @@ test("command aliases and model lifecycle call the poller exactly", async () => 
 
   await command.handler("   ", ctx);
   assert.deepEqual(notices.at(-1), [
-    "Responsive footer on; 5h 12%, 7d 57%",
+    "Responsive footer on; 5h 12%, 7d 57%; resources off",
     "info",
   ]);
   await command.handler(" OFF ", ctx);
@@ -269,12 +276,15 @@ test("command aliases and model lifecycle call the poller exactly", async () => 
 
   poller.snapshot = { secondary: { usedPercent: 9.6, windowMinutes: 10_080 } };
   await command.handler("status", ctx);
-  assert.deepEqual(notices.at(-1), ["Responsive footer on; 7d 10%", "info"]);
+  assert.deepEqual(notices.at(-1), [
+    "Responsive footer on; 7d 10%; resources off",
+    "info",
+  ]);
   poller.snapshot = undefined;
   poller.lastError = "offline";
   await command.handler("status", ctx);
   assert.deepEqual(notices.at(-1), [
-    "Responsive footer on; CodexBar unavailable: offline",
+    "Responsive footer on; CodexBar unavailable: offline; resources off",
     "info",
   ]);
 });
@@ -319,4 +329,108 @@ test("non-TUI sessions do not install a footer or poll CodexBar", async () => {
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(installed, false);
   assert.equal(polls, 0);
+});
+
+test("resource segment follows config and samples off the render path", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-tidy-footer-ext-"));
+  const configPath = join(dir, "pi-tidy-footer.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify({ resources: { enabled: true, mounts: ["/tmp"] } })
+  );
+  const handlers = new Map<string, Function>();
+  let command: any;
+  const pi = {
+    on(name: string, handler: Function) {
+      handlers.set(name, handler);
+    },
+    registerCommand(_name: string, value: any) {
+      command = value;
+    },
+    getThinkingLevel: () => "off",
+  };
+  let samples = 0;
+  const monitor = new ResourceMonitor({
+    loadavg: () => {
+      samples += 1;
+      return [0.5, 0, 0];
+    },
+    cpuCount: () => 2,
+    totalMemory: () => 8 * 2 ** 30,
+    availableMemory: async () => 6 * 2 ** 30,
+    disk: async () => ({ blockPercent: 16, inodePercent: 100 }),
+  });
+  const poller: any = { start() {}, stop() {}, async refresh() {} };
+  createFooterExtension({ poller, resources: monitor, configPath })(pi as any);
+  const footers: any[] = [];
+  const notices: Array<[string, string]> = [];
+  const ctx: any = {
+    mode: "tui",
+    cwd: "/home/me/project",
+    model: { id: "claude", provider: "anthropic" },
+    getContextUsage: () => undefined,
+    sessionManager: { getBranch: () => [] },
+    ui: {
+      theme: { fg: (_name: string, text: string) => text },
+      setFooter(value: any) {
+        footers.push(value);
+      },
+      notify(text: string, level: string) {
+        notices.push([text, level]);
+      },
+    },
+  };
+  try {
+    handlers.get("session_start")!({}, ctx);
+    assert.equal(monitor.running, true);
+    await monitor.refresh();
+    let renders = 0;
+    const component = footers.at(-1)(
+      { requestRender: () => (renders += 1) },
+      ctx.ui.theme,
+      {
+        getGitBranch: () => "main",
+        getExtensionStatuses: () => new Map(),
+        onBranchChange: () => () => {},
+      }
+    );
+    const before = samples;
+    const lines = component.render(60);
+    assert.equal(samples, before, "render reads only the cached sample");
+    assert.match(lines[1], /^! \/tmp 100%i/);
+    const wide = component.render(120);
+    assert.match(wide[1], /cpu 25% · mem 2\.0\/8\.0G/);
+    await monitor.refresh(() => renders++);
+    assert.ok(renders >= 1);
+
+    await command.handler("status", ctx);
+    assert.deepEqual(notices.at(-1), [
+      "Responsive footer on; CodexBar pending; resources on (/tmp; warn 85%)",
+      "info",
+    ]);
+
+    await command.handler("default", ctx);
+    assert.equal(monitor.running, false);
+    await command.handler("on", ctx);
+    assert.equal(monitor.running, true);
+
+    writeFileSync(
+      configPath,
+      JSON.stringify({ resources: { enabled: false } })
+    );
+    handlers.get("session_start")!({}, ctx);
+    assert.equal(monitor.running, false);
+    assert.equal(monitor.snapshot, undefined);
+    await command.handler("status", ctx);
+    assert.match(notices.at(-1)![0], /; resources off$/);
+
+    writeFileSync(configPath, JSON.stringify({ resources: { enabled: true } }));
+    handlers.get("session_start")!({}, ctx);
+    assert.equal(monitor.running, true);
+    handlers.get("session_shutdown")!();
+    assert.equal(monitor.running, false);
+  } finally {
+    monitor.stop();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

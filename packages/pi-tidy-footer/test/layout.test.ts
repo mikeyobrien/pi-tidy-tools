@@ -4,8 +4,10 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import {
   alignSides,
   compactModelId,
+  formatGiB,
   formatTokens,
   renderFooter,
+  resourceItems,
   sanitizeStatus,
 } from "../layout.js";
 import type { FooterPalette, FooterSnapshot } from "../types.js";
@@ -347,4 +349,131 @@ test("capacity ordering, fallback labels, and width admission are deterministic"
     { dim: (x) => x, accent: (x) => x, warning: (x) => x, error: (x) => x }
   )[1]!;
   assert.equal(justFits, `${exactCandidate}  ctx 0%`);
+});
+
+const GiB = 2 ** 30;
+const resources = (
+  overrides: Partial<NonNullable<FooterSnapshot["resources"]>> = {}
+): NonNullable<FooterSnapshot["resources"]> => ({
+  warnPercent: 85,
+  cpu: { load1: 1.36, cores: 4 },
+  memory: { used: 12.4 * GiB, total: 31.2 * GiB },
+  disks: [
+    { mount: "/", blockPercent: 47, inodePercent: 5 },
+    { mount: "/tmp", blockPercent: 16, inodePercent: 3 },
+  ],
+  ...overrides,
+});
+
+test("formats memory in GiB with one decimal below ten", () => {
+  assert.deepEqual(
+    [0, 3.25 * GiB, 9.94 * GiB, 9.96 * GiB, 31.2 * GiB].map(formatGiB),
+    ["0.0", "3.3", "9.9", "10", "31"]
+  );
+});
+
+test("resource items are compact and omitted without readings", () => {
+  assert.deepEqual(resourceItems(snapshot()), []);
+  assert.deepEqual(resourceItems(snapshot({ resources: resources() })), [
+    { text: "cpu 34%", severity: 2 },
+    { text: "mem 12/31G", severity: 2 },
+    { text: "/ 47%", severity: 2 },
+    { text: "/tmp 16%", severity: 2 },
+  ]);
+  assert.deepEqual(
+    resourceItems(
+      snapshot({
+        resources: resources({
+          cpu: undefined,
+          memory: { used: 1, total: 0 },
+          disks: [{ mount: "/empty" }, { mount: "\x1b[31m", blockPercent: 1 }],
+        }),
+      })
+    ),
+    [{ text: "? 1%", severity: 2 }]
+  );
+});
+
+test("disk shows the higher of block and inode use and flags inodes", () => {
+  const items = resourceItems(
+    snapshot({
+      resources: resources({
+        cpu: undefined,
+        memory: undefined,
+        disks: [
+          { mount: "/tmp", blockPercent: 16, inodePercent: 100 },
+          { mount: "/var", blockPercent: 30, inodePercent: 30 },
+          { mount: "/srv", inodePercent: 12 },
+          { mount: "/data", blockPercent: 12 },
+        ],
+      }),
+    })
+  );
+  assert.deepEqual(items, [
+    { text: "! /tmp 100%i", severity: 1 },
+    { text: "/var 30%", severity: 2 },
+    { text: "/srv 12%i", severity: 2 },
+    { text: "/data 12%", severity: 2 },
+  ]);
+});
+
+test("resource warnings start exactly at the configured threshold", () => {
+  const at = (percent: number, warnPercent = 85) =>
+    resourceItems(
+      snapshot({
+        resources: resources({
+          warnPercent,
+          cpu: { load1: percent / 100, cores: 1 },
+          memory: { used: percent, total: 100 },
+          disks: [{ mount: "/", blockPercent: percent }],
+        }),
+      })
+    ).map(({ severity }) => severity);
+  assert.deepEqual(at(84.9), [2, 2, 2]);
+  assert.deepEqual(at(85), [1, 1, 1]);
+  assert.deepEqual(at(60, 50), [1, 1, 1]);
+  assert.deepEqual(at(49, 50), [2, 2, 2]);
+});
+
+test("an inode-full mount displaces routine fields in warning style", () => {
+  const lines = renderFooter(
+    snapshot({
+      resources: resources({
+        disks: [
+          { mount: "/", blockPercent: 47, inodePercent: 5 },
+          { mount: "/tmp", blockPercent: 16, inodePercent: 100 },
+        ],
+      }),
+    }),
+    52,
+    palette
+  );
+  assert.ok(lines[1]!.startsWith("\x1b[33m! /tmp 100%i"), lines[1]);
+  for (const line of lines) assert.ok(visibleWidth(line) <= 52);
+
+  const tiny = renderFooter(
+    snapshot({
+      contextPercent: 10,
+      statuses: new Map(),
+      resources: resources({
+        disks: [{ mount: "/tmp", blockPercent: 16, inodePercent: 100 }],
+      }),
+    }),
+    24,
+    palette
+  );
+  assert.equal(tiny[1], "\x1b[33m! /tmp 100%i\x1b[0m");
+});
+
+test("routine resources follow quotas and precede extension statuses", () => {
+  const [, line] = renderFooter(snapshot({ resources: resources() }), 160, {
+    dim: (t) => t,
+    accent: (t) => t,
+    warning: (t) => t,
+    error: (t) => t,
+  });
+  assert.match(
+    line!,
+    /^5h 3% · 7d 20% · cpu 34% · mem 12\/31G · \/ 47% · \/tmp 16% · 🧠 58L 16P/
+  );
 });

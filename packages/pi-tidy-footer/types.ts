@@ -29,6 +29,23 @@ export interface FooterSnapshot {
   usage?: FooterUsage;
   quota?: CodexQuotaSnapshot;
   statuses?: ReadonlyMap<string, string>;
+  resources?: ResourceSnapshot;
+}
+
+export interface DiskUsage {
+  mount: string;
+  blockPercent?: number;
+  inodePercent?: number;
+}
+
+export interface ResourceSnapshot {
+  /** One-minute load average and logical core count. */
+  cpu?: { load1: number; cores: number };
+  /** Bytes in use (total minus available) and total bytes. */
+  memory?: { used: number; total: number };
+  disks: DiskUsage[];
+  /** Readings at or above this percentage use the warning style. */
+  warnPercent: number;
 }
 
 export interface FooterPalette {

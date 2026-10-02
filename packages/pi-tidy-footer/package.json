@@ -34,7 +34,9 @@
   "files": [
     "index.ts",
     "codexbar.ts",
+    "config.ts",
     "layout.ts",
+    "resources.ts",
     "types.ts",
     "vendor/**/*.ts",
     "dist/**/*",

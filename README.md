@@ -121,6 +121,7 @@ pi install npm:@mobrienv/pi-tidy-memory
 - Uses two justified, ANSI- and Unicode-safe lines
 - Reads five-hour and seven-day quota usage from the `codexbar` CLI
 - Polls outside rendering and keeps the last good quota snapshot
+- Optional CPU, memory, and disk segment that flags inode exhaustion, off by default
 
 ```bash
 pi install git:github.com/mikeyobrien/pi-tidy-tools@main

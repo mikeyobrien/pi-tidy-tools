@@ -4,7 +4,9 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { CodexBarPoller } from "./codexbar.js";
+import { loadResourceConfig } from "./config.js";
 import { renderFooter } from "./layout.js";
+import { ResourceMonitor } from "./resources.js";
 import type {
   CodexQuotaSnapshot,
   CodexQuotaWindow,
@@ -14,23 +16,40 @@ import type {
 } from "./types.js";
 
 export { CodexBarPoller, parseCodexBarJson, runCodexBar } from "./codexbar.js";
+export { loadResourceConfig } from "./config.js";
+export type { ResourceConfig } from "./config.js";
+export {
+  createSystemProbe,
+  parseDf,
+  parseVmStat,
+  ResourceMonitor,
+  sampleResources,
+  statfsUsage,
+} from "./resources.js";
+export type { ResourceProbe } from "./resources.js";
 export {
   alignSides,
   compactModelId,
   formatTokens,
   renderFooter,
+  resourceItems,
   sanitizeStatus,
 } from "./layout.js";
 export type {
   CodexQuotaSnapshot,
   CodexQuotaWindow,
+  DiskUsage,
   FooterPalette,
   FooterSnapshot,
   FooterUsage,
+  ResourceSnapshot,
 } from "./types.js";
 
 export interface FooterExtensionOptions {
   poller?: CodexBarPoller;
+  resources?: ResourceMonitor;
+  /** Override the config path; defaults to PI_TIDY_FOOTER_CONFIG or ~/.pi/agent. */
+  configPath?: string;
 }
 
 function collectUsage(ctx: ExtensionContext): FooterUsage {
@@ -78,11 +97,14 @@ function palette(theme: ExtensionContext["ui"]["theme"]): FooterPalette {
 export function createFooterExtension(options: FooterExtensionOptions = {}) {
   return function footerExtension(pi: ExtensionAPI): void {
     const poller = options.poller ?? new CodexBarPoller();
+    const monitor = options.resources ?? new ResourceMonitor();
+    const readConfig = () => loadResourceConfig(options.configPath);
     let enabled = true;
     let requestRender: (() => void) | undefined;
 
     const install = (ctx: ExtensionContext) => {
       if (ctx.mode !== "tui" || !enabled) return;
+      const resources = readConfig();
 
       ctx.ui.setFooter((tui, theme, footerData) => {
         requestRender = () => tui.requestRender();
@@ -109,6 +131,7 @@ export function createFooterExtension(options: FooterExtensionOptions = {}) {
                   ? poller.snapshot
                   : undefined,
               statuses: footerData.getExtensionStatuses(),
+              resources: monitor.snapshot,
             };
             return renderFooter(snapshot, width, palette(theme));
           },
@@ -117,6 +140,13 @@ export function createFooterExtension(options: FooterExtensionOptions = {}) {
 
       if (ctx.model?.provider === "openai-codex") {
         poller.start(() => requestRender?.());
+      }
+      if (resources.enabled) {
+        monitor.start(resources.mounts, resources.warnPercent, () =>
+          requestRender?.()
+        );
+      } else {
+        monitor.stop();
       }
     };
 
@@ -141,6 +171,7 @@ export function createFooterExtension(options: FooterExtensionOptions = {}) {
 
     pi.on("session_shutdown", () => {
       poller.stop();
+      monitor.stop();
       requestRender = undefined;
     });
 
@@ -151,6 +182,7 @@ export function createFooterExtension(options: FooterExtensionOptions = {}) {
         if (action === "default" || action === "off") {
           enabled = false;
           poller.stop();
+          monitor.stop();
           ctx.ui.setFooter(undefined);
           ctx.ui.notify("Default Pi footer restored", "info");
           return;
@@ -183,8 +215,12 @@ export function createFooterExtension(options: FooterExtensionOptions = {}) {
           : poller.lastError
             ? `CodexBar unavailable: ${poller.lastError}`
             : "CodexBar pending";
+        const resources = readConfig();
+        const resourceState = resources.enabled
+          ? `resources on (${resources.mounts.join(", ")}; warn ${resources.warnPercent}%)`
+          : "resources off";
         ctx.ui.notify(
-          `Responsive footer ${enabled ? "on" : "off"}; ${source}`,
+          `Responsive footer ${enabled ? "on" : "off"}; ${source}; ${resourceState}`,
           "info"
         );
       },

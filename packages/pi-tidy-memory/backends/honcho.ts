@@ -31,7 +31,7 @@ const MAX_MEMORY_CHARS = 8_000;
 const MAX_REFLECT_CHARS = 32_000;
 const MAX_QUERY_CHARS = 10_000;
 const SESSION_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
-const REASONING_LEVELS = new Set(["low", "mid", "high"]);
+const REASONING_LEVELS = new Set(["minimal", "low", "medium", "high", "max"]);
 const RECALL_MODES = new Set(["dialectic", "search", "hybrid"]);
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -175,6 +175,8 @@ export class HonchoBackend implements MemoryBackend {
 
   private reasoningLevel(): string {
     const level = this.config.reasoningLevel;
+    // Preserve the earlier adapter spelling while sending Honcho's API value.
+    if (level === "mid") return "medium";
     return level && REASONING_LEVELS.has(level) ? level : "low";
   }
 

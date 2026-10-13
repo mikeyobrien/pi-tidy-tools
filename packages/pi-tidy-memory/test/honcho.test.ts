@@ -308,3 +308,18 @@ test("apiKeyEnv takes precedence over configFile credentials", async () => {
     "Bearer env-key"
   );
 });
+
+for (const level of ["minimal", "low", "medium", "high", "max", "mid"]) {
+  test(`reflect sends the official reasoning level for ${level}`, async () => {
+    let sent: unknown;
+    const client = backend(
+      (async (_input, init) => {
+        sent = JSON.parse(String(init?.body)).reasoning_level;
+        return json({ content: "synthetic insight" });
+      }) as typeof globalThis.fetch,
+      { reasoningLevel: level }
+    );
+    await client.reflect({ query: "synthetic query" });
+    assert.equal(sent, level === "mid" ? "medium" : level);
+  });
+}

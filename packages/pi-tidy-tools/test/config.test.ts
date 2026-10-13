@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import {
   mkdir,
   mkdtemp,
@@ -278,6 +279,71 @@ test("PI_TIDY_TOOLS_CONFIG redirects default-path reads and writes", async () =>
   } finally {
     if (previous === undefined) delete process.env.PI_TIDY_TOOLS_CONFIG;
     else process.env.PI_TIDY_TOOLS_CONFIG = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("host config precedence isolates reads and writes from ordinary Pi", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-tidy-tools-host-"));
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: root };
+  delete env.PI_TIDY_TOOLS_CONFIG;
+  delete env.PI_CODING_AGENT_DIR;
+  delete env.PI_TIDY_TOOLS;
+  try {
+    execFileSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `
+      import assert from "node:assert/strict";
+      import { readFile, writeFile } from "node:fs/promises";
+      import { join } from "node:path";
+      import * as c from ${JSON.stringify(new URL("../config.js", import.meta.url).href)};
+      const ordinary = join(process.env.HOME, ".pi", "agent", "pi-tidy-tools.json");
+      await c.saveTidyIcons(false);
+      assert.equal(c.loadTidyIcons(), false);
+      const original = await readFile(ordinary, "utf8");
+      const host = join(process.env.HOME, "rho", "pi-agent");
+      process.env.PI_CODING_AGENT_DIR = host;
+      assert.deepEqual(c.loadTidyState(), { enabled: true, source: "default" });
+      assert.equal(c.loadTidyIcons(), true);
+      assert.equal(c.loadTidyMode(), "default");
+      assert.deepEqual(c.loadTidyOutputReasoning(), { enabled: true });
+      await c.saveTidyEnabled(false);
+      await c.saveTidyIcons(false);
+      await c.saveTidyMode("result");
+      await c.saveTidyOutputReasoning(false);
+      await c.saveTidyOutputReasoningModel("provider/model");
+      const expected = { enabled: false, icons: false, mode: "result",
+        outputReasoning: false, outputReasoningModel: "provider/model" };
+      const hostPath = join(host, "pi-tidy-tools.json");
+      assert.deepEqual(JSON.parse(await readFile(hostPath, "utf8")), expected);
+      assert.deepEqual(c.loadTidyState(), { enabled: false, source: "file" });
+      assert.equal(c.loadTidyIcons(), false);
+      assert.equal(c.loadTidyMode(), "result");
+      assert.deepEqual(c.loadTidyOutputReasoning(), { enabled: false, model: "provider/model" });
+      assert.equal(await readFile(ordinary, "utf8"), original);
+      const explicit = join(process.env.HOME, "explicit.json");
+      process.env.PI_TIDY_TOOLS_CONFIG = explicit;
+      await writeFile(explicit, JSON.stringify({ icons: true, mode: "reasoning" }));
+      assert.equal(c.loadTidyIcons(), true);
+      assert.equal(c.loadTidyMode(), "reasoning");
+      await c.saveTidyIcons(false);
+      assert.deepEqual(JSON.parse(await readFile(explicit, "utf8")), { icons: false, mode: "reasoning" });
+      assert.deepEqual(JSON.parse(await readFile(hostPath, "utf8")), expected);
+      assert.equal(await readFile(ordinary, "utf8"), original);
+      delete process.env.PI_TIDY_TOOLS_CONFIG;
+      delete process.env.PI_CODING_AGENT_DIR;
+      assert.equal(c.loadTidyIcons(), false);
+      assert.equal(c.loadTidyMode(), "default");
+      await c.saveTidyMode("reasoning");
+      assert.deepEqual(JSON.parse(await readFile(ordinary, "utf8")), { icons: false, mode: "reasoning" });
+    `,
+      ],
+      { env, stdio: "pipe" }
+    );
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });

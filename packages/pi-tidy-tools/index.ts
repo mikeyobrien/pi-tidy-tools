@@ -148,6 +148,31 @@ export interface TidyExtensionDependencies {
   ) => PiFffIntegrationController;
 }
 
+/**
+ * Pi builds its own bash tool with the user's `shellPath` and
+ * `shellCommandPrefix` settings. Read them per call, the same way, so the
+ * wrapped tool runs in the same shell; project settings apply only when the
+ * project is trusted.
+ */
+function createSettingsAwareBashTool(cwd: string): SourceToolDefinition {
+  const base = createBashTool(cwd) as SourceToolDefinition;
+  const settingsManager = (host as any).SettingsManager;
+  if (!settingsManager?.create) return base;
+  return {
+    ...base,
+    execute(id: string, params: any, signal: any, onUpdate: any, ctx: any) {
+      const settings = settingsManager.create(cwd, host.getAgentDir(), {
+        projectTrusted: ctx?.isProjectTrusted?.() ?? false,
+      });
+      const tool = createBashTool(cwd, {
+        shellPath: settings.getShellPath(),
+        commandPrefix: settings.getShellCommandPrefix(),
+      }) as SourceToolDefinition;
+      return tool.execute(id, params, signal, onUpdate, ctx);
+    },
+  };
+}
+
 function previewText(preview: PiFffLifecyclePreview): string {
   return preview.changes
     .map(
@@ -600,7 +625,7 @@ export function createTidyExtension(
       read: createReadTool(cwd) as SourceToolDefinition,
       write: createDiffingWriteTool(cwd) as SourceToolDefinition,
       edit: createEditTool(cwd) as SourceToolDefinition,
-      bash: createBashTool(cwd) as SourceToolDefinition,
+      bash: createSettingsAwareBashTool(cwd),
       grep: createGrepTool(cwd) as SourceToolDefinition,
       find: createFindTool(cwd) as SourceToolDefinition,
       ls: createLsTool(cwd) as SourceToolDefinition,

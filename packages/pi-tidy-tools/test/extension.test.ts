@@ -1913,3 +1913,54 @@ test("codemode detection treats a host without getActiveTools as inactive", asyn
   const prepared = tools.get("bash").prepareArguments({ command: "true" });
   assert.equal(Object.hasOwn(prepared, "reasoning"), false);
 });
+
+test("wrapped bash honors shellCommandPrefix from Pi settings and project trust", async () => {
+  const root = await mkdtemp(join(tmpdir(), "tidy-bash-settings-"));
+  const agentDir = join(root, "agent");
+  const project = join(root, "project");
+  await mkdir(agentDir, { recursive: true });
+  await mkdir(join(project, ".pi"), { recursive: true });
+  await writeFile(
+    join(agentDir, "settings.json"),
+    JSON.stringify({ shellCommandPrefix: "export TIDY_PROBE=global" })
+  );
+  await writeFile(
+    join(project, ".pi", "settings.json"),
+    JSON.stringify({ shellCommandPrefix: "export TIDY_PROBE=project" })
+  );
+  const tools = new Map<string, any>();
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const previous = process.env.PI_TIDY_TOOLS;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  process.env.PI_TIDY_TOOLS = "on";
+  try {
+    await createTidyExtension({
+      cwd: project,
+      createIntegration: absentIntegration,
+    })({
+      on() {},
+      registerCommand() {},
+      registerShortcut() {},
+      registerMessageRenderer() {},
+      registerTool: (tool: any) => tools.set(tool.name, tool),
+    } as any);
+    const run = async (trusted: boolean) => {
+      const result = await tools.get("bash").execute(
+        "call-1",
+        { command: 'echo "probe=$TIDY_PROBE"', reasoning: "check prefix" },
+        undefined,
+        undefined,
+        { cwd: project, isProjectTrusted: () => trusted }
+      );
+      return result.content.map((part: any) => part.text ?? "").join("");
+    };
+    assert.match(await run(false), /probe=global/);
+    assert.match(await run(true), /probe=project/);
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    if (previous === undefined) delete process.env.PI_TIDY_TOOLS;
+    else process.env.PI_TIDY_TOOLS = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
